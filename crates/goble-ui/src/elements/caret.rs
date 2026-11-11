@@ -1,7 +1,8 @@
 use crate::color::ColorU;
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
 use crate::geometry::{rectf, Vector2F};
-use crate::theme::ColorToken;
+use crate::platform::text_atlas::FontWeight;
+use crate::theme::{ColorToken, FontFamily};
 
 use super::vec2f;
 
@@ -24,6 +25,13 @@ pub const CARET_CELL_WIDTH: f32 = 8.0;
 /// Thickness of the underline caret drawn under the character it sits on.
 const CARET_UNDERLINE_HEIGHT: f32 = 2.0;
 
+/// The line height a block's inverted glyph is rasterized with. A one-glyph run
+/// lays its single line on the face's own ascent, which this multiplier does
+/// not move — the fontdue baseline of a first line is the line's ascent — so
+/// the glyph lands on the pen the row gave it; the multiplier only sizes the
+/// blank box the atlas reserves around the ink.
+const INK_LINE_HEIGHT: f32 = 1.0;
+
 /// The shape a field's insertion point is drawn in. A block covers the
 /// character after the insertion point, which is what the rich input and the
 /// document editor draw while typing and in vim's normal and visual modes; an
@@ -35,6 +43,23 @@ pub enum CaretShape {
     Bar,
     Block,
     Underline,
+}
+
+/// The character a block caret covers, and the face the row draws it in.
+///
+/// A block is a terminal-style cursor: the cell is the caret's own colour and
+/// the character on it is drawn in the background colour, so the letter reads
+/// as inverted rather than shaded. The face travels with the character because
+/// the block redraws it as a run of its own, and it has to be the very face the
+/// row used — family, size, weight and italic — or the glyph would not land on
+/// its own slot.
+#[derive(Clone, Copy, Debug)]
+pub struct CaretGlyph {
+    pub ch: char,
+    pub family: FontFamily,
+    pub size: f32,
+    pub weight: FontWeight,
+    pub italic: bool,
 }
 
 /// The insertion point of a focused text field.
@@ -60,23 +85,22 @@ pub fn caret_bar(app: &AppContext, height: f32) -> Box<dyn Element> {
 /// The insertion point, painted in the shape the editor's mode calls for, one
 /// cell at `x` past the element's own origin.
 ///
-/// The element takes no room in the row and rasterizes no text. It reports no
-/// advance at all, so the line's own columns do not depend on where the caret
-/// is, and it paints a single rectangle: a block fills the cell of the
-/// character the insertion point sits before, an underline draws the rule under
-/// that character, and a bar is the field's own beam.
+/// The element takes no room in the row. It reports no advance at all, so the
+/// line's own columns do not depend on where the caret is, and it paints one
+/// cell: a block fills the cell of the character the insertion point sits
+/// before, an underline draws the rule under that character, and a bar is the
+/// field's own beam.
 ///
-/// A block is put into the row *before* the run it sits in, so its fill is
-/// behind the text and the character it covers is that run's own glyph, at the
-/// position the row already gives it. Redrawing the glyph here — as a run of
-/// its own, which is what the caret used to do — placed it a couple of pixels
-/// off its slot for every glyph whose ink overhangs its cell (a `j` in the
-/// prose face, `A`, `x`, `p`, `#` and others in the oblique faces): a fresh
-/// run is anchored on its own ink, while the same glyph inside the line is
-/// anchored on the line's, so the letter under the caret jumped as the caret
-/// crossed it. Painting the fill behind the text keeps one rasterization per
-/// glyph and the row's own positions, which is the only way the text can be
-/// perfectly still.
+/// A block is painted in two halves, because the row's text sits between them.
+/// The fill goes into the row *before* the run it covers, so the row's glyphs
+/// keep their one rasterization and their own positions; the character under
+/// the cell is then redrawn *after* the run, in the background colour, by
+/// [`caret_ink`]. That is what makes the block read as a terminal's cursor —
+/// the cell is the caret's colour and the letter on it is the background's —
+/// instead of a pale highlight behind a letter that keeps its own colour. The
+/// redraw is safe because the platform anchors a one-glyph run on its own slot,
+/// so the ink lands back on the very cell the line drew it in, and the caret
+/// still reports no advance: nothing moves as the caret crosses a letter.
 pub fn caret_overlay(
     app: &AppContext,
     shape: CaretShape,
@@ -86,23 +110,69 @@ pub fn caret_overlay(
 ) -> Box<dyn Element> {
     CaretOverlay {
         shape,
+        phase: Phase::Fill,
         x: x.max(0.0),
         cell: cell.max(0.0),
         height,
         color: app.theme.color(ColorToken::Focus),
+        ink: app.theme.color(ColorToken::Bg),
+        glyph: None,
         origin: None,
     }
     .finish()
 }
 
+/// The other half of a block: the character the cell covers, redrawn in the
+/// background colour at the very pen the row gave it and in the row's own face.
+///
+/// The caller puts this element into the row *after* the run the cell covers,
+/// so its ink lands over the glyph the fill is behind. It occupies the same
+/// cell as the fill and reports no advance, like every other caret half.
+pub fn caret_ink(
+    app: &AppContext,
+    x: f32,
+    cell: f32,
+    height: f32,
+    glyph: CaretGlyph,
+) -> Box<dyn Element> {
+    CaretOverlay {
+        shape: CaretShape::Block,
+        phase: Phase::Ink,
+        x: x.max(0.0),
+        cell: cell.max(0.0),
+        height,
+        color: app.theme.color(ColorToken::Focus),
+        ink: app.theme.color(ColorToken::Bg),
+        glyph: Some(glyph),
+        origin: None,
+    }
+    .finish()
+}
+
+/// Which half of a block caret an overlay paints. The row's text sits between
+/// the two: the fill is drawn before the run, the inverted character after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Fill,
+    Ink,
+}
+
 struct CaretOverlay {
     shape: CaretShape,
+    phase: Phase,
     /// The cell's left edge, past the element's own origin. The element owns no
     /// advance, so this offset is not part of what the row lays out.
     x: f32,
     cell: f32,
     height: f32,
     color: ColorU,
+    /// The colour the covered character is redrawn in: the field's own
+    /// background, which is what makes the cell read as inverted.
+    ink: ColorU,
+    /// The character under a block, with the face the row draws it in. `None`
+    /// on the fill half, and at the end of a line or on a cell with no glyph of
+    /// its own, where there is nothing to invert.
+    glyph: Option<CaretGlyph>,
     origin: Option<Point>,
 }
 
@@ -123,14 +193,33 @@ impl Element for CaretOverlay {
             return;
         };
         let x = origin.x + self.x;
-        match self.shape {
-            CaretShape::Bar => {
+        match (self.shape, self.phase) {
+            (CaretShape::Bar, _) => {
                 renderer.fill_rect(rectf(x, origin.y, CARET_WIDTH, self.height), self.color);
             }
-            CaretShape::Block => {
+            (CaretShape::Block, Phase::Fill) => {
                 renderer.fill_rect(rectf(x, origin.y, self.cell, self.height), self.color);
             }
-            CaretShape::Underline => {
+            (CaretShape::Block, Phase::Ink) => {
+                // The cell is the caret's colour and the character on it is
+                // the background's: the glyph keeps the pen the row gave it and
+                // only its ink changes colour.
+                if let Some(glyph) = self.glyph {
+                    let mut buffer = [0u8; 4];
+                    renderer.draw_text_with_font(
+                        vec2f(x, origin.y),
+                        glyph.ch.encode_utf8(&mut buffer).to_string(),
+                        glyph.size,
+                        self.ink,
+                        f32::INFINITY,
+                        INK_LINE_HEIGHT,
+                        glyph.weight,
+                        glyph.family,
+                        glyph.italic,
+                    );
+                }
+            }
+            (CaretShape::Underline, _) => {
                 renderer.fill_rect(
                     rectf(
                         x,

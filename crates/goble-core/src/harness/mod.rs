@@ -28,6 +28,7 @@ use anyhow::Result;
 use futures::{Stream, StreamExt};
 
 mod agents;
+pub mod catalog;
 mod commands;
 mod credentials;
 mod definitions;
@@ -46,6 +47,7 @@ mod workflows;
 #[cfg(test)]
 mod tests;
 
+pub use catalog::{detect_harness, harness_by_id, harness_for, HarnessSpec, HARNESSES};
 pub use presentation::{
     edit_change_counts, edit_diffstat, is_hidden_tool, one_line, skill_name, string_argument,
     subagent_subject, tool_kind_for, tool_row, web_search_sources, ToolKind, ToolRow,
@@ -112,8 +114,9 @@ impl Harness {
         self
     }
 
-    /// When set, the agent does not suspend to ask the user a question: an
-    /// `ask_user` tool call is auto-skipped and the mission continues.
+    /// When set, a command tool runs without suspending on the approval gate.
+    /// A question is not an approval: `ask_user` always suspends the turn and
+    /// reaches the user, whatever this is set to.
     pub fn with_auto_approve(mut self, auto_approve: bool) -> Self {
         self.auto_approve = auto_approve;
         self

@@ -32,6 +32,10 @@ pub struct ConversationEntry {
     /// The directory the conversation works in, drawn on its card under the
     /// subject. Empty when the conversation has no directory of its own yet.
     pub directory: String,
+    /// Which harness the conversation runs on (`goble`, `claude`, `codex`,
+    /// `grok`, `gemini`). The card leads with that harness's mark; an unknown
+    /// or empty value draws the native Goble one.
+    pub harness: String,
     /// Whether the agent has produced anything in this conversation.
     ///
     /// A conversation is opened before it has been answered — a new tab is a
@@ -53,6 +57,7 @@ impl Default for ConversationEntry {
             folder: "General".to_string(),
             workspace_routing: "local".to_string(),
             directory: String::new(),
+            harness: "goble".to_string(),
             has_agent_reply: true,
         }
     }
@@ -74,6 +79,7 @@ impl ConversationEntry {
             folder: "General".to_string(),
             workspace_routing: "local".to_string(),
             directory: String::new(),
+            harness: "goble".to_string(),
             has_agent_reply: true,
         }
     }
@@ -97,6 +103,13 @@ impl ConversationEntry {
     /// subject. Empty draws no row.
     pub fn with_directory(mut self, directory: impl Into<String>) -> Self {
         self.directory = directory.into();
+        self
+    }
+
+    /// Which harness the conversation runs on. The card draws the matching
+    /// mark beside its subject; see [`ConversationEntry::harness`].
+    pub fn with_harness(mut self, harness: impl Into<String>) -> Self {
+        self.harness = harness.into();
         self
     }
 
@@ -242,12 +255,12 @@ impl ConversationSidebar {
                 let item = ConversationListItem::new(
                     entry.id.clone(),
                     entry.name.clone(),
-                    entry.last_response.clone(),
                     entry.timestamp.clone(),
                     Rc::new(RefCell::new(AgentCardUi::default())),
                     selected,
                 )
                 .with_status(entry.status)
+                .with_harness(entry.harness.clone())
                 .with_on_click(move || {
                     if let Some(cb) = on_select.as_ref() {
                         (cb.borrow_mut())(select_id.clone());

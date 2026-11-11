@@ -31,10 +31,14 @@ fn with_inline_terminal(
     // same terminal block the pane does, so a command the user ran is one block
     // wherever it appears. A command the agent ran is not this: its call is part
     // of the agent's reply and is drawn continuously under the row that names it.
+    //
+    // A conversation reads its own shell, never the pane's terminal: a `!` line
+    // typed in the agent view runs beside the terminal, so the terminal's own
+    // commands stay out of the transcript and this one stays out of the shell
+    // behind Esc.
     let block = {
         let reg = terminal.borrow();
-        reg.sessions
-            .get(&pane_id)
+        reg.agent_session(pane_id)
             .and_then(crate::ui::terminal::executed_command_block_at)
     };
     let Some((data, started)) = block else {
@@ -99,7 +103,12 @@ fn with_conversation_commands(
     let view = BlockView::Agent {
         conversation_id: conversation_id.to_string(),
     };
-    let blocks = state.terminal.borrow().visible_blocks(pane_id, &view);
+    // The conversation's commands live in its own shell; reading the pane's
+    // terminal here is what made a `!` command appear on both surfaces.
+    let blocks = state
+        .terminal
+        .borrow()
+        .agent_visible_blocks(pane_id, &view);
     merge_conversation_commands(messages, conversation_command_rows(&blocks))
 }
 
@@ -215,12 +224,27 @@ pub fn build_agent_chat(
         .get(&pane_id)
         .cloned()
         .unwrap_or_else(|| crate::state::NEW_AGENT_TAB_LABEL.to_string());
+    // The bar names the harness this surface works with: the CLI agent in the
+    // pane's pty when one runs (the chip asks the registry first), else the
+    // conversation's own harness, else the native one this view runs.
+    let surface_harness = state
+        .conversations
+        .iter()
+        .find(|entry| entry.id == session.conversation_id)
+        .and_then(|entry| goble_core::harness::harness_for(&entry.harness))
+        .or_else(|| goble_core::harness::harness_for("goble"));
+    // A CLI harness owns its own model and approval policy. The app's model
+    // switcher and always-approve control are the native agent's, so a pane
+    // talking to a CLI harness draws neither; the harness chip names what
+    // answers instead.
+    let native_harness = surface_harness.is_none_or(|spec| spec.id == "goble");
     let header = build_agent_header(
         app,
         state,
         actions,
         pane_id,
         harness_open,
+        surface_harness,
         Some(PaneHeading::Agent(heading)),
     );
 
@@ -393,9 +417,6 @@ pub fn build_agent_chat(
             session.command_caret.clone(),
             session.command_editor_scroll.clone(),
         )
-        .with_composer_approval_mode(controls.approval_mode)
-        .with_composer_approval_menu_open(controls.approval_menu_open.clone())
-        .with_composer_approval_menu_highlight(controls.approval_menu_highlight.clone())
         .with_on_select_approval_mode(move |mode| {
             (on_select_approval_mode.borrow_mut())(pane_id, mode)
         })
@@ -422,8 +443,15 @@ pub fn build_agent_chat(
     // the pane draws no control whose selection the route would drop: the
     // environment it can honestly choose is its only submit-time control (A3,
     // model half).
-    if session.worker.is_none() {
+    if session.worker.is_none() && native_harness {
         chat = chat.with_composer_model_label(controls.model.clone());
+        // The approval policy is the native agent's too: a CLI harness decides
+        // its own approvals, so the always-approve control would write a
+        // setting nothing in the conversation reads.
+        chat = chat
+            .with_composer_approval_mode(controls.approval_mode)
+            .with_composer_approval_menu_open(controls.approval_menu_open.clone())
+            .with_composer_approval_menu_highlight(controls.approval_menu_highlight.clone());
     }
 
     // Modal (vim) editing of the agent composer, when the user turned it on.

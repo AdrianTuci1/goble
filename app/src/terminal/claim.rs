@@ -127,7 +127,10 @@ pub(super) struct PaneCommandRunner {
 
 impl PaneCommandRunner {
     /// A runner reaching the session that shares `commands`.
-    pub(super) fn new(commands: Arc<Mutex<PaneCommands>>, conversation_id: impl Into<String>) -> Self {
+    pub(super) fn new(
+        commands: Arc<Mutex<PaneCommands>>,
+        conversation_id: impl Into<String>,
+    ) -> Self {
         Self {
             commands,
             conversation_id: conversation_id.into(),

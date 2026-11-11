@@ -149,6 +149,22 @@ pub fn display_path(path: &str) -> String {
     collapse_home(path, home_directory().as_deref())
 }
 
+/// The real path behind a label [`display_path`] produced: a leading `~`
+/// becomes the home directory again, and every other path is returned as it
+/// came. Used where a saved conversation's directory has to be spawned or read.
+pub fn expand_path(path: &str) -> String {
+    let Some(home) = home_directory() else {
+        return path.to_string();
+    };
+    if path == "~" {
+        return home;
+    }
+    match path.strip_prefix("~/") {
+        Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
+        None => path.to_string(),
+    }
+}
+
 /// [`display_path`] with the home directory passed in, so the collapse is
 /// testable without changing the process environment.
 ///

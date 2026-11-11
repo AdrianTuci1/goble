@@ -413,15 +413,29 @@ fn tab_hinted(
     on_click: Rc<RefCell<dyn FnMut(usize)>>,
     close: Box<dyn Element>,
 ) -> Box<dyn Element> {
+    let child = Text::new("Space 1")
+        .with_theme_color(ColorToken::Text, app)
+        .with_font_size(12.0)
+        .finish();
+    tab_labelled(app, active, color, child, hint, on_click, close)
+}
+
+/// The same tab, drawing `child` as its name.
+fn tab_labelled(
+    _app: &AppContext,
+    active: bool,
+    color: Option<TabColor>,
+    child: Box<dyn Element>,
+    hint: Option<Box<dyn Element>>,
+    on_click: Rc<RefCell<dyn FnMut(usize)>>,
+    close: Box<dyn Element>,
+) -> Box<dyn Element> {
     let noop_press: Rc<RefCell<dyn FnMut(usize, Vector2F)>> =
         Rc::new(RefCell::new(|_: usize, _: Vector2F| {}));
     let noop_at: Rc<RefCell<dyn FnMut(usize, Vector2F)>> =
         Rc::new(RefCell::new(|_: usize, _: Vector2F| {}));
     Box::new(WorkspaceChip::new(WorkspaceChipParts {
-        child: Text::new("Space 1")
-            .with_theme_color(ColorToken::Text, app)
-            .with_font_size(12.0)
-            .finish(),
+        child,
         index: 1,
         active,
         color,
@@ -560,6 +574,32 @@ fn render_with_pointer(
     cursor: Option<Vector2F>,
 ) -> Vec<RenderCommand> {
     let _ = element.layout(SizeConstraint::loose(size), &mut LayoutContext, app);
+    paint_with_pointer(element, app, cursor)
+}
+
+/// One frame of a chip laid out in a tab `width` wide — the tight slot the
+/// strip hands every tab — with the pointer at `cursor`.
+fn render_tab(
+    element: &mut Box<dyn Element>,
+    width: f32,
+    app: &AppContext,
+    cursor: Option<Vector2F>,
+) -> Vec<RenderCommand> {
+    let _ = element.layout(
+        SizeConstraint::new(vec2f(width, 0.0), vec2f(width, TOPBAR_HEIGHT)),
+        &mut LayoutContext,
+        app,
+    );
+    paint_with_pointer(element, app, cursor)
+}
+
+/// The commands of an element already laid out, painted with the pointer at
+/// `cursor`.
+fn paint_with_pointer(
+    element: &mut Box<dyn Element>,
+    app: &AppContext,
+    cursor: Option<Vector2F>,
+) -> Vec<RenderCommand> {
     let mut ctx = PaintContext::new(goble_ui::render::Renderer::new());
     if let Some(position) = cursor {
         ctx.cursor_inside = true;
@@ -570,6 +610,33 @@ fn render_with_pointer(
         .take()
         .map(|renderer| renderer.commands().to_vec())
         .unwrap_or_default()
+}
+
+/// The origin and width of the run that reads exactly `text`, measured at the
+/// size the frame drew it at.
+fn run_geometry(
+    commands: &[RenderCommand],
+    text: &str,
+    app: &AppContext,
+) -> Option<(Vector2F, f32)> {
+    let (origin, font_size) = commands.iter().find_map(|command| match command {
+        RenderCommand::DrawText {
+            text: drawn,
+            origin,
+            font_size,
+            ..
+        } if drawn == text => Some((*origin, *font_size)),
+        _ => None,
+    })?;
+    let width = Text::new(text)
+        .with_font_size(font_size)
+        .layout(
+            SizeConstraint::loose(vec2f(f32::INFINITY, TOPBAR_HEIGHT)),
+            &mut LayoutContext,
+            app,
+        )
+        .x;
+    Some((origin, width))
 }
 
 /// The centre of the close "x" a frame drew, when it drew one at all.
@@ -808,9 +875,9 @@ fn a_tab_shows_its_shortcut_hint_in_place_of_the_close_control() {
 
     // The close "x" is drawn on hover; the hint holds the slot instead, so the
     // "x" is gone even with the pointer over the tab.
-    let commands = render_with_pointer(
+    let commands = render_tab(
         &mut element,
-        vec2f(400.0, TOPBAR_HEIGHT),
+        200.0,
         &app,
         Some(vec2f(20.0, TOPBAR_HEIGHT / 2.0)),
     );
@@ -848,6 +915,18 @@ fn a_tab_shows_its_shortcut_hint_in_place_of_the_close_control() {
         "the hint is drawn inside the tab: {hint_origin:?} + {hint_width} in {size:?}"
     );
 
+    // The name stays where it was: it is centred in the room the "x" leaves,
+    // and the hint takes the slot without changing that room.
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let mut plain = tab(&app, true, noop.clone(), close_button(&app, noop));
+    let plain_commands = render_tab(&mut plain, 200.0, &app, None);
+    let hinted_name = run_geometry(&commands, "Space 1", &app).expect("the tab's name");
+    let plain_name = run_geometry(&plain_commands, "Space 1", &app).expect("the tab's name");
+    assert_eq!(
+        hinted_name.0.x, plain_name.0.x,
+        "the name does not move when the hint takes the close control's slot"
+    );
+
     // And with the hint in the slot, the tab body is still the click target.
     let mut ctx = EventContext;
     for event in [
@@ -870,6 +949,47 @@ fn a_tab_shows_its_shortcut_hint_in_place_of_the_close_control() {
     assert!(
         closed.borrow().is_empty(),
         "the close control is not a target while the hint holds its slot"
+    );
+}
+
+/// A short name sits in the middle of the room its tab leaves it, the way
+/// warp-new centres a tab title in the content row (`app/src/tab.rs:1440-1457`):
+/// the gap to the inner area's left edge and the gap to its right edge are the
+/// same, so an equal-width tab does not carry the name on one side.
+#[test]
+fn a_short_named_tab_centres_its_name() {
+    const WIDTH: f32 = 200.0;
+    // `WorkspaceChip`'s own inset, the gap to the close "x", and the 16 pt
+    // button the "x" is drawn in; the room the name may use is between them.
+    const INSET: f32 = 7.0;
+    const GAP: f32 = 4.0;
+    const CLOSE: f32 = 16.0;
+
+    let app = AppContext::default();
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let mut element = tab(&app, true, noop.clone(), close_button(&app, noop));
+    // The pointer is over the tab so the "x" is drawn; neither it nor the hint
+    // moves the name.
+    let commands = render_tab(
+        &mut element,
+        WIDTH,
+        &app,
+        Some(vec2f(20.0, TOPBAR_HEIGHT / 2.0)),
+    );
+
+    let (origin, width) = run_geometry(&commands, "Space 1", &app).expect("the tab's name");
+    let inner_left = INSET;
+    let inner_right = WIDTH - INSET - GAP - CLOSE;
+    let left_gap = origin.x - inner_left;
+    let right_gap = inner_right - (origin.x + width);
+    assert!(
+        left_gap > 0.0,
+        "a short name does not sit on the tab's left inset: {origin:?} + {width}"
+    );
+    assert!(
+        (left_gap - right_gap).abs() < 1.0,
+        "the name is centred in the room the close control leaves: {left_gap} before it and \
+         {right_gap} after it, in {inner_left}..{inner_right}"
     );
 }
 

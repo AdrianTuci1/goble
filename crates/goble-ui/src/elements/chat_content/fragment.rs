@@ -70,6 +70,12 @@ impl ChatFragment {
         })
     }
 
+    /// A block of ANSI-coloured output, drawn as coloured prose without a code
+    /// panel.
+    pub fn ansi(code: impl Into<String>) -> Self {
+        Self::of(ChatFragmentKind::Ansi(code.into()))
+    }
+
     pub fn heading(level: u8, text: impl Into<String>) -> Self {
         Self::of(ChatFragmentKind::Heading {
             level,
@@ -150,6 +156,9 @@ pub enum ChatFragmentKind {
     BoldItalic(String),
     Code(String),
     CodeBlock { lang: Option<String>, code: String },
+    /// ANSI-coloured output drawn as prose: the escapes are interpreted for
+    /// colour and the block gets no code panel. See [`super::ansi`].
+    Ansi(String),
     Heading { level: u8, text: String },
     Link { label: String, url: String },
     /// A list and its items. `start` is `Some(n)` for an ordered list whose

@@ -195,6 +195,20 @@ fn capitalize_first(text: &str) -> String {
     }
 }
 
+/// The subject a prompt alone names, or `None` when it names nothing.
+///
+/// A CLI harness keeps its transcript in its own store, so the exchange a
+/// native conversation is named from is not there to read; the prompt the user
+/// sent into the harness is the one part of it goble sees. Everything else is
+/// [`agent_subject`]'s own rule — the same words dropped and the same length —
+/// applied to that prompt as the opening of a conversation nobody has named.
+pub fn prompt_subject(prompt: &str) -> Option<String> {
+    agent_subject(
+        NEW_CONVERSATION_TITLE,
+        &[("user", prompt), ("assistant", "")],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +333,20 @@ mod tests {
     fn the_placeholder_is_never_the_derived_subject() {
         let messages = [("user", "new conversation"), ("assistant", "ok")];
         assert_eq!(agent_subject(NEW_CONVERSATION_TITLE, &messages), None);
+    }
+
+    #[test]
+    fn a_prompt_names_a_conversation_on_its_own() {
+        assert_eq!(
+            prompt_subject("Arata un text colorat in chat").as_deref(),
+            Some("Arata un text colorat in chat")
+        );
+        assert_eq!(
+            prompt_subject("Can you add a title to the sidebar?").as_deref(),
+            Some("Add a title to the sidebar")
+        );
+        assert_eq!(prompt_subject("Thanks!"), None);
+        assert_eq!(prompt_subject("   "), None);
     }
 
     #[test]

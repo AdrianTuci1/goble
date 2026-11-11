@@ -87,6 +87,17 @@ impl TerminalSession {
             .unwrap_or_default()
     }
 
+    /// The cursors of the blocks still running in `view`, keyed by block id.
+    pub fn block_output_cursors(
+        &self,
+        view: &BlockView,
+    ) -> HashMap<BlockId, goble_terminal::CursorState> {
+        self.state
+            .lock()
+            .map(|state| state.block_output_cursors(view))
+            .unwrap_or_default()
+    }
+
     /// The cells of one block's output, when the block list still holds it.
     pub fn block_output_lines_of(&self, id: BlockId) -> Option<Vec<ScreenLine>> {
         self.state

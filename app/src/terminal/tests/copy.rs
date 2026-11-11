@@ -15,9 +15,7 @@ fn session(lines: &str, columns: usize, rows: usize) -> TerminalSession {
 #[test]
 fn copy_mode_moves_and_yanks_a_visual_line() {
     let mut registry = TerminalRegistry::default();
-    registry
-        .sessions
-        .insert(1, session("one\r\ntwo", 20, 4));
+    registry.sessions.insert(1, session("one\r\ntwo", 20, 4));
 
     registry.enter_copy_mode(1);
     assert!(registry.copy_active(1));
@@ -42,9 +40,7 @@ fn copy_mode_moves_and_yanks_a_visual_line() {
 #[test]
 fn a_mouse_selection_copies_the_cells_it_covers() {
     let mut registry = TerminalRegistry::default();
-    registry
-        .sessions
-        .insert(1, session("hello world", 20, 4));
+    registry.sessions.insert(1, session("hello world", 20, 4));
     let now = std::time::Instant::now();
     registry.begin_selection(1, Cell::new(0, 0), now);
     registry.extend_selection(1, Cell::new(0, 4));
@@ -96,7 +92,9 @@ fn a_find_searches_history_and_the_screen_and_reports_a_bad_regex() {
     let find = registry.pane_ui(1).unwrap().find.clone();
     assert!(find.matches.is_empty());
     assert!(
-        find.error.as_deref().is_some_and(|e| e.contains("invalid regex")),
+        find.error
+            .as_deref()
+            .is_some_and(|e| e.contains("invalid regex")),
         "{:?}",
         find.error
     );
@@ -109,9 +107,7 @@ fn a_find_searches_history_and_the_screen_and_reports_a_bad_regex() {
 #[test]
 fn a_dragged_selection_is_the_text_copied_on_release() {
     let mut registry = TerminalRegistry::default();
-    registry
-        .sessions
-        .insert(1, session("hello world", 20, 4));
+    registry.sessions.insert(1, session("hello world", 20, 4));
     let now = std::time::Instant::now();
 
     // A press with no motion is a click: it selects a cell and copies nothing.
@@ -123,10 +119,7 @@ fn a_dragged_selection_is_the_text_copied_on_release() {
     registry.begin_selection(1, Cell::new(0, 0), now);
     registry.extend_selection(1, Cell::new(0, 4));
     registry.end_selection(1);
-    assert_eq!(
-        registry.dragged_selection_text(1).as_deref(),
-        Some("hello")
-    );
+    assert_eq!(registry.dragged_selection_text(1).as_deref(), Some("hello"));
 
     // A double click takes the word, which spans more than one cell.
     registry.begin_selection(1, Cell::new(0, 6), now);
@@ -139,9 +132,7 @@ fn a_dragged_selection_is_the_text_copied_on_release() {
 #[test]
 fn a_copy_mode_selection_yields_to_the_mouse_selection_for_cmd_c() {
     let mut registry = TerminalRegistry::default();
-    registry
-        .sessions
-        .insert(1, session("alpha beta", 20, 4));
+    registry.sessions.insert(1, session("alpha beta", 20, 4));
     registry.begin_selection(1, Cell::new(0, 6), std::time::Instant::now());
     registry.extend_selection(1, Cell::new(0, 9));
     assert_eq!(registry.copy_text(1).as_deref(), Some("beta"));

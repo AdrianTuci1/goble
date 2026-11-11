@@ -15,6 +15,8 @@ use goble_core::harness::ToolCallStatus;
 use goble_core::harness::{tool_kind_for, tool_row, ToolKind};
 use super::*;
 use super::super::{ChatMessageBubble, read_excerpt};
+use super::super::read_excerpt::{drawn_lines, EXPANDED_LINE_CAP};
+use super::super::tool_body::READ_TRUNCATION;
 
 /// A tool call is inline rows: no border stroke and no raised `surface_2`
 /// card background.
@@ -610,6 +612,153 @@ fn expanded_read_draws_a_gutter_and_highlighted_lines_on_a_band() {
         .filter(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == band))
         .count();
     assert_eq!(bands, 10, "each read line draws its own band, got {bands}");
+}
+
+/// `count` numbered source lines, the shape the harness's `read_file` returns.
+fn source_lines(count: usize) -> String {
+    (1..=count).map(|i| format!("fn f{i}() {{}}\n")).collect()
+}
+
+/// A large read is bounded by what is on screen: expanded draws the cap's head
+/// lines and one residue band naming the rest, so a frame's work no longer
+/// follows the file's length.
+#[test]
+fn an_expanded_read_is_capped_and_names_the_lines_it_leaves_out() {
+    let result = source_lines(2000);
+    let app = AppContext::default();
+    let (commands, _) = paint_tool_calls_with_fold(
+        vec![call(
+            "read_file",
+            r#"{"path":"src/lib.rs"}"#,
+            ToolCallStatus::Finished,
+            Some(&result),
+        )],
+        Some(ToolDisplayMode::Expanded),
+    );
+
+    let band = app.theme.color(ColorToken::Bg);
+    let bands = commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == band))
+        .count();
+    assert_eq!(
+        bands,
+        EXPANDED_LINE_CAP + 1,
+        "the cap's lines and one residue band, got {bands}"
+    );
+
+    let rows = drawn_row_texts(&commands);
+    assert!(
+        rows.iter().any(|row| row.ends_with("fn f200() {}")),
+        "the cap's last line is drawn, got {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.ends_with("fn f201() {}")),
+        "the line past the cap is not drawn, got {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.ends_with("fn f2000() {}")),
+        "the file's last line is not drawn, got {rows:?}"
+    );
+    let residue = format!("… {} more lines", 2000 - EXPANDED_LINE_CAP);
+    assert!(
+        rows.iter().any(|row| row.contains(residue.as_str())),
+        "one row names the remainder, got {rows:?}"
+    );
+}
+
+/// The drawn lines stay numbered as the file numbers them: the gutter is as
+/// wide as the largest number the excerpt carries, and each band carries its
+/// own line's number.
+#[test]
+fn a_capped_read_keeps_the_gutter_numbers_of_the_lines_it_draws() {
+    let result = source_lines(2000);
+    let (commands, _) = paint_tool_calls_with_fold(
+        vec![call(
+            "read_file",
+            r#"{"path":"src/lib.rs"}"#,
+            ToolCallStatus::Finished,
+            Some(&result),
+        )],
+        Some(ToolDisplayMode::Expanded),
+    );
+
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts.iter().any(|t| t == "   1  "),
+        "line 1 is right-aligned in the four-wide gutter, got {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == " 200  "),
+        "the cap's last line carries its own number, got {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t == " 201  "),
+        "no number is drawn past the cap, got {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t == "2000  "),
+        "the file's last number is not drawn, got {texts:?}"
+    );
+}
+
+/// The helper the column draws from hands the highlighter only the drawn
+/// blocks: the expanded head up to the cap, and truncated's head and tail,
+/// with nothing from the elided middle joined or tokenised.
+#[test]
+fn drawn_lines_hands_the_highlighter_only_the_text_it_draws() {
+    let result = source_lines(2000);
+    let read = call(
+        "read_file",
+        r#"{"path":"src/lib.rs"}"#,
+        ToolCallStatus::Finished,
+        Some(&result),
+    );
+    let arguments = serde_json::json!({ "path": "src/lib.rs" });
+    let excerpt = read_excerpt(&arguments, &read).expect("content addresses");
+
+    let open = drawn_lines(&excerpt, ToolDisplayMode::Expanded);
+    assert_eq!(open.head, 0..EXPANDED_LINE_CAP);
+    assert_eq!(
+        open.head_text.lines().count(),
+        EXPANDED_LINE_CAP,
+        "the highlighter's input is the drawn head only"
+    );
+    assert!(
+        !open.head_text.contains("fn f2000()"),
+        "the elided tail is never joined for the highlighter"
+    );
+    assert!(open.tail.is_none() && open.tail_text.is_none());
+    assert_eq!(
+        open.residue,
+        Some((
+            2000 - EXPANDED_LINE_CAP,
+            format!("… {} more lines", 2000 - EXPANDED_LINE_CAP)
+        ))
+    );
+
+    let (first, last) = READ_TRUNCATION;
+    let truncated = drawn_lines(&excerpt, ToolDisplayMode::Truncated);
+    assert_eq!(truncated.head, 0..first);
+    assert_eq!(truncated.tail, Some((2000 - last)..2000));
+    assert_eq!(
+        truncated.head_text.lines().count(),
+        first,
+        "truncated still draws grok-build's head"
+    );
+    let tail_text = truncated
+        .tail_text
+        .as_deref()
+        .expect("the tail block is drawn");
+    assert_eq!(tail_text.lines().count(), last, "truncated still draws grok-build's tail");
+    assert_eq!(
+        truncated.residue,
+        Some((2000 - first - last, "…".to_string()))
+    );
+    assert!(
+        !truncated.head_text.contains("fn f1000()") && !tail_text.contains("fn f1000()"),
+        "the elided middle is in neither block"
+    );
 }
 
 /// A read with no usable line information — here a failed read — degrades

@@ -1,5 +1,6 @@
 pub use agent_card::AgentCard;
 pub use align::{Align, Alignment};
+pub use app_mark::AppMark;
 pub use approval_mode::ApprovalMode;
 pub use ask_user::{AskUserCard, AskUserUi};
 pub use avatar::{Avatar, AvatarShape};
@@ -14,7 +15,10 @@ pub use chat_content::{
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, RoutineItem, CHAT_SIDEBAR_WIDTH};
-pub use conversation_list_item::{AgentCardUi, ConversationListItem, ConversationStatus};
+pub use conversation_list_item::{
+    harness_accent, harness_bar_mark, harness_icon, harness_mark, AgentCardUi, ConversationListItem,
+    ConversationStatus,
+};
 pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
 };
@@ -79,9 +83,11 @@ pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
 pub use terminal_block::{
-    filter_option_labels, terminal_block, terminal_block_with_selection, TerminalBlock,
-    TerminalBlockPlumbing, TerminalCopyHandler, TerminalData, TerminalFilter, TerminalLine,
-    TerminalLineGeometry, TerminalLineKind, TerminalMeta, TerminalStatus, TerminalTextSelection,
+    filter_option_labels, terminal_block, terminal_block_styled, terminal_block_with_cursor_styled,
+    terminal_block_with_selection, terminal_block_with_selection_styled, TerminalBlock,
+    TerminalBlockCursor, TerminalBlockPlumbing, TerminalCopyHandler, TerminalCursorShape,
+    TerminalData, TerminalFilter, TerminalLine, TerminalLineGeometry, TerminalLineKind, TerminalMeta,
+    TerminalStatus, TerminalTextSelection, TerminalTextStyle,
 };
 pub use terminal_grid::{GridRange, TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
@@ -585,6 +591,7 @@ where
 
 pub mod agent_card;
 pub mod align;
+pub mod app_mark;
 pub mod approval_mode;
 pub mod ask_user;
 pub mod avatar;

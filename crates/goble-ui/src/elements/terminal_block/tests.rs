@@ -560,6 +560,54 @@ fn section(lines: &[(&str, TerminalLineKind)]) -> TerminalData {
     )
 }
 
+/// A terminal pane draws its blocks at the grid's cell pitch. A captured row
+/// is exactly as wide as the pty was told it is, so at that pitch it stays one
+/// row; at the transcript's larger body font the same row wraps, which is what
+/// made a full line of output show up as two.
+#[test]
+fn a_pane_block_draws_a_full_terminal_row_on_one_line() {
+    let app = app();
+    let columns = 60usize;
+    let pane_cell = crate::elements::TerminalGrid::cell_width(12.0);
+    // A word per few cells gives the wrapper somewhere to break, the way a
+    // real command's output does.
+    let mut row = String::new();
+    while row.chars().count() < columns {
+        row.push_str("ab ");
+    }
+    row.truncate(columns);
+    if row.ends_with(' ') {
+        row.pop();
+        row.push('z');
+    }
+    let width = columns as f32 * pane_cell + pane_cell * 0.5;
+    let pane_style = TerminalTextStyle::new(12.0, 1.35);
+
+    let height = |mut block: TerminalBlock| {
+        block
+            .layout(
+                SizeConstraint::loose(vec2f(width, 1000.0)),
+                &mut LayoutContext::default(),
+                &app,
+            )
+            .y
+    };
+    let one_line = height(
+        TerminalBlock::new()
+            .with_line(TerminalLine::output("one row"))
+            .with_text_style(pane_style),
+    );
+    let full_row = height(
+        TerminalBlock::new()
+            .with_line(TerminalLine::output(row))
+            .with_text_style(pane_style),
+    );
+    assert_eq!(
+        full_row, one_line,
+        "the pane draws a row of {columns} cells, the pty's own width, as one line"
+    );
+}
+
 /// A: the block's controls are its own, so they are drawn only while the
 /// pointer is over the block; with the pointer away the header is only the
 /// prompt row.

@@ -31,6 +31,8 @@ pub enum ChatBlock {
     Paragraph(Vec<InlineSpan>),
     Heading { level: u8, text: String },
     CodeBlock { lang: Option<String>, code: String },
+    /// ANSI-coloured output, drawn as prose without a code panel.
+    Ansi { text: String },
     List {
         items: Vec<ListItem>,
         start: Option<u64>,
@@ -147,6 +149,9 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
                     code: code.clone(),
                 });
             }
+            ChatFragmentKind::Ansi(text) => blocks.push(ChatBlock::Ansi {
+                text: text.clone(),
+            }),
             ChatFragmentKind::List { items, start } => {
                 blocks.push(ChatBlock::List {
                     items: items.clone(),

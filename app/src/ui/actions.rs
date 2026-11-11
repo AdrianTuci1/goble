@@ -143,6 +143,10 @@ pub struct UiActions {
     pub on_composer_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_composer_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
     pub on_send_message: Rc<RefCell<dyn FnMut(String)>>,
+    /// Send a line to the CLI agent running in a pane's pty: `(pane, text)`.
+    /// This is the rich input of a TUI harness — the prompt goes to the agent's
+    /// own stdin, not to a model turn.
+    pub on_agent_prompt: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Cmd/Ctrl+Enter in a chat composer: send the draft to the agent as a NEW
     /// agent conversation (warp-new behavior), binding the pane to a fresh
     /// conversation before the turn.

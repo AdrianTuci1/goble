@@ -12,6 +12,9 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 ///   (`red`, `orange`, `yellow`, `green`, `blue`, `purple`, `cyan`, `gray`,
 ///   `white`, `black`). Colour nests over every other inline style.
 /// - inline code and fenced code blocks (language is preserved)
+/// - fenced ANSI/SGR output, drawn as coloured prose with no code panel. An
+///   `ansi`, `sgr` or `colors` fence says so outright; a plain fence carrying
+///   escapes is coloured output too. See `is_ansi_fence`.
 /// - links `[label](url)`, kept inline in the paragraph they appear in
 /// - images `![alt](url)`, carried as alt text plus destination
 /// - unordered/ordered lists (ordered keeps the source start number), including
@@ -149,7 +152,12 @@ impl<'a> MarkdownParser<'a> {
                 };
                 let code = self.parse_code(|te| matches!(te, TagEnd::CodeBlock));
                 if !code.is_empty() {
-                    self.emit_block(out, vec![ChatFragment::code_block(lang, code)]);
+                    let fragment = if is_ansi_fence(lang.as_deref(), &code) {
+                        ChatFragment::ansi(code)
+                    } else {
+                        ChatFragment::code_block(lang, code)
+                    };
+                    self.emit_block(out, vec![fragment]);
                 }
             }
             Tag::List(start) => {
@@ -456,6 +464,24 @@ impl<'a> MarkdownParser<'a> {
         if let Some(fragment) = take_pending(&mut self.pending, leads_block) {
             out.push(fragment);
         }
+    }
+}
+
+/// Whether a fenced block is coloured output rather than code.
+///
+/// An `ansi` (or `sgr`/`colors`) fence says so outright. An unlabelled or plain
+/// text fence is coloured output when it actually carries an escape: that is
+/// what the model wrote, and drawing the escapes inside a code panel hides the
+/// only thing the block was for. A `bash` fence keeps its code shape even when
+/// it shows an escape, because there the escape is the program, not its output.
+fn is_ansi_fence(lang: Option<&str>, code: &str) -> bool {
+    let lang = lang.unwrap_or("").trim().to_ascii_lowercase();
+    match lang.as_str() {
+        "ansi" | "ansi-color" | "ansi-colors" | "sgr" | "color" | "colors" => true,
+        "" | "text" | "txt" | "plain" | "output" => {
+            crate::elements::chat_content::ansi::has_escape(code)
+        }
+        _ => false,
     }
 }
 
@@ -929,6 +955,50 @@ mod tests {
                 Some("rust".to_string()),
                 "fn main() {}"
             )]
+        );
+    }
+
+    #[test]
+    fn an_ansi_fence_is_coloured_prose() {
+        let fragments = parse_markdown("```ansi\n\u{1b}[31mred\u{1b}[0m\n```");
+        assert_eq!(
+            fragments,
+            vec![ChatFragment::ansi("\u{1b}[31mred\u{1b}[0m")]
+        );
+    }
+
+    /// A model often writes the escape as text, and a plain fence is the
+    /// natural place to put it. Such a block is coloured output, not code: the
+    /// escapes are the only reason it is there.
+    #[test]
+    fn a_plain_fence_carrying_an_escape_is_coloured_prose() {
+        let fragments = parse_markdown("```\n\\033[32mgreen\\033[0m\n```");
+        assert_eq!(
+            fragments,
+            vec![ChatFragment::ansi("\\033[32mgreen\\033[0m")]
+        );
+    }
+
+    /// In a shell fence the escape is the program being shown, so it keeps the
+    /// code panel instead of painting an escape the user asked to read.
+    #[test]
+    fn a_shell_fence_showing_an_escape_stays_code() {
+        let fragments = parse_markdown("```bash\nprintf '\\033[31mred\\033[0m'\n```");
+        assert_eq!(
+            fragments,
+            vec![ChatFragment::code_block(
+                Some("bash".to_string()),
+                "printf '\\033[31mred\\033[0m'"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_plain_fence_without_an_escape_stays_code() {
+        let fragments = parse_markdown("```text\nplain words\n```");
+        assert_eq!(
+            fragments,
+            vec![ChatFragment::code_block(Some("text".to_string()), "plain words")]
         );
     }
 

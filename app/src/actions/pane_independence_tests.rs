@@ -168,6 +168,48 @@ fn a_split_opens_an_agent_pane_that_can_return_to_its_terminal() {
     );
 }
 
+/// A TUI harness typed at the shell's prompt is opened in the agent view. The
+/// launch becomes a conversation with that harness in the sidebar, and the pane
+/// switches to it, so the CLI's own screen is not the surface the user works
+/// in.
+#[test]
+fn a_shell_line_that_launches_a_tui_harness_opens_its_agent_view() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let pane_id = state.borrow().active_pane_id;
+
+    (actions.on_shell_line.borrow_mut())(pane_id, "claude".to_string());
+
+    let s = state.borrow();
+    assert!(
+        s.pane_controls(pane_id).harness_mode,
+        "the launched harness is open in the pane"
+    );
+    assert!(
+        matches!(
+            s.pane_view(pane_id),
+            goble_terminal::blocks::BlockView::Agent { .. }
+        ),
+        "the pane draws the launched harness's agent view"
+    );
+    assert!(s.composer_focused, "the agent input takes the keyboard");
+    let conversation_id = s
+        .pane_sessions
+        .get(&pane_id)
+        .map(|session| session.conversation_id.clone())
+        .expect("the pane owns the conversation it launched");
+    let chat = desktop
+        .list_chats()
+        .into_iter()
+        .find(|chat| chat.id == conversation_id)
+        .expect("the launch is a conversation in the sidebar");
+    assert_eq!(
+        chat.provider.as_deref(),
+        Some("claude"),
+        "the conversation carries the harness it launched"
+    );
+}
+
 /// Clicking a file in the explorer opens it in a pane of its own beside the
 /// active one, in the tab on screen — and a second click while that view is up
 /// loads the other file into the same pane instead of tiling the tab with them.
@@ -1212,4 +1254,50 @@ fn the_diff_control_opens_one_review_pane_per_directory() {
             })
         );
     }
+}
+
+/// A `!` line that names a harness in agent mode opens that harness's agent
+/// view; it never starts the harness's TUI in the conversation's shell, where
+/// the full-screen program would have no way out.
+#[test]
+fn a_bang_harness_line_in_agent_mode_opens_the_harness_view() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let pane_id = state.borrow().active_pane_id;
+
+    (actions.on_set_pane_harness_mode.borrow_mut())(pane_id, true);
+    (actions.on_send_message.borrow_mut())("!claude".to_string());
+
+    let s = state.borrow();
+    assert!(
+        s.pane_controls(pane_id).harness_mode,
+        "the pane stays in agent mode"
+    );
+    assert!(
+        matches!(s.pane_view(pane_id), goble_terminal::blocks::BlockView::Agent { .. }),
+        "the harness view is what the pane draws"
+    );
+    let conversation_id = s
+        .pane_sessions
+        .get(&pane_id)
+        .map(|session| session.conversation_id.clone())
+        .expect("the pane owns the conversation the launch opened");
+    let chat = desktop
+        .list_chats()
+        .into_iter()
+        .find(|chat| chat.id == conversation_id)
+        .expect("the launch is a conversation in the sidebar");
+    assert_eq!(
+        chat.provider.as_deref(),
+        Some("claude"),
+        "the conversation carries the harness the line named"
+    );
+    assert!(
+        !s.terminal.borrow().sessions.contains_key(&pane_id),
+        "no harness TUI is started in the pane's shell"
+    );
+    assert!(
+        !s.terminal.borrow().agent_sessions.contains_key(&pane_id),
+        "the launch runs no command; the harness is the conversation's surface"
+    );
 }

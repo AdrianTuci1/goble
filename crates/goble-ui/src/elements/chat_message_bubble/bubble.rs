@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, ListItem, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text};
+use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text, TextSpan};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
@@ -313,6 +313,45 @@ impl ChatMessageBubble {
                 .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
                 .with_padding(EdgeInsets::uniform(padding))
                 .finish()
+            }
+            ChatBlock::Ansi { text } => {
+                // Coloured output is prose. The escapes pick the glyph colours
+                // and the transcript's own surface stays behind them, so the
+                // block reads as a coloured paragraph rather than a code panel.
+                // A terminal line is already complete, so each line is its own
+                // flow; the column keeps them one under the other without the
+                // blank line a hard break inside one flow would leave.
+                let mut column = Flex::column()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                for line in crate::elements::chat_content::ansi::parse(text) {
+                    let spans: Vec<TextSpan> = line
+                        .into_iter()
+                        .map(|run| {
+                            // A run with no foreground keeps the theme's text
+                            // colour, exactly as a reset returns a terminal to
+                            // its default.
+                            let mut span = TextSpan::plain(run.text);
+                            if let Some(color) = run.color {
+                                span = span.with_color(color);
+                            }
+                            span.with_weight(if run.bold {
+                                FontWeight::Bold
+                            } else {
+                                FontWeight::Regular
+                            })
+                            .with_italic(run.italic)
+                            .with_underline(run.underline)
+                            .with_strikeout(run.strikeout)
+                        })
+                        .collect();
+                    column = column.with_child(
+                        self.recorded(InlineText::new(spans))
+                            .with_font_size(MESSAGE_FONT_SIZE)
+                            .with_line_height(MESSAGE_LINE_HEIGHT)
+                            .finish(),
+                    );
+                }
+                column.finish()
             }
             ChatBlock::List { items, start } => self.render_list(items, *start, app),
             // A quote is an indent plus a rail, not a rounded box.

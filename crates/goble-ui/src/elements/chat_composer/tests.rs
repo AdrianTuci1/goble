@@ -1966,16 +1966,18 @@ fn the_focused_editor_shows_the_focus_blue_caret() {
     );
 }
 
-/// The rich input's cursor does not move the letter it sits among: the editor
-/// draws its whole line as one run and the block is a fill painted behind it.
-/// The block covers exactly the letter after the insertion point, and that
-/// letter is the run's own glyph — the caret never rasterizes one of its own.
+/// The rich input's cursor is a terminal's block, not a highlight: the editor
+/// draws its whole line as one run, the block is a fill painted behind it, and
+/// the letter the block covers is redrawn over the run in the background
+/// colour, at the pen the editor gives it. The cell covers exactly the letter
+/// after the insertion point, and no other letter moves.
 #[test]
 fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
     let focus = app.theme.color(ColorToken::Focus);
+    let bg = app.theme.color(ColorToken::Bg);
     let caret = Rc::new(RefCell::new(1));
     let mut composer = ChatComposer::new()
         .with_value("hi")
@@ -1983,21 +1985,30 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
         .with_caret(caret);
     let commands = paint_composer(&app, &mut composer);
 
-    // One intact run, at the editor's own origin, and no run of the caret's
-    // own: the letter the block covers is the run's own glyph.
-    let runs: Vec<(&str, crate::geometry::Vector2F)> = commands
+    // One intact run at the editor's own origin, and then the letter the block
+    // covers, redrawn in the background colour on the run's own pen.
+    let runs: Vec<(&str, crate::geometry::Vector2F, crate::color::ColorU)> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } => Some((text.as_str(), *origin)),
+            RenderCommand::DrawText {
+                origin, text, color, ..
+            } => Some((text.as_str(), *origin, *color)),
             _ => None,
         })
         .collect();
     assert_eq!(
         runs.len(),
-        1,
-        "the editor draws its line as one run, never a glyph of its own: {runs:?}"
+        2,
+        "the editor draws its line as one run and redraws only the letter the \
+         block covers: {runs:?}"
     );
     assert_eq!(runs[0].0, "hi");
+    assert_eq!(runs[1].0, "i", "the cell covers the `i` after the beam");
+    assert_eq!(
+        runs[1].2, bg,
+        "the covered letter is drawn in the background colour, so the cell \
+         reads as inverted"
+    );
 
     let (cell_at, cell) = commands
         .iter()
@@ -2027,15 +2038,32 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
         (cell.width() - advance_i).abs() < 0.5,
         "the cell covers the `i` after it ({advance_i}): {cell:?}"
     );
-    // The fill is behind the line: the run is painted over it, so the glyph the
-    // block covers keeps its own pixel column instead of being redrawn.
+    assert!(
+        (runs[1].1.x - cell.min_x()).abs() < 0.5 && (runs[1].1.y - runs[0].1.y).abs() < 0.5,
+        "the inverted glyph sits on the cell's own pen and line: {:?} against \
+         {cell:?} and {:?}",
+        runs[1].1,
+        runs[0].1
+    );
+    // The fill is behind the line and the inverted glyph over it: the run keeps
+    // its own pixel column, and the cell is what changes colour.
     let run_at = commands
         .iter()
         .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "hi"))
         .expect("the line is drawn");
+    let ink_at = commands
+        .iter()
+        .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "i"))
+        .expect("the covered letter is redrawn");
     assert!(
         cell_at < run_at,
-        "the block is a fill painted before the line, not a cell redrawn over it"
+        "the block is a fill painted before the line, so the letter is not \
+         hidden by it"
+    );
+    assert!(
+        run_at < ink_at,
+        "the inverted letter is painted after the line, so it is the ink that \
+         changes colour and not a shade behind it"
     );
 }
 

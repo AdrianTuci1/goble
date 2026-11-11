@@ -4,7 +4,7 @@ use super::id::BlockId;
 use super::state::{BlockKind, BlockOwner, BlockState};
 use super::visibility::BlockVisibility;
 use crate::hooks::PrecmdValue;
-use crate::screen::{Screen, ScreenConfig, ScreenLine, ScreenSize};
+use crate::screen::{CursorState, Screen, ScreenConfig, ScreenLine, ScreenSize};
 
 /// What the shell told us about where a command was run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -317,6 +317,37 @@ impl Block {
     /// The output rows, without blank padding.
     pub fn output_lines(&self) -> Vec<ScreenLine> {
         trimmed(self.output.content_lines())
+    }
+
+    /// The cursor a running command left in its output, in the coordinates of
+    /// [`Self::output_lines`]: the row of the trimmed output the program's
+    /// caret sits on, its column and the shape it asked for.
+    ///
+    /// The blank rows `output_lines` trims from the top are what the row is
+    /// measured against, so the caret lands on the line it was drawn on instead
+    /// of drifting by the shell's leading empty lines. `None` when the program
+    /// hid its cursor (`?25l`), which is how a TUI says it draws its own.
+    pub fn output_cursor(&self) -> Option<CursorState> {
+        let cursor = self.output.cursor();
+        if !cursor.visible {
+            return None;
+        }
+        let content = self.output.content_lines();
+        let lead = content.iter().take_while(|line| line.is_blank()).count();
+        let top = self
+            .output
+            .history_size()
+            .saturating_sub(self.output.display_offset());
+        let line = top.saturating_add(cursor.line).checked_sub(lead)?;
+        if line >= content.len().saturating_sub(lead) {
+            return None;
+        }
+        Some(CursorState {
+            line,
+            column: cursor.column,
+            visible: true,
+            shape: cursor.shape,
+        })
     }
 
     /// Everything the block shows: command first, then output.

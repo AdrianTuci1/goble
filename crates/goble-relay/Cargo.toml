@@ -1,0 +1,32 @@
+[package]
+name = "goble-relay"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version = "1.86"
+description = "Device identity, QR pairing, end-to-end encryption and the durable registry for the Goble relay."
+
+[lib]
+name = "goble_relay"
+path = "src/lib.rs"
+
+[dependencies]
+base64.workspace = true
+chacha20poly1305.workspace = true
+chrono.workspace = true
+goble-core = { path = "../goble-core" }
+ring.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

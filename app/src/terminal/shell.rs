@@ -83,10 +83,7 @@ pub(super) fn shell_command(shell: &str) -> ShellLaunch {
         }
         ShellLaunch {
             program,
-            args: vec![
-                "--rcfile".to_string(),
-                script.display().to_string(),
-            ],
+            args: vec!["--rcfile".to_string(), script.display().to_string()],
             env: Vec::new(),
             integration_dir: Some(dir),
         }

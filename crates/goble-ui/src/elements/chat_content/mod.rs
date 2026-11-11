@@ -6,6 +6,7 @@
 //! live sub-agent row ([`sub_agent`]). The re-exports below keep the module's
 //! public paths (`elements::chat_content::ChatFragment`, ...) unchanged.
 
+pub mod ansi;
 mod block;
 mod fragment;
 mod message;

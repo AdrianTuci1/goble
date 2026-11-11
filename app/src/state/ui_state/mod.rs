@@ -30,6 +30,7 @@ pub use agents::{PaneAgentState, TurnOutcome};
 pub use inbox::{InboxItem, InboxKind};
 pub use onboarding::{ONBOARDING_STEPS, ONBOARDING_USAGE};
 pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
+pub use title::prompt_subject;
 
 /// The title a conversation gets when it is created without a subject of its
 /// own. It is a placeholder, not a subject: a tab whose agent holds such a
@@ -477,6 +478,22 @@ pub struct UiState {
     /// reconnect offer survive a restart; a pane the user moved with a typed
     /// `ssh` line keeps the resolved session.
     pub pane_ssh: HashMap<u64, SshPaneBinding>,
+    /// The sidebar chat a pane's CLI harness conversation was registered under,
+    /// keyed by pane id and harness id: a harness launched in a pane opens one
+    /// conversation in the sidebar, and launching the same harness there again
+    /// returns to that conversation instead of stacking a duplicate.
+    pub harness_chats: HashMap<(u64, String), String>,
+    /// What the harness's own session store answered when a conversation still
+    /// named for its harness was looked up, keyed by conversation id: the title
+    /// it offered, or the empty string when it offered none. The store is the
+    /// filesystem, so a conversation is looked at once per run rather than on
+    /// every sidebar rebuild; see [`UiState::refresh_conversations`].
+    pub harness_title_attempts: HashMap<String, String>,
+    /// The harness conversations whose card was named from the session the
+    /// conversation owns, by conversation id. A conversation with a session is
+    /// named from that session once per run; the set keeps the store from being
+    /// read again on every sidebar rebuild.
+    pub harness_session_titles: std::collections::HashSet<String>,
     /// The saved hosts read from `~/.goble/hosts.toml`, in file order. Filled
     /// when the host picker opens, never while the window draws.
     pub ssh_host_entries: Vec<HostEntry>,

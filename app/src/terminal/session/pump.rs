@@ -13,6 +13,34 @@ impl TerminalSession {
         }
     }
 
+    /// Write bytes after `delay`, drained by the next [`Self::pump`] that comes
+    /// due. A CLI agent that treats a prompt and the Enter after it as one paste
+    /// needs the two as separate reads; waiting on the UI thread for that would
+    /// stall every pane.
+    pub fn write_after(&mut self, delay: std::time::Duration, bytes: Vec<u8>) {
+        self.pending_writes
+            .push((std::time::Instant::now() + delay, bytes));
+    }
+
+    fn flush_due_writes(&mut self) {
+        if self.pending_writes.is_empty() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let mut due = Vec::new();
+        self.pending_writes.retain(|(at, bytes)| {
+            if *at <= now {
+                due.push(bytes.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for bytes in due {
+            self.write(&bytes);
+        }
+    }
+
     /// Take everything the screen produced since the last call and answer the
     /// questions it is waiting on.
     ///
@@ -21,6 +49,7 @@ impl TerminalSession {
     /// (its colours, the text area size) waits for the reply, so this has to run
     /// even when nothing is being painted — the pane calls it every frame.
     pub fn pump(&mut self) {
+        self.flush_due_writes();
         let (events, replies, hooks, osc, block_events, finishes) = {
             let Ok(mut state) = self.state.lock() else {
                 return;
@@ -79,7 +108,9 @@ impl TerminalSession {
         for (event, finish) in block_events.into_iter().zip(finishes) {
             match event {
                 BlockEvent::ToolResult(result) => self.tool_results.push(result),
-                BlockEvent::BlockFinished { exit_code, failed, .. } => {
+                BlockEvent::BlockFinished {
+                    exit_code, failed, ..
+                } => {
                     let Some(finish) = finish.filter(|finish| finish.ran_a_command) else {
                         continue;
                     };

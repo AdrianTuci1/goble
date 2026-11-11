@@ -34,7 +34,10 @@ fn a_stored_total_reaches_the_pane_that_shows_the_conversation() {
         .get(&1)
         .expect("the pane's snapshot")
         .usage;
-    assert_eq!((usage.input, usage.cached, usage.output), (1_200, Some(900), 80));
+    assert_eq!(
+        (usage.input, usage.cached, usage.output),
+        (1_200, Some(900), 80)
+    );
     assert_eq!(usage.total(), 1_280, "the total is input + output");
 }
 

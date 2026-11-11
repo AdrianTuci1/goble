@@ -16,8 +16,10 @@ mod plumbing;
 mod tests;
 
 pub use block::{
-    terminal_block, terminal_block_with_selection, TerminalBlock, TerminalLineGeometry,
-    TerminalTextSelection,
+    terminal_block, terminal_block_styled, terminal_block_with_cursor_styled,
+    terminal_block_with_selection, terminal_block_with_selection_styled, TerminalBlock,
+    TerminalBlockCursor, TerminalCursorShape, TerminalLineGeometry, TerminalTextSelection,
+    TerminalTextStyle,
 };
 pub use data::{TerminalData, TerminalMeta, TerminalStatus};
 pub use filter::{

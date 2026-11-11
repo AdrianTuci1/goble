@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use super::block::Block;
 use super::event::{BlockEvent, BlockLine};
 use super::id::BlockId;
@@ -42,6 +44,11 @@ pub struct BlockList {
     gaps: Vec<BlockId>,
     /// A command the app claimed, resolved or refused by the next `Preexec`.
     pending_claim: Option<PendingClaim>,
+    /// Conversations waiting for the next commands' `Preexec`, in the order
+    /// the lines were written. The block a command runs in is only known when
+    /// it starts — a fresh shell finishes its startup block first — so the
+    /// visibility is applied at `Preexec`, not when the line is written.
+    pending_conversations: VecDeque<String>,
 }
 
 impl BlockList {
@@ -60,7 +67,15 @@ impl BlockList {
             input_cursor: None,
             gaps: Vec::new(),
             pending_claim: None,
+            pending_conversations: VecDeque::new(),
         }
+    }
+
+    /// File the block the next command starts in under `conversation_id`'s
+    /// agent view. Applied at the command's `Preexec`, when the block it runs in
+    /// is known.
+    pub fn hold_next_command_for(&mut self, conversation_id: impl Into<String>) {
+        self.pending_conversations.push_back(conversation_id.into());
     }
 
     pub fn blocks(&self) -> &[Block] {
@@ -237,14 +252,25 @@ impl BlockList {
         // either way, so a `Preexec` that lands on another block refuses the
         // claim and that command stays the user's.
         let claim = self.pending_claim.take();
-        let active = self.active_block_mut();
-        if let Some(claim) = claim {
-            if claim.block == active.id() {
-                active.set_owner(claim.owner);
+        // A conversation held for the next command takes the block the command
+        // actually starts in, which is not known until here.
+        let conversation = self.pending_conversations.pop_front();
+        let id = {
+            let active = self.active_block_mut();
+            if let Some(claim) = claim {
+                if claim.block == active.id() {
+                    active.set_owner(claim.owner);
+                }
+            }
+            active.preexec(value.command.unwrap_or_default());
+            active.id()
+        };
+        if let Some(conversation) = conversation {
+            if let Some(block) = self.blocks.iter_mut().find(|block| block.id == id) {
+                block.visibility = BlockVisibility::agent(conversation);
             }
         }
-        active.preexec(value.command.unwrap_or_default());
-        vec![BlockEvent::BlockStarted { id: active.id() }]
+        vec![BlockEvent::BlockStarted { id }]
     }
 
     fn on_command_finished(&mut self, exit_code: i32) -> Vec<BlockEvent> {

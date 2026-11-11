@@ -167,9 +167,9 @@ async fn test_resume_stores_credential_by_name_not_value() {
 }
 
 #[tokio::test]
-async fn test_auto_approve_skips_ask_user() {
-    // With auto-approve on, the harness must not suspend on `ask_user`: it
-    // neither emits an AskUser event nor persists a pending ask.
+async fn test_auto_approve_still_suspends_on_ask_user() {
+    // Auto-approve opens the command gate; it never answers for the user. A
+    // question suspends the turn and is recorded as pending even with it on.
     let store = Store::open_in_memory().unwrap();
     let chat_id = chat(&store);
     let llm = llm_with_reasoning_tools(
@@ -191,14 +191,84 @@ async fn test_auto_approve_skips_ask_user() {
         .run_turn(&chat_id, "automate reports", "mock", "mock")
         .collect()
         .await;
-    assert!(!events.iter().any(|e| matches!(e, HarnessEvent::AskUser { .. })));
-    assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
-    // The harness records that the question was auto-approved so the next
-    // reasoning/execution step sees an answer in history.
+    assert!(events.iter().any(
+        |e| matches!(e, HarnessEvent::AskUser { question, .. } if question == "Which database should I query?")
+    ));
+    let pending = store
+        .get_pending_ask(&chat_id)
+        .unwrap()
+        .expect("the question is recorded as pending");
+    assert_eq!(pending.3, "Which database should I query?");
+    // Nothing stands in for the user's answer, and the turn does not finish.
     let messages = store.list_chat_messages(&chat_id).unwrap();
-    assert!(messages
+    assert!(
+        !messages
+            .iter()
+            .any(|(_, role, content, _, _)| role == "user" && content.contains("auto-approved")),
+        "no synthetic answer is recorded: {messages:?}"
+    );
+    assert!(!events.iter().any(|e| matches!(e, HarnessEvent::Done)));
+
+    // The user's answer resumes the same mission under the same setting.
+    let llm2 = llm_with_reasoning_tools(
+        "Got it, executing now.",
+        vec![LlmToolCall {
+            id: "tc6".to_string(),
+            name: "execute".to_string(),
+            arguments: serde_json::json!({}),
+        }],
+    );
+    let harness2 = Harness::new(store.clone())
+        .with_llm(llm2)
+        .with_auto_approve(true);
+    let events2: Vec<_> = harness2
+        .resume_turn(&chat_id, "postgres", None, "mock", "mock")
+        .collect()
+        .await;
+    assert!(events2
         .iter()
-        .any(|(_, role, content, _, _)| role == "user" && content.contains("auto-approved")));
+        .any(|e| matches!(e, HarnessEvent::ReasoningDone { .. })));
+    assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
+}
+
+/// The reasoning phase offers only its own planning tools, and an agent asked
+/// to delegate work used to answer that it had no delegation tool at all. The
+/// prompt must name the harness tools it executes with, `spawn_subagent`
+/// included, and must not read as the whole of what the agent can do.
+#[test]
+fn reasoning_prompt_names_spawn_subagent_and_does_not_deny_delegation() {
+    let prompt =
+        super::prompts::build_reasoning_prompt(ThinkingMode::Planning, "split the task", &[]);
+    assert!(
+        prompt.contains("spawn_subagent"),
+        "the reasoning prompt names the delegation tool: {prompt}"
+    );
+    assert!(
+        prompt.contains("run_in_background"),
+        "it says how a sub-agent is spawned: {prompt}"
+    );
+    assert!(
+        prompt.contains("after execute"),
+        "it places the delegation after execute: {prompt}"
+    );
+    let lower = prompt.to_lowercase();
+    for denial in [
+        "no delegation",
+        "cannot delegate",
+        "only reasoning tools",
+        "do not have",
+    ] {
+        assert!(
+            !lower.contains(denial),
+            "the prompt denies a capability the agent has (`{denial}`): {prompt}"
+        );
+    }
+
+    let execution = super::prompts::build_execution_prompt("split the task", &[]);
+    assert!(
+        execution.contains("spawn_subagent"),
+        "the execution prompt names the delegation tool: {execution}"
+    );
 }
 
 /// Records each command line the harness runs, so the approval tests assert

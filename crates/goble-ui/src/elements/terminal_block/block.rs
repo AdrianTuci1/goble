@@ -19,6 +19,36 @@ const FONT_SIZE: f32 = 13.0;
 
 const LINE_HEIGHT: f32 = 1.4;
 
+/// The font a block's command and output lines draw with.
+///
+/// A block in the transcript keeps the body size. A block in a terminal pane
+/// draws at the pane's grid size instead: the command ran at that cell pitch,
+/// so a row of `columns` cells fits the pane exactly. Drawing it larger makes
+/// the last word of every full row wrap, which shows a terminal row as two.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerminalTextStyle {
+    pub font_size: f32,
+    pub line_height: f32,
+}
+
+impl Default for TerminalTextStyle {
+    fn default() -> Self {
+        Self {
+            font_size: FONT_SIZE,
+            line_height: LINE_HEIGHT,
+        }
+    }
+}
+
+impl TerminalTextStyle {
+    pub const fn new(font_size: f32, line_height: f32) -> Self {
+        Self {
+            font_size,
+            line_height,
+        }
+    }
+}
+
 /// Widest the header's prompt row is allowed to draw before it ellipsizes, so a
 /// deep working directory never pushes the block's controls off its edge.
 const PROMPT_MAX_WIDTH: f32 = 420.0;
@@ -43,12 +73,12 @@ const PROMPT_PREFIX: &str = "❯ ";
 /// header's mono font. A shell prompt is the user's own string and can be
 /// longer than the row it is drawn in; cutting it here keeps the row one line,
 /// which is the height the layout reserves for it.
-fn elide_to_width(text: &str, max_width: f32) -> String {
+fn elide_to_width(text: &str, max_width: f32, style: TerminalTextStyle) -> String {
     let width = |candidate: &str| {
         measure_text_family(
             candidate,
-            FONT_SIZE,
-            LINE_HEIGHT,
+            style.font_size,
+            style.line_height,
             f32::INFINITY,
             FontWeight::Regular,
             FontFamily::Mono,
@@ -204,6 +234,25 @@ impl Element for LineProbe {
 /// The block filter bar's field, named the way warp names it.
 const FILTER_PLACEHOLDER: &str = "Filter block output";
 
+/// The shape a program asked its cursor to take (`DECSCUSR`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalCursorShape {
+    Block,
+    HollowBlock,
+    Beam,
+    Underline,
+}
+
+/// A running command's own caret, placed in the block's drawn lines: the line
+/// index (the command line is line 0), the column, and the shape the program
+/// asked for. A block that is not running draws none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalBlockCursor {
+    pub line: usize,
+    pub column: usize,
+    pub shape: TerminalCursorShape,
+}
+
 /// Build the one terminal block element.
 ///
 /// Every place a block appears draws it through here — a terminal fragment in
@@ -214,6 +263,24 @@ pub fn terminal_block(
     filter: TerminalFilter,
     global_filter: Option<TerminalFilter>,
     on_copy: Option<TerminalCopyHandler>,
+) -> Box<dyn Element> {
+    terminal_block_styled(
+        data,
+        filter,
+        global_filter,
+        on_copy,
+        TerminalTextStyle::default(),
+    )
+}
+
+/// The same block at a caller's font. A terminal pane hands it its grid's own
+/// size so its output rows keep the terminal's shape.
+pub fn terminal_block_styled(
+    data: &TerminalData,
+    filter: TerminalFilter,
+    global_filter: Option<TerminalFilter>,
+    on_copy: Option<TerminalCopyHandler>,
+    style: TerminalTextStyle,
 ) -> Box<dyn Element> {
     TerminalBlock::new()
         .with_title(data.title.clone())
@@ -227,6 +294,7 @@ pub fn terminal_block(
                 (cb.borrow_mut())(text);
             }
         })
+        .with_text_style(style)
         .finish()
 }
 
@@ -243,6 +311,30 @@ pub fn terminal_block_with_selection(
     line_base: usize,
     geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
 ) -> Box<dyn Element> {
+    terminal_block_with_selection_styled(
+        data,
+        filter,
+        global_filter,
+        on_copy,
+        selection,
+        line_base,
+        geometry,
+        TerminalTextStyle::default(),
+    )
+}
+
+/// The selected block at a caller's font; see [`terminal_block_styled`].
+#[allow(clippy::too_many_arguments)]
+pub fn terminal_block_with_selection_styled(
+    data: &TerminalData,
+    filter: TerminalFilter,
+    global_filter: Option<TerminalFilter>,
+    on_copy: Option<TerminalCopyHandler>,
+    selection: Option<TerminalTextSelection>,
+    line_base: usize,
+    geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
+    style: TerminalTextStyle,
+) -> Box<dyn Element> {
     TerminalBlock::new()
         .with_title(data.title.clone())
         .with_status(data.status.unwrap_or_default())
@@ -257,6 +349,39 @@ pub fn terminal_block_with_selection(
         })
         .with_text_selection(selection)
         .with_line_geometry(geometry, line_base)
+        .with_text_style(style)
+        .finish()
+}
+
+/// The selected block with the caret a still-running command left in it.
+#[allow(clippy::too_many_arguments)]
+pub fn terminal_block_with_cursor_styled(
+    data: &TerminalData,
+    filter: TerminalFilter,
+    global_filter: Option<TerminalFilter>,
+    on_copy: Option<TerminalCopyHandler>,
+    selection: Option<TerminalTextSelection>,
+    cursor: Option<TerminalBlockCursor>,
+    line_base: usize,
+    geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
+    style: TerminalTextStyle,
+) -> Box<dyn Element> {
+    TerminalBlock::new()
+        .with_title(data.title.clone())
+        .with_status(data.status.unwrap_or_default())
+        .with_lines(data.lines.clone())
+        .with_meta(data.meta.clone())
+        .with_filter(filter)
+        .with_global_filter(global_filter)
+        .with_on_copy(move |text| {
+            if let Some(cb) = on_copy.as_ref() {
+                (cb.borrow_mut())(text);
+            }
+        })
+        .with_text_selection(selection)
+        .with_cursor(cursor)
+        .with_line_geometry(geometry, line_base)
+        .with_text_style(style)
         .finish()
 }
 
@@ -279,12 +404,16 @@ pub struct TerminalBlock {
     /// The selection drawn over the block's text, in this block's line
     /// coordinates.
     selection: Option<TerminalTextSelection>,
+    /// The caret of the command this block is still running, if any.
+    cursor: Option<TerminalBlockCursor>,
     /// Where the block's lines landed, shared with the pane that owns the
     /// pointer state.
     line_geometry: Option<Rc<RefCell<Vec<TerminalLineGeometry>>>>,
     /// The flattened line offset this block starts at in its pane's block
     /// text.
     line_base: usize,
+    /// The font the command and output lines draw with.
+    text_style: TerminalTextStyle,
     root: Option<Box<dyn Element>>,
     pub(super) size: Option<Vector2F>,
     origin: Option<Point>,
@@ -307,8 +436,10 @@ impl TerminalBlock {
             global_filter: None,
             on_copy: None,
             selection: None,
+            cursor: None,
             line_geometry: None,
             line_base: 0,
+            text_style: TerminalTextStyle::default(),
             root: None,
             size: None,
             origin: None,
@@ -369,6 +500,12 @@ impl TerminalBlock {
         self
     }
 
+    /// Draw the caret a running command left in its output.
+    pub fn with_cursor(mut self, cursor: Option<TerminalBlockCursor>) -> Self {
+        self.cursor = cursor;
+        self
+    }
+
     /// Record where each drawn line lands, and the flattened offset this
     /// block's first line has in the pane's block text.
     pub fn with_line_geometry(
@@ -378,6 +515,14 @@ impl TerminalBlock {
     ) -> Self {
         self.line_geometry = Some(geometry);
         self.line_base = line_base;
+        self
+    }
+
+    /// Draw the block's text at `style`. A terminal pane passes its grid's
+    /// font so the block's rows keep the terminal's cell pitch; other surfaces
+    /// keep the body default.
+    pub fn with_text_style(mut self, style: TerminalTextStyle) -> Self {
+        self.text_style = style;
         self
     }
 
@@ -399,12 +544,17 @@ impl TerminalBlock {
 
     /// One line as it is drawn: its styled runs when it carries colour or
     /// emphasis, otherwise its own text in the line kind's colour.
-    fn line_element(line: &TerminalLine, color: ColorToken, app: &AppContext) -> Box<dyn Element> {
+    fn line_element(
+        line: &TerminalLine,
+        color: ColorToken,
+        app: &AppContext,
+        style: TerminalTextStyle,
+    ) -> Box<dyn Element> {
         if line.runs.is_empty() {
             return Text::new(line.text.clone())
                 .with_theme_color(color, app)
-                .with_font_size(FONT_SIZE)
-                .with_line_height(LINE_HEIGHT)
+                .with_font_size(style.font_size)
+                .with_line_height(style.line_height)
                 .with_font_family(FontFamily::Mono)
                 .finish();
         }
@@ -435,8 +585,8 @@ impl TerminalBlock {
             })
             .collect();
         InlineText::new(spans)
-            .with_font_size(FONT_SIZE)
-            .with_line_height(LINE_HEIGHT)
+            .with_font_size(style.font_size)
+            .with_line_height(style.line_height)
             .with_cell_backgrounds(cell_backgrounds)
             .finish()
     }
@@ -469,8 +619,8 @@ impl TerminalBlock {
             .map(|line| {
                 measure_text_family(
                     &Self::line_text(line),
-                    FONT_SIZE,
-                    LINE_HEIGHT,
+                    self.text_style.font_size,
+                    self.text_style.line_height,
                     max_text_width,
                     FontWeight::Regular,
                     FontFamily::Mono,
@@ -506,11 +656,15 @@ impl TerminalBlock {
     /// wraps paints its extra lines past the one-line height the layout
     /// reserved, over the command below it.
     fn prompt_element(&self, app: &AppContext, max_width: f32) -> Box<dyn Element> {
-        let label = elide_to_width(&self.prompt_label(), max_width.min(PROMPT_MAX_WIDTH));
+        let label = elide_to_width(
+            &self.prompt_label(),
+            max_width.min(PROMPT_MAX_WIDTH),
+            self.text_style,
+        );
         let text = Text::new(label)
             .with_theme_color(ColorToken::Muted, app)
-            .with_font_size(FONT_SIZE)
-            .with_line_height(LINE_HEIGHT)
+            .with_font_size(self.text_style.font_size)
+            .with_line_height(self.text_style.line_height)
             .with_font_family(FontFamily::Mono)
             .with_max_lines(1)
             .finish();
@@ -618,7 +772,8 @@ impl TerminalBlock {
         let global = self.global_filter.clone();
         let geometry = self.line_geometry.clone();
         let line_base = self.line_base;
-        let column_width = mono_advance(FONT_SIZE, FontWeight::Regular);
+        let style = self.text_style;
+        let column_width = mono_advance(style.font_size, FontWeight::Regular);
         // The lines are drawn as terminal rows: one line height each, no gap
         // between them. A gap would spread a command's output out like
         // paragraphs and break column alignment across lines.
@@ -637,15 +792,15 @@ impl TerminalBlock {
                     .with_child(
                         Text::new(PROMPT_PREFIX.to_string())
                             .with_theme_color(ColorToken::Accent, app)
-                            .with_font_size(FONT_SIZE)
-                            .with_line_height(LINE_HEIGHT)
+                            .with_font_size(style.font_size)
+                            .with_line_height(style.line_height)
                             .with_font_family(FontFamily::Mono)
                             .finish(),
                     )
-                    .with_child(Self::line_element(line, color, app))
+                    .with_child(Self::line_element(line, color, app, style))
                     .finish()
             } else {
-                Self::line_element(line, color, app)
+                Self::line_element(line, color, app, style)
             };
             let element = match &geometry {
                 Some(geometry) => LineProbe {
@@ -748,14 +903,72 @@ impl TerminalBlock {
             renderer.draw_text_with_font(
                 Vector2F::new(x, line.origin.y),
                 fragment,
-                FONT_SIZE,
+                self.text_style.font_size,
                 contrast,
                 f32::INFINITY,
-                LINE_HEIGHT,
+                self.text_style.line_height,
                 FontWeight::Regular,
                 FontFamily::Mono,
                 false,
             );
+        }
+    }
+
+    /// Draw the program's caret where it left it in this block's output: a
+    /// command that is still running keeps its own cursor, in the shape it
+    /// asked for, exactly as it drew it in the terminal it believes it owns.
+    fn paint_cursor(&self, ctx: &mut PaintContext, app: &AppContext) {
+        let Some(cursor) = self.cursor else {
+            return;
+        };
+        let Some(geometry) = &self.line_geometry else {
+            return;
+        };
+        let geometry = geometry.borrow();
+        // The line the care sits on, as the block drew it. A line the block's
+        // own filter hid has no box to paint in, so the caret goes with it.
+        let Some(line) = geometry.iter().find(|line| line.line == cursor.line) else {
+            return;
+        };
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        let cell = line.column_width.max(1.0);
+        let x = line.origin.x + (line.prefix_columns + cursor.column) as f32 * cell;
+        let (y, height) = (line.origin.y, line.size.y);
+        let ink = app.theme.color(ColorToken::Text);
+        match cursor.shape {
+            TerminalCursorShape::Block => {
+                renderer.fill_rect(rectf(x, y, cell, height), ink);
+                // The glyph under a block cursor is redrawn in the cursor's
+                // colour so the cell stays readable, the way a terminal does.
+                if let Some(source) = self.lines.get(cursor.line) {
+                    if let Some(glyph) = source.text.chars().nth(cursor.column) {
+                        renderer.draw_text_with_font(
+                            Vector2F::new(x, y),
+                            glyph.to_string(),
+                            self.text_style.font_size,
+                            app.theme.color(ColorToken::Bg),
+                            f32::INFINITY,
+                            self.text_style.line_height,
+                            FontWeight::Regular,
+                            FontFamily::Mono,
+                            false,
+                        );
+                    }
+                }
+            }
+            TerminalCursorShape::HollowBlock => {
+                let stroke = 1.0;
+                renderer.fill_rect(rectf(x, y, cell, stroke), ink);
+                renderer.fill_rect(rectf(x, y + height - stroke, cell, stroke), ink);
+                renderer.fill_rect(rectf(x, y, stroke, height), ink);
+                renderer.fill_rect(rectf(x + cell - stroke, y, stroke, height), ink);
+            }
+            TerminalCursorShape::Beam => renderer.fill_rect(rectf(x, y, 2.0, height), ink),
+            TerminalCursorShape::Underline => {
+                renderer.fill_rect(rectf(x, y + height - 2.0, cell, 2.0), ink)
+            }
         }
     }
 
@@ -767,8 +980,8 @@ impl TerminalBlock {
         // buttons count, plus a gap per item and two more around the spacer.
         let prompt_w = measure_text_family(
             &self.prompt_label(),
-            FONT_SIZE,
-            LINE_HEIGHT,
+            self.text_style.font_size,
+            self.text_style.line_height,
             PROMPT_MAX_WIDTH.min(max_text_width),
             FontWeight::Regular,
             FontFamily::Mono,
@@ -812,6 +1025,7 @@ impl Element for TerminalBlock {
             root.paint(origin, ctx, app);
         }
         self.paint_selection(ctx, app);
+        self.paint_cursor(ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {

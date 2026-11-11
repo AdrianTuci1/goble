@@ -615,7 +615,7 @@ impl ChatView {
                 message_column = message_column.with_child(notice);
             }
             // The rows the sticky turn header reads: the latest user message and
-            // the reply after it, recorded as they paint.
+            // the next prompt after it, recorded as they paint.
             let sticky = StickyTurn::for_messages(&self.messages);
             for (index, message) in self.messages.iter().enumerate() {
                 let on_action = self.on_action.clone();
@@ -654,7 +654,10 @@ impl ChatView {
             // model) so it scrolls with the conversation rather than pinning to
             // the bottom of the window.
             if let Some(ask) = &self.pending_ask {
-                let mut card = AskUserCard::new(ask.question.clone(), ask.quick_replies.clone());
+                let mut card = AskUserCard::from_ui(ask)
+                    // The rich input keeps its keys while it holds the
+                    // keyboard; otherwise the panel answers digits and Enter.
+                    .with_keys_enabled(!self.composer_focused);
                 if let Some(cb) = self.on_answer_ask.clone() {
                     card = card.with_on_answer(move |resp, cred| (cb.borrow_mut())(resp, cred));
                 }
@@ -771,9 +774,10 @@ impl ChatView {
                 None => transcript,
             };
             // The latest user message pins to the transcript's top edge while
-            // its own bubble is above it (grok-build's sticky turn). The header
-            // is an overlay of the transcript's stack, so it covers the top
-            // strip instead of taking a row from the scrolling content.
+            // its own bubble is above it (grok-build's sticky turn), and stays
+            // for the whole turn it opens. The header is an overlay of the
+            // transcript's stack, so it covers the top strip instead of taking
+            // a row from the scrolling content.
             let transcript: Box<dyn Element> = match sticky.overlay() {
                 Some(header) => Stack::new()
                     .with_children(vec![transcript])

@@ -137,6 +137,11 @@ impl UiState {
             rt.pending_ask = Some(AskUserUi::new(question.to_string(), quick_replies));
             rt.agent_state = PaneAgentState::NeedsInput;
         }
+        // The panel takes the keyboard when it appears: its digits pick an
+        // answer and Enter submits it, until the user clicks the composer.
+        if pane_id == self.active_pane_id {
+            self.composer_focused = false;
+        }
         self.raise_inbox(
             pane_id,
             chat_id.to_string(),

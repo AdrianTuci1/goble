@@ -271,6 +271,33 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Persist the id a CLI harness keeps for the conversation's own session.
+    ///
+    /// `chats.agent_id` is otherwise unused for a conversation: the column is
+    /// where a goble agent's id lived before conversations were chats, and the
+    /// thread-migration path still reads it as a fallback name. For a chat bound
+    /// to a CLI harness it names the harness's session, so reopening the card
+    /// resumes that session rather than whichever one ran last in the directory.
+    pub fn set_chat_agent_id(&self, id: &str, agent_id: Option<&str>) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET agent_id = ?1 WHERE id = ?2",
+            params![agent_id, id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the CLI harness session id a conversation carries, if any.
+    pub fn get_chat_agent_id(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT agent_id FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get::<_, Option<String>>(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Persist the directory a conversation works in.
     pub fn set_chat_working_dir(&self, id: &str, dir: &str) -> Result<()> {
         self.conn.lock().execute(

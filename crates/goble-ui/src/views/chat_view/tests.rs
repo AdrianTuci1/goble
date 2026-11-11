@@ -922,6 +922,57 @@ fn the_agent_transcript_paints_no_pill() {
     }
 }
 
+/// The pending ask closes the transcript as grok-new's "Agent questions" band:
+/// a titled header with Skip all and Next, then the question and one numbered
+/// row per answer, ending in "Other…".
+#[test]
+fn the_pending_ask_closes_the_transcript_as_the_agent_questions_band() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Which host should I query?")],
+        )])
+        .with_pending_ask(Some(AskUserUi::new(
+            "Which environment?",
+            vec!["staging".to_string(), "production".to_string()],
+        )))
+        .without_composer()
+        .finish();
+    let drawn: Vec<String> = render_element(&mut view, vec2f(600.0, 500.0), &app)
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for expected in [
+        "Agent questions",
+        "Skip all",
+        "Next",
+        "Which environment?",
+        "1",
+        "staging",
+        "2",
+        "production",
+        "3",
+        "Other...",
+    ] {
+        assert!(
+            drawn.iter().any(|text| text == expected),
+            "the transcript closes with the ask panel drawing {expected:?}, got {drawn:?}"
+        );
+    }
+    assert!(
+        !drawn.iter().any(|text| text == "Agent asks" || text == "Send answer"),
+        "the old ask surface is gone: {drawn:?}"
+    );
+}
+
 /// While the approval card waits, the whole rich input is gone: the card is
 /// the pane's only typing surface until Run or Reject settles the decision.
 #[test]
@@ -2609,10 +2660,11 @@ mod drag_to_copy {
 }
 
 /// Grok Build's sticky turn: the latest user message pins to the transcript's
-/// top edge while its own bubble has scrolled above it, and is released as soon
-/// as the reply under it reaches that edge. Only the latest user message ever
-/// pins, and the pinned row is the user's own prompt band: the same grey fill,
-/// the same `❯` marker and the same 14 px line as the bubble it names.
+/// top edge while its own bubble has scrolled above it, and stays for the whole
+/// turn that bubble opens — through every reply and tool row — until the next
+/// user prompt reaches that edge. Only the latest user message ever pins, and
+/// the pinned row is the user's own prompt band: the same grey fill, the same
+/// `❯` marker and the same 14 px line as the bubble it names.
 mod sticky_turn {
     use super::*;
     use crate::color::ColorU;
@@ -2988,19 +3040,137 @@ mod sticky_turn {
     }
 
     #[test]
-    fn the_pin_releases_when_the_reply_reaches_the_top() {
+    fn the_pin_survives_the_reply_that_reaches_the_top() {
         let app = AppContext::default();
         let width = 600.0;
         let size = vec2f(width, 480.0);
         let messages = conversation("Fix the login bug", 40);
         let (scroll, bands) = at_top(&messages, size, &app);
+        // The first reply's own row is the one at the top edge: the pin names
+        // the turn, not the row, so the reply does not release it.
         let reply = reply_top(&app, bands[0]);
         scroll.borrow_mut().scroll_by(reply + 5.0);
 
         let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width)
+            .expect("the reply at the top edge leaves the turn pinned");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(
+            line.text, "Fix the login bug",
+            "the pin keeps naming the prompt the turn opened on"
+        );
+    }
+
+    /// A turn's first row can be a tool call, not a reply: the pin stays over
+    /// that row too. Before the release rule read the next prompt, this row was
+    /// the anchor, and the header vanished as soon as the agent reached for a
+    /// tool.
+    #[test]
+    fn the_pin_survives_the_tool_row_that_reaches_the_top() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let mut messages = vec![ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("Fix the login bug")],
+        )];
+        messages.push(ChatMessage::new(
+            ChatRole::Tool,
+            vec![ChatFragment::text("read src/lib.rs")],
+        ));
+        messages.extend((0..40).map(|i| {
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text(format!("reply line {i}"))],
+            )
+        }));
+        let (scroll, bands) = at_top(&messages, size, &app);
+        let tool = reply_top(&app, bands[0]);
+        scroll.borrow_mut().scroll_by(tool + 5.0);
+
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width)
+            .expect("the tool row at the top edge leaves the turn pinned");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(line.text, "Fix the login bug");
+    }
+
+    /// With no later prompt to release it on, the pin stays for the whole
+    /// scroll: it is the header of the turn being read, not of the gap between
+    /// two messages.
+    #[test]
+    fn the_pin_stays_for_the_whole_scroll_when_no_later_prompt_follows() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let messages = conversation("Fix the login bug", 40);
+        let (scroll, bands) = at_top(&messages, size, &app);
+        assert_eq!(bands.len(), 1, "one prompt in the conversation");
+        let max = scroll.borrow().max_offset();
+        assert!(max > 0.0, "the transcript scrolls");
+        scroll.borrow_mut().scroll_by(max);
+
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width)
+            .expect("the prompt's bubble is far above the edge, so the turn pins");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(line.text, "Fix the login bug");
+    }
+
+    /// The release anchor is the next prompt: nothing pins while that prompt's
+    /// own row is still below the top edge, and the moment it reaches the edge
+    /// the strip is that turn's.
+    #[test]
+    fn the_pin_moves_to_the_next_prompt_when_it_reaches_the_top() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let mut messages = vec![ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("first question")],
+        )];
+        messages.extend((0..40).map(|i| {
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text(format!("first reply {i}"))],
+            )
+        }));
+        messages.push(ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("second question")],
+        ));
+        messages.extend((0..40).map(|i| {
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text(format!("second reply {i}"))],
+            )
+        }));
+
+        let (scroll, bands) = at_top(&messages, size, &app);
+        assert_eq!(bands.len(), 2, "two prompts");
+
+        // The first turn's rows are at the top edge, and the next prompt is
+        // still below it: the pin has no turn to name yet, because the latest
+        // prompt is the one it names.
+        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) + 5.0);
+        let commands = frame(&messages, &scroll, size, &app);
         assert!(
             strip(&commands, &app, width).is_none(),
-            "the reply's top is above the viewport, so the pin scrolls away with it"
+            "the latest prompt is still on screen, so nothing pins above it"
+        );
+
+        // The next prompt's own row reaches the top edge: the strip is drawn
+        // again, and it is that prompt's.
+        let second = bands[1].min_y();
+        let offset = scroll.borrow().offset();
+        scroll.borrow_mut().scroll_by(second + 5.0 - offset);
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width)
+            .expect("the next prompt's row at the top edge pins its turn");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(
+            line.text, "second question",
+            "the pin gives way to the prompt whose row reached the edge"
         );
     }
 

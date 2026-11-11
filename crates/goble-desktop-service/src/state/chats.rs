@@ -135,6 +135,20 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Record the CLI harness session the conversation ran in.
+    ///
+    /// The write reaches the store, the in-memory list the sidebar is built
+    /// from, and the frontends through `chats:updated`, so a card's session
+    /// survives a restart and reopening it resumes the session the card named.
+    pub fn set_chat_agent_id(&self, id: &str, agent_id: Option<&str>) -> anyhow::Result<()> {
+        self.store.lock().set_chat_agent_id(id, agent_id)?;
+        if let Some(chat) = self.chats.lock().iter_mut().find(|c| c.id == id) {
+            chat.agent_id = agent_id.map(str::to_string);
+        }
+        self.emit("chats:updated", ());
+        Ok(())
+    }
+
     pub fn set_chat_model(&self, id: &str, provider: &str, model: &str) -> anyhow::Result<()> {
         self.store.lock().set_chat_model(id, provider, model)?;
         if let Some(chat) = self.chats.lock().iter_mut().find(|c| c.id == id) {

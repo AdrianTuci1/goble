@@ -3,16 +3,16 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, EventContext, Expanded,
-    Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, Padding,
-    PaintContext, Point, SizeConstraint, Text, TopbarButton,
+    AppContext, AppMark, Border, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
+    EventContext, Expanded, Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisAlignment,
+    MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Stack, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 
 /// Extra height above and below a card's rows. The card is a full-width band,
-/// so without it the two text rows sit flush against the cards above and below
+/// so without it the card's rows sit flush against the cards above and below
 /// and the digest reads as one block of text.
 const CARD_EXTRA_HEIGHT: f32 = 4.0;
 
@@ -33,20 +33,33 @@ const DOTS_CLEARANCE: f32 = 6.0;
 /// (`Container::with_horizontal_padding(12.)`).
 const CARD_CONTENT_INSET: f32 = 12.0;
 
-/// The status square the card leads with. It is a marker, not a badge: half
-/// the linear space of the environment avatar it replaces, so the subject's
-/// text stays the card's widest element.
-const STATUS_SIZE: f32 = 11.0;
+/// The harness mark the card leads with. It takes the space the status square
+/// had, and the status becomes the badge on its corner.
+const HARNESS_SIZE: f32 = 16.0;
 
-/// The gap between the status square and the subject. The card led with a
-/// 12 pt square and a 10 pt gap before the square shrank, so the gutter keeps
-/// its old width and this gap absorbs the extra point.
-const STATUS_GAP: f32 = 11.0;
+/// The gap between the harness mark and the subject.
+const HARNESS_GAP: f32 = 6.0;
 
-/// The gutter the status square keeps before the subject: the square and the gap
+/// The status badge's diameter. Small enough to read as a dot on the mark's
+/// corner rather than a second glyph.
+const STATUS_BADGE_SIZE: f32 = 8.0;
+
+/// How far the badge hangs past the mark's bottom-right corner, so it reads as
+/// a badge on the corner rather than a dot inside the glyph.
+const STATUS_BADGE_OVERHANG: f32 = 2.0;
+
+/// Where the badge's top-left sits relative to the mark's: the mark's corner
+/// minus the badge's size plus the overhang.
+const STATUS_BADGE_OFFSET: f32 = HARNESS_SIZE - STATUS_BADGE_SIZE + STATUS_BADGE_OVERHANG;
+
+/// The badge's ring, painted in the card's own background so the dot knocks a
+/// clean hole out of the mark it sits on.
+const STATUS_BADGE_RING: f32 = 1.5;
+
+/// The gutter the harness mark keeps before the subject: the mark and the gap
 /// after it. It is what the rows under the title pad themselves by to line up
 /// with the subject, the content inset coming from their container.
-const TEXT_GUTTER: f32 = STATUS_SIZE + STATUS_GAP;
+const TEXT_GUTTER: f32 = HARNESS_SIZE + HARNESS_GAP;
 
 /// The inset the card's text starts at: the content inset plus the gutter the
 /// status square and its gap keep for themselves. The container supplies the
@@ -123,22 +136,82 @@ impl ConversationStatus {
     }
 }
 
+/// The atlas glyph for a harness key. Provider names (`anthropic`, `openai`,
+/// `xai`, `google`) are accepted beside the harness ids so a conversation that
+/// only recorded its model provider still gets its family's mark, and every id
+/// in the shared catalog gets its own; an unknown key draws Goble's own.
+pub fn harness_icon(harness: &str) -> &'static str {
+    goble_core::harness::harness_for(harness).map_or("harness-goble", |spec| spec.icon)
+}
+
+/// A harness's mark at `size`, as a surface that leads with it (a sidebar card)
+/// draws it: Goble's own artwork for the native harness — the atlas glyph for it
+/// is a rounded square, which one tint flattens to a block — and the catalog
+/// glyph in the family's accent for every other harness. A key this build does
+/// not know draws the native mark, like the sidebar card does.
+pub fn harness_mark(harness: &str, size: f32, app: &AppContext) -> Box<dyn Element> {
+    let spec = goble_core::harness::harness_for(harness);
+    if spec.map_or(true, |spec| spec.id == "goble") {
+        return AppMark::new(size).finish();
+    }
+    Icon::new(harness_icon(harness))
+        .with_size(size)
+        .with_color(harness_accent(harness, app))
+        .finish()
+}
+
+/// The same mark for a bar that names the harness beside a title: the octopus
+/// alone for the native harness, with none of the app's square frame around it,
+/// and the catalog glyph in the family's accent for every other harness.
+pub fn harness_bar_mark(harness: &str, size: f32, app: &AppContext) -> Box<dyn Element> {
+    let spec = goble_core::harness::harness_for(harness);
+    if spec.map_or(true, |spec| spec.id == "goble") {
+        return AppMark::octopus(size).finish();
+    }
+    Icon::new(harness_icon(harness))
+        .with_size(size)
+        .with_color(harness_accent(harness, app))
+        .finish()
+}
+
+/// The colour a harness's mark is drawn in: the harness family's own accent, so
+/// a bar carrying the mark reads which agent it is without naming it.
+///
+/// The marks are single-tint glyphs, so this is the one colour each of them
+/// takes. A harness with no brand colour of its own — and one this build does
+/// not know — draws in the theme's muted ink.
+pub fn harness_accent(harness: &str, app: &AppContext) -> crate::ColorU {
+    let id = goble_core::harness::harness_for(harness)
+        .map_or("goble", |spec| spec.id);
+    match id {
+        "goble" => app.theme.color(ColorToken::Accent),
+        "claude" => crate::ColorU::new(0xD9, 0x77, 0x57, 255),
+        "codex" => crate::ColorU::new(0x74, 0xAA, 0x9C, 255),
+        "gemini" => crate::ColorU::new(0x42, 0x85, 0xF4, 255),
+        "grok" => app.theme.color(ColorToken::Text),
+        "cursor" => crate::ColorU::new(0xB4, 0xB4, 0xB4, 255),
+        "copilot" => crate::ColorU::new(0x8B, 0x5C, 0xF6, 255),
+        _ => app.theme.color(ColorToken::Muted),
+    }
+}
+
 pub struct ConversationListItem {
     id: String,
     name: String,
-    last_response: String,
     timestamp: String,
     /// The directory the conversation works in, drawn under its subject. `None`
     /// (or empty) draws no row, so a conversation that has not run anywhere yet
-    /// keeps the two-line card.
+    /// keeps the single-line card.
     directory: Option<String>,
     selected: bool,
     /// Whether the conversation is starred, which the card marks and the
     /// sidebar's Starred section lists.
     starred: bool,
-    /// What the card's status square reports. [`ConversationStatus::Default`]
-    /// and [`ConversationStatus::Stopped`] draw the neutral gray square.
+    /// What the badge on the harness mark reports. [`ConversationStatus::Default`]
+    /// and [`ConversationStatus::Stopped`] draw the neutral gray dot.
     status: ConversationStatus,
+    /// Which harness the conversation runs on. The card leads with its mark.
+    harness: String,
     ui: Rc<RefCell<AgentCardUi>>,
     on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_delete: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -179,7 +252,6 @@ impl ConversationListItem {
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
-        last_response: impl Into<String>,
         timestamp: impl Into<String>,
         ui: Rc<RefCell<AgentCardUi>>,
         selected: bool,
@@ -187,12 +259,12 @@ impl ConversationListItem {
         Self {
             id: id.into(),
             name: name.into(),
-            last_response: last_response.into(),
             timestamp: timestamp.into(),
             directory: None,
             selected,
             starred: false,
             status: ConversationStatus::Default,
+            harness: "goble".to_string(),
             ui,
             on_select: None,
             on_delete: None,
@@ -237,6 +309,13 @@ impl ConversationListItem {
     /// one per [`ConversationStatus`].
     pub fn with_status(mut self, status: ConversationStatus) -> Self {
         self.status = status;
+        self
+    }
+
+    /// Set which harness the conversation runs on. Unknown keys draw the
+    /// native Goble mark.
+    pub fn with_harness(mut self, harness: impl Into<String>) -> Self {
+        self.harness = harness.into();
         self
     }
 
@@ -330,40 +409,37 @@ impl ConversationListItem {
             )
             .finish();
 
-        let last_row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(xs)
-            .with_child(
-                Text::new(self.last_response.clone())
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(12.0)
-                    .with_max_lines(1)
-                    .finish(),
-            )
-            .finish();
-
-        // Status square. It leads the title line rather than the card: its own
-        // line is the subject's, so the two share a centre, while a square
-        // centred on the whole column would sit between the title and the path
-        // under it.
-        //
-        // The colour is the conversation's last turn at a glance: gray when
-        // there is nothing to report, yellow while the agent is working or
-        // waiting on the user, red when the last turn failed and green when it
-        // finished. Square and unbacked, like the rest of the sidebar's marks;
-        // the environment avatar it replaces is gone.
-        let square = Container::new(
+        // The harness mark, with the conversation's status as a badge hanging
+        // off its bottom-right corner. The mark says what runs the work; the
+        // badge says how the last turn ended: gray when there is nothing to
+        // report, yellow while the agent is working or waiting on the user, red
+        // when the last turn failed and green when it finished. The badge's
+        // ring is the card's own fill, so it cuts a clean edge out of the mark
+        // instead of tinting it.
+        let mark = harness_mark(&self.harness, HARNESS_SIZE, app);
+        let badge = Container::new(
             Empty::new()
-                .with_size(vec2f(STATUS_SIZE, STATUS_SIZE))
+                .with_size(vec2f(STATUS_BADGE_SIZE, STATUS_BADGE_SIZE))
                 .finish(),
         )
         .with_background(Fill::Solid(app.theme.color(self.status.color_token())))
+        .with_border(
+            Border::all(STATUS_BADGE_RING).with_border_color(self.bg),
+        )
+        .with_corner_radius(STATUS_BADGE_SIZE / 2.0)
         .finish();
+        let harness = Stack::new()
+            .with_children([mark])
+            .with_overlay(
+                badge,
+                vec2f(STATUS_BADGE_OFFSET, STATUS_BADGE_OFFSET),
+            )
+            .finish();
 
         let title = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(STATUS_GAP)
-            .with_child(square)
+            .with_spacing(HARNESS_GAP)
+            .with_child(harness)
             .with_child(name_row)
             .finish();
 
@@ -372,9 +448,9 @@ impl ConversationListItem {
             .with_spacing(2.0)
             .with_child(title);
         // The directory the conversation works in, directly under its subject:
-        // it says where the work happens, which the title alone cannot. It and
-        // the last response keep the title's inset, so the column reads as one
-        // block beside the square's gutter.
+        // it says where the work happens, which the title alone cannot. It
+        // keeps the title's inset, so the column reads as one block beside the
+        // square's gutter.
         if let Some(directory) = self.directory.clone() {
             text_column = text_column.with_child(beside_square(
                 Flex::row()
@@ -396,7 +472,7 @@ impl ConversationListItem {
                     .finish(),
             ));
         }
-        let text_column = text_column.with_child(beside_square(last_row)).finish();
+        let text_column = text_column.finish();
 
         let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
@@ -754,7 +830,7 @@ impl Element for ConversationListItem {
         let Some(size) = self.size else { return };
 
         // The card's band, then everything inside it clipped to the card so a
-        // long one-line last message is cut at the card's right edge instead of
+        // long one-line title or path is cut at the card's right edge instead of
         // spilling into the main area.
         let card = rectf(origin.x, origin.y, size.x, size.y);
         if let Some(renderer) = ctx.renderer.as_mut() {
@@ -906,7 +982,6 @@ mod tests {
         let mut item = ConversationListItem::new(
             "c1",
             "Ada",
-            "I finished the task.",
             "40 min ago",
             ui,
             false,
@@ -929,7 +1004,6 @@ mod tests {
         let mut item = ConversationListItem::new(
             "c1",
             "Ada",
-            "Hello",
             "5 min ago",
             ui,
             false,
@@ -965,7 +1039,6 @@ mod tests {
         let mut item = ConversationListItem::new(
             "c1",
             "Ada",
-            "Hello",
             "5 min ago",
             Rc::clone(&ui),
             false,
@@ -994,8 +1067,7 @@ mod tests {
         let ui = Rc::new(RefCell::new(AgentCardUi::default()));
         let item = ConversationListItem::new(
             "c1",
-            "Ada",
-            "A very long last message that should fade out at the right edge",
+            "A subject far wider than the card it is listed in fades out",
             "5 min ago",
             ui,
             false,
@@ -1005,6 +1077,95 @@ mod tests {
         let counts = crate::test_util::command_counts(&commands);
         assert_eq!(counts.fill_rect_fade, 1, "idle card should emit a right fade");
         assert!(counts.draw_text > 0, "card should render text");
+    }
+
+    /// A conversation card leads with its harness mark, and the status is a
+    /// badge hanging off that mark's bottom-right corner rather than a square
+    /// of its own. The badge has to overhang the mark by
+    /// [`STATUS_BADGE_OVERHANG`], carry the status colour, and keep a ring in
+    /// the card's own background so it cuts the mark's corner cleanly.
+    #[test]
+    fn the_card_leads_with_the_harness_mark_and_badges_its_status_on_the_corner() {
+        let app = AppContext::default();
+        let item = ConversationListItem::new(
+            "c1",
+            "Ada",
+            "5 min ago",
+            Rc::new(RefCell::new(AgentCardUi::default())),
+            false,
+        )
+        .with_harness("claude")
+        .with_status(ConversationStatus::Waiting);
+        let mut element: Box<dyn Element> = Box::new(item);
+        let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+
+        let (mark_origin, mark_size) = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { origin, name, size, .. }
+                    if name == "harness-claude" =>
+                {
+                    Some((*origin, *size))
+                }
+                _ => None,
+            })
+            .expect("the card draws the Claude mark");
+        assert_eq!(mark_size, HARNESS_SIZE);
+
+        let warning = app.theme.color(ColorToken::Warning);
+        let badge = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == warning
+                    && (*corner_radius - STATUS_BADGE_SIZE / 2.0).abs() < 0.01 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the waiting status draws its badge");
+        assert!(
+            (badge.min_x() - (mark_origin.x + STATUS_BADGE_OFFSET)).abs() < 0.01
+                && (badge.min_y() - (mark_origin.y + STATUS_BADGE_OFFSET)).abs() < 0.01,
+            "the badge sits on the mark's corner: badge {badge:?}, mark {mark_origin:?}"
+        );
+        assert!(
+            badge.max_x() > mark_origin.x + HARNESS_SIZE
+                && badge.max_y() > mark_origin.y + HARNESS_SIZE,
+            "the badge overhangs the mark's corner: badge {badge:?}"
+        );
+
+        let ring = commands.iter().any(|command| match command {
+            RenderCommand::StrokeRect {
+                rect,
+                color,
+                width,
+                corner_radius,
+            } => {
+                (*color == app.theme.color(ColorToken::Surface))
+                    && (*width - STATUS_BADGE_RING).abs() < 0.01
+                    && (*corner_radius - STATUS_BADGE_SIZE / 2.0).abs() < 0.01
+                    && (rect.min_x() - badge.min_x()).abs() < 0.01
+            }
+            _ => false,
+        });
+        assert!(ring, "the badge keeps a ring in the card's own background");
+    }
+
+    #[test]
+    fn harness_keys_map_to_their_marks() {
+        assert_eq!(harness_icon("claude"), "harness-claude");
+        assert_eq!(harness_icon("anthropic"), "harness-claude");
+        assert_eq!(harness_icon("codex"), "harness-codex");
+        assert_eq!(harness_icon("OpenAI"), "harness-codex");
+        assert_eq!(harness_icon("xai"), "harness-grok");
+        assert_eq!(harness_icon("gemini"), "harness-gemini");
+        assert_eq!(harness_icon("goble"), "harness-goble");
+        assert_eq!(harness_icon("ollama"), "harness-goble");
     }
 
     /// The 3-dot control's box and colour, from the icon it paints.
@@ -1033,7 +1194,6 @@ mod tests {
         let idle = ConversationListItem::new(
             "c1",
             long_title,
-            "A long last message",
             "5 min ago",
             Rc::new(RefCell::new(AgentCardUi::default())),
             false,
@@ -1067,7 +1227,6 @@ mod tests {
         let hovered = ConversationListItem::new(
             "c1",
             long_title,
-            "A long last message",
             "5 min ago",
             Rc::new(RefCell::new(AgentCardUi {
                 hover: true,
@@ -1093,7 +1252,6 @@ mod tests {
         let narrow = ConversationListItem::new(
             "c1",
             "Ada",
-            "A long last message",
             "5 min ago",
             Rc::new(RefCell::new(AgentCardUi {
                 hover: true,
@@ -1146,7 +1304,6 @@ mod tests {
         let mut item = ConversationListItem::new(
             "c1",
             "Ada",
-            "A long last message",
             "5 min ago",
             ui,
             false,
@@ -1219,7 +1376,6 @@ mod tests {
         let item = ConversationListItem::new(
             "c1",
             "Ada",
-            "A long last message",
             "5 min ago",
             Rc::clone(&ui),
             false,
@@ -1288,7 +1444,6 @@ mod tests {
         let item = ConversationListItem::new(
             "c1",
             "Ada",
-            "A long last message",
             "5 min ago",
             Rc::clone(&ui),
             false,
@@ -1584,13 +1739,37 @@ mod tests {
         );
     }
 
-    /// The status square the card paints: its box and its fill.
-    fn status_square(commands: &[RenderCommand]) -> Option<(RectF, crate::color::ColorU)> {
+    /// The status badge the card paints: its box and its fill. It is the one
+    /// small rounded fill on the card — the badge's ring is a stroke, not a
+    /// fill, and the band's own fill has no radius.
+    fn status_badge(commands: &[RenderCommand]) -> Option<(RectF, crate::color::ColorU)> {
         commands.iter().find_map(|command| match command {
-            RenderCommand::FillRect { rect, color, .. }
-                if rect.width() == STATUS_SIZE && rect.height() == STATUS_SIZE =>
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if rect.width() == STATUS_BADGE_SIZE
+                && rect.height() == STATUS_BADGE_SIZE
+                && (*corner_radius - STATUS_BADGE_SIZE / 2.0).abs() < 0.01 =>
             {
                 Some((*rect, *color))
+            }
+            _ => None,
+        })
+    }
+
+    /// The harness mark's box: the atlas glyph for a provider, or the
+    /// full-colour Goble artwork the card draws as an image.
+    fn harness_box(commands: &[RenderCommand]) -> Option<RectF> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawIcon {
+                name,
+                origin,
+                size,
+                ..
+            } if name.starts_with("harness-") => Some(rectf(origin.x, origin.y, *size, *size)),
+            RenderCommand::DrawImage { rect, source, .. } if source == "harness-goble-mark" => {
+                Some(*rect)
             }
             _ => None,
         })
@@ -1616,12 +1795,12 @@ mod tests {
         })
     }
 
-    /// Every conversation's card leads with an 11x11 filled square, and its
-    /// colour is the status: gray when idle or stopped, yellow while the agent
-    /// works or waits, red for a failed turn and green for a finished one. The
-    /// environment icon the card used to draw is gone.
+    /// Every conversation's card leads with its harness mark, and the status is
+    /// an 8x8 badge on that mark's bottom-right corner: gray when idle or
+    /// stopped, yellow while the agent works or waits, red for a failed turn and
+    /// green for a finished one.
     #[test]
-    fn the_card_draws_a_status_square_in_its_status_colour() {
+    fn the_card_badges_its_status_on_the_harness_marks_corner() {
         let app = AppContext::default();
 
         for (status, token) in [
@@ -1634,7 +1813,6 @@ mod tests {
             let item = ConversationListItem::new(
                 "c1",
                 "Ada",
-                "I finished the task.",
                 "40 min ago",
                 Rc::new(RefCell::new(AgentCardUi::default())),
                 false,
@@ -1643,15 +1821,25 @@ mod tests {
             let mut element: Box<dyn Element> = Box::new(item);
             let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
 
-            let (square, color) =
-                status_square(&commands).unwrap_or_else(|| panic!("{status:?}: no square"));
-            assert_eq!((square.width(), square.height()), (STATUS_SIZE, STATUS_SIZE));
+            let (badge, color) =
+                status_badge(&commands).unwrap_or_else(|| panic!("{status:?}: no badge"));
+            assert_eq!(
+                (badge.width(), badge.height()),
+                (STATUS_BADGE_SIZE, STATUS_BADGE_SIZE)
+            );
             assert_eq!(color, app.theme.color(token), "{status:?} colour");
             assert_eq!(
-                square.min_x(),
-                CARD_CONTENT_INSET,
-                "{status:?}: the square leads the card's content"
+                badge.min_x(),
+                CARD_CONTENT_INSET + STATUS_BADGE_OFFSET,
+                "{status:?}: the badge hangs off the mark's corner"
             );
+            assert!(
+                badge.max_x() > CARD_CONTENT_INSET + HARNESS_SIZE,
+                "{status:?}: the badge overhangs the mark: {badge:?}"
+            );
+            let mark = harness_box(&commands).expect("the card draws its harness mark");
+            assert_eq!(mark.width(), HARNESS_SIZE, "{status:?}: mark size");
+            assert_eq!(mark.min_x(), CARD_CONTENT_INSET, "{status:?}: mark inset");
             assert!(
                 !commands.iter().any(|command| matches!(
                     command,
@@ -1662,17 +1850,16 @@ mod tests {
         }
     }
 
-    /// The status square belongs to the title line: its centre is the subject's
-    /// centre. A square centred on the card's whole text column instead lands
+    /// The harness mark belongs to the title line: its centre is the subject's
+    /// centre. A mark centred on the card's whole text column instead lands
     /// between the title and the path under it, which is the placement this
-    /// pins against.
+    /// pins against; the badge then hangs off the mark's corner.
     #[test]
-    fn the_status_square_sits_on_the_title_line() {
+    fn the_harness_mark_sits_on_the_title_line() {
         let app = AppContext::default();
         let item = ConversationListItem::new(
             "c1",
             "Ada",
-            "I finished the task.",
             "40 min ago",
             Rc::new(RefCell::new(AgentCardUi::default())),
             false,
@@ -1682,33 +1869,30 @@ mod tests {
         let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
         let card = element.size().expect("the card laid out");
 
-        let (square, _) = status_square(&commands).expect("the card draws its status square");
+        let mark = harness_box(&commands).expect("the card draws its harness mark");
         let title = run_box(&commands, "Ada").expect("the card draws its subject");
         let path = run_box(&commands, "~/Projects/goble").expect("the card draws its path");
-        let last =
-            run_box(&commands, "I finished the task.").expect("the card draws its last response");
 
         let centre = |box_: RectF| box_.min_y() + box_.height() / 2.0;
         assert!(
-            (centre(square) - centre(title)).abs() <= 0.5,
-            "the square is centred on the title: square {square:?} title {title:?}"
+            (centre(mark) - centre(title)).abs() <= 0.5,
+            "the mark is centred on the title: mark {mark:?} title {title:?}"
         );
         assert!(
-            (centre(square) - card.y / 2.0).abs() > 1.0,
-            "and no longer on the whole card: square {square:?} card {card:?}"
+            (centre(mark) - card.y / 2.0).abs() > 1.0,
+            "and no longer on the whole card: mark {mark:?} card {card:?}"
         );
         assert!(
-            centre(title) < centre(path) && centre(path) < centre(last),
-            "the path sits between the title and the last response: \
-             title {title:?} path {path:?} last {last:?}"
+            centre(title) < centre(path),
+            "the path sits under the title: title {title:?} path {path:?}"
         );
-        // The square keeps its size, and the title starts past its gutter: the
-        // content's inset, then the square, then the gap.
-        assert_eq!(square.width(), STATUS_SIZE);
+        // The mark keeps its size, and the title starts past its gutter: the
+        // content's inset, then the mark, then the gap.
+        assert_eq!(mark.width(), HARNESS_SIZE);
         assert_eq!(
             title.min_x(),
-            CARD_CONTENT_INSET + STATUS_SIZE + STATUS_GAP,
-            "the subject's first character starts past the square's gutter"
+            CARD_CONTENT_INSET + HARNESS_SIZE + HARNESS_GAP,
+            "the subject's first character starts past the mark's gutter"
         );
         assert_eq!(
             title.min_x(),
@@ -1719,6 +1903,60 @@ mod tests {
             icon_box(&commands, "folder").map(|icon| icon.min_x()),
             Some(TEXT_INSET),
             "and the path row under it starts at the same inset"
+        );
+    }
+
+    /// The card draws its subject and, when the conversation has a directory,
+    /// the path under it — and no third line: the last response is not a row of
+    /// the card, so the height it took is gone with it.
+    #[test]
+    fn the_card_draws_only_its_subject_and_its_path() {
+        let app = AppContext::default();
+
+        let card = |directory: Option<&str>| {
+            let mut item = ConversationListItem::new(
+                "c1",
+                "Ada",
+                "40 min ago",
+                Rc::new(RefCell::new(AgentCardUi::default())),
+                false,
+            );
+            if let Some(directory) = directory {
+                item = item.with_directory(directory);
+            }
+            let mut element: Box<dyn Element> = Box::new(item);
+            let commands =
+                crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+            let size = element.size().expect("the card laid out");
+            let runs: Vec<String> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect();
+            (size, runs, commands)
+        };
+
+        let (plain, plain_runs, _) = card(None);
+        assert_eq!(
+            plain_runs,
+            ["Ada", "40 min ago"],
+            "a card without a directory draws its subject line only"
+        );
+
+        let (with_path, runs, commands) = card(Some("~/Projects/goble"));
+        assert_eq!(
+            runs,
+            ["Ada", "40 min ago", "~/Projects/goble"],
+            "a card with a directory draws the path under the subject and nothing else"
+        );
+
+        let path = run_box(&commands, "~/Projects/goble").expect("the card draws its path");
+        assert!(
+            (with_path.y - plain.y - (path.height() + 2.0)).abs() < 0.01,
+            "the path row and its spacing are the whole height difference: \
+             card {with_path:?} plain {plain:?} path {path:?}"
         );
     }
 
@@ -1733,7 +1971,6 @@ mod tests {
         let item = ConversationListItem::new(
             "c1",
             "Ada",
-            "I finished the task.",
             "40 min ago",
             Rc::new(RefCell::new(AgentCardUi {
                 hover: true,
@@ -1772,19 +2009,19 @@ mod tests {
             "over the card's full height: {band:?} card {card:?}"
         );
 
-        // The content: the square starts at the inset, the subject past the
-        // square's gutter.
-        let (square, _) = status_square(&commands).expect("the card draws its status square");
+        // The content: the harness mark starts at the inset, the subject past
+        // the mark's gutter.
+        let mark = harness_box(&commands).expect("the card draws its harness mark");
         assert_eq!(
-            square.min_x(),
+            mark.min_x(),
             CARD_CONTENT_INSET,
-            "the square starts the content's inset in: {square:?}"
+            "the mark starts the content's inset in: {mark:?}"
         );
         let title = run_box(&commands, "Ada").expect("the card draws its subject");
         assert_eq!(
             title.min_x(),
-            CARD_CONTENT_INSET + STATUS_SIZE + STATUS_GAP,
-            "the subject starts past the square's gutter: {title:?}"
+            CARD_CONTENT_INSET + HARNESS_SIZE + HARNESS_GAP,
+            "the subject starts past the mark's gutter: {title:?}"
         );
 
         // The dots are placed from the band's trailing edge, so the right side's
@@ -1800,7 +2037,6 @@ mod tests {
         let selected = ConversationListItem::new(
             "c1",
             "Ada",
-            "I finished the task.",
             "40 min ago",
             Rc::new(RefCell::new(AgentCardUi::default())),
             true,
@@ -1836,7 +2072,6 @@ mod tests {
         let item = ConversationListItem::new(
             "c1",
             "Ada",
-            "I finished the task.",
             "40 min ago",
             Rc::new(RefCell::new(AgentCardUi::default())),
             false,

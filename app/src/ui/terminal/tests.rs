@@ -1,5 +1,5 @@
 use super::blocks::block_status;
-use super::cards::build_card;
+use super::cards::{build_card, CardInfo};
 use crate::emulator::{AgentViewCard, VisibleBlock};
 use crate::terminal::{TerminalRegistry, TerminalSession};
 use goble_ui::elements::{
@@ -15,8 +15,8 @@ use crate::emulator::Emulator;
 use crate::state::UiState;
 use goble_core::harness::ToolCallStatus;
 use goble_ui::elements::{
-    terminal_block, ChatFragment, ChatMessageBubble, ChatRole, TerminalFilter, ToolCall,
-    CARD_RAIL_WIDTH,
+    terminal_block, ChatFragment, ChatMessageBubble, ChatRole, ConversationEntry,
+    ConversationStatus, TerminalFilter, ToolCall,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::platform::text_atlas::{mono_advance, FontWeight};
@@ -730,6 +730,122 @@ fn a_tui_agent_launched_from_the_rich_input_goes_native_first() {
         state.borrow().terminal.borrow().mode(1),
         crate::terminal::TerminalMode::Agent(crate::terminal::TuiAgent::Hermes),
         "the pane hands its input to the agent"
+    );
+}
+
+/// `agy` paints its TUI inline and never takes the alternate screen, so the
+/// command the shell reports is the whole signal that tells the pane the
+/// Antigravity CLI is running. Launching it opens the agent view; Esc back to
+/// the terminal draws the CLI's live screen cell by cell, with the rich input
+/// below it as its prompt line, unfocused, so the CLI's option list still gets
+/// the keys.
+#[test]
+fn an_inline_cli_agent_keeps_the_rich_input_below_its_screen() {
+    use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
+    use goble_terminal::HookEvent;
+
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    let placeholder = ChatComposer::new().placeholder().to_string();
+    let _ = pane_runs(&mut root, &app);
+
+    // The user launches `agy` from the bar: the pane flips at submit.
+    type_line(&mut root, &app, "agy");
+    assert!(press(&mut root, &app, "Enter"));
+    assert_eq!(
+        state.borrow().terminal.borrow().mode(1),
+        crate::terminal::TerminalMode::Agent(crate::terminal::TuiAgent::Antigravity),
+        "the line names the Antigravity CLI"
+    );
+    assert!(
+        matches!(
+            state.borrow().pane_view(1),
+            goble_terminal::blocks::BlockView::Agent { .. }
+        ),
+        "launching the CLI opens its agent view"
+    );
+
+    // The shell reports the command; `agy` draws inline, with no alternate
+    // screen to announce it.
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some("agy".to_string()),
+    })));
+    // What the CLI paints: an inline frame with colour, cursor-addressed.
+    emulator.feed(b"\x1b[2J\x1b[H\x1b[31mACCESSING\x1b[0m workspace");
+    state
+        .borrow()
+        .terminal
+        .borrow_mut()
+        .sessions
+        .insert(1, TerminalSession::with_emulator(emulator));
+    assert!(
+        !state
+            .borrow()
+            .terminal
+            .borrow()
+            .sessions
+            .get(&1)
+            .expect("the pane has a session")
+            .is_alt_screen(),
+        "agy needs no alternate screen"
+    );
+    // The agent view is the surface now; Esc is its way back. The tree has to
+    // be built from the switched state before it can route the key.
+    let _ = pane_runs(&mut root, &app);
+    assert!(press(&mut root, &app, "Escape"), "esc leaves the agent view");
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        runs.iter()
+            .any(|(text, _)| text.contains("Message Antigravity")),
+        "the rich input stays under the CLI's screen, addressed to its harness: {runs:?}"
+    );
+    // The live screen is the body: its cells are painted one by one, with the
+    // colour the CLI asked for. A block would draw the whole line as one plain
+    // run over a command header instead.
+    assert!(
+        !pane_has(&runs, "ACCESSING"),
+        "the frame is not drawn as one block line: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, "A") && pane_has(&runs, "w"),
+        "the CLI's screen is painted cell by cell: {runs:?}"
+    );
+    let palette = app.theme.terminal_palette();
+    let red = ColorU::new(palette.ansi[1].0, palette.ansi[1].1, palette.ansi[1].2, 255);
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, color, .. } if text == "A" && *color == red
+        )),
+        "the cell keeps the ANSI colour: {commands:?}"
+    );
+    assert!(
+        press(&mut root, &app, "ArrowDown"),
+        "the CLI takes the arrow key"
+    );
+    assert!(press(&mut root, &app, "Enter"), "and Enter picks the option");
+
+    // The CLI exits and the shell prompt is back, so is the pane's own bar.
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some("agy".to_string()),
+    })));
+    emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+        CommandFinishedValue::default(),
+    )));
+    state
+        .borrow()
+        .terminal
+        .borrow_mut()
+        .sessions
+        .insert(1, TerminalSession::with_emulator(emulator));
+    assert!(
+        pane_has(&pane_runs(&mut root, &app), &placeholder),
+        "the rich input returns with the shell prompt"
     );
 }
 
@@ -1558,21 +1674,40 @@ fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view
         "the terminal never receives typed characters"
     );
 
-    // Clicking the card reopens that conversation's agent view. The card's
-    // accent rail is where the card landed.
+    // The card reads the harness off the app's conversation list, so the mark
+    // it leads with is the conversation's own, not a fixed native one.
+    state.borrow_mut().conversations = vec![ConversationEntry::new(
+        conversation_id.clone(),
+        "Explain the last command",
+        "",
+        "just now",
+    )
+    .with_harness("claude")
+    .with_status(ConversationStatus::Waiting)];
+
+    // Clicking the card reopens that conversation's agent view. Its harness
+    // mark is where the card landed.
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-    let rail = commands
+    let (mark, mark_size) = commands
         .iter()
         .find_map(|c| match c {
-            RenderCommand::FillRect { rect, .. }
-                if rect.width() == CARD_RAIL_WIDTH && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
-            {
-                Some(*rect)
+            RenderCommand::DrawIcon {
+                origin, name, size, ..
+            } if name == "harness-claude" && origin.x >= crate::ui::SIDEBAR_WIDTH => {
+                Some((*origin, *size))
             }
             _ => None,
         })
-        .expect("the terminal view draws the conversation card");
-    let position = Vector2F::new(rail.min_x() + 20.0, rail.min_y() + 8.0);
+        .expect("the card leads with the conversation's harness");
+    assert!(
+        !commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawImage { rect, source, .. }
+                if source == "harness-goble-octopus" && rect.min_x() >= crate::ui::SIDEBAR_WIDTH
+        )),
+        "a claude conversation does not draw the native mark"
+    );
+    let position = Vector2F::new(mark.x + mark_size / 2.0, mark.y + mark_size / 2.0);
     let mut ctx = EventContext;
     assert!(root.dispatch_event(
         &DispatchedEvent::MouseDown {
@@ -2199,36 +2334,84 @@ fn the_harness_hint_starts_past_the_focus_mark() {
     );
 }
 
-/// R6: the app's conversation card is A8's `ConversationCard` element, not
-/// a private bordered container. It paints its status rail and no border.
+/// R6: the app's conversation card is A8's `ConversationCard` element: the
+/// raised band it draws, led by its harness's mark and closed by the two
+/// glyphs that say the row opens.
 #[test]
-fn the_conversation_card_is_card_free() {
+fn the_conversation_card_is_the_shared_raised_band() {
     let app = AppContext::default();
-    let mut card = build_card(&AgentViewCard {
+    let card = AgentViewCard {
         conversation_id: "c1".to_string(),
         label: "Fix the build".to_string(),
-    });
-    let commands = render_element(&mut card, vec2f(420.0, 40.0), &app);
+    };
+    let mut element = build_card(&card, None);
+    let commands = render_element(&mut element, vec2f(420.0, 40.0), &app);
 
     let strokes = commands
         .iter()
         .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
         .count();
-    assert_eq!(strokes, 0, "the conversation card draws no border");
+    assert_eq!(strokes, 1, "the band keeps one hairline");
 
-    // The accent rail is the card element's own mark, not a bordered box.
-    let rail = commands.iter().find_map(|c| match c {
-        RenderCommand::FillRect {
-            rect,
-            corner_radius,
-            ..
-        } if rect.width() == CARD_RAIL_WIDTH => Some(*corner_radius),
-        _ => None,
-    });
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawImage { source, .. } if source == "harness-goble-octopus"
+        )),
+        "a card with no conversation info leads with the native mark"
+    );
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.contains(&"Fix the build"), "the title: {texts:?}");
+    let icons: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        icons.contains(&"maximize-01") && icons.contains(&"chevron-right"),
+        "the expand and open glyphs: {icons:?}"
+    );
+}
+
+/// The card takes its harness and last activity from the app's conversation
+/// list, which is where a card left by a pane reads which agent ran it.
+#[test]
+fn the_conversation_card_takes_its_harness_from_the_conversation_list() {
+    let app = AppContext::default();
+    let entry = ConversationEntry::new("c1", "Fix the build", "", "2m")
+        .with_harness("claude")
+        .with_status(ConversationStatus::Waiting);
+    let info = CardInfo::from(&entry);
+
+    assert_eq!(info.harness, "claude");
+    assert_eq!(info.last_activity, "2m");
     assert_eq!(
-        rail,
-        Some(0.0),
-        "the card element paints its square status rail"
+        info.status,
+        goble_ui::elements::ConversationCardStatus::Running,
+        "the sidebar's one live state reads as a turn in flight"
+    );
+
+    let card = AgentViewCard {
+        conversation_id: "c1".to_string(),
+        label: "Fix the build".to_string(),
+    };
+    let mut element = build_card(&card, Some(&info));
+    let commands = render_element(&mut element, vec2f(420.0, 40.0), &app);
+
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawIcon { name, .. } if name == "harness-claude"
+        )),
+        "the card leads with the conversation's own harness"
     );
 }
 

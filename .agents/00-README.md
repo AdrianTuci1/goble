@@ -6,7 +6,7 @@ The root of the repo also has working docs (`docs/ARCHITECTURE.md`, `docs/plans/
 
 ## Reading order
 
-Start here → `01-vision/README.md` → `02-first-run-and-routing/README.md` → `03-workspace-model/README.md` → `04-agent-runtime/README.md` → `05-execution-router-and-targets/README.md` → `06-renderer/README.md` → `07-observability/README.md`. Folders `08` (threads) and `09` (mobile) are deferred; `10` is cross-cutting platform/perf concerns.
+Start here → `01-vision/README.md` → `02-first-run-and-routing/README.md` → `03-workspace-model/README.md` → `04-agent-runtime/README.md` → `05-execution-router-and-targets/README.md` → `06-renderer/README.md` → `07-observability/README.md`. Folders `08` (threads), `09` (mobile) and `11` (relay and hub) are direction-only; `10` is cross-cutting platform/perf concerns.
 
 ## Glossary
 
@@ -83,6 +83,10 @@ flowchart TB
   pl --> wgp["10-platform-and-performance/wgpu-renderer-platform.md"]
   pl --> perf["10-platform-and-performance/performance.md"]
   pl --> tci["10-platform-and-performance/testing-and-ci.md"]
+
+  root --> rh["11-relay-and-hub/README.md"]
+  rh --> ra["11-relay-and-hub/relay-auth.md"]
+  rh --> hb["11-relay-and-hub/hub.md"]
 ```
 
 ## Cross-links between subsystems

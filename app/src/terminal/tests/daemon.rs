@@ -32,13 +32,12 @@ fn a_second_client_attaches_without_stealing_or_killing_the_session() {
         Some(session_id.as_str()),
         "the second client attached to the existing session"
     );
-    assert!(first.is_alive() && second.is_alive(), "neither attach killed it");
+    assert!(
+        first.is_alive() && second.is_alive(),
+        "neither attach killed it"
+    );
     assert_eq!(
-        daemon
-            .list()
-            .iter()
-            .filter(|session| session.alive)
-            .count(),
+        daemon.list().iter().filter(|session| session.alive).count(),
         1,
         "both clients share one shell"
     );
@@ -48,7 +47,11 @@ fn a_second_client_attaches_without_stealing_or_killing_the_session() {
         wait_for(|| {
             first.pump();
             second.pump();
-            first.snapshot(48).lines.iter().any(|line| line.contains("F5B-SHARED"))
+            first
+                .snapshot(48)
+                .lines
+                .iter()
+                .any(|line| line.contains("F5B-SHARED"))
                 && second
                     .snapshot(48)
                     .lines
@@ -75,11 +78,7 @@ fn a_second_client_attaches_without_stealing_or_killing_the_session() {
         first.snapshot(48).lines.join("\n")
     );
     assert_eq!(
-        daemon
-            .list()
-            .iter()
-            .filter(|session| session.alive)
-            .count(),
+        daemon.list().iter().filter(|session| session.alive).count(),
         1,
         "the shell survived the second client's detach"
     );
@@ -98,11 +97,7 @@ fn ensure_session_reuses_the_persisted_daemon_session() {
     let session_id = first.session_id().expect("a daemon session").to_string();
     drop(first);
     assert_eq!(
-        daemon
-            .list()
-            .iter()
-            .filter(|session| session.alive)
-            .count(),
+        daemon.list().iter().filter(|session| session.alive).count(),
         1,
         "the detached shell is still running"
     );
@@ -123,7 +118,10 @@ fn ensure_session_reuses_the_persisted_daemon_session() {
 
     let mut restored = UiState::mock();
     restored.restore_panes(&desktop);
-    restored.terminal.borrow_mut().use_socket(daemon.socket.clone());
+    restored
+        .terminal
+        .borrow_mut()
+        .use_socket(daemon.socket.clone());
     assert_eq!(
         restored
             .terminal
@@ -135,10 +133,7 @@ fn ensure_session_reuses_the_persisted_daemon_session() {
         "the restored pane remembered its daemon session"
     );
 
-    restored
-        .terminal
-        .borrow_mut()
-        .ensure_session(1, cwd);
+    restored.terminal.borrow_mut().ensure_session(1, cwd);
     let terminal = restored.terminal.borrow();
     let session = terminal.sessions.get(&1).expect("the pane has a session");
     assert_eq!(session.session_id(), Some(session_id.as_str()));
@@ -255,10 +250,7 @@ fn shell_integration_hooks_reach_the_emulator_from_replayed_bytes() {
             "-c".to_string(),
             "cat \"$GOBLE_HOOKS\"; printf 'F1B-READY\\n'; exec sleep 30".to_string(),
         ],
-        vec![(
-            "GOBLE_HOOKS".to_string(),
-            hook_file.display().to_string(),
-        )],
+        vec![("GOBLE_HOOKS".to_string(), hook_file.display().to_string())],
         shell_cwd.path(),
     );
     daemon.wait_for_output(&info.session_id, b"F1B-READY");
@@ -281,10 +273,7 @@ fn shell_integration_hooks_reach_the_emulator_from_replayed_bytes() {
     assert!(
         parsed,
         "the replayed hooks must reach the emulator; screen held:\n{}",
-        session
-            .snapshot(48)
-            .lines
-            .join("\n")
+        session.snapshot(48).lines.join("\n")
     );
     assert!(
         session
@@ -332,10 +321,7 @@ fn a_reattached_pane_rebuilds_the_command_and_its_output_from_the_replay() {
             "-c".to_string(),
             "cat \"$GOBLE_HOOKS\"; printf 'F5C-READY\\n'; exec sleep 30".to_string(),
         ],
-        vec![(
-            "GOBLE_HOOKS".to_string(),
-            script_file.display().to_string(),
-        )],
+        vec![("GOBLE_HOOKS".to_string(), script_file.display().to_string())],
         shell_cwd.path(),
     );
     daemon.wait_for_output(&info.session_id, b"F5C-READY");
@@ -347,9 +333,13 @@ fn a_reattached_pane_rebuilds_the_command_and_its_output_from_the_replay() {
     );
     let rebuilt = wait_for(|| {
         session.pump();
-        session.visible_blocks(&BlockView::Terminal).iter().any(|block| {
-            block.command.contains("echo persisted") && block.output.contains("persisted output")
-        })
+        session
+            .visible_blocks(&BlockView::Terminal)
+            .iter()
+            .any(|block| {
+                block.command.contains("echo persisted")
+                    && block.output.contains("persisted output")
+            })
     });
     assert!(
         rebuilt,
@@ -414,6 +404,96 @@ fn launch_starts_a_shell_for_terminal_leaves_only() {
         daemon.list().is_empty(),
         "leaving the app closes every pane shell: {:?}",
         daemon.list()
+    );
+}
+
+/// A `!` line typed inside a conversation runs in the conversation's own
+/// shell. The pane's terminal is a separate session: Esc back to it shows the
+/// shell's own history, with none of the conversation's commands in it.
+#[test]
+fn a_conversation_command_runs_in_its_own_shell() {
+    use goble_terminal::blocks::BlockView;
+
+    let daemon = TestDaemon::start();
+    let shell_cwd = tempfile::tempdir().expect("create a shell cwd");
+    let cwd = shell_cwd.path().to_str().expect("a path");
+
+    let mut state = UiState::mock();
+    state
+        .terminal
+        .borrow_mut()
+        .use_socket(daemon.socket.clone());
+    state
+        .pane_sessions
+        .get_mut(&1)
+        .expect("pane 1 has a session")
+        .path = cwd.to_string();
+    let pane_id = state.active_pane_id;
+    state.terminal.borrow_mut().ensure_session(pane_id, cwd);
+    {
+        let mut reg = state.terminal.borrow_mut();
+        reg.sessions
+            .get_mut(&pane_id)
+            .expect("the terminal session")
+            .write(b"printf 'TERMINAL-ONLY\\n'\n");
+    }
+    assert!(
+        wait_for(|| {
+            let mut reg = state.terminal.borrow_mut();
+            reg.pump_sessions();
+            reg.visible_blocks(pane_id, &BlockView::Terminal)
+                .iter()
+                .any(|block| block.output.contains("TERMINAL-ONLY"))
+        }),
+        "the terminal's own command runs in the terminal session"
+    );
+
+    crate::actions::prompt::run_terminal_command(
+        &mut state,
+        "printf 'AGENT-ONLY\\n'",
+        pane_id,
+        Some("conv-1"),
+        None,
+    );
+
+    let conversation = BlockView::Agent {
+        conversation_id: "conv-1".to_string(),
+    };
+    assert!(
+        wait_for(|| {
+            let mut reg = state.terminal.borrow_mut();
+            reg.pump_sessions();
+            reg.agent_visible_blocks(pane_id, &conversation)
+                .iter()
+                .any(|block| block.output.contains("AGENT-ONLY"))
+        }),
+        "the conversation's command ran in its own shell; agent blocks: {:?}",
+        state
+            .terminal
+            .borrow()
+            .agent_visible_blocks(pane_id, &conversation)
+            .iter()
+            .map(|block| (block.command.clone(), block.output.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    let terminal = state.terminal.borrow();
+    let terminal_blocks = terminal.visible_blocks(pane_id, &BlockView::Terminal);
+    assert!(
+        !terminal_blocks
+            .iter()
+            .any(|block| block.command.contains("AGENT-ONLY") || block.output.contains("AGENT-ONLY")),
+        "the terminal never sees the conversation's command; terminal blocks: {:?}",
+        terminal_blocks
+            .iter()
+            .map(|block| (block.command.clone(), block.output.clone()))
+            .collect::<Vec<_>>()
+    );
+    drop(terminal);
+    assert_eq!(
+        daemon.list().iter().filter(|session| session.alive).count(),
+        2,
+        "the pane owns a terminal shell and a conversation shell"
     );
 }
 

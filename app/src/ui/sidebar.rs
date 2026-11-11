@@ -457,13 +457,13 @@ fn conversation_card(
     ConversationListItem::new(
         entry.id.clone(),
         entry.name.clone(),
-        entry.last_response.clone(),
         entry.timestamp.clone(),
         ui,
         selected,
     )
     .with_workspace_routing(entry.workspace_routing.clone())
     .with_status(entry.status)
+    .with_harness(entry.harness.clone())
     .with_directory(card_directory(state, entry))
     .with_starred(state.starred.iter().any(|id| id == &entry.id))
     .with_dots_inset(dots_inset)
@@ -601,6 +601,14 @@ mod sidebar_surface_tests {
         // The tray's own rows: a rounded fill that holds one of them is the
         // tray's card and not a row that went back to being a widget.
         let tray_rows = ["Star", "Delete conversation"];
+        // The card's status badge is the one rounded mark on the card itself:
+        // an 8 pt dot with a 4 pt radius, drawn on the harness mark's corner.
+        // It is a mark, not a card surface, so the flatness rule ignores it.
+        let is_status_badge = |rect: &RectF, radius: f32| {
+            (radius - 4.0).abs() < 0.01
+                && (rect.width() - 8.0).abs() < 0.01
+                && (rect.height() - 8.0).abs() < 0.01
+        };
         let holds_a_tray_row = |rect: &RectF| {
             tray_open
                 && commands.iter().any(|other| match other {
@@ -627,7 +635,10 @@ mod sidebar_surface_tests {
                     rect,
                     corner_radius,
                     ..
-                } if in_band(*rect) && *corner_radius > 0.0 && !holds_a_tray_row(rect) => {
+                } if in_band(*rect)
+                    && *corner_radius > 0.0
+                    && !is_status_badge(rect, *corner_radius)
+                    && !holds_a_tray_row(rect) => {
                     Some(format!("fill {rect:?} radius {corner_radius}"))
                 }
                 _ => None,
@@ -1608,10 +1619,10 @@ mod sidebar_surface_tests {
     }
 
     /// A card names the directory its conversation works in, directly under the
-    /// subject and above the last response, in the form the user reads it: a
-    /// path under the home directory collapses to `~`. A conversation that has
-    /// run nowhere names the directory it would run in, so its card carries the
-    /// row too.
+    /// subject, in the form the user reads it: a path under the home directory
+    /// collapses to `~`. A conversation that has run nowhere names the directory
+    /// it would run in, so its card carries the row too. Nothing follows that
+    /// row: the last response is not a line of the card.
     #[test]
     fn a_conversation_card_draws_the_working_directory_under_its_subject() {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
@@ -1652,15 +1663,11 @@ mod sidebar_surface_tests {
             title.y < path.y,
             "the path is under the subject: title {title:?} path {path:?}"
         );
-        let last = runs
-            .iter()
-            .filter(|(run, origin)| run == "Let's ship hot reload today" && origin.y > path.y)
-            .min_by(|a, b| a.1.y.total_cmp(&b.1.y))
-            .map(|(_, origin)| *origin)
-            .expect("the card draws its last response below the path");
         assert!(
-            path.y < last.y,
-            "and above the last response: path {path:?} last {last:?}"
+            !runs
+                .iter()
+                .any(|(run, _)| run == "Let's ship hot reload today"),
+            "the card draws no last response: {runs:?}"
         );
 
         // The path row starts at the title's own x — the folder icon leads it,
@@ -1726,23 +1733,39 @@ mod sidebar_surface_tests {
             "{home}/Projects/goble/crates/goble-ui/src/elements"
         ));
 
-        let rows = |commands: &[RenderCommand]| {
-            let runs = list_runs(commands);
-            let at = |text: &str| {
-                runs.iter()
-                    .find_map(|(run, origin)| (run == text).then_some(*origin))
-                    .unwrap_or_else(|| panic!("the sidebar draws {text:?}: {runs:?}"))
-            };
-            (at("Ada"), at("Let's ship hot reload today"))
+        let subject = |commands: &[RenderCommand]| {
+            list_runs(commands)
+                .into_iter()
+                .find_map(|(run, origin)| (run == "Ada").then_some(origin))
+                .unwrap_or_else(|| panic!("the sidebar draws the card's subject"))
         };
-        let (short_title, short_last) = rows(&blank);
-        let (long_title, long_last) = rows(&long);
+        let (short_title, long_title) = (subject(&blank), subject(&long));
         assert_eq!(
-            short_last.y - short_title.y,
-            long_last.y - long_title.y,
-            "a longer path adds no line to the card"
+            short_title.y, long_title.y,
+            "a longer path adds no line above the subject"
         );
         assert_eq!(short_title.x, long_title.x, "and does not move the title");
+
+        // The path is the card's last row: the subject, the path under it and
+        // nothing else — the last response is not a line of the card.
+        // The card shows the directory with the home directory collapsed to
+        // `~` (`crate::state::display_path`), so that is the run to look for.
+        let long_path = format!("{home}/Projects/goble/crates/goble-ui/src/elements");
+        let shown_path = crate::state::display_path(&long_path);
+        let path = list_runs(&long)
+            .into_iter()
+            .find_map(|(run, origin)| (run == shown_path).then_some(origin))
+            .expect("the card draws its path");
+        assert!(
+            path.y > long_title.y,
+            "the path is under the subject: path {path:?} title {long_title:?}"
+        );
+        assert!(
+            !list_runs(&long)
+                .iter()
+                .any(|(run, _)| run == "Let's ship hot reload today"),
+            "the card draws no last response below the path"
+        );
 
         // The subject is drawn whole at this width: the gutter holds and a short
         // title still ends inside the card's own edge.
@@ -2273,6 +2296,38 @@ mod sidebar_surface_tests {
             &app,
         );
         let open = frame_at(&mut root, &app, on_dots);
+
+        // Each row leads with its own glyph, on the row's line and left of the
+        // label. The tray carries the star and the red delete mark; a frame
+        // that drops them reads as two plain labels.
+        for (icon, label) in [("star", "Star"), ("trash-02", "Delete conversation")] {
+            let label_origin = open
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText {
+                        text: run, origin, ..
+                    } if run == label => Some(*origin),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label:?} is drawn in the tray"));
+            let (origin, size) = open
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawIcon {
+                        name, origin, size, ..
+                    } if name == icon => Some((*origin, *size)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the {label:?} row draws {icon:?}"));
+            assert!(
+                origin.x < label_origin.x,
+                "{icon:?} leads the {label:?} row: icon {origin:?}, label {label_origin:?}"
+            );
+            assert!(
+                ((origin.y + size / 2.0) - (label_origin.y + 6.0)).abs() <= 6.0,
+                "{icon:?} sits on the {label:?} row's line: icon {origin:?}, label {label_origin:?}"
+            );
+        }
 
         let star_row = on_tray_text(&open, "Star");
         let delete_row = on_tray_text(&open, "Delete conversation");

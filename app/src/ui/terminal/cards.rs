@@ -1,16 +1,18 @@
 //! The conversation cards in the pane's block list, and where they landed.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AppContext, ConversationCard, Element, EventContext, LayoutContext, PaintContext, Point,
-    SizeConstraint,
+    AppContext, ConversationCard, ConversationCardStatus, ConversationEntry, ConversationStatus,
+    Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::Vector2F;
 
 use crate::emulator::AgentViewCard;
+use crate::ui::UiSnapshot;
 
 /// Where one conversation card landed in the terminal view, in window
 /// coordinates, so a click on the card is a click on the conversation it names.
@@ -30,11 +32,57 @@ impl CardRect {
     }
 }
 
+/// What a conversation card draws that the block does not carry: the harness
+/// whose mark leads the row, and when the conversation last did anything.
+#[derive(Clone, Debug)]
+pub(super) struct CardInfo {
+    pub(super) harness: String,
+    pub(super) status: ConversationCardStatus,
+    pub(super) last_activity: String,
+}
+
+impl From<&ConversationEntry> for CardInfo {
+    fn from(entry: &ConversationEntry) -> Self {
+        Self {
+            harness: entry.harness.clone(),
+            // The sidebar's live state covers a turn in flight and one
+            // suspended on the user in one value; the card's finer split
+            // cannot tell them apart, so both read as a turn in flight.
+            status: match entry.status {
+                ConversationStatus::Waiting => ConversationCardStatus::Running,
+                ConversationStatus::Default
+                | ConversationStatus::Success
+                | ConversationStatus::Error
+                | ConversationStatus::Stopped => ConversationCardStatus::Idle,
+            },
+            last_activity: entry.timestamp.clone(),
+        }
+    }
+}
+
+/// The card info for every conversation the app's list holds, keyed by id. A
+/// card whose conversation has left the list still draws, on the native
+/// harness, because the block, not the list, is what keeps it in the pane.
+pub(super) fn card_infos(state: &UiSnapshot) -> HashMap<String, CardInfo> {
+    state
+        .conversations
+        .iter()
+        .map(|entry| (entry.id.clone(), CardInfo::from(entry)))
+        .collect()
+}
+
 /// The row a conversation card draws: A8's [`ConversationCard`] element, built
-/// from the block identity the pane's view carries. The card draws its own
-/// status rail and no border, so it reads as part of the scrollback.
-pub(super) fn build_card(card: &AgentViewCard) -> Box<dyn Element> {
-    ConversationCard::new(card.conversation_id.clone(), card.label.clone()).finish()
+/// from the block identity the pane's view carries and what the app's
+/// conversation list knows about it.
+pub(super) fn build_card(card: &AgentViewCard, info: Option<&CardInfo>) -> Box<dyn Element> {
+    let mut element = ConversationCard::new(card.conversation_id.clone(), card.label.clone());
+    if let Some(info) = info {
+        element = element
+            .with_harness(info.harness.clone())
+            .with_status(info.status)
+            .with_last_activity(info.last_activity.clone());
+    }
+    element.finish()
 }
 
 /// Draws a conversation card and records where it landed, so the pane can turn

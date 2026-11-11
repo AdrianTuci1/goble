@@ -199,6 +199,17 @@ impl RootView {
                                 .map(|m| m.label.clone())
                                 .unwrap_or_else(|| "Local".to_string());
                         }
+                        // A conversation that belongs to a CLI harness names
+                        // that harness in the rich input: the harness is the
+                        // agent the thread runs with, and its model is not the
+                        // app's to switch. The environment pill names the
+                        // machine; this one names the agent.
+                        if let Some(spec) = s.pane_conversation_harness(pid) {
+                            ctx.harness_label = spec.name.to_string();
+                            ctx.harness_icon = spec.icon;
+                            ctx.harness_ids.clear();
+                            ctx.harness_items.clear();
+                        }
 
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
                         ctx.dir_menu_highlight = controls.dir_menu_highlight.clone();

@@ -13,7 +13,7 @@
 //! colour report, the text-area size) are queued as bytes for the session to
 //! write back to the pty.
 
-use goble_terminal::blocks::{BlockView, BlockVisibility};
+use goble_terminal::blocks::BlockView;
 use goble_terminal::{
     Block, BlockEvent, BlockId, BlockList, BlockOwner, BlockState, CursorState, HookEvent, HookTap,
     OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine, ScreenQuery,
@@ -419,6 +419,27 @@ impl Emulator {
         self.blocks.get(id).map(Block::output_lines)
     }
 
+    /// The cursor of every block still running in `view`, keyed by block id and
+    /// measured in the rows [`Self::block_output_lines`] returns for it.
+    ///
+    /// A finished block keeps no caret: its command is over, and a cursor drawn
+    /// at where it stopped would read as an insertion point that does nothing.
+    pub fn block_output_cursors(
+        &self,
+        view: &BlockView,
+    ) -> std::collections::HashMap<BlockId, CursorState> {
+        self.visible_blocks(view)
+            .into_iter()
+            .filter(|block| block.state == BlockState::Executing)
+            .filter_map(|block| {
+                self.blocks
+                    .get(block.id)
+                    .and_then(|block| block.output_cursor())
+                    .map(|cursor| (block.id, cursor))
+            })
+            .collect()
+    }
+
     /// What a block that just finished actually was: who owned it, how long it
     /// ran, and whether a command was behind it at all.
     ///
@@ -476,8 +497,12 @@ impl Emulator {
         if active.state() != BlockState::BeforeExecution {
             return false;
         }
-        self.blocks
-            .set_visibility(active.id(), BlockVisibility::agent(conversation_id))
+        // The line is written right after this, and the block it runs in is
+        // only known at its `Preexec`: a shell that has just started finishes
+        // its startup block first. The command is filed under the conversation
+        // when it actually starts.
+        self.blocks.hold_next_command_for(conversation_id);
+        true
     }
 
     pub fn take_osc_events(&mut self) -> Vec<OscEvent> {

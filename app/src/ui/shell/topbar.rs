@@ -4,7 +4,8 @@ use std::rc::Rc;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Button, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
+    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
+    MainAxisSize,
     PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint, Stack, Text,
     TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
@@ -585,9 +586,17 @@ impl Element for TabLabel {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let name = self.fit(constraint.max.x, app);
+        let room = constraint.max.x;
+        let name = self.fit(room, app);
+        // A cut run stands for the whole room it was cut to, so a parent that
+        // centres it leaves it at the inset it was measured from: the name only
+        // steps in from there while it is short.
+        let cut = name != self.name;
         let mut run = self.run(&name, app);
-        let size = run.layout(constraint, ctx, app);
+        let mut size = run.layout(constraint, ctx, app);
+        if cut {
+            size.x = room;
+        }
         self.run = Some(run);
         self.size = Some(size);
         size
@@ -1268,13 +1277,26 @@ fn build_workspace_chip(
     }))
 }
 
-/// The inline rename field, centered in the active tab's full height so the
-/// strip keeps `TOPBAR_HEIGHT` while the name is being edited.
+/// The inline rename field, centred in the active tab's slot both ways — as
+/// warp-new centres it (`Align::new(TextInput…)`, `app/src/tab.rs:1118`) and in
+/// the tab's full height, so the strip keeps `TOPBAR_HEIGHT` while the name is
+/// being edited.
 fn build_rename_tab(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    // The column stretches to the tab's slot so the row below has the slot's
+    // width to centre the fixed-width field in; the column alone would shrink
+    // to the field and sit on the tab's left edge.
     Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::Center)
-        .with_child(build_rename_field(app, state, actions))
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::Center)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(build_rename_field(app, state, actions))
+                .finish(),
+        )
         .finish()
 }
 
@@ -1337,6 +1359,9 @@ pub(super) struct WorkspaceChip {
     /// menu hangs from the pointer itself.
     on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     state: goble_ui::elements::interactive::InteractiveState,
+    /// The x the name is painted at inside the tab: the left inset while it
+    /// fills the room it was given, and a share further in while it is short.
+    child_x: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -1379,6 +1404,7 @@ impl WorkspaceChip {
             on_press,
             on_right_click,
             state: Default::default(),
+            child_x: Self::h_pad(),
             size: None,
             origin: None,
         }
@@ -1457,24 +1483,38 @@ impl Element for WorkspaceChip {
         // chord modifier is held — is reserved in the tab whether it is drawn
         // or not, and it is reserved *before* the name is measured: the name
         // gets what is left of the tab, so it never runs under the control. One
-        // of the two is laid out and reserved, never both.
-        let trailing_size = match self.hint.as_mut() {
-            Some(hint) => hint.layout(
+        // of the two is drawn, but the "x" is measured on every frame too: the
+        // name is centred in the room it leaves, which is the same whether the
+        // "x" or the hint holds the slot.
+        let hint_size = self.hint.as_mut().map(|hint| {
+            hint.layout(
                 SizeConstraint::loose(vec2f(constraint.max.x, Self::height())),
                 ctx,
                 app,
-            ),
-            None => self.close.layout(
-                SizeConstraint::loose(vec2f(Self::height(), Self::height())),
-                ctx,
-                app,
-            ),
-        };
+            )
+        });
+        let close_size = self.close.layout(
+            SizeConstraint::loose(vec2f(Self::height(), Self::height())),
+            ctx,
+            app,
+        );
+        let trailing_size = hint_size.unwrap_or(close_size);
         let child_size = self
             .child
             .layout(Self::inner(constraint, trailing_size.x), ctx, app);
         let intrinsic = child_size.x + Self::close_gap() + trailing_size.x + Self::h_pad() * 2.0;
         let size = vec2f(Self::width(intrinsic, constraint), Self::height());
+        // Centre the name in the room the close slot leaves of the tab's own
+        // width — the way warp-new centres its tab titles
+        // (`app/src/tab.rs:1440-1457`, `MainAxisAlignment::Center`) — and keep
+        // the left inset when the name fills that room, so a cut run still
+        // starts there.
+        let room = (size.x - Self::h_pad() * 2.0 - Self::close_gap() - close_size.x).max(0.0);
+        let centred = (room - child_size.x).max(0.0) / 2.0;
+        // The name was cut to the room the drawn trailing control leaves; it
+        // never reaches back under a hint that is wider than the "x".
+        let fit_room = Self::inner(constraint, trailing_size.x).max.x;
+        self.child_x = Self::h_pad() + centred.min((fit_room - child_size.x).max(0.0));
         self.size = Some(size);
         size
     }
@@ -1506,7 +1546,7 @@ impl Element for WorkspaceChip {
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
         self.child.paint(
             vec2f(
-                origin.x + Self::h_pad(),
+                origin.x + self.child_x,
                 origin.y + (size.y - child_size.y).max(0.0) / 2.0,
             ),
             ctx,
@@ -2489,6 +2529,31 @@ mod tests {
                 .any(|text| text.starts_with("A workspace") && text.ends_with(ELLIPSIS)),
             "the tab reads the name cut at its own width: {:?}",
             topbar_texts(&commands)
+        );
+        // A cut name keeps the left inset the tab has always drawn it at: the
+        // centring only applies while the name is short enough to fit whole.
+        let cut = topbar_texts(&commands)
+            .into_iter()
+            .find(|text| text.starts_with("A workspace") && text.ends_with(ELLIPSIS))
+            .expect("the tab reads the name cut at its own width");
+        let origin = topbar_text(&commands, &cut).expect("the cut run's origin");
+        assert!(
+            (origin.x - (tab.min_x() + WorkspaceChip::h_pad())).abs() < 0.01,
+            "a name too long for its tab starts at the left inset: {origin:?} in {tab:?}"
+        );
+        let cut_width = Text::new(cut.as_str())
+            .with_font_size(TAB_FONT_SIZE)
+            .with_weight(FontWeight::Medium)
+            .with_max_lines(1)
+            .layout(
+                SizeConstraint::loose(vec2f(f32::INFINITY, TOPBAR_HEIGHT)),
+                &mut LayoutContext,
+                &app,
+            )
+            .x;
+        assert!(
+            origin.x + cut_width <= tab.max_x() - WorkspaceChip::h_pad(),
+            "the cut run ends inside the tab: {origin:?} + {cut_width} in {tab:?}"
         );
     }
 

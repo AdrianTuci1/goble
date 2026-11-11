@@ -270,46 +270,31 @@ pub(crate) fn run_mission(
                     break;
                 }
 
+                // A question is not an approval: `auto_approve` opens the
+                // command gate (below) and never answers for the user, so an
+                // `ask_user` always suspends the turn and reaches the user.
                 if decision == ReasoningDecision::AskUser {
                     if let Some(ask) = extract_ask_user(&tool_calls) {
-                        if auto_approve {
-                            // Auto-approve: skip suspending on the question and
-                            // record a synthetic answer so the next reasoning /
-                            // execution step sees the user already responded.
-                            let now = Utc::now().to_rfc3339();
-                            if let Err(e) = store.insert_chat_message(
-                                &uuid::Uuid::new_v4().to_string(),
-                                &chat_id,
-                                "user",
-                                &format!("(auto-approved; no answer to: {})", ask.question),
-                                None,
-                                &now,
-                            ) {
-                                yield HarnessEvent::Error(e.to_string());
-                                return;
-                            }
-                        } else {
-                            let now = Utc::now().to_rfc3339();
-                            if let Err(e) = store.insert_pending_ask(
-                                &ask.id,
-                                &chat_id,
-                                Some(&mission.id),
-                                &ask.question,
-                                &ask.quick_replies.join("\n"),
-                                "pending",
-                                &now,
-                                &now,
-                            ) {
-                                yield HarnessEvent::Error(e.to_string());
-                                return;
-                            }
-                            mission.pending_ask = Some(ask.clone());
-                            yield HarnessEvent::AskUser {
-                                question: ask.question,
-                                quick_replies: ask.quick_replies,
-                            };
+                        let now = Utc::now().to_rfc3339();
+                        if let Err(e) = store.insert_pending_ask(
+                            &ask.id,
+                            &chat_id,
+                            Some(&mission.id),
+                            &ask.question,
+                            &ask.quick_replies.join("\n"),
+                            "pending",
+                            &now,
+                            &now,
+                        ) {
+                            yield HarnessEvent::Error(e.to_string());
                             return;
                         }
+                        mission.pending_ask = Some(ask.clone());
+                        yield HarnessEvent::AskUser {
+                            question: ask.question,
+                            quick_replies: ask.quick_replies,
+                        };
+                        return;
                     }
                 }
 

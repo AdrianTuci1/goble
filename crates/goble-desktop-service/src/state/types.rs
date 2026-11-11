@@ -26,6 +26,9 @@ pub struct Chat {
     pub title: String,
     pub provider: Option<String>,
     pub model: Option<String>,
+    /// The CLI harness's own session id when the conversation ran inside one
+    /// (`None` until a session is known). It is what the card resumes and names
+    /// itself from, so two conversations in one directory keep two sessions.
     pub agent_id: Option<String>,
     pub worker_id: Option<String>,
     /// Where the agent for this conversation should run: `"local"` or `"remote"`.

@@ -120,12 +120,15 @@ impl DesktopState {
         for (id, title, provider, model, _created_at, updated_at) in chats {
             let workspace_routing = self.store.lock().get_chat_workspace_routing(&id)?;
             let working_dir = self.store.lock().get_chat_working_dir(&id)?;
+            // The column is the CLI harness session a card resumes; a chat that
+            // never ran in a harness has none.
+            let agent_id = self.store.lock().get_chat_agent_id(&id)?;
             chats_vec.push(Chat {
                 id,
                 title,
                 provider,
                 model,
-                agent_id: None,
+                agent_id,
                 worker_id: None,
                 workspace_routing,
                 working_dir,

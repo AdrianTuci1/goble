@@ -150,13 +150,17 @@ pub fn word_selection(line_index: usize, line: &ScreenLine, column: usize) -> Op
 
 /// The whole line, with trailing blanks left out.
 pub fn line_selection(line_index: usize, line: &ScreenLine) -> Selection {
-    let end = line.cells.iter().enumerate().fold(0, |end, (column, cell)| {
-        if cell.ch == ' ' && cell.zerowidth.is_empty() {
-            end
-        } else {
-            column + if cell.attrs.wide { 2 } else { 1 }
-        }
-    });
+    let end = line
+        .cells
+        .iter()
+        .enumerate()
+        .fold(0, |end, (column, cell)| {
+            if cell.ch == ' ' && cell.zerowidth.is_empty() {
+                end
+            } else {
+                column + if cell.attrs.wide { 2 } else { 1 }
+            }
+        });
     Selection::new(
         Cell::new(line_index, 0),
         Cell::new(line_index, end.saturating_sub(1)),
@@ -251,7 +255,8 @@ impl CopyMode {
     }
 
     pub fn selection(&self) -> Option<Selection> {
-        self.visual.map(|anchor| Selection::new(anchor, self.cursor))
+        self.visual
+            .map(|anchor| Selection::new(anchor, self.cursor))
     }
 
     fn clamp_column(&mut self, line_len: usize) {
@@ -368,11 +373,7 @@ pub enum FindAction {
 /// Classify a key against the find bar. `field_focused` is true while the
 /// query field holds the caret, where printable keys and Backspace are typed
 /// rather than read as navigation.
-pub fn classify_find_key(
-    key: &str,
-    modifiers: ModifiersState,
-    field_focused: bool,
-) -> FindAction {
+pub fn classify_find_key(key: &str, modifiers: ModifiersState, field_focused: bool) -> FindAction {
     if key == "Escape" {
         return FindAction::Close;
     }
@@ -527,8 +528,7 @@ impl TerminalRegistry {
     }
 
     pub fn copy_active(&self, pane_id: u64) -> bool {
-        self.pane_ui(pane_id)
-            .is_some_and(|state| state.copy.active)
+        self.pane_ui(pane_id).is_some_and(|state| state.copy.active)
     }
 
     /// Enter copy mode at the shell's cursor, leaving any visual selection
@@ -575,9 +575,7 @@ impl TerminalRegistry {
         let mut mode = CopyMode {
             active: true,
             cursor,
-            visual: self
-                .pane_ui(pane_id)
-                .and_then(|state| state.copy.visual),
+            visual: self.pane_ui(pane_id).and_then(|state| state.copy.visual),
         };
         mode.apply(motion, total, |line| session.line_len(line));
         let cursor = mode.cursor;
@@ -759,7 +757,8 @@ impl TerminalRegistry {
             .pane_ui(pane_id)
             .and_then(|state| state.last_click)
             .filter(|click| {
-                click.cell == cell && now.saturating_duration_since(click.at) <= MULTI_CLICK_INTERVAL
+                click.cell == cell
+                    && now.saturating_duration_since(click.at) <= MULTI_CLICK_INTERVAL
             })
             .map_or(1, |click| (click.count + 1).min(3));
         let line = self
@@ -867,7 +866,8 @@ impl TerminalRegistry {
     }
 
     pub fn block_selection(&self, pane_id: u64) -> Option<Selection> {
-        self.pane_ui(pane_id).and_then(|state| state.block_selection)
+        self.pane_ui(pane_id)
+            .and_then(|state| state.block_selection)
     }
 
     /// The text a block-text selection covers.
@@ -917,10 +917,7 @@ impl TerminalRegistry {
     /// a double/triple click took, is copied.
     pub fn dragged_selection_text(&self, pane_id: u64) -> Option<String> {
         let state = self.pane_ui(pane_id)?;
-        if let Some(selection) = state
-            .selection
-            .filter(Selection::spans_more_than_one_cell)
-        {
+        if let Some(selection) = state.selection.filter(Selection::spans_more_than_one_cell) {
             if let Some(session) = self.sessions.get(&pane_id) {
                 let text = session.selection_text(selection);
                 if !text.is_empty() {
@@ -1063,10 +1060,22 @@ mod tests {
             classify_copy_key("$", ModifiersState::default()),
             CopyAction::Move(CopyMotion::LineEnd)
         );
-        assert_eq!(classify_copy_key("v", ModifiersState::default()), CopyAction::Visual);
-        assert_eq!(classify_copy_key("y", ModifiersState::default()), CopyAction::Yank);
-        assert_eq!(classify_copy_key("/", ModifiersState::default()), CopyAction::Search);
-        assert_eq!(classify_copy_key("q", ModifiersState::default()), CopyAction::Exit);
+        assert_eq!(
+            classify_copy_key("v", ModifiersState::default()),
+            CopyAction::Visual
+        );
+        assert_eq!(
+            classify_copy_key("y", ModifiersState::default()),
+            CopyAction::Yank
+        );
+        assert_eq!(
+            classify_copy_key("/", ModifiersState::default()),
+            CopyAction::Search
+        );
+        assert_eq!(
+            classify_copy_key("q", ModifiersState::default()),
+            CopyAction::Exit
+        );
         assert_eq!(
             classify_copy_key("j", ModifiersState::default()),
             CopyAction::Move(CopyMotion::Down)
@@ -1095,7 +1104,10 @@ mod tests {
             shift: true,
             ..ModifiersState::default()
         };
-        assert_eq!(classify_find_key("Enter", shift, true), FindAction::Previous);
+        assert_eq!(
+            classify_find_key("Enter", shift, true),
+            FindAction::Previous
+        );
         assert_eq!(classify_find_key("n", none, true), FindAction::Input);
         assert_eq!(classify_find_key("n", none, false), FindAction::Next);
         assert_eq!(classify_find_key("N", none, false), FindAction::Previous);
@@ -1106,7 +1118,10 @@ mod tests {
         };
         assert_eq!(classify_find_key("r", alt, false), FindAction::ToggleRegex);
         assert_eq!(classify_find_key("x", none, true), FindAction::Input);
-        assert_eq!(classify_find_key("ArrowLeft", none, true), FindAction::Ignore);
+        assert_eq!(
+            classify_find_key("ArrowLeft", none, true),
+            FindAction::Ignore
+        );
     }
 
     #[test]
@@ -1151,7 +1166,9 @@ mod tests {
         );
         assert_eq!(bar.count_label(), "0/0");
         assert!(
-            bar.error.as_deref().is_some_and(|error| error.contains("invalid regex")),
+            bar.error
+                .as_deref()
+                .is_some_and(|error| error.contains("invalid regex")),
             "{:?}",
             bar.error
         );

@@ -7,7 +7,9 @@ use crate::llm::ToolDefinition;
 /// read.
 pub const RICH_TEXT_GUIDE: &str = "Replies render as Markdown in every Goble client. Use **bold** for emphasis. \
 A run can carry an explicit colour with {color:#rrggbb}text{/color}; the named colours red, orange, yellow, \
-green, blue, purple, cyan, gray, white and black are accepted too. Use colour for status and labels, sparingly.";
+green, blue, purple, cyan, gray, white and black are accepted too. A fenced block tagged `ansi`, or a plain \
+fence carrying SGR escape codes, renders as coloured prose without a code panel. Use colour for status and \
+labels, sparingly.";
 
 const HARNESS_BASE_PROMPT: &str = r#"You are an assistant that controls a local Goble agent environment.
 You can create/update agents, workflows and teams, run shell commands, read/write files, search the store, deploy agents/workflows to workers, schedule workflows, and check execution status.

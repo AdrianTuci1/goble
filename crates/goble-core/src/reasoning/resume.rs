@@ -17,11 +17,10 @@ use crate::store::Store;
 use crate::subagent_run::SubAgentHost;
 use crate::worker::WorkerId;
 
-use super::mission::run_mission_turn;
 use super::persist::persist_tool_call_records;
 
 /// Continue a turn that suspended on an `ask_user`, with the same crate-private
-/// host requirement as [`run_mission_turn`].
+/// host requirement as `run_mission_turn`.
 pub(crate) fn resume_mission_turn(
     store: Store,
     runner: Arc<dyn crate::harness::CommandRunner>,
@@ -73,11 +72,49 @@ pub(crate) fn resume_mission_turn(
                 "\nCredential stored as {name}. Reference it in run_command as {{{{credential:{name}}}}}."
             ));
         }
+        // The answer is the `ask_user` call's result, not a message the user
+        // sent: the card stood for the question, so the transcript shows the
+        // call the agent made and what came back — the same tool row every
+        // other call gets. The model reads it as that call's result, which
+        // keeps its history a tool exchange.
+        let call_id = format!("ask_{}", uuid::Uuid::new_v4().simple());
+        let call = crate::harness::ChatToolCall {
+            id: call_id.clone(),
+            name: "ask_user".to_string(),
+            arguments: serde_json::json!({
+                "question": ask.3,
+                "quick_replies": ask.4
+                    .split('\n')
+                    .filter(|reply| !reply.is_empty())
+                    .collect::<Vec<_>>(),
+            }),
+            status: crate::harness::ToolCallStatus::Finished,
+            result: Some(answer.clone()),
+            diff: None,
+        };
+        let calls_json = match serde_json::to_string(&[call]) {
+            Ok(json) => json,
+            Err(e) => {
+                yield HarnessEvent::Error(e.to_string());
+                return;
+            }
+        };
         if let Err(e) = store.insert_chat_message(
             &uuid::Uuid::new_v4().to_string(),
             &chat_id,
-            "user",
-            &answer,
+            "assistant",
+            "",
+            Some(&calls_json),
+            &now,
+        ) {
+            yield HarnessEvent::Error(e.to_string());
+            return;
+        }
+        if let Err(e) = store.insert_chat_message(
+            &uuid::Uuid::new_v4().to_string(),
+            &chat_id,
+            "tool",
+            &format!("{call_id}\n{answer}"),
             None,
             &now,
         ) {
@@ -85,7 +122,9 @@ pub(crate) fn resume_mission_turn(
             return;
         }
 
-        let mut inner = run_mission_turn(
+        // The mission continues from the tool result in its history; the
+        // answer is not a new user prompt, so no user row is added.
+        let mut inner = super::mission::run_mission(
             store,
             runner,
             llm,

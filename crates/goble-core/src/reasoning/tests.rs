@@ -168,6 +168,20 @@ async fn an_execution_only_turn_can_ask_with_options() {
         .collect()
         .await;
     assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
+    // The answer came back as the call's result, so the transcript draws the
+    // agent's tool row instead of a message attributed to the user.
+    let rows = store.list_chat_messages(&chat_id).unwrap();
+    assert!(
+        !rows
+            .iter()
+            .any(|(_, role, content, _, _)| role == "user" && content.contains("Canberra")),
+        "the answer is not a user message: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|(_, role, content, _, _)| role == "tool" && content.contains("Canberra")),
+        "the answer is the ask_user result row: {rows:?}"
+    );
 }
 
 #[tokio::test]
@@ -217,15 +231,41 @@ async fn test_resume_stores_credential_by_name_not_value() {
         Some("ghs_secret".to_string())
     );
     let rows = store.list_chat_messages(&chat_id).unwrap();
-    let user_turn = rows
+    assert!(
+        !rows
+            .iter()
+            .any(|(_, role, content, _, _)| role == "user" && content.contains("Answer to")),
+        "the answer is not a message the user sent: {rows:?}"
+    );
+    let tool_turn = rows
         .iter()
-        .filter(|(_, role, _, _, _)| role == "user")
+        .filter(|(_, role, _, _, _)| role == "tool")
         .map(|(_, _, content, _, _)| content.clone())
-        .find(|c| c.contains("Answer to question"))
-        .unwrap_or_default();
-    assert!(user_turn.contains("Credential stored as github_token"));
-    assert!(user_turn.contains("{{credential:github_token}}"));
-    assert!(!user_turn.contains("ghs_secret"));
+        .find(|c| c.contains("Credential stored as github_token"))
+        .expect("the ask_user result row carries the stored credential's name");
+    assert!(tool_turn.contains("{{credential:github_token}}"));
+    assert!(!tool_turn.contains("ghs_secret"));
+    // The answer is the call's result, so the transcript draws the tool the
+    // agent ran rather than a user bubble.
+    let calls: Vec<ChatToolCall> = rows
+        .iter()
+        .filter(|(_, role, _, tool_calls, _)| role == "assistant" && tool_calls.is_some())
+        .flat_map(|(_, _, _, tool_calls, _)| {
+            serde_json::from_str::<Vec<ChatToolCall>>(tool_calls.as_deref().unwrap_or("[]"))
+                .unwrap_or_default()
+        })
+        .collect();
+    assert!(
+        calls.iter().any(|call| call.name == "ask_user"
+            && call.status == ToolCallStatus::Finished
+            && call.result.as_deref() == Some(tool_turn_body(&tool_turn))),
+        "the answered question is a finished ask_user call: {calls:?}"
+    );
+}
+
+/// What a `role="tool"` row holds past its call id: the result body.
+fn tool_turn_body(row: &str) -> &str {
+    row.split_once('\n').map(|(_, body)| body).unwrap_or(row)
 }
 
 #[tokio::test]

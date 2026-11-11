@@ -53,6 +53,49 @@ fn a_persisted_tool_result_folds_into_the_call_it_belongs_to() {
     );
 }
 
+/// An answered question is the `ask_user` call's result: the pane draws the
+/// tool the agent ran, with the answer in its row. The question lives in the
+/// card while it waits, so the reply never reaches the transcript as a message
+/// the user sent.
+#[test]
+fn an_answered_question_draws_as_the_agents_tool_call() {
+    let answer = "Answer to question 'Which environment?': staging";
+    let assistant = goble_desktop_service::ChatMessage {
+        id: "m1".into(),
+        role: "assistant".into(),
+        content: String::new(),
+        tool_calls: Some(
+            r#"[{"id":"ask_1","name":"ask_user","arguments":{"question":"Which environment?","quick_replies":["staging","production"]},"status":"finished","result":"Answer to question 'Which environment?': staging"}]"#
+                .to_string(),
+        ),
+        created_at: "2026-09-10T00:00:00Z".into(),
+    };
+    let result = goble_desktop_service::ChatMessage {
+        id: "m2".into(),
+        role: "tool".into(),
+        content: format!("ask_1\n{answer}"),
+        tool_calls: None,
+        created_at: "2026-09-10T00:00:01Z".into(),
+    };
+
+    let messages = MessageParseCache::default().resolve(&[assistant, result]);
+
+    assert_eq!(
+        messages.len(),
+        1,
+        "the answer is the call's result, not a message of its own"
+    );
+    assert!(
+        !messages.iter().any(|message| message.role == ChatRole::User),
+        "the reply is not a message the user sent"
+    );
+    let calls = &messages[0].tool_calls;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "ask_user");
+    assert_eq!(calls[0].status, ToolCallStatus::Finished);
+    assert_eq!(calls[0].result.as_deref(), Some(answer));
+}
+
 /// A result row whose call the transcript does not carry still becomes a
 /// message — the output is real and must be readable — but it is drawn as
 /// the agent's own prose surface, never as a terminal block.

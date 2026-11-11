@@ -590,7 +590,7 @@ fn a_layout_with_two_settings_leaves_focuses_the_first_and_normalises_nothing() 
             .filter(|c| matches!(c, RenderCommand::DrawText { text: run, .. } if run == text))
             .count()
     };
-    assert_eq!(count("Dark mode"), 1, "the first pane draws Appearance");
+    assert_eq!(count("Palette"), 1, "the first pane draws Appearance");
     assert_eq!(count("Invert scroll"), 1, "the second draws Mouse");
     // Each pane carries its own "Settings" title; the strip still draws one tab
     // for the space, its label above the panes.
@@ -1093,13 +1093,12 @@ fn assert_theme_overrides_cleared(
     );
 }
 
-/// The Themes section offers the Default base and one row per preset, and a
-/// click shows that palette exactly: the preset is persisted and the five
-/// channel overrides are cleared, so the preset's own colours are what the
-/// next frame paints. The Default row goes back to the built-in base,
-/// clearing the preset and the overrides with it.
+/// The Themes row is a stepper: the chevrons on either side walk the Default
+/// base and the five presets in order, wrapping at both ends. A step persists
+/// the base and clears the five channel overrides, so the next frame paints
+/// that palette exactly. `Left`, `Right` and `Enter` take the same steps.
 #[test]
-fn clicking_a_preset_row_applies_and_persists_it() {
+fn the_theme_stepper_walks_the_bases_and_persists_each_one() {
     use goble_ui::theme::{ColorToken, Theme, ThemePreset};
 
     let app = AppContext::default();
@@ -1107,106 +1106,107 @@ fn clicking_a_preset_row_applies_and_persists_it() {
     let (mut root, state, _dir, desktop, theme_ctx) = settings_tree(SettingsCategory::Appearance);
     let commands = frame(&mut root, &app, window);
 
-    assert!(drawn(&commands, "Default"), "the Default row is drawn");
-    for preset in ThemePreset::ALL {
-        assert!(
-            drawn(&commands, preset.display_name()),
-            "{} is drawn",
-            preset.display_name()
-        );
-        assert!(
-            drawn_text(&commands, preset.description()).is_some(),
-            "{}'s descriptor is drawn",
-            preset.display_name()
-        );
-    }
-    // The preset rows sit between the dark-mode switch and the channel rows.
-    let controls = state.borrow().settings_pane_controls();
-    assert_eq!(controls[0], SettingsControl::DarkMode);
-    assert_eq!(controls[1], SettingsControl::ThemePreset(None));
+    // The stepper is the Themes section's only control, and it names the
+    // Default base to start with. The dark-mode switch is the palette's now.
+    assert!(drawn(&commands, "Default"), "the Default base is named");
+    assert!(!drawn(&commands, "Dark mode"), "the switch row is gone");
     assert_eq!(
-        controls[2..7].to_vec(),
-        ThemePreset::ALL
-            .map(|preset| SettingsControl::ThemePreset(Some(preset)))
-            .to_vec()
+        state.borrow().settings_pane_controls().first(),
+        Some(&SettingsControl::ThemeStepper)
     );
-    assert_eq!(controls.last(), Some(&SettingsControl::ResetThemeColors));
 
-    // The wheel has refined the palette, and those overrides are stored: the
-    // preset has to drop them or its own colours never show.
+    // The wheel refined the palette and those overrides are stored: a step has
+    // to drop them or the palette's own colours never show.
     seed_theme_overrides(&state, &desktop);
     let commands = frame(&mut root, &app, window);
-    let row = drawn_text(&commands, "Tokyo Night").expect("the Tokyo Night row is drawn");
-    click(&mut root, &app, row + vec2f(2.0, 2.0));
+    let next = drawn_icon(&commands, "chevron-right").expect("the next chevron is drawn");
+    click(&mut root, &app, next);
     assert_eq!(
         state.borrow().theme_preset.as_deref(),
-        Some(ThemePreset::TokyoNight.key())
+        Some(ThemePreset::GobleNight.key())
     );
     assert_eq!(
         desktop.config().theme.preset.as_deref(),
-        Some(ThemePreset::TokyoNight.key())
+        Some(ThemePreset::GobleNight.key())
     );
-    assert_theme_overrides_cleared(&state, &desktop, "Tokyo Night");
+    assert_theme_overrides_cleared(&state, &desktop, "Goble Night");
 
-    // The next frame paints the preset exactly: its own palette, its key, and
-    // no override left on top.
+    // The next frame paints the palette exactly: its key, its colours, and no
+    // override left on top.
     frame(&mut root, &app, window);
     let applied = theme_ctx.borrow().theme.clone();
-    assert_eq!(applied, Theme::preset(ThemePreset::TokyoNight));
-    assert_eq!(applied.name, ThemePreset::TokyoNight.key());
+    assert_eq!(applied, Theme::preset(ThemePreset::GobleNight));
+    assert_eq!(applied.name, ThemePreset::GobleNight.key());
     assert_eq!(
         applied.color(ColorToken::Bg),
-        ThemePreset::TokyoNight.colors().bg
+        ThemePreset::GobleNight.colors().bg
     );
     assert_eq!(
         applied.color(ColorToken::Accent),
-        ThemePreset::TokyoNight.accent()
+        ThemePreset::GobleNight.accent()
     );
 
-    // Default goes back to the built-in base and clears the stored preset, and
-    // it clears the overrides just as a preset row does.
-    seed_theme_overrides(&state, &desktop);
-    let commands = frame(&mut root, &app, window);
-    let default = drawn_text(&commands, "Default").expect("the Default row is drawn");
-    click(&mut root, &app, default + vec2f(2.0, 2.0));
-    assert!(state.borrow().theme_preset.is_none());
-    assert!(desktop.config().theme.preset.is_none());
-    assert_theme_overrides_cleared(&state, &desktop, "Default");
-    frame(&mut root, &app, window);
-    let applied = theme_ctx.borrow().theme.clone();
-    assert_eq!(applied.name, "dark");
-    assert_eq!(applied, Theme::dark());
-
-    // The same rows answer Enter: the focus order puts every preset in reach,
-    // and Enter clears the overrides the click does.
-    seed_theme_overrides(&state, &desktop);
+    // The row answers the arrows: `Right` takes the next palette, `Left` the
+    // one before it, and `Enter` advances as it does on every stepper.
     {
         let mut s = state.borrow_mut();
-        let slot = s
-            .settings_pane_controls()
-            .iter()
-            .position(|control| {
-                *control == SettingsControl::ThemePreset(Some(ThemePreset::GrokNight))
-            })
-            .expect("Grok Night is in the focus order");
         s.settings_focus = SettingsFocus::Pane;
-        s.settings_pane_focus = slot;
+        s.settings_pane_focus = 0;
     }
     frame(&mut root, &app, window);
+    assert!(press(&mut root, &app, "ArrowRight"));
+    assert_eq!(
+        state.borrow().theme_preset.as_deref(),
+        Some(ThemePreset::GobleDay.key())
+    );
+    assert!(press(&mut root, &app, "ArrowLeft"));
+    assert_eq!(
+        state.borrow().theme_preset.as_deref(),
+        Some(ThemePreset::GobleNight.key())
+    );
     assert!(press(&mut root, &app, "Enter"));
     assert_eq!(
         state.borrow().theme_preset.as_deref(),
-        Some(ThemePreset::GrokNight.key())
+        Some(ThemePreset::GobleDay.key())
+    );
+
+    // Left walks back to Default, which drops the preset and, like every base,
+    // the overrides.
+    seed_theme_overrides(&state, &desktop);
+    assert!(press(&mut root, &app, "ArrowLeft"));
+    assert_eq!(
+        state.borrow().theme_preset.as_deref(),
+        Some(ThemePreset::GobleNight.key()),
+        "one step back is Goble Night"
+    );
+    assert_theme_overrides_cleared(&state, &desktop, "Goble Night");
+    assert!(press(&mut root, &app, "ArrowLeft"));
+    assert!(state.borrow().theme_preset.is_none());
+    assert!(desktop.config().theme.preset.is_none());
+    assert_theme_overrides_cleared(&state, &desktop, "Default");
+    let commands = frame(&mut root, &app, window);
+    assert!(drawn(&commands, "Default"), "the row names the base again");
+    let applied = theme_ctx.borrow().theme.clone();
+    assert_eq!(applied, Theme::dark());
+
+    // Left from Default wraps to the last preset, and the row names it.
+    assert!(press(&mut root, &app, "ArrowLeft"));
+    assert_eq!(
+        state.borrow().theme_preset.as_deref(),
+        Some(ThemePreset::OscuraMidnight.key())
     );
     assert_eq!(
         desktop.config().theme.preset.as_deref(),
-        Some(ThemePreset::GrokNight.key())
+        Some(ThemePreset::OscuraMidnight.key())
     );
-    assert_theme_overrides_cleared(&state, &desktop, "Enter on Grok Night");
-    frame(&mut root, &app, window);
+    let commands = frame(&mut root, &app, window);
+    assert!(
+        drawn(&commands, "Oscura Midnight"),
+        "the row names the palette"
+    );
     assert_eq!(
         theme_ctx.borrow().theme.clone(),
-        Theme::preset(ThemePreset::GrokNight)
+        Theme::preset(ThemePreset::OscuraMidnight)
     );
 }
 
@@ -1227,7 +1227,7 @@ fn the_reset_row_clears_the_overrides_and_keeps_the_preset() {
         s.theme_surface = Some("#202020".to_string());
     }
     let mut config = desktop.config();
-    config.theme.preset = Some(ThemePreset::GrokNight.key().to_string());
+    config.theme.preset = Some(ThemePreset::GobleNight.key().to_string());
     config.theme.primary = Some("#ff0000".to_string());
     config.theme.secondary = Some("#00ff00".to_string());
     config.theme.accent = Some("#0000ff".to_string());
@@ -1236,7 +1236,7 @@ fn the_reset_row_clears_the_overrides_and_keeps_the_preset() {
     desktop
         .save_config(&config)
         .expect("save the fixture config");
-    state.borrow_mut().theme_preset = Some(ThemePreset::GrokNight.key().to_string());
+    state.borrow_mut().theme_preset = Some(ThemePreset::GobleNight.key().to_string());
 
     let commands = frame(&mut root, &app, window);
     let reset = drawn_text(&commands, "Reset colors").expect("the reset row is drawn");
@@ -1250,7 +1250,7 @@ fn the_reset_row_clears_the_overrides_and_keeps_the_preset() {
     assert!(s.theme_surface.is_none());
     assert_eq!(
         s.theme_preset.as_deref(),
-        Some(ThemePreset::GrokNight.key()),
+        Some(ThemePreset::GobleNight.key()),
         "the base palette stays"
     );
     drop(s);
@@ -1263,10 +1263,10 @@ fn the_reset_row_clears_the_overrides_and_keeps_the_preset() {
 
     frame(&mut root, &app, window);
     let applied = theme_ctx.borrow().theme.clone();
-    assert_eq!(applied.name, ThemePreset::GrokNight.key());
+    assert_eq!(applied.name, ThemePreset::GobleNight.key());
     assert_eq!(
         applied.color(goble_ui::theme::ColorToken::Bg),
-        ThemePreset::GrokNight.colors().bg
+        ThemePreset::GobleNight.colors().bg
     );
 }
 
@@ -1683,8 +1683,15 @@ fn the_footer_says_what_the_focused_row_answers() {
     let rail = footer_hints(SettingsFocus::Rail, None, false);
     assert_eq!(words(&rail), vec!["page", "open the page"]);
 
-    let toggle = footer_hints(SettingsFocus::Pane, Some(&SettingsControl::DarkMode), false);
+    let toggle = footer_hints(SettingsFocus::Pane, Some(&SettingsControl::InvertScroll), false);
     assert_eq!(words(&toggle), vec!["row", "toggle", "back"]);
+
+    let theme = footer_hints(
+        SettingsFocus::Pane,
+        Some(&SettingsControl::ThemeStepper),
+        false,
+    );
+    assert_eq!(words(&theme), vec!["row", "theme", "next", "back"]);
 
     let stepper = footer_hints(
         SettingsFocus::Pane,
@@ -1944,6 +1951,19 @@ fn drawn_text(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
         RenderCommand::DrawText {
             origin, text: run, ..
         } if run == text => Some(*origin),
+        _ => None,
+    })
+}
+
+/// The centre of an icon the frame paints, so a test can press it.
+fn drawn_icon(commands: &[RenderCommand], name: &str) -> Option<Vector2F> {
+    commands.iter().find_map(|c| match c {
+        RenderCommand::DrawIcon {
+            origin,
+            size,
+            name: run,
+            ..
+        } if run == name => Some(vec2f(origin.x + size * 0.5, origin.y + size * 0.5)),
         _ => None,
     })
 }

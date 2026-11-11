@@ -1,6 +1,7 @@
 use super::*;
 
 use goble_core::config::RemoteMode;
+use goble_ui::theme::ThemePreset;
 
 impl UiState {
     pub fn refresh_crons(&mut self, desktop: &DesktopState) {
@@ -438,6 +439,23 @@ impl UiState {
             .position(|t| *t == self.theme_color_target)
             .unwrap_or(0) as i32;
         self.theme_color_target = order[(pos + delta).rem_euclid(order.len() as i32) as usize];
+    }
+
+    /// The base palette one step along the Themes stepper: the Default base
+    /// first, then the presets in [`ThemePreset::ALL`] order, wrapping at both
+    /// ends. The caller applies it, so a step persists like a picked base.
+    pub fn theme_preset_stepped(&self, delta: i32) -> Option<ThemePreset> {
+        let all = ThemePreset::ALL;
+        let current = self
+            .theme_preset
+            .as_deref()
+            .and_then(ThemePreset::from_key);
+        let index = current
+            .and_then(|preset| all.iter().position(|candidate| *candidate == preset))
+            .map(|position| position as i32 + 1)
+            .unwrap_or(0);
+        let next = (index + delta).rem_euclid(all.len() as i32 + 1);
+        (next > 0).then(|| all[(next - 1) as usize])
     }
 
     // ---- Settings -> Environment -------------------------------------------

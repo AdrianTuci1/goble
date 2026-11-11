@@ -64,7 +64,7 @@ pub const CONFIG_HEADER: &str = "\
 #   url = \"http://localhost:4400/mcp\"
 #
 # [theme] is goble's own section and grok has no equivalent: `dark` picks the
-# built-in base, `preset` names a palette (groknight, grokday, tokyonight,
+# built-in base, `preset` names a palette (goble-night, goble-day, tokyonight,
 # rosepine-moon, oscura-midnight), and `accent`, `primary`, `secondary`, `bg`
 # and `surface` override one colour each on top of whichever base is in force.
 #

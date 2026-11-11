@@ -385,13 +385,11 @@ pub enum SettingsControl {
     DefaultModel,
     /// Agent & Approval: the app-wide command-approval policy.
     ApprovalMode,
-    /// Appearance: the dark-mode switch.
-    DarkMode,
     /// Appearance: one channel of the colour-target column.
     ThemeChannel(super::color_picker::ColorTarget),
-    /// Appearance: one row of the Themes section. `None` is the Default row;
-    /// `Some` is a preset palette.
-    ThemePreset(Option<goble_ui::theme::ThemePreset>),
+    /// Appearance: the Themes stepper. `Left`/`Right` and the two arrow
+    /// buttons walk the Default base and the presets in order.
+    ThemeStepper,
     /// Appearance: clear the five colour overrides, keeping the base palette.
     ResetThemeColors,
     /// Appearance: the colour wheel; it is a drag surface, so it takes a focus
@@ -460,6 +458,7 @@ impl SettingsControl {
             SettingsControl::ScrollSpeed
                 | SettingsControl::FontSize
                 | SettingsControl::ThemeChannel(_)
+                | SettingsControl::ThemeStepper
                 | SettingsControl::ApprovalMode
         )
     }

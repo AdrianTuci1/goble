@@ -554,6 +554,8 @@ pub struct UiActions {
     pub on_set_theme_surface: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: pick a preset palette, or `None` for the Default base.
     pub on_set_theme_preset: Rc<RefCell<dyn FnMut(Option<goble_ui::theme::ThemePreset>)>>,
+    /// Settings: step the Themes stepper by `delta` bases.
+    pub on_step_theme: Rc<RefCell<dyn FnMut(i32)>>,
     /// Settings: clear all five colour overrides, keeping the current base.
     pub on_reset_theme_colors: Rc<RefCell<dyn FnMut()>>,
     /// Settings: save the profile (name, email).

@@ -36,8 +36,8 @@
 //! | Focused row | `Enter` |
 //! | --- | --- |
 //! | a toggle | flips it |
-//! | a stepper (scroll speed, font size) | advances it one step, as `Right` does |
-//! | a single-choice row (Local/Remote, a theme channel, a theme preset) | selects the named choice |
+//! | a stepper (scroll speed, font size, the theme) | advances it one step, as `Right` does |
+//! | a single-choice row (Local/Remote, a theme channel) | selects the named choice |
 //! | a list row (an environment group, a secret) | opens it |
 //! | a connection row (Connections) | selects it and names it — it does not connect |
 //! | a text field | puts the caret in it; `Enter` again commits, `Esc` cancels the edit and stays on the row |
@@ -131,13 +131,7 @@ pub fn pane_controls(
     match category {
         SettingsCategory::Profile => vec![FriendlyName, DataSharing],
         SettingsCategory::Appearance => {
-            let mut controls = vec![DarkMode];
-            controls.push(ThemePreset(None));
-            controls.extend(
-                goble_ui::theme::ThemePreset::ALL
-                    .into_iter()
-                    .map(|preset| ThemePreset(Some(preset))),
-            );
+            let mut controls = vec![ThemeStepper];
             controls.extend(COLOR_TARGET_ORDER.iter().copied().map(ThemeChannel));
             controls.push(ColorWheel);
             controls.push(ResetThemeColors);
@@ -496,6 +490,10 @@ pub(crate) fn footer_hints(
                     hints.push(ShortcutHint::new(&["↵"], "edit"));
                 }
                 Some(SettingsControl::ColorWheel) => {}
+                Some(SettingsControl::ThemeStepper) => {
+                    hints.push(ShortcutHint::new(&["←", "→"], "theme"));
+                    hints.push(ShortcutHint::new(&["↵"], "next"));
+                }
                 Some(control) if control.has_discrete_values() => {
                     hints.push(ShortcutHint::new(&["←", "→"], "change"));
                     hints.push(ShortcutHint::new(&["↵"], "increase"));
@@ -509,10 +507,6 @@ pub(crate) fn footer_hints(
                 // A connection row is read-only by nature: `Enter` names the
                 // target, and nothing about it connects.
                 Some(SettingsControl::SshHost(_)) => {
-                    hints.push(ShortcutHint::new(&["↵"], "select"));
-                }
-                // A preset row picks the palette it names.
-                Some(SettingsControl::ThemePreset(_)) => {
                     hints.push(ShortcutHint::new(&["↵"], "select"));
                 }
                 // The remaining rows are buttons and fields/entries: Enter
@@ -530,8 +524,7 @@ pub(crate) fn footer_hints(
 fn is_toggle(control: &SettingsControl) -> bool {
     matches!(
         control,
-        SettingsControl::DarkMode
-            | SettingsControl::InvertScroll
+        SettingsControl::InvertScroll
             | SettingsControl::AutoApprove
             | SettingsControl::VimMode
             | SettingsControl::AutoSaveOnClose
@@ -854,8 +847,8 @@ fn build_appearance(
     let controls = order_for(state, page);
     let mut order = FocusOrder::new(state, &controls);
 
-    // The Default base is what the dark-mode switch styles; a preset carries
-    // its own base, and the switch leaves it alone.
+    // The Default base is the built-in palette; the Dark mode command in the
+    // palette styles it. A preset carries its own base and ignores the flag.
     let base_theme = if state.settings_dark_mode {
         Theme::dark()
     } else {
@@ -866,52 +859,33 @@ fn build_appearance(
         .as_deref()
         .and_then(ThemePreset::from_key);
 
+    // The Themes section is the base palette; the Colors section below refines
+    // it. Both are the same page's controls, in the order the ring walks.
     let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min)
-        .with_child(heading(app, "Theme"));
-    // Rows are drawn in the focus order, so the ring walks down the page with
-    // the arrow keys.
-    col = col.with_child(switch_row(
+        .with_child(heading(app, "Themes"));
+    let (name, description, preview) = match current_preset {
+        Some(preset) => (
+            preset.display_name(),
+            preset.description(),
+            Theme::preset(preset),
+        ),
+        None => (
+            "Default",
+            "The built-in base. /theme switches it light or dark",
+            base_theme,
+        ),
+    };
+    let theme_row = theme_stepper(app, name, &preview, actions.on_step_theme.clone());
+    col = col.with_child(setting_row(
         app,
-        "Dark mode",
-        state.settings_dark_mode,
-        actions.on_toggle_dark_mode.clone(),
-        order.take(SettingsControl::DarkMode),
+        "Palette",
+        theme_row,
+        order.take(SettingsControl::ThemeStepper),
     ));
-    if current_preset.is_some() {
-        col = col.with_child(note(
-            app,
-            "A preset sets its own base, so Dark mode applies when Default is selected.",
-        ));
-    }
+    col = col.with_child(note(app, description));
     col = col.with_child(rule());
-
-    // The Themes section is the base palette; the Colors section below refines
-    // it. Both are the same page's controls, in the order the ring walks.
-    col = col.with_child(heading(app, "Themes"));
-    let default_focused = order.take(SettingsControl::ThemePreset(None));
-    col = col.with_child(theme_preset_row(
-        app,
-        None,
-        &base_theme,
-        current_preset.is_none(),
-        default_focused,
-        actions.on_set_theme_preset.clone(),
-    ));
-    col = col.with_child(rule());
-    for preset in ThemePreset::ALL {
-        let focused = order.take(SettingsControl::ThemePreset(Some(preset)));
-        col = col.with_child(theme_preset_row(
-            app,
-            Some(preset),
-            &Theme::preset(preset),
-            current_preset == Some(preset),
-            focused,
-            actions.on_set_theme_preset.clone(),
-        ));
-        col = col.with_child(rule());
-    }
 
     col = col.with_child(heading(app, "Colors"));
     for target in COLOR_TARGET_ORDER {
@@ -1033,22 +1007,40 @@ fn color_swatch(color: ColorU, size: f32) -> Box<dyn Element> {
     .finish()
 }
 
-/// One row of the Themes section: the palette's name, its one-line descriptor
-/// and a background/surface/accent preview. The whole row is the hit target and
-/// the selected row carries the selection band, as the channel rows do.
-fn theme_preset_row(
+/// The Themes stepper: a chevron on each side of the palette the page is on,
+/// its name and a background/surface/accent preview. The arrows are the
+/// mouse's path to the same steps `Left`/`Right` take, and the note under the
+/// row says what the palette looks like.
+fn theme_stepper(
     app: &AppContext,
-    preset: Option<ThemePreset>,
+    name: &str,
     theme: &Theme,
-    selected: bool,
-    focused: bool,
-    on_select: Rc<RefCell<dyn FnMut(Option<ThemePreset>)>>,
+    on_step: Rc<RefCell<dyn FnMut(i32)>>,
 ) -> Box<dyn Element> {
-    let sm = app.theme.spacing_px(SpacingToken::Sm);
     let xs = app.theme.spacing_px(SpacingToken::Xs);
-    let (name, description) = match preset {
-        Some(preset) => (preset.display_name(), preset.description()),
-        None => ("Default", "The built-in base, styled by Dark mode"),
+    let previous = {
+        let on_step = on_step.clone();
+        TopbarButton::new(
+            Icon::new("chevron-left")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(24.0)
+        .with_on_click(move || (on_step.borrow_mut())(-1))
+        .finish()
+    };
+    let next = {
+        let on_step = on_step.clone();
+        TopbarButton::new(
+            Icon::new("chevron-right")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(24.0)
+        .with_on_click(move || (on_step.borrow_mut())(1))
+        .finish()
     };
     let preview = Flex::row()
         .with_main_axis_size(MainAxisSize::Min)
@@ -1058,34 +1050,21 @@ fn theme_preset_row(
         .with_child(color_swatch(theme.color(ColorToken::Surface), 12.0))
         .with_child(color_swatch(theme.color(ColorToken::Accent), 12.0))
         .finish();
-    let row = HoverRow::new(
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(sm)
-            .with_child(
-                Text::new(name)
-                    .with_theme_color(ColorToken::Text, app)
-                    .with_font_size(12.0)
-                    .with_max_lines(1)
-                    .finish(),
-            )
-            .with_child(
-                Text::new(description)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(11.0)
-                    .with_max_lines(1)
-                    .finish(),
-            )
-            .with_child(Spacer::new().finish())
-            .with_child(preview)
-            .finish(),
-    )
-    .with_selected(selected)
-    .with_padding(EdgeInsets::uniform(sm))
-    .with_on_click(move || (on_select.borrow_mut())(preset))
-    .finish();
-    focus_ring(app, row, focused)
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(xs)
+        .with_child(previous)
+        .with_child(
+            Text::new(name)
+                .with_theme_color(ColorToken::Text, app)
+                .with_font_size(12.0)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .with_child(preview)
+        .with_child(next)
+        .finish()
 }
 
 /// Resolve the effective color for a theme channel: the custom override if set,

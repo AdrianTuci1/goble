@@ -623,6 +623,17 @@ pub fn make_actions(
                 }
             }
         }));
+    // The Themes stepper walks Default and the presets in order, wrapping at
+    // both ends. Every step goes through the preset action, so it persists and
+    // drops the overrides exactly as picking a base does.
+    let action_step_theme: Rc<RefCell<dyn FnMut(i32)>> = {
+        let step_state = Rc::clone(&state);
+        let on_preset = action_set_theme_preset.clone();
+        Rc::new(RefCell::new(move |delta: i32| {
+            let next = step_state.borrow().theme_preset_stepped(delta);
+            (on_preset.borrow_mut())(next);
+        }))
+    };
     let action_reset_theme_colors: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
         {
             let mut state = on_reset_theme_colors.borrow_mut();
@@ -893,6 +904,7 @@ pub fn make_actions(
         let on_speed = action_set_scroll_speed.clone();
         let on_font = action_set_font_size.clone();
         let on_mode = action_select_approval_mode.clone();
+        let on_theme = action_step_theme.clone();
         Rc::new(RefCell::new(move |delta: i32| {
             // Read the focused control into a local first: the arms below run
             // the actions that own the value, and those borrow the same state,
@@ -919,6 +931,7 @@ pub fn make_actions(
                     };
                     (on_mode.borrow_mut())(pane_id, next);
                 }
+                Some(SettingsControl::ThemeStepper) => (on_theme.borrow_mut())(delta),
                 _ => step_state.borrow_mut().settings_adjust_control(delta),
             }
         }))
@@ -2361,10 +2374,8 @@ pub fn make_actions(
         })),
         on_settings_activate: Rc::new(RefCell::new({
             let activate_state = Rc::clone(&on_settings_activate);
-            let on_dark = action_toggle_dark_mode.clone();
             let on_invert = action_toggle_invert_scroll.clone();
             let on_theme = action_set_theme_target.clone();
-            let on_preset = action_set_theme_preset.clone();
             let on_reset_theme = action_reset_theme_colors.clone();
             let on_auto = action_toggle_auto_approve.clone();
             let on_vim = action_toggle_vim_mode.clone();
@@ -2379,10 +2390,6 @@ pub fn make_actions(
                 match control {
                     // The controls whose behaviour is already an action run
                     // through it, so a click and the Enter key share one path.
-                    Some(SettingsControl::DarkMode) => {
-                        let next = !activate_state.borrow().settings_dark_mode;
-                        (on_dark.borrow_mut())(next);
-                    }
                     Some(SettingsControl::InvertScroll) => {
                         let next = !activate_state.borrow().settings_invert_scroll;
                         (on_invert.borrow_mut())(next);
@@ -2390,11 +2397,11 @@ pub fn make_actions(
                     Some(SettingsControl::ThemeChannel(target)) => {
                         (on_theme.borrow_mut())(target);
                     }
-                    Some(SettingsControl::ThemePreset(preset)) => (on_preset.borrow_mut())(preset),
                     Some(SettingsControl::ResetThemeColors) => (on_reset_theme.borrow_mut())(),
                     // A stepper advances: the same step the arrow keys take.
                     Some(SettingsControl::ScrollSpeed)
                     | Some(SettingsControl::FontSize)
+                    | Some(SettingsControl::ThemeStepper)
                     | Some(SettingsControl::ApprovalMode) => {
                         (on_step.borrow_mut())(1);
                     }
@@ -3452,6 +3459,7 @@ pub fn make_actions(
         // Picking a preset (or Default) clears the channel overrides, so the
         // palette shown is exactly the one the row names.
         on_set_theme_preset: action_set_theme_preset.clone(),
+        on_step_theme: action_step_theme.clone(),
         on_reset_theme_colors: action_reset_theme_colors.clone(),
         on_save_profile: Rc::new(RefCell::new(move |name: String, email: String| {
             let mut state = on_save_profile.borrow_mut();

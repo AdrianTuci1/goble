@@ -265,29 +265,28 @@ impl Default for Theme {
 /// override any channel it edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ThemePreset {
-    GrokNight,
-    GrokDay,
+    GobleNight,
+    GobleDay,
     TokyoNight,
     RosePineMoon,
     OscuraMidnight,
 }
 
 impl ThemePreset {
-    /// The presets, in the order the Themes section draws them.
+    /// The presets, in the order the Themes stepper walks them.
     pub const ALL: [ThemePreset; 5] = [
-        ThemePreset::GrokNight,
-        ThemePreset::GrokDay,
+        ThemePreset::GobleNight,
+        ThemePreset::GobleDay,
         ThemePreset::TokyoNight,
         ThemePreset::RosePineMoon,
         ThemePreset::OscuraMidnight,
     ];
 
-    /// The key `[theme] preset` stores; the same spelling grok's own theme
-    /// menu uses.
+    /// The key `[theme] preset` stores.
     pub const fn key(self) -> &'static str {
         match self {
-            ThemePreset::GrokNight => "groknight",
-            ThemePreset::GrokDay => "grokday",
+            ThemePreset::GobleNight => "goble-night",
+            ThemePreset::GobleDay => "goble-day",
             ThemePreset::TokyoNight => "tokyonight",
             ThemePreset::RosePineMoon => "rosepine-moon",
             ThemePreset::OscuraMidnight => "oscura-midnight",
@@ -297,14 +296,20 @@ impl ThemePreset {
     /// Read a stored key back. An unknown key is not a preset, so the caller
     /// keeps its Default base rather than failing the whole config.
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|preset| preset.key() == key)
+        match key {
+            // The first spelling the two Goble palettes shipped with, kept so
+            // a config written before the rename still resolves.
+            "groknight" => Some(Self::GobleNight),
+            "grokday" => Some(Self::GobleDay),
+            _ => Self::ALL.into_iter().find(|preset| preset.key() == key),
+        }
     }
 
-    /// The name the selector shows, as grok's theme menu spells it.
+    /// The name the selector shows.
     pub const fn display_name(self) -> &'static str {
         match self {
-            ThemePreset::GrokNight => "Grok Night",
-            ThemePreset::GrokDay => "Grok Day",
+            ThemePreset::GobleNight => "Goble Night",
+            ThemePreset::GobleDay => "Goble Day",
             ThemePreset::TokyoNight => "Tokyo Night",
             ThemePreset::RosePineMoon => "Rose Pine Moon",
             ThemePreset::OscuraMidnight => "Oscura Midnight",
@@ -314,8 +319,8 @@ impl ThemePreset {
     /// One line saying what the palette looks like.
     pub const fn description(self) -> &'static str {
         match self {
-            ThemePreset::GrokNight => "Neutral gray, Tokyo Night accents",
-            ThemePreset::GrokDay => "The same accents on a light gray base",
+            ThemePreset::GobleNight => "Neutral gray, Tokyo Night accents",
+            ThemePreset::GobleDay => "The same accents on a light gray base",
             ThemePreset::TokyoNight => "Deep navy with blue, violet and teal",
             ThemePreset::RosePineMoon => "Muted rose, iris and pine",
             ThemePreset::OscuraMidnight => "Near-black with purple accents",
@@ -327,7 +332,7 @@ impl ThemePreset {
         match self {
             // groknight.rs: BG_STORM, bg_dark, BG_HIGHLIGHT; the TokyoNight
             // Night accents grok pairs with its neutral gray ramp.
-            ThemePreset::GrokNight => ColorScheme {
+            ThemePreset::GobleNight => ColorScheme {
                 bg: ColorU::hex(0x141414),
                 surface: ColorU::hex(0x1c1c1c),
                 surface_raised: ColorU::hex(0x242424),
@@ -348,7 +353,7 @@ impl ThemePreset {
             },
             // grokday.rs: the light counterpart, same hue family deepened for
             // contrast on #eeeeee.
-            ThemePreset::GrokDay => ColorScheme {
+            ThemePreset::GobleDay => ColorScheme {
                 bg: ColorU::hex(0xeeeeee),
                 surface: ColorU::hex(0xe4e4e4),
                 surface_raised: ColorU::hex(0xdedede),
@@ -436,8 +441,8 @@ impl ThemePreset {
     /// The palette's accent, which is also its badge hue in every arm.
     pub const fn accent(self) -> ColorU {
         match self {
-            ThemePreset::GrokNight => ColorU::hex(0xbb9af7),
-            ThemePreset::GrokDay => ColorU::hex(0x7d4bc6),
+            ThemePreset::GobleNight => ColorU::hex(0xbb9af7),
+            ThemePreset::GobleDay => ColorU::hex(0x7d4bc6),
             ThemePreset::TokyoNight => ColorU::hex(0x7aa2f7),
             ThemePreset::RosePineMoon => ColorU::hex(0xc4a7e7),
             ThemePreset::OscuraMidnight => ColorU::hex(0x9b7ece),

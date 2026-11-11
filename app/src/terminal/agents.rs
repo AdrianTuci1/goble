@@ -93,6 +93,9 @@ impl TuiAgent {
     /// Detect a harness from a command line through the shared catalog. Wrapper
     /// programs and paths are normalised by the catalog, so this covers every
     /// Paseo harness and not just the ones with a dedicated variant.
+    ///
+    /// Any token counts, which is the loose read a resume command or a menu
+    /// needs. [`Self::launched_by`] is the strict read of what a line starts.
     pub fn detect(command: &str) -> Option<TuiAgent> {
         let spec = detect_harness(command)?;
         Some(match spec.id {
@@ -108,6 +111,21 @@ impl TuiAgent {
             "antigravity" => TuiAgent::Antigravity,
             _ => TuiAgent::Catalog(spec),
         })
+    }
+
+    /// The harness a command line *starts*: the one its program names.
+    /// Wrappers pass on to the program after them, so `sudo npx codex` starts
+    /// Codex, while a harness named as an argument — `echo codex`, `man
+    /// claude` — is text and starts nothing.
+    ///
+    /// This is the read every surface uses to decide whether a line opens a
+    /// harness's agent view; [`Self::detect`] answers the looser question of
+    /// whether the line mentions one.
+    pub fn launched_by(command: &str) -> Option<TuiAgent> {
+        let program = command.split_whitespace().take(8).find(|token| {
+            !token.starts_with('-') && !is_assignment(token) && !passes_to_program(token)
+        })?;
+        TuiAgent::detect(program)
     }
 
     /// All agents with a dedicated variant, for building a launch menu.
@@ -160,6 +178,13 @@ pub(super) fn program_to_check(command: &str) -> Option<&str> {
 /// Whether `token` is a wrapper that runs the program after it.
 fn is_wrapper(token: &str) -> bool {
     matches!(token, "sudo" | "command" | "exec" | "env")
+}
+
+/// Whether `token` runs the token after it instead of being a program of its
+/// own: a shell wrapper, or a package runner fetching the package the line
+/// names.
+fn passes_to_program(token: &str) -> bool {
+    is_wrapper(token) || matches!(token, "npx" | "bunx" | "uvx" | "pnpm" | "yarn")
 }
 
 /// Whether `token` is a shell variable assignment (`FOO=1`).

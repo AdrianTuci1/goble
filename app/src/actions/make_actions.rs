@@ -240,6 +240,7 @@ pub fn make_actions(
     let on_select_conversation = Rc::clone(&state);
     let on_select_tab = Rc::clone(&state);
     let on_composer_change = Rc::clone(&state);
+    let desktop_composer = desktop.clone();
     let on_slash_move = Rc::clone(&state);
     let on_slash_close = Rc::clone(&state);
     let on_slash_dismiss = Rc::clone(&state);
@@ -1049,11 +1050,27 @@ pub fn make_actions(
         })),
         on_composer_change: Rc::new(RefCell::new(move |value: String| {
             let mut state = on_composer_change.borrow_mut();
+            let pane_id = state.active_pane_id;
+            let typing = !value.trim().is_empty();
             state.set_active_pane_draft(value);
+            // The rich input belongs to the agent whichever surface the pane
+            // was on: the first character typed at a shell's bar opens that
+            // pane's harness, and the draft comes with it into the agent
+            // view's composer. Esc still returns the pane to its shell.
+            if typing
+                && state.pane_is_terminal(pane_id)
+                && !state.pane_controls(pane_id).harness_mode
+            {
+                open_pane_harness(&mut state, pane_id, desktop_composer.as_ref());
+                if state.pane_controls(pane_id).harness_mode {
+                    // The switch keeps the keys: the agent composer is the
+                    // surface that now owns the draft being typed.
+                    state.composer_focused = true;
+                }
+            }
             // The draft is the slash menu's query, so a new query starts the
             // menu's selection over at the first row — and typing brings the
             // menu back after Escape put it away.
-            let pane_id = state.active_pane_id;
             *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
             *state
                 .pane_controls_mut(pane_id)
@@ -3020,7 +3037,7 @@ pub fn make_actions(
                 return;
             }
             if let Some(spec) =
-                crate::terminal::TuiAgent::detect(&line).and_then(|agent| agent.spec())
+                crate::terminal::TuiAgent::launched_by(&line).and_then(|agent| agent.spec())
             {
                 state.bind_pane_harness_chat(pane_id, spec, desktop_shell_line.as_deref());
                 state.open_harness_agent_view(pane_id);

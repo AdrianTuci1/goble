@@ -31,6 +31,28 @@ fn detection_skips_wrappers_and_paths() {
     assert_eq!(TuiAgent::detect("bunx gemini"), Some(TuiAgent::Gemini));
 }
 
+/// Whether a line turns into a harness's agent view is read from the program
+/// the line runs: a harness named as an argument is text the shell handles.
+#[test]
+fn launching_reads_the_program_the_line_runs() {
+    assert_eq!(TuiAgent::launched_by("codex"), Some(TuiAgent::Codex));
+    assert_eq!(
+        TuiAgent::launched_by("codex --full-auto"),
+        Some(TuiAgent::Codex)
+    );
+    assert_eq!(TuiAgent::launched_by("sudo npx codex"), Some(TuiAgent::Codex));
+    assert_eq!(TuiAgent::launched_by("env FOO=1 claude"), Some(TuiAgent::Claude));
+    assert_eq!(
+        TuiAgent::launched_by("/usr/local/bin/hermes --resume x"),
+        Some(TuiAgent::Hermes)
+    );
+    assert_eq!(TuiAgent::launched_by("echo codex"), None);
+    assert_eq!(TuiAgent::launched_by("man claude"), None);
+    assert_eq!(TuiAgent::launched_by("grep -r claude src"), None);
+    assert_eq!(TuiAgent::launched_by("ls"), None);
+    assert_eq!(TuiAgent::launched_by(""), None);
+}
+
 #[test]
 fn every_catalog_harness_is_recognised_by_its_command() {
     use goble_core::harness::HARNESSES;

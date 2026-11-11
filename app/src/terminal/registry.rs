@@ -487,7 +487,9 @@ impl TerminalRegistry {
         // Shell mode even while its agent is still running.
         if running
             .as_deref()
-            .is_some_and(|command| TuiAgent::detect(command).is_some_and(TuiAgent::owns_screen))
+            .is_some_and(|command| {
+                TuiAgent::launched_by(command).is_some_and(TuiAgent::owns_screen)
+            })
         {
             return true;
         }
@@ -706,7 +708,7 @@ impl TerminalRegistry {
     /// the program. A line whose program is missing is not an agent line — the
     /// shell runs it and prints its own `command not found`.
     fn detected_agent(&self, command: &str) -> Option<TuiAgent> {
-        TuiAgent::detect(command)
+        TuiAgent::launched_by(command)
             .filter(|agent| agent.owns_screen())
             .filter(|_| self.command_exists(command))
     }

@@ -256,21 +256,17 @@ pub(crate) fn run_terminal_command(
         .get(&pane_id)
         .map(|s| s.path.clone())
         .unwrap_or_default();
-    // A `!` line that names a CLI harness inside a conversation opens that
-    // harness's agent view instead of starting its TUI in the conversation's
-    // shell. The TUI would be a full-screen program inside the transcript with
-    // no way to leave it, and the agent view is the surface goble runs a
-    // harness in. A harness whose program is not installed runs in the
-    // conversation's shell like any other line, so the shell's own
-    // `command not found` reaches the user instead of a surface for a program
-    // that is not there.
-    let harness_spec = match conversation {
-        Some(_) if crate::terminal::command_installed(text) => {
-            crate::terminal::TuiAgent::detect(text)
-                .filter(|agent| agent.owns_screen())
-                .and_then(|agent| agent.spec())
-        }
-        _ => None,
+    // A line that names a CLI harness opens that harness's agent view: the
+    // TUI never starts in a pane's shell, on either surface, so Esc back to
+    // the terminal shows the shell rather than an agent's screen. The agent
+    // view is the surface goble runs a harness in, and the harness the line
+    // names gets a conversation of its own. A harness whose program is not
+    // installed stays a shell line, so the shell's own `command not found`
+    // reaches the user instead of a surface for a program that is not there.
+    let harness_spec = if crate::terminal::command_installed(text) {
+        crate::terminal::TuiAgent::launched_by(text).and_then(|agent| agent.spec())
+    } else {
+        None
     };
     if let Some(spec) = harness_spec {
         let already = conversation
@@ -308,7 +304,7 @@ pub(crate) fn run_terminal_command(
     };
     let leaves_the_shell =
         conversation.is_none() && goble_core::ssh_command::returns_to_local_shell(text);
-    let launched = {
+    {
         let mut reg = state.terminal.borrow_mut();
         if let Some(session) = ssh_session.clone() {
             reg.set_ssh_session(pane_id, Some(session));
@@ -320,32 +316,20 @@ pub(crate) fn run_terminal_command(
             // blocks, and the pane's terminal is untouched.
             Some(conversation) => {
                 reg.run_agent_command(pane_id, &cwd, conversation, text);
-                None
             }
-            // The pane's shell: a line naming a TUI agent flips the pane
-            // native-first before the agent paints, exactly as the same line
-            // typed at the grid prompt does.
+            // The pane's shell: the line runs in the shell's own blocks. A
+            // line naming a harness never reaches here — it opened the
+            // harness's agent view above, so no TUI is started in the shell.
             None => {
-                let agent = reg.note_command(pane_id, text);
+                reg.note_command(pane_id, text);
                 reg.ensure_session(pane_id, &cwd);
                 if let Some(session) = reg.sessions.get_mut(&pane_id) {
                     let mut line = text.trim_end().to_string();
                     line.push('\n');
                     session.write(line.as_bytes());
                 }
-                agent
             }
         }
-    };
-    // A harness the user just launched is a conversation of its own: it takes a
-    // sidebar chat (and the tab's mark) named for it, so a CLI agent started
-    // inside the app is not invisible in the sidebar until its pane is opened
-    // again. The launch then lands in that conversation's agent view: the
-    // harness is worked through goble's agent surface, with its own TUI kept in
-    // the pty behind Esc.
-    if let Some(spec) = launched.and_then(|agent| agent.spec()) {
-        state.bind_pane_harness_chat(pane_id, spec, desktop);
-        state.open_harness_agent_view(pane_id);
     }
     // A typed `ssh` line and a saved-host pane share one binding record: the
     // line clears a saved host's name (it named its own target), and `exit`

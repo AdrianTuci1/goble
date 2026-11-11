@@ -430,6 +430,17 @@ impl TerminalView {
                 let submitted = (bytes.as_slice() == b"\r")
                     .then(|| self.terminal.borrow().input(self.pane_id))
                     .filter(|line| !line.trim().is_empty());
+                // A line naming a CLI harness never starts that harness in the
+                // pane's shell: the agent view opens instead, and the shell's
+                // pending line is cleared so the same text is not left at its
+                // prompt. The TUI therefore never runs behind the terminal
+                // Esc returns to.
+                let harness_line = bytes.as_slice() == b"\r"
+                    && !self.program_owns_screen()
+                    && submitted.as_deref().is_some_and(|line| {
+                        crate::terminal::command_installed(line)
+                            && crate::terminal::TuiAgent::launched_by(line).is_some()
+                    });
                 {
                     let mut reg = self.terminal.borrow_mut();
                     // A plain Enter submits the current input line. If it names
@@ -437,11 +448,15 @@ impl TerminalView {
                     // mode so the agent takes over and keeps its native input.
                     // This must run before `update_input_mirror` clears the
                     // line on Enter.
-                    if bytes.as_slice() == b"\r" {
+                    if bytes.as_slice() == b"\r" && !harness_line {
                         reg.update_mode_from_input(self.pane_id);
                     }
                     if let Some(session) = reg.sessions.get_mut(&self.pane_id) {
-                        session.write(&bytes);
+                        if harness_line {
+                            session.write(b"\x15");
+                        } else {
+                            session.write(&bytes);
+                        }
                     }
                     let input = reg.input.entry(self.pane_id).or_default();
                     update_input_mirror(input, key, modifiers);

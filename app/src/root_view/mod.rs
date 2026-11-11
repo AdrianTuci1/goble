@@ -77,7 +77,7 @@ pub struct RootView {
     diff_files: Rc<RefCell<DiffFileCache>>,
     /// The callbacks built on the last rebuild; kept here so the root can
     /// dispatch global keyboard shortcuts (split/space) before the tree does.
-    actions: Option<UiActions>,
+    pub(crate) actions: Option<UiActions>,
     /// The control socket's server and its UI-command receiver. The server's
     /// handler forwards non-PTY verbs here; [`Self::process_control_requests`]
     /// answers them on this thread, once per frame.

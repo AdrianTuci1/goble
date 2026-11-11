@@ -555,6 +555,44 @@ fn paint_tool_calls_with_run_open(
     paint_tool_calls_with_fold_map(calls, fold)
 }
 
+/// Paint `bubble` with the pointer resting on the row whose text starts with
+/// `prefix`. Hover is written while a row paints, so the frame that reads it
+/// is the next one: this lays the tree out and paints twice, and returns the
+/// second frame's commands.
+fn paint_with_pointer_over(
+    bubble: &mut ChatMessageBubble,
+    app: &AppContext,
+    prefix: &str,
+) -> Vec<RenderCommand> {
+    let constraint = SizeConstraint::loose(vec2f(400.0, 400.0));
+    bubble.layout(constraint, &mut LayoutContext::default(), app);
+    let mut first = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut first, app);
+    let origin = first
+        .renderer
+        .take()
+        .and_then(|renderer| {
+            renderer.commands().iter().find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text.starts_with(prefix) => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| panic!("the row {prefix:?} is drawn"));
+
+    bubble.layout(constraint, &mut LayoutContext::default(), app);
+    let mut pointer = PaintContext::new(Renderer::new());
+    pointer.cursor_inside = true;
+    pointer.cursor_position = vec2f(origin.x + 4.0, origin.y + 4.0);
+    bubble.paint(vec2f(0.0, 0.0), &mut pointer, app);
+    pointer
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec())
+        .unwrap_or_default()
+}
+
 fn paint_tool_calls_with_fold_map(
     calls: Vec<ToolCall>,
     fold: HashMap<String, ToolDisplayMode>,

@@ -469,11 +469,15 @@ fn verb_group_header(
     key: &str,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
     hover: &Rc<RefCell<Option<String>>>,
+    member_hovered: bool,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
     let open = verb_group_open(fold, key);
     let hovered = hover.borrow().as_deref() == Some(key);
-    let active = open || hovered;
+    // The header carries the arrow whenever the block reads as selected: open,
+    // under the pointer, or with one of its member rows under it — the same
+    // states the bracket frames.
+    let active = open || hovered || member_hovered;
     let base = app.theme.color(if active {
         ColorToken::Text
     } else {
@@ -634,8 +638,10 @@ pub(super) fn build_tool_call_rows(
                 sub_agent_model,
                 app,
             );
-            let hovered = hover.borrow().as_deref() == Some(key.as_str());
-            let element = ToolBracket::new(element, hovered).finish();
+            // A call with its body open reads as selected, so it keeps the rail
+            // the group's members get; a collapsed one is framed by hover only.
+            let element =
+                ToolBracket::new(element, !collapsed, hover.clone(), vec![key]).finish();
             column = push(column, element, collapsed);
             index += 1;
             continue;
@@ -666,12 +672,28 @@ pub(super) fn build_tool_call_rows(
 
         let group_key = verb_group_key(tool_calls, start);
         let open = verb_group_open(fold, &group_key);
+        let member_keys: Vec<String> = (start..end)
+            .map(|member| tool_fold_key(&tool_calls[member], member))
+            .collect();
+        let member_hovered = {
+            let hovered = hover.borrow();
+            let hovered = hovered.as_deref();
+            member_keys
+                .iter()
+                .any(|key| hovered == Some(key.as_str()))
+        };
         let (label, _running, failed) = verb_group_label(&tool_calls[start..end], start, fold);
         let mut group = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0)
             .with_child(verb_group_header(
-                &label, failed, &group_key, fold, hover, app,
+                &label,
+                failed,
+                &group_key,
+                fold,
+                hover,
+                member_hovered,
+                app,
             ));
         // Folded, a run shows only its header — except for a member the user
         // already opened, which grok-build keeps on screen and transparent.
@@ -701,15 +723,9 @@ pub(super) fn build_tool_call_rows(
         // The block is bracketed in the free margin beside the text — both
         // strokes, no inset — while the group is open or the pointer is on any
         // of its rows. The label carries no punctuation of its own.
-        let hovered = {
-            let hovered = hover.borrow();
-            let hovered = hovered.as_deref();
-            hovered == Some(group_key.as_str())
-                || (start..end).any(|member| {
-                    hovered == Some(tool_fold_key(&tool_calls[member], member).as_str())
-                })
-        };
-        let group = ToolBracket::new(group.finish(), open || hovered).finish();
+        let mut hover_keys = vec![group_key.clone()];
+        hover_keys.extend(member_keys);
+        let group = ToolBracket::new(group.finish(), open, hover.clone(), hover_keys).finish();
         column = push(column, group, !open);
         index = end.max(start + 1);
     }
@@ -810,15 +826,18 @@ pub(super) fn tool_call_header(
             .with_weight(weight)
     };
     // Every call wears the diamond, whatever its family or fold; the pointer
-    // swaps it for the arrow in the same two columns.
+    // swaps it for the arrow in the same two columns. A row the user opened
+    // keeps the arrow with the pointer off it: the open body is read as the
+    // row's selected state, not as a closed row beside it.
     let hovered = hover.borrow().as_deref() == Some(key);
-    let mark_color = if chain_open || hovered {
+    let active = hovered || mode != ToolDisplayMode::Collapsed;
+    let mark_color = if chain_open || active {
         ColorToken::Text
     } else {
         ColorToken::Muted
     };
     let mut spans = vec![run(
-        if hovered { HOVER_ARROW } else { TOOL_MARK }.to_string(),
+        if active { HOVER_ARROW } else { TOOL_MARK }.to_string(),
         app.theme.color(mark_color),
         FontWeight::Regular,
     )];

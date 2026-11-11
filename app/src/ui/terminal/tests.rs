@@ -224,8 +224,8 @@ fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
     );
 
     // The same command the agent ran is not that block: the transcript
-    // draws the row that names it and then its output, with no block
-    // prompt line and no block header of its own.
+    // draws the row that names it and then its output, with the tool row's
+    // own `Run` verb rather than the block's header.
     let call = ToolCall {
         id: "call-1".to_string(),
         name: "run_command".to_string(),
@@ -253,8 +253,8 @@ fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
         "the output is drawn under the row, got {bubble_runs:?}"
     );
     assert!(
-        !bubble_runs.iter().any(|(text, _, _, _)| text == "❯ "),
-        "the agent's call carries no block prompt line, got {bubble_runs:?}"
+        bubble_runs.iter().any(|(text, _, _, _)| text == "Run "),
+        "the row names the command as a tool call, got {bubble_runs:?}"
     );
     assert!(
         bubble_runs.iter().all(|(_, _, _, size)| *size == 13.0),

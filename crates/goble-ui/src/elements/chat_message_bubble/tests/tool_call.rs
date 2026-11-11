@@ -6,7 +6,7 @@ use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatRole, ToolDisplayMode};
 use crate::elements::TerminalFilter;
 use crate::elements::{terminal_block, AppContext, TerminalData, TerminalStatus};
-use crate::geometry::vec2f;
+use crate::geometry::{vec2f, Vector2F};
 use crate::render::RenderCommand;
 use crate::test_util::render_element;
 use crate::platform::text_atlas::FontWeight;
@@ -137,7 +137,7 @@ fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
 
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "List Entities"),
+        texts.iter().any(|t| t.ends_with("List Entities")),
         "the tool name is drawn as words, got {texts:?}"
     );
     assert!(
@@ -146,7 +146,7 @@ fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
     );
     assert_eq!(
         drawn_row_texts(&commands),
-        vec!["◆ List Entities agent".to_string(), "2 entities".to_string()],
+        vec!["❯ List Entities agent".to_string(), "2 entities".to_string()],
         "the row and its result are the whole body, got {texts:?}"
     );
     assert!(
@@ -346,14 +346,20 @@ fn a_users_command_is_still_the_terminal_block() {
         TerminalStatus::Success,
     );
     let mut block = terminal_block(&data, TerminalFilter::default(), None, None);
-    let block_runs = text_runs(&render_element(&mut block, vec2f(600.0, 200.0), &app));
+    let block_commands = render_element(&mut block, vec2f(600.0, 200.0), &app);
+    let block_runs = text_runs(&block_commands);
     assert!(
         block_runs.iter().any(|(text, _, _, _)| text == "❯ "),
         "the pane's block draws its own prompt line, got {block_runs:?}"
     );
+    let block_rows = drawn_row_texts(&block_commands);
+    assert!(
+        block_rows.iter().any(|row| row == "cargo test -p goble-ui"),
+        "the pane's block heads the command with its own title row, got {block_rows:?}"
+    );
 
-    // An agent's call to the same command has no block, so it draws no prompt
-    // line and no block title: the difference is the whole point.
+    // An agent's call to the same command carries no block chrome: it draws its
+    // tool row, with no header repeating the command.
     let (commands, _) = paint_tool_calls_with_fold(
         vec![call(
             "run_command",
@@ -363,10 +369,21 @@ fn a_users_command_is_still_the_terminal_block() {
         )],
         Some(ToolDisplayMode::Expanded),
     );
-    let transcript_runs = text_runs(&commands);
+    let transcript_rows = drawn_row_texts(&commands);
     assert!(
-        !transcript_runs.iter().any(|(text, _, _, _)| text == "❯ "),
-        "an agent's call draws no block prompt, got {transcript_runs:?}"
+        transcript_rows
+            .iter()
+            .any(|row| row == "❯ Run cargo test -p goble-ui"),
+        "an agent's call draws its own tool row, got {transcript_rows:?}"
+    );
+    assert_eq!(
+        transcript_rows
+            .iter()
+            .filter(|row| row.as_str() == "cargo test -p goble-ui")
+            .count(),
+        0,
+        "an agent's call draws no terminal header repeating the command, got \
+         {transcript_rows:?}"
     );
 }
 
@@ -1182,20 +1199,16 @@ fn a_tool_block_is_bracketed_without_moving_its_words() {
             Some("fn main() {}\n"),
         )
     };
-    for (label, fold, hovered) in [
-        ("folded and resting", HashMap::new(), None),
-        (
-            "folded under the pointer",
-            HashMap::new(),
-            Some(tool_fold_key(&read(), 0)),
-        ),
+    for (label, fold, pointer) in [
+        ("folded and resting", HashMap::new(), false),
+        ("folded under the pointer", HashMap::new(), true),
         (
             "opened",
             HashMap::from([(
                 format!("verb-group:{}", tool_fold_key(&read(), 0)),
                 ToolDisplayMode::Expanded,
             )]),
-            None,
+            false,
         ),
     ] {
         let mut bubble = ChatMessageBubble::new(
@@ -1204,19 +1217,23 @@ fn a_tool_block_is_bracketed_without_moving_its_words() {
         )
         .with_tool_calls(vec![read()])
         .with_tool_fold(Rc::new(RefCell::new(fold)))
-        .with_tool_hover(Rc::new(RefCell::new(hovered)));
-        bubble.layout(
-            SizeConstraint::loose(vec2f(400.0, 400.0)),
-            &mut LayoutContext::default(),
-            &app,
-        );
-        let mut paint_ctx = PaintContext::new(Renderer::new());
-        bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-        let commands = paint_ctx
-            .renderer
-            .take()
-            .map(|renderer| renderer.commands().to_vec())
-            .unwrap_or_default();
+        .with_tool_hover(Rc::new(RefCell::new(None)));
+        let commands = if pointer {
+            paint_with_pointer_over(&mut bubble, &app, "◈ ")
+        } else {
+            bubble.layout(
+                SizeConstraint::loose(vec2f(400.0, 400.0)),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            let mut paint_ctx = PaintContext::new(Renderer::new());
+            bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+            paint_ctx
+                .renderer
+                .take()
+                .map(|renderer| renderer.commands().to_vec())
+                .unwrap_or_default()
+        };
 
         let origin_x = |prefix: &str| {
             commands.iter().find_map(|command| match command {
@@ -1227,7 +1244,8 @@ fn a_tool_block_is_bracketed_without_moving_its_words() {
             })
         };
         let prose = origin_x("Prose starts here.").expect("the prose is drawn");
-        let row_start = origin_x("◈ ")
+        let row_start = origin_x("❯ ")
+            .or_else(|| origin_x("◈ "))
             .or_else(|| origin_x("◆ "))
             .unwrap_or_else(|| {
                 panic!("{label}: the run's own header is drawn: {:?}", drawn_texts(&commands))
@@ -1275,39 +1293,13 @@ fn a_tool_block_is_bracketed_without_moving_its_words() {
     }
 }
 
-/// A call that stands on its own — never folded into a run — is bracketed only
-/// under the pointer.
+/// A call that stands on its own is framed while its body is open; a collapsed
+/// one is framed only under the pointer, so the rail follows the selection.
 #[test]
-fn a_standalone_row_is_bracketed_only_under_the_pointer() {
+fn a_standalone_row_is_bracketed_while_open_or_under_the_pointer() {
     let app = AppContext::default();
-    let read = call(
-        "read_file",
-        r#"{"path":"src/lib.rs"}"#,
-        ToolCallStatus::Finished,
-        Some("fn main() {}"),
-    );
-    let key = tool_fold_key(&read, 0);
-    for hovered in [None, Some(key.clone())] {
-        let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
-            .with_tool_calls(vec![read.clone()])
-            .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(
-                key.clone(),
-                ToolDisplayMode::Expanded,
-            )]))))
-            .with_tool_hover(Rc::new(RefCell::new(hovered.clone())));
-        bubble.layout(
-            SizeConstraint::loose(vec2f(400.0, 400.0)),
-            &mut LayoutContext::default(),
-            &app,
-        );
-        let mut paint_ctx = PaintContext::new(Renderer::new());
-        bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-        let commands = paint_ctx
-            .renderer
-            .take()
-            .map(|renderer| renderer.commands().to_vec())
-            .unwrap_or_default();
-        let brackets = commands
+    let brackets = |commands: &[RenderCommand]| {
+        commands
             .iter()
             .filter(|command| {
                 matches!(
@@ -1318,13 +1310,190 @@ fn a_standalone_row_is_bracketed_only_under_the_pointer() {
                             && rect.size.height > 0.0
                 )
             })
-            .count();
+            .count()
+    };
+    let paint = |bubble: &mut ChatMessageBubble, pointer: bool, prefix: &str| {
+        if pointer {
+            return paint_with_pointer_over(bubble, &app, prefix);
+        }
+        bubble.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        paint_ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default()
+    };
+    let bubble = |call: ToolCall, mode: ToolDisplayMode| {
+        let key = tool_fold_key(&call, 0);
+        ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+            .with_tool_calls(vec![call])
+            .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(key, mode)]))))
+            .with_tool_hover(Rc::new(RefCell::new(None)))
+    };
+
+    let read = call(
+        "read_file",
+        r#"{"path":"src/lib.rs"}"#,
+        ToolCallStatus::Finished,
+        Some("fn main() {}"),
+    );
+    for (label, pointer) in [("away", false), ("under the pointer", true)] {
+        let mut open = bubble(read.clone(), ToolDisplayMode::Expanded);
+        let commands = paint(&mut open, pointer, "❯ ");
         assert_eq!(
-            brackets,
-            if hovered.is_some() { 2 } else { 0 },
-            "a stand-alone row is bracketed only under the pointer"
+            brackets(&commands),
+            2,
+            "an opened row keeps its rail with the pointer {label}"
         );
     }
+
+    // A spawn ends a chain and stays on its own row, so it can be collapsed.
+    let spawn = call(
+        "run_agent",
+        r#"{"description":"map the call sites"}"#,
+        ToolCallStatus::Finished,
+        Some("done"),
+    );
+    for (label, pointer, expected) in [
+        ("away", false, 0),
+        ("under the pointer", true, 2),
+    ] {
+        let mut collapsed = bubble(spawn.clone(), ToolDisplayMode::Collapsed);
+        let commands = paint(&mut collapsed, pointer, "◆ ");
+        assert_eq!(
+            brackets(&commands),
+            expected,
+            "a collapsed stand-alone row is framed only under the pointer ({label})"
+        );
+    }
+}
+
+/// An opened row reads as selected: its mark stays the arrow and reads white
+/// while the pointer is elsewhere, in the partial and the full open state.
+#[test]
+fn an_open_row_keeps_the_arrow_in_place_of_the_diamond() {
+    let app = AppContext::default();
+    for mode in [ToolDisplayMode::Truncated, ToolDisplayMode::Expanded] {
+        let (commands, _) = paint_tool_calls_with_fold(
+            vec![call(
+                "read_file",
+                r#"{"path":"src/lib.rs"}"#,
+                ToolCallStatus::Finished,
+                Some("fn main() {}"),
+            )],
+            Some(mode),
+        );
+        let runs = text_runs(&commands);
+        let mark = runs
+            .iter()
+            .find(|(text, ..)| text == "❯ " || text == "◆ ")
+            .expect("the row draws its mark");
+        assert_eq!(
+            mark.0, "❯ ",
+            "an opened row swaps the diamond for the arrow ({mode:?})"
+        );
+        assert_eq!(
+            mark.1,
+            app.theme.color(ColorToken::Text),
+            "an opened row reads white ({mode:?})"
+        );
+    }
+}
+
+/// The rail is decided while the block paints: a hover cell still naming the
+/// row from an earlier frame cannot keep the strokes on screen once the pointer
+/// has left.
+#[test]
+fn a_closed_rows_rail_leaves_with_the_pointer() {
+    let app = AppContext::default();
+    let spawn = call(
+        "run_agent",
+        r#"{"description":"map the call sites"}"#,
+        ToolCallStatus::Finished,
+        Some("done"),
+    );
+    let key = tool_fold_key(&spawn, 0);
+
+    let mut probe = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![spawn.clone()])
+        .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(
+            key.clone(),
+            ToolDisplayMode::Collapsed,
+        )]))))
+        .with_tool_hover(Rc::new(RefCell::new(None)));
+    probe.layout(
+        SizeConstraint::loose(vec2f(400.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut ctx = PaintContext::new(Renderer::new());
+    probe.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+    let origin = ctx
+        .renderer
+        .take()
+        .and_then(|renderer| {
+            renderer.commands().iter().find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text.starts_with("◆ ") => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+        })
+        .expect("the collapsed row draws its diamond");
+
+    let strokes = |cursor: Vector2F| {
+        let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+            .with_tool_calls(vec![spawn.clone()])
+            .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(
+                key.clone(),
+                ToolDisplayMode::Collapsed,
+            )]))))
+            .with_tool_hover(Rc::new(RefCell::new(Some(key.clone()))));
+        bubble.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = cursor;
+        bubble.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        ctx.renderer
+            .take()
+            .map(|renderer| {
+                renderer
+                    .commands()
+                    .iter()
+                    .filter(|command| {
+                        matches!(
+                            command,
+                            RenderCommand::FillRect { rect, color, .. }
+                                if *color == app.theme.color(ColorToken::Muted)
+                                    && rect.size.width <= 2.5
+                                    && rect.size.height > 0.0
+                        )
+                    })
+                    .count()
+            })
+            .unwrap_or_default()
+    };
+
+    assert_eq!(
+        strokes(vec2f(origin.x + 4.0, origin.y + 4.0)),
+        2,
+        "the row is framed while the pointer is on it"
+    );
+    assert_eq!(
+        strokes(vec2f(origin.x + 4.0, origin.y + 220.0)),
+        0,
+        "the rail cannot outlive the pointer"
+    );
 }
 
 /// A call under the pointer swaps its diamond for the arrow and reads white,
@@ -1666,7 +1835,7 @@ fn an_opened_member_keeps_its_body_inside_the_folded_run() {
         .find(|row| row.contains("src/b.rs"))
         .unwrap_or_else(|| panic!("the opened member draws its row, got {rows:?}"));
     assert!(
-        member.starts_with("◆ Read "),
+        member.starts_with("❯ Read "),
         "the opened member draws its own marked row inside the folded chain, got {member:?}"
     );
     assert!(

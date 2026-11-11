@@ -30,7 +30,7 @@ use super::pane_ops::{
     close_space_at, ensure_pane_hover, open_diff_pane, open_file_pane, open_pane_harness,
     open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
 };
-use super::prompt::{run_terminal_command, send_agent_prompt};
+use super::prompt::{run_terminal_command, send_agent_prompt, send_sub_agent_prompt};
 use crate::ui::pickers::{change_directory_command, checkout_branch_command};
 
 /// Answer the question the pane's turn is suspended on, resuming it through the
@@ -264,6 +264,9 @@ pub fn make_actions(
     let on_open_sub_agent = Rc::clone(&state);
     let on_stop_sub_agent = Rc::clone(&state);
     let on_close_sub_agent = Rc::clone(&state);
+    let on_send_sub_agent_message = Rc::clone(&state);
+    let desktop_send_sub_agent_message = desktop.clone();
+    let media_send_sub_agent_message = Rc::clone(&media);
     let on_toggle_sub_agent_panel = Rc::clone(&state);
     let desktop_open_sub_agent = desktop.clone();
     let desktop_stop_sub_agent = desktop.clone();
@@ -1496,6 +1499,37 @@ pub fn make_actions(
                 .borrow_mut()
                 .close_sub_agent_view(pane_id);
         })),
+        // A message typed in a child view goes to that child's own
+        // conversation, not to the pane's parent conversation: see
+        // `send_sub_agent_prompt`.
+        on_send_sub_agent_message: Rc::new(RefCell::new(
+            move |pane_id: u64, text: String| {
+                let mut state = on_send_sub_agent_message.borrow_mut();
+                let Some(child_id) = state
+                    .sub_agent_views
+                    .get(&pane_id)
+                    .map(|view| view.child_id.clone())
+                else {
+                    return;
+                };
+                if send_sub_agent_prompt(
+                    &mut state,
+                    desktop_send_sub_agent_message.as_ref(),
+                    &media_send_sub_agent_message,
+                    pane_id,
+                    &child_id,
+                    &text,
+                ) {
+                    // The line ran, so the draft it was typed in is spent; the
+                    // app-owned cell is what the next frame rebuilds the
+                    // child's composer from.
+                    if let Some(view) = state.sub_agent_views.get(&pane_id) {
+                        *view.draft.borrow_mut() = String::new();
+                        *view.caret.borrow_mut() = 0;
+                    }
+                }
+            },
+        )),
         on_toggle_sub_agent_panel: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_sub_agent_panel.borrow_mut();
             state.sub_agent_panel_open = !state.sub_agent_panel_open;

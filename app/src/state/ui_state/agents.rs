@@ -717,6 +717,8 @@ impl UiState {
             messages: Vec::new(),
             returned_to,
             parse_cache: MessageParseCache::default(),
+            draft: Rc::new(RefCell::new(String::new())),
+            caret: Rc::new(RefCell::new(0)),
         };
         if let Some(desktop) = desktop {
             let row = view.row.clone();

@@ -99,7 +99,15 @@ pub(crate) fn build_sub_agent_child_view(
         .finish();
 
     let on_close = actions.on_close_sub_agent.clone();
-    ChatView::new()
+    // The child accepts a message of its own once it has ended: the text goes
+    // to the child's conversation, the way grok-build's takeover lets the user
+    // type in the child's own input. A child still working owns that
+    // conversation, so its view stays read-only until it settles.
+    let can_reply = child.row.as_ref().is_none_or(|row| !row.is_running());
+    let draft = child.draft.clone();
+    let on_change_draft = draft.clone();
+    let on_send_child = actions.on_send_sub_agent_message.clone();
+    let mut view = ChatView::new()
         .with_header(title)
         // The child's own rows, read from the store by its conversation id on
         // the app side — the same message shape the parent's transcript arrives
@@ -122,7 +130,16 @@ pub(crate) fn build_sub_agent_child_view(
         .with_sub_agents(session.sub_agents.clone())
         .with_pane_active(active)
         .with_on_action(chat_action_relay(actions.on_open_url.clone()))
-        .without_composer()
-        .with_on_escape(move || (on_close.borrow_mut())(pane_id))
-        .finish()
+        .with_on_escape(move || (on_close.borrow_mut())(pane_id));
+    if can_reply {
+        view = view
+            .with_composer_value(draft.borrow().clone())
+            .with_composer_caret(child.caret.clone())
+            .with_composer_focused(active)
+            .with_composer_on_change(move |text| *on_change_draft.borrow_mut() = text)
+            .with_on_send(move |text| (on_send_child.borrow_mut())(pane_id, text));
+    } else {
+        view = view.without_composer();
+    }
+    view.finish()
 }

@@ -349,6 +349,11 @@ pub struct SubAgentChildView {
     pub(crate) returned_to: BlockView,
     /// The child rows' parse cache, so a refresh re-parses only what changed.
     pub(crate) parse_cache: MessageParseCache,
+    /// The message typed into the child view, and its caret. A child that has
+    /// ended can be woken with a follow-up in its own conversation, the way
+    /// grok-build's subagent takeover accepts a prompt in the child's input.
+    pub draft: Rc<RefCell<String>>,
+    pub caret: Rc<RefCell<usize>>,
 }
 
 impl SubAgentChildView {

@@ -702,6 +702,8 @@ impl UiState {
                                 .live_sub_agent_row(*pane_id, &view.child_id)
                                 .or_else(|| view.row.clone()),
                             messages: view.messages.clone(),
+                            draft: view.draft.clone(),
+                            caret: view.caret.clone(),
                         }
                     }),
                     scroll: self.pane_scroll(*pane_id),

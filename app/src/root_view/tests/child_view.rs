@@ -234,7 +234,7 @@ use super::*;
         );
         assert!(
             !texts.iter().any(|t| t.contains("Ask anything")),
-            "the child's view has no composer of its own: {texts:?}"
+            "a running child's view stays read-only: {texts:?}"
         );
 
         // Esc returns to the parent's transcript, leaving the child's card.
@@ -296,6 +296,14 @@ use super::*;
         assert!(
             texts.iter().any(|t| t == "completed in 12s"),
             "the title follows the record's new status: {texts:?}"
+        );
+        // The child has ended, so its conversation can be woken with a
+        // follow-up: the view offers its own composer (see
+        // `send_sub_agent_prompt`), the way grok-build's takeover accepts a
+        // prompt in the child's input.
+        assert!(
+            texts.iter().any(|t| t.contains("Ask anything")),
+            "a finished child's view offers a composer: {texts:?}"
         );
         assert_eq!(
             child_cards(&state),

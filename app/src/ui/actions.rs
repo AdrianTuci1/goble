@@ -192,6 +192,9 @@ pub struct UiActions {
     /// Leave the child view `pane_id` shows and put the pane back on the
     /// conversation it came from; the child's card stays in the block list.
     pub on_close_sub_agent: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Send the text typed in a child view to that child's own conversation:
+    /// `(pane_id, text)`. The child id is resolved from the pane's open view.
+    pub on_send_sub_agent_message: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Fold or open the sub-agent strip under the agent pane's header.
     pub on_toggle_sub_agent_panel: Rc<RefCell<dyn FnMut()>>,
     /// Submit the composed answer of the inline ask-user card. The optional

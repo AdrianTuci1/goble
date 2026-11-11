@@ -38,6 +38,10 @@ pub struct SubAgentViewSnapshot {
     /// leaves the conversation itself on screen.
     pub row: Option<goble_ui::SubAgentRow>,
     pub messages: Vec<UiChatMessage>,
+    /// The message typed into the child view, and its caret: the app owns both
+    /// so the composer survives the per-frame rebuild.
+    pub draft: std::rc::Rc<std::cell::RefCell<String>>,
+    pub caret: std::rc::Rc<std::cell::RefCell<usize>>,
 }
 
 /// A viewer pane's session as its surface draws it: which worker the

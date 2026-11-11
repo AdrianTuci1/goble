@@ -139,6 +139,81 @@ pub(crate) fn send_agent_prompt(
     ran_turn
 }
 
+/// Run the text typed in a child view as that child's next turn.
+///
+/// A child view reads the child's own conversation, but the pane's bound
+/// conversation is its parent's, so the ordinary composer path would write to
+/// the parent. This runs the turn on `child_id` itself, with the pane's own
+/// model, environment and working directory, so a finished child can be woken
+/// with a follow-up (grok-build's takeover accepts a prompt in the child's own
+/// input the same way). A child that is still working is left alone: its turn
+/// already owns that conversation.
+pub(crate) fn send_sub_agent_prompt(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    media: &Rc<RefCell<MediaState>>,
+    pane_id: u64,
+    child_id: &str,
+    text: &str,
+) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    let Some(desktop) = desktop else {
+        return false;
+    };
+    if state
+        .live_sub_agent_row(pane_id, child_id)
+        .is_some_and(|row| row.is_running())
+    {
+        return false;
+    }
+    let model = state.pane_agent_model(pane_id);
+    let path = state
+        .pane_sessions
+        .get(&pane_id)
+        .map(|s| s.path.clone())
+        .unwrap_or_else(|| state.composer_path.clone());
+    let (medium_id, project_id) = {
+        let media = media.borrow();
+        match state.pane_environment(pane_id) {
+            Some(environment) => (
+                environment.clone(),
+                media.default_project_for_medium(&environment),
+            ),
+            None => (
+                media.selected_medium_id().to_string(),
+                media.selected_project_id().to_string(),
+            ),
+        }
+    };
+    // The turn runs under the child's own conversation id: the store keys the
+    // child's rows by it, and the view reads them back by the same id.
+    match crate::runtime::run_turn(
+        desktop,
+        child_id,
+        text,
+        &state.settings_llm_provider,
+        &model,
+        state.workspace_routing,
+        &medium_id,
+        &project_id,
+        child_id,
+        &path,
+        Some(state.selected_harness.as_str()),
+        None,
+    ) {
+        Ok(_) => {
+            state.refresh_messages(desktop);
+            true
+        }
+        Err(error) => {
+            log::warn!("run_chat_turn({child_id}) failed: {error}");
+            false
+        }
+    }
+}
+
 /// Run `text` as a shell command in `pane_id`'s real PTY session.
 ///
 /// Every pane (chat or terminal) is given a live [`TerminalSession`] on demand

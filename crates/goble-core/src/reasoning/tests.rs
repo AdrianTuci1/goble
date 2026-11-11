@@ -1085,3 +1085,144 @@ fn test_tool_call_row_from_older_build_still_parses() {    let old = r#"[{"id":"
     assert_eq!(records[0].status, ToolCallStatus::Pending);
     assert_eq!(records[0].result, None);
 }
+
+/// A provider that asks for the same call every time and records the requests
+/// it was given, so a test can read what the stuck turn was told.
+#[derive(Clone)]
+struct RepeatingProvider {
+    name: String,
+    seen: Arc<std::sync::Mutex<Vec<Vec<crate::llm::Message>>>>,
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for RepeatingProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn complete(&self, _req: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+        Ok(CompletionResponse {
+            content: "trying again".to_string(),
+            tool_calls: vec![LlmToolCall {
+                id: "tc_same".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }],
+            usage: None,
+        })
+    }
+
+    async fn complete_stream(
+        &self,
+        req: CompletionRequest,
+    ) -> anyhow::Result<std::pin::Pin<Box<dyn futures::Stream<Item = CompletionStreamEvent> + Send>>>
+    {
+        self.seen.lock().unwrap().push(req.messages.clone());
+        let events = vec![
+            CompletionStreamEvent::AssistantDelta("trying again".to_string()),
+            CompletionStreamEvent::ToolCalls(vec![LlmToolCall {
+                id: "tc_same".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }]),
+            CompletionStreamEvent::Done,
+        ];
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
+}
+
+/// A model that keeps asking for the same unknown `bash` call is stopped after
+/// a few rounds with a reason the user can read, instead of running into the
+/// execution-iteration cap ("too many execution iterations") with no
+/// explanation.
+#[tokio::test]
+async fn a_model_stuck_on_one_tool_call_is_stopped_with_a_readable_error() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let llm = Arc::new(RepeatingProvider {
+        name: "repeating".to_string(),
+        seen: Arc::clone(&seen),
+    });
+    let harness = Harness::new(store.clone())
+        .with_llm(llm)
+        .with_reasoning(false);
+
+    let events: Vec<_> = harness.run_turn(&chat_id, "check the folder", "mock", "mock").collect().await;
+
+    let stopped = events.iter().find_map(|event| match event {
+        HarnessEvent::Error(message) if message.contains("repeated the same tool call") => {
+            Some(message.clone())
+        }
+        _ => None,
+    });
+    let stopped = stopped.expect("the turn ends with the stationarity error");
+    assert!(stopped.contains("bash"), "{stopped}");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, HarnessEvent::Error(message) if message.contains("too many execution iterations"))),
+        "the stationarity guard stops the turn before the iteration cap"
+    );
+
+    // The reminder reaches the model before the stop: one of the requests
+    // carries the nudge.
+    let nudged = seen.lock().unwrap().iter().any(|messages| {
+        messages
+            .iter()
+            .any(|message| message.content.contains("appear to be stuck"))
+    });
+    assert!(nudged, "a stuck turn is reminded before it is stopped");
+
+    // The stuck call ran a bounded number of times, not the whole budget.
+    let records = tool_call_records(&store, &chat_id);
+    assert!(
+        records.len() < 4,
+        "the same call is not replayed to the iteration cap, got {} records",
+        records.len()
+    );
+}
+
+/// A stored assistant row that carries neither text nor calls is not sent back
+/// to the provider: the request shape would be rejected outright ("content or
+/// tool_calls must be set"), which is what failed a real conversation.
+#[tokio::test]
+async fn an_empty_assistant_row_is_not_sent_back() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let now = Utc::now().to_rfc3339();
+    store
+        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "user", "hello", None, &now)
+        .unwrap();
+    store
+        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "assistant", "", None, &now)
+        .unwrap();
+    store
+        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "assistant", "hi", None, &now)
+        .unwrap();
+
+    let mission = MissionState {
+        id: "mission-1".to_string(),
+        chat_id: chat_id.clone(),
+        goal: "hello".to_string(),
+        status: "running".to_string(),
+        plan: None,
+        workflow_id: None,
+        reasoning_steps: Vec::new(),
+        pending_ask: None,
+    };
+    let history = build_history(&store, &chat_id, &mission, &[], &[], ThinkingMode::Direct).await;
+
+    assert!(
+        !history.iter().any(|message| {
+            (message.role == Role::Assistant)
+                && message.content.trim().is_empty()
+                && message.tool_calls.as_ref().is_none_or(Vec::is_empty)
+        }),
+        "an assistant row with no text and no calls never reaches the provider: {history:?}"
+    );
+    assert!(
+        history.iter().any(|message| message.content == "hi"),
+        "the reply that has text is kept"
+    );
+}

@@ -326,7 +326,12 @@ pub(crate) fn run_mission(
             host: &subagents,
         };
         let mut execution_iteration = 0;
-        let mut prev_tool_calls: Vec<LlmToolCall> = Vec::new();
+        // Action stationarity: how many rounds in a row asked for the same
+        // batch, and that batch's signature. A model stuck on one call is
+        // nudged, then stopped, instead of spending the iteration budget on
+        // the same failing call (grok-build's own turn guard).
+        let mut identical_tool_rounds = 0u32;
+        let mut last_tool_batch: Option<Vec<(String, String)>> = None;
 
         loop {
             if cancel.load(Ordering::Relaxed) {
@@ -348,6 +353,16 @@ pub(crate) fn run_mission(
                 tool_status: None,
                 reasoning_content: None,
             });
+            if identical_tool_rounds >= NUDGE_AFTER_IDENTICAL_TOOL_ROUNDS {
+                history.push(Message {
+                    role: Role::System,
+                    content: STATIONARITY_NUDGE.to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_status: None,
+                    reasoning_content: None,
+                });
+            }
 
             let request = CompletionRequest::new(provider.clone(), model.clone())
                 .with_system(harness_system_prompt())
@@ -441,11 +456,28 @@ pub(crate) fn run_mission(
             if tool_calls.is_empty() {
                 break;
             }
-            if assistant_content.is_empty() {
-                if tool_calls == prev_tool_calls {
-                    break;
-                }
-                prev_tool_calls = tool_calls.clone();
+            let signature = tool_batch_signature(&tool_calls);
+            if last_tool_batch.as_ref() == Some(&signature) {
+                identical_tool_rounds += 1;
+            } else {
+                identical_tool_rounds = 1;
+                last_tool_batch = Some(signature);
+            }
+            // A silent repeat adds no information: the model asked the same
+            // question without saying anything new, so the turn ends here
+            // rather than asking it again.
+            if identical_tool_rounds > 1 && assistant_content.trim().is_empty() {
+                break;
+            }
+            if identical_tool_rounds >= MAX_IDENTICAL_TOOL_ROUNDS {
+                let names: Vec<&str> = tool_calls.iter().map(|call| call.name.as_str()).collect();
+                yield HarnessEvent::Error(format!(
+                    "the model repeated the same tool call{} ({}) {} times in a row; the turn was stopped",
+                    if tool_calls.len() == 1 { "" } else { "s" },
+                    names.join(", "),
+                    identical_tool_rounds
+                ));
+                return;
             }
 
             // Attach tool-call metadata to the streamed message, or create the
@@ -665,4 +697,50 @@ pub(crate) fn run_mission(
         };
         yield HarnessEvent::Done;
     })
+}
+
+/// How many rounds in a row may ask for the same batch before the model is
+/// reminded, and after how many the turn ends instead of burning the iteration
+/// budget on one call. grok-build's turn guard uses the same shape: a nudge,
+/// then a hard stop.
+const NUDGE_AFTER_IDENTICAL_TOOL_ROUNDS: u32 = 2;
+const MAX_IDENTICAL_TOOL_ROUNDS: u32 = 4;
+
+/// The reminder a stuck turn reads before its next request: the model has to
+/// change the call or stop and say what is blocking it.
+const STATIONARITY_NUDGE: &str = "You have called the same tool with the same arguments several times in a row and appear to be stuck. Change the call or its arguments, or stop and tell the user what is blocking you. The turn ends automatically if the identical call keeps repeating.";
+
+/// One tool batch as the stationarity guard compares it: order-insensitive,
+/// and object keys sorted, so a reordered batch or a re-serialized argument
+/// object is still the same calls.
+fn tool_batch_signature(calls: &[LlmToolCall]) -> Vec<(String, String)> {
+    let mut signature: Vec<(String, String)> = calls
+        .iter()
+        .map(|call| (call.name.clone(), canonical_json(&call.arguments)))
+        .collect();
+    signature.sort();
+    signature
+}
+
+fn canonical_json(value: &serde_json::Value) -> String {
+    serde_json::to_string(&sorted_json(value)).unwrap_or_default()
+}
+
+fn sorted_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), sorted_json(value)))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sorted_json).collect())
+        }
+        other => other.clone(),
+    }
 }

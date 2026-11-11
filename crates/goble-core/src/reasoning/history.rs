@@ -89,6 +89,16 @@ pub(super) async fn build_history(
                 }
                 calls = None;
             }
+            // A provider rejects an assistant message that carries neither
+            // text nor calls ("content or tool_calls must be set"), and a
+            // suspended, cancelled or empty reply can leave exactly that row
+            // behind. It is not part of the conversation the model reads back.
+            if (role == "assistant" || role == "tool_calls")
+                && content.trim().is_empty()
+                && calls.as_ref().is_none_or(Vec::is_empty)
+            {
+                return None;
+            }
             Some(Message {
                 role: match role.as_str() {
                     "system" => Role::System,

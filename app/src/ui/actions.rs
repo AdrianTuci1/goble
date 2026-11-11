@@ -181,17 +181,19 @@ pub struct UiActions {
     pub on_clear_transcript: Rc<RefCell<dyn FnMut()>>,
     pub on_stop: Rc<RefCell<dyn FnMut()>>,
     /// Enter a sub-agent child's own conversation in `pane_id`, by the child's
-    /// conversation id — the row's click in the parent transcript (S5). The
-    /// child view (S6) puts the child's card in the pane's block list and shows
-    /// the child's transcript in its place.
+    /// conversation id — the open control on the pane's sub-agent strip (S5).
+    /// The child view (S6) puts the child's card in the pane's block list and
+    /// shows the child's transcript in its place.
     pub on_open_sub_agent: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Stop the sub-agent child `child_id` running under `pane_id`, by the
-    /// child's conversation id — the Stop the parent transcript's row draws
-    /// while the child runs.
+    /// child's conversation id — the stop control the pane's sub-agent strip
+    /// draws while the child runs.
     pub on_stop_sub_agent: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Leave the child view `pane_id` shows and put the pane back on the
     /// conversation it came from; the child's card stays in the block list.
     pub on_close_sub_agent: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Fold or open the sub-agent strip under the agent pane's header.
+    pub on_toggle_sub_agent_panel: Rc<RefCell<dyn FnMut()>>,
     /// Submit the composed answer of the inline ask-user card. The optional
     /// `(name, value)` carries a credential entered in the card, threaded out
     /// separately from the answer so the secret never enters the transcript.

@@ -56,6 +56,7 @@ impl UiState {
             right_sidebar_open: false,
             fullscreen: false,
             sub_agent_views: HashMap::new(),
+            sub_agent_panel_open: true,
             maximized_pane: None,
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),

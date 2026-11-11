@@ -476,6 +476,72 @@ fn the_pane_header_tray_paints_over_the_transcript_and_fits_the_view() {
     );
 }
 
+/// The pane's sub-agent strip is chrome around the transcript: it takes the
+/// row directly under the header the column reserved and hands the rest to the
+/// conversation, so it never scrolls with the messages.
+#[test]
+fn the_sub_agent_panel_sits_under_the_header_and_above_the_transcript() {
+    use crate::elements::chat_content::{SubAgentPanel, SubAgentRow, SubAgentRowStatus};
+    use crate::elements::Empty;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+    use std::time::Duration;
+
+    let app = AppContext::default();
+    let header_height = 44.0;
+    let record = SubAgentRow {
+        child_id: "conv-child-1".to_string(),
+        subagent_type: "worker".to_string(),
+        description: "Write simple slugify function".to_string(),
+        status: SubAgentRowStatus::Running,
+        activity: String::new(),
+        elapsed: Duration::from_millis(8700),
+        turns: 1,
+        tool_calls: 2,
+        tokens: 300,
+        outcome: None,
+        background: false,
+    };
+    let panel = SubAgentPanel::new(vec![record], "deepseek", true).finish();
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("transcript marker")],
+    )];
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_header(
+            Empty::new()
+                .with_size(vec2f(0.0, header_height))
+                .finish(),
+        )
+        .with_sub_agent_panel(Some(panel))
+        .finish();
+    let commands = render_element(&mut view, vec2f(600.0, 480.0), &app);
+
+    let origin_of = |label: &str| {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. } if text == label => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the pane draws {label:?}"))
+    };
+    let strip = origin_of("Subagents");
+    let transcript = origin_of("transcript marker");
+    assert!(
+        strip.y >= header_height - 0.5,
+        "the strip starts under the reserved header, at {} of {header_height}",
+        strip.y
+    );
+    assert!(
+        transcript.y > strip.y,
+        "the transcript starts below the strip: strip {} transcript {}",
+        strip.y,
+        transcript.y
+    );
+}
+
 #[test]
 fn chat_view_renders_the_queued_prompt_as_a_borderless_band() {
     use crate::test_util::{command_counts, render_element};

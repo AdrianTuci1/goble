@@ -446,6 +446,7 @@ impl RootView {
                 reasoning_expanded: s.reasoning_expanded.clone(),
                 tool_fold: s.tool_fold.clone(),
                 terminal_global_filters: s.terminal_global_filters.clone(),
+                sub_agent_panel_open: s.sub_agent_panel_open,
                 pane_terminal_scroll: s.pane_terminal_scroll.clone(),
                 crons_open: s.crons_open,
                 task_workflow_open: s.task_workflow_open,

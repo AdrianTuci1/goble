@@ -63,6 +63,14 @@ impl ChatView {
         self
     }
 
+    /// Draw the pane's sub-agent strip under the header, above the transcript.
+    /// The pane builds it (its rows, the pane's model and the two controls), so
+    /// the view only has to give it the slot.
+    pub fn with_sub_agent_panel(mut self, panel: Option<Box<dyn Element>>) -> Self {
+        self.sub_agent_panel = panel;
+        self
+    }
+
     /// Render `notice` at the top of the transcript, inside the chat area.
     pub fn with_notice(mut self, notice: Option<Box<dyn Element>>) -> Self {
         self.notice = notice;
@@ -152,6 +160,13 @@ impl ChatView {
     /// app's S4 events every frame, so a running child's row re-draws with it.
     pub fn with_sub_agents(mut self, sub_agents: HashMap<String, SubAgentRow>) -> Self {
         self.sub_agents = sub_agents;
+        self
+    }
+
+    /// Set the model a running child's transcript row names beside what the
+    /// child is doing. Empty draws `Responding` alone.
+    pub fn with_sub_agent_model(mut self, model: impl Into<String>) -> Self {
+        self.sub_agent_model = model.into();
         self
     }
 

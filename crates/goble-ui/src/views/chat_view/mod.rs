@@ -33,6 +33,9 @@ mod tests;
 
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
+    /// The pane's sub-agent strip, drawn directly under the header and above
+    /// the transcript: the one place the pane's sub-agent controls live.
+    sub_agent_panel: Option<Box<dyn Element>>,
     /// An inline notice rendered at the top of the transcript (inside the chat
     /// area rather than as a floating dialog), e.g. the "no API key" error.
     notice: Option<Box<dyn Element>>,
@@ -63,6 +66,8 @@ pub struct ChatView {
     /// keyed by the id of the tool call that spawned each child; held by the
     /// app from S4's `chat:subagent_*` events and handed down every frame.
     sub_agents: HashMap<String, SubAgentRow>,
+    /// The model the pane's turns run on, named by a running child's row.
+    sub_agent_model: String,
     /// The whole-transcript filter, applied to every terminal block (filtered
     /// via a bar above the transcript). App-owned so it survives the rebuild.
     global_terminal_filter: Option<TerminalFilter>,
@@ -227,6 +232,7 @@ impl ChatView {
     pub fn new() -> Self {
         Self {
             header: None,
+            sub_agent_panel: None,
             notice: None,
             turn_error: None,
             messages: Vec::new(),
@@ -239,6 +245,7 @@ impl ChatView {
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
             sub_agents: HashMap::new(),
+            sub_agent_model: String::new(),
             global_terminal_filter: None,
             on_copy_terminal: None,
             empty_title: None,

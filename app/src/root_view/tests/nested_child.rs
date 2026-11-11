@@ -1,12 +1,13 @@
 use super::*;
 
-    /// S6's nested case: a child that spawned a child of its own. The row drawn
-    /// inside the child view must be enterable like the parent's row is — a
-    /// sub-agent is enterable, not merely visible — and leaving the nested view
-    /// must land back on the conversation the first row was clicked in, so no
-    /// conversation is stranded. Clicks and the key go through the mounted root.
+    /// S6's nested case: a child that spawned a child of its own. The pane's
+    /// strip enters the first child; the child view carries no strip of its
+    /// own, so the nested child is entered from the conversation it was spawned
+    /// in. Leaving the nested view lands back on the conversation the strip
+    /// opened first, so no conversation is stranded. Clicks and the key go
+    /// through the mounted root.
     #[test]
-    fn a_nested_child_row_inside_the_child_view_is_enterable_and_esc_returns_to_the_parent() {
+    fn a_nested_child_is_entered_from_its_parent_and_esc_returns_to_the_pane() {
         use crate::emulator::Emulator;
         use crate::terminal::TerminalSession;
         use goble_terminal::blocks::BlockView;
@@ -125,20 +126,19 @@ use super::*;
                 })
                 .collect()
         }
-        fn click_run(root: &mut Box<dyn Element>, app: &AppContext, needle: &str) {
+        fn click_icon(root: &mut Box<dyn Element>, app: &AppContext, name: &str) {
             let commands = render_element(root, vec2f(1024.0, 768.0), app);
-            let origin = commands
+            let position = commands
                 .iter()
                 .find_map(|c| match c {
-                    RenderCommand::DrawText { origin, text, .. }
-                        if text == needle && origin.x >= crate::ui::SIDEBAR_WIDTH =>
-                    {
-                        Some(*origin)
+                    RenderCommand::DrawIcon {
+                        origin, name: drawn, size, ..
+                    } if drawn == name && origin.x >= crate::ui::SIDEBAR_WIDTH => {
+                        Some(*origin + vec2f(size / 2.0, size / 2.0))
                     }
                     _ => None,
                 })
-                .unwrap_or_else(|| panic!("the pane draws the {needle:?} run"));
-            let position = origin + vec2f(2.0, 4.0);
+                .unwrap_or_else(|| panic!("the pane draws the {name:?} icon"));
             let mut ctx = EventContext;
             for event in [
                 DispatchedEvent::MouseDown {
@@ -174,11 +174,12 @@ use super::*;
                 .collect()
         };
 
-        // A spawn call draws its own row, so the parent's row — and the target
-        // that enters the child — is on screen without opening anything.
+        // A spawn call draws its own row, so the parent's row — and the strip
+        // control that enters the child — is on screen without opening
+        // anything.
 
-        // Trip one: the parent's row opens its child.
-        click_run(&mut root, &app, "open child");
+        // Trip one: the parent's strip opens its child.
+        click_icon(&mut root, &app, "arrow-up");
         assert_eq!(
             view_of(&state),
             BlockView::Agent {
@@ -193,19 +194,31 @@ use super::*;
                 .any(|t| t.contains("CHILD CONVERSATION MARKER")),
             "the first child's conversation is drawn: {texts:?}"
         );
-        // The nested spawn call draws its own row in the child's transcript.
+        // The nested spawn call draws its own row in the child's transcript,
+        // but the child view carries no strip of its own: the delegation chrome
+        // belongs to the pane's own agent surface, so the nested row is a
+        // status line here rather than another set of controls.
         let texts = pane_texts(&mut root, &app);
-        // The nested row lives in the child's own transcript, so the child view
-        // has to hand the pane's live records to the renderer for it to be
-        // enterable — without the record there is no open target at all.
         assert!(
-            texts.iter().any(|t| t == "open child"),
-            "the child's own sub-agent row is enterable from inside the child \
-             view: {texts:?}"
+            texts
+                .iter()
+                .any(|t| t.contains("check the schema")),
+            "the child's own sub-agent row is drawn: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t == "Subagents"),
+            "the child view draws no strip of its own: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t == "open child"),
+            "the nested row carries no open control in the child view: {texts:?}"
         );
 
-        // Trip two: that row opens the nested child's conversation.
-        click_run(&mut root, &app, "open child");
+        // Trip two: entering the nested child from the conversation it was
+        // spawned in, the way a strip row in the pane's own surface would.
+        state
+            .borrow_mut()
+            .open_sub_agent(1, "conv-child-2", Some(&desktop));
         assert_eq!(
             view_of(&state),
             BlockView::Agent {
@@ -238,8 +251,8 @@ use super::*;
             "both children keep a card, so neither conversation is stranded"
         );
 
-        // Esc returns to the conversation the first row was clicked in, not to
-        // the intermediate child the user passed through.
+        // Esc returns to the conversation the strip opened first, not to the
+        // intermediate child the user passed through.
         assert!(
             press_escape(&mut root, &app),
             "the nested child view takes Escape"

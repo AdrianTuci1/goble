@@ -263,7 +263,7 @@ fn a_long_command_output_wraps_inside_the_pane() {
 }
 
 #[test]
-fn a_long_sub_agent_row_keeps_its_open_action_in_the_pane() {
+fn a_long_sub_agent_row_wraps_inside_the_pane_without_controls() {
     let token = "c".repeat(600);
     let spawn = call(
         "task",
@@ -300,8 +300,8 @@ fn a_long_sub_agent_row_keeps_its_open_action_in_the_pane() {
         .take()
         .map(|r| r.commands().to_vec())
         .unwrap_or_default();
-    // The header takes the row's remaining width and the action keeps its place
-    // at the right edge: its label starts and ends inside the pane.
+    // The row wraps inside the pane and draws nothing at its right edge: the
+    // controls that enter and stop the child belong to the pane's strip.
     for command in &commands {
         if let RenderCommand::DrawText { origin, .. } = command {
             assert!(
@@ -311,35 +311,10 @@ fn a_long_sub_agent_row_keeps_its_open_action_in_the_pane() {
             );
         }
     }
-    let (origin, font_size, font_weight, font_family, font_italic) = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawText {
-                origin,
-                text,
-                font_size,
-                font_weight,
-                font_family,
-                font_italic,
-                ..
-            } if text == "open child" => {
-                Some((*origin, *font_size, *font_weight, *font_family, *font_italic))
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the open action stays drawn: {:?}", drawn_texts(&commands)));
-    let drawn = crate::platform::text_atlas::advance_width(
-        "open child",
-        font_size,
-        font_weight,
-        font_family,
-        font_italic,
-    );
+    let texts = drawn_texts(&commands);
     assert!(
-        origin.x + drawn <= size.x + 0.5,
-        "the open action ends at {} past the {}-wide pane",
-        origin.x + drawn,
-        size.x
+        !texts.iter().any(|text| text == "open child" || text == "Stop"),
+        "the transcript row draws no controls, got {texts:?}"
     );
 }
 

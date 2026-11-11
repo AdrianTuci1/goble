@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::elements::SizeConstraint;
-use crate::elements::chat_content::{tool_fold_key, ChatAction, ChatFragment, ChatRole, SubAgentRowStatus, ToolDisplayMode};
+use crate::elements::chat_content::{tool_fold_key, ChatFragment, ChatRole, SubAgentRowStatus, ToolDisplayMode};
 use crate::elements::{AppContext, LayoutContext, PaintContext, TerminalData, TerminalLine};
 use crate::geometry::vec2f;
 use crate::render::{RenderCommand, Renderer};
@@ -41,9 +41,11 @@ fn sub_agent_call_shows_its_own_rows() {
     );
 }
 
-/// Each of the four statuses draws its own line on the parent transcript:
-/// the description, then the status phrase — with the activity label and the
-/// elapsed time only while the child runs.
+/// Each of the four statuses draws its own line on the parent transcript.
+///
+/// A running child is the delegation itself — the description and what it is
+/// doing — and an ended one keeps its terminal phrase, with the elapsed time
+/// inside it. The row carries no controls: the pane's strip owns those.
 ///
 /// The mark itself does not change with the status: every row draws the same
 /// diamond, and the status is the colour it is drawn in. A live child is not a
@@ -58,7 +60,7 @@ fn each_sub_agent_status_draws_its_own_line() {
             Duration::from_millis(4500),
             None,
             ColorToken::Warning,
-            "running · reading · 4.5s",
+            "running: “audit the migration” · Responding",
         ),
         (
             SubAgentRowStatus::Completed,
@@ -100,8 +102,8 @@ fn each_sub_agent_status_draws_its_own_line() {
             .iter()
             .find(|row| row.contains("Subagent"))
             .unwrap_or_else(|| panic!("status {status:?} draws its row, got {rows:?}"));
-        // One ruler row: the status mark, the verb, the child in quotes and
-        // the record's own line, with no body and no card.
+        // One ruler row: the status mark, the verb, the child and what it is
+        // doing, with no body and no card.
         assert!(
             row.starts_with("◆ "),
             "status {status:?} draws the one diamond mark, got {row:?}"
@@ -113,6 +115,10 @@ fn each_sub_agent_status_draws_its_own_line() {
         assert!(
             row.contains(line),
             "status {status:?} must draw {line:?}, got {row:?}"
+        );
+        assert!(
+            !row.contains("Stop") && !row.contains("open child"),
+            "status {status:?} draws no controls of its own, got {row:?}"
         );
         assert!(
             mark_color(&commands, folded_mark(&app, token)),
@@ -144,53 +150,54 @@ fn mark_color(commands: &[RenderCommand], color: crate::color::ColorU) -> bool {
     })
 }
 
-/// A running row's activity and elapsed time come from the live record, so a
-/// progress event moves the row; a child that ended keeps neither.
+/// A running child's row states what the child is doing and the model it is
+/// doing it with, from the pane's own label. It carries neither the record's
+/// activity nor its ticking clock: those belong to the pane's strip.
 #[test]
-fn a_running_sub_agent_row_carries_its_activity_and_elapsed_time() {
+fn a_running_sub_agent_row_states_responding_and_the_panes_model() {
     let call = spawn_call(ToolCallStatus::Finished);
-    let status_lines = |elapsed: u64, activity: &str| {
-        let record = record(
-            "conv-child-1",
-            SubAgentRowStatus::Running,
-            activity,
-            Duration::from_millis(elapsed),
-            None,
-        );
-        let (commands, _) = paint_sub_agent(
-            vec![call.clone()],
-            HashMap::from([(call.id.clone(), record)]),
-            None,
-        );
-        drawn_row_texts(&commands)
-    };
-
-    let first = status_lines(1500, "reading the schema");
-    assert!(
-        first
-            .iter()
-            .any(|row| row.contains("running · reading the schema · 1.5s")),
-        "the running row carries the activity and the elapsed time, got {first:?}"
+    let live = record(
+        "conv-child-1",
+        SubAgentRowStatus::Running,
+        "reading the schema",
+        Duration::from_millis(1500),
+        None,
     );
-    let ticked = status_lines(2500, "running the tests");
+    let app = AppContext::default();
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![call.clone()])
+        .with_sub_agents(HashMap::from([(call.id.clone(), live.clone())]))
+        .with_sub_agent_model("deepseek");
+    let rows = drawn_row_texts(&paint_bubble_at(&mut bubble, &app, 800.0));
+    let row = rows
+        .iter()
+        .find(|row| row.contains("Subagent"))
+        .unwrap_or_else(|| panic!("the running row is drawn, got {rows:?}"));
     assert!(
-        ticked
-            .iter()
-            .any(|row| row.contains("running · running the tests · 2.5s")),
-        "the next progress event moves both segments of the row, got {ticked:?}"
+        row.contains("Subagent running: “audit the migration” · Responding (deepseek)"),
+        "the row names the delegation and the model, got {row:?}"
     );
-    // A child that is live before its first progress event says so rather
-    // than drawing an empty label.
-    let initializing = status_lines(0, "");
     assert!(
-        initializing
-            .iter()
-            .any(|row| row.contains("running · initializing · 0.0s")),
-        "a child with no activity yet draws `initializing`, got {initializing:?}"
+        !row.contains("reading the schema") && !row.contains("1.5s"),
+        "the activity and the elapsed time are the strip's, got {row:?}"
     );
 
-    // The terminal row states its duration inside its own phrase and drops
-    // the activity segment.
+    // A pane with no model label states the response without a parenthesis.
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![call.clone()])
+        .with_sub_agents(HashMap::from([(call.id.clone(), live)]));
+    let rows = drawn_row_texts(&paint_bubble_at(&mut bubble, &app, 800.0));
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("running: “audit the migration” · Responding")),
+        "an unknown model draws `Responding` alone, got {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("Responding (")),
+        "no empty parentheses are drawn, got {rows:?}"
+    );
+
+    // The terminal row states its duration inside its own phrase.
     let record = record(
         "conv-child-1",
         SubAgentRowStatus::Completed,
@@ -329,13 +336,13 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
     );
 }
 
-/// A running child draws its Stop beside the row that names it; a child that
-/// ended draws none. The chip is the transcript's own control, so it is on the
-/// collapsed row rather than behind an opened run.
+/// The row carries no controls at all, whatever the child's status: entering
+/// and stopping a child belong to the pane's sub-agent strip, and the chat says
+/// only what the child is doing.
 #[test]
-fn a_running_child_draws_a_stop_and_an_ended_one_does_not() {
+fn a_sub_agent_row_draws_no_controls_of_its_own() {
     let call = spawn_call(ToolCallStatus::Running);
-    let stop_texts = |status: SubAgentRowStatus| {
+    let texts_for = |status: SubAgentRowStatus| {
         let record = record(
             "conv-child-1",
             status,
@@ -351,108 +358,26 @@ fn a_running_child_draws_a_stop_and_an_ended_one_does_not() {
         drawn_texts(&commands)
     };
 
-    let running = stop_texts(SubAgentRowStatus::Running);
-    assert!(
-        running.iter().any(|text| text == "Stop"),
-        "a running child draws its Stop, got {running:?}"
-    );
-    assert!(
-        running.iter().any(|text| text == "Subagent "),
-        "the Stop sits beside the row that names the child, got {running:?}"
-    );
-
-    for ended in [
+    for status in [
+        SubAgentRowStatus::Running,
         SubAgentRowStatus::Completed,
         SubAgentRowStatus::Failed,
         SubAgentRowStatus::Cancelled,
     ] {
-        let texts = stop_texts(ended);
+        let texts = texts_for(status);
         assert!(
-            !texts.iter().any(|text| text == "Stop"),
-            "an ended child ({ended:?}) draws no Stop, got {texts:?}"
+            !texts.iter().any(|text| text == "Stop" || text == "open child"),
+            "a {status:?} row draws no controls, got {texts:?}"
         );
     }
-}
 
-/// A click on the row's open target fires the action that opens the child's
-/// own view, carrying the child's conversation id, and leaves the fold alone.
-/// With no record held there is no child to open, so no target is drawn.
-#[test]
-fn clicking_a_sub_agent_row_fires_the_open_action() {
-    let app = AppContext::default();
-    let call = spawn_call(ToolCallStatus::Finished);
-    let key = tool_fold_key(&call, 0);
-    let record = record(
-        "conv-child-9",
-        SubAgentRowStatus::Running,
-        "reading",
-        Duration::from_secs(4),
-        None,
-    );
-    let calls = vec![call.clone()];
-    let fold = Rc::new(RefCell::new(HashMap::new()));
-    let (mut bubble, actions) = sub_agent_bubble(
-        calls,
-        HashMap::from([(call.id.clone(), record.clone())]),
-        fold.clone(),
-    );
-    let commands = paint_bubble(&mut bubble, &app);
-    let position = run_origin(&commands, "open child") + vec2f(2.0, 4.0);
-    click_at(&mut bubble, &app, position);
-    assert_eq!(
-        *actions.borrow(),
-        vec![ChatAction::OpenSubAgent("conv-child-9".to_string())],
-        "the row's click fires the open action with the child's id"
-    );
-    assert_eq!(
-        fold.borrow().get(&key),
-        None,
-        "the open target is not the fold toggle"
-    );
-
-    // No record, no child: the row draws no dead affordance.
+    // No record at all: the spawn call's own row is the fallback shape, and it
+    // has no controls either.
     let (commands, _) = paint_sub_agent(vec![call], HashMap::new(), None);
     let texts = drawn_texts(&commands);
     assert!(
-        !texts.iter().any(|text| text == "open child"),
-        "a row with no record draws no open target, got {texts:?}"
-    );
-}
-
-/// A click on the row's Stop fires the action that cancels the child's turn,
-/// carrying the child's conversation id, and leaves the fold alone — stopping a
-/// child is not closing the row that names it.
-#[test]
-fn clicking_a_running_childs_stop_fires_the_stop_action() {
-    let app = AppContext::default();
-    let call = spawn_call(ToolCallStatus::Running);
-    let key = tool_fold_key(&call, 0);
-    let record = record(
-        "conv-child-7",
-        SubAgentRowStatus::Running,
-        "reading",
-        Duration::from_secs(4),
-        None,
-    );
-    let calls = vec![call.clone()];
-    let fold = Rc::new(RefCell::new(HashMap::new()));
-    let (mut bubble, actions) = sub_agent_bubble(
-        calls,
-        HashMap::from([(call.id.clone(), record)]),
-        fold.clone(),
-    );
-    let commands = paint_bubble(&mut bubble, &app);
-    let position = run_origin(&commands, "Stop") + vec2f(2.0, 4.0);
-    click_at(&mut bubble, &app, position);
-    assert_eq!(
-        *actions.borrow(),
-        vec![ChatAction::StopSubAgent("conv-child-7".to_string())],
-        "the Stop fires the stop action with the child's id"
-    );
-    assert_eq!(
-        fold.borrow().get(&key),
-        None,
-        "the Stop is not the fold toggle"
+        !texts.iter().any(|text| text == "Stop" || text == "open child"),
+        "a row with no record draws no controls, got {texts:?}"
     );
 }
 

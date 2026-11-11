@@ -59,6 +59,11 @@ use super::*;
             ),
             "the running row carries the activity and the elapsed time from the event"
         );
+        assert_eq!(
+            snapshot[&1].sub_agent_panel_rows.len(),
+            1,
+            "a running child is listed in the pane's strip"
+        );
 
         bus.emit(
             "chat:subagent_finished",
@@ -92,5 +97,9 @@ use super::*;
                 Some("the migration is safe")
             ),
             "the finish settles the row's status, duration and outcome"
+        );
+        assert!(
+            snapshot[&1].sub_agent_panel_rows.is_empty(),
+            "an ended child leaves the strip once the pane's turn is over"
         );
     }

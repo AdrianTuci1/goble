@@ -47,6 +47,9 @@ pub struct ChatMessageBubble {
     /// from, keyed by the id of the tool call that spawned the child. The app
     /// holds them from S4's `chat:subagent_*` events.
     sub_agents: HashMap<String, SubAgentRow>,
+    /// The model the pane's turns run on, which a running child's row names
+    /// beside what the child is doing. Empty draws no model there.
+    sub_agent_model: String,
     /// The whole-transcript filter, applied to every terminal block.
     global_terminal_filter: Option<TerminalFilter>,
     on_copy_terminal: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
@@ -67,6 +70,7 @@ impl ChatMessageBubble {
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
             sub_agents: HashMap::new(),
+            sub_agent_model: String::new(),
             global_terminal_filter: None,
             on_copy_terminal: None,
             root: None,
@@ -152,6 +156,13 @@ impl ChatMessageBubble {
         self
     }
 
+    /// Set the model a running child's row names beside what the child is
+    /// doing (`Responding (deepseek)`).
+    pub fn with_sub_agent_model(mut self, model: impl Into<String>) -> Self {
+        self.sub_agent_model = model.into();
+        self
+    }
+
     pub fn with_global_terminal_filter(mut self, filter: Option<TerminalFilter>) -> Self {
         self.global_terminal_filter = filter;
         self
@@ -214,7 +225,7 @@ impl ChatMessageBubble {
                 &self.tool_calls,
                 &self.tool_fold,
                 &self.sub_agents,
-                &self.on_action,
+                &self.sub_agent_model,
                 app,
             ));
         }

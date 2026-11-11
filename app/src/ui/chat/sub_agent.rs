@@ -1,6 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use goble_ui::elements::{
     AppContext, Container, CrossAxisAlignment, Divider,
     EdgeInsets, Element, Fill, Flex, MainAxisSize, Spacer, Text,
@@ -102,22 +99,6 @@ pub(crate) fn build_sub_agent_child_view(
         .finish();
 
     let on_close = actions.on_close_sub_agent.clone();
-    // A nested child's row stays enterable: the view opens on the view rather
-    // than dead-ending at the first generation.
-    let open_sub_agent: Rc<RefCell<dyn FnMut(String)>> = {
-        let open = actions.on_open_sub_agent.clone();
-        Rc::new(RefCell::new(move |child_id: String| {
-            (open.borrow_mut())(pane_id, child_id)
-        }))
-    };
-    // A nested child's row draws the same Stop, and the child it stops is the
-    // nested one's own conversation.
-    let stop_sub_agent: Rc<RefCell<dyn FnMut(String)>> = {
-        let stop = actions.on_stop_sub_agent.clone();
-        Rc::new(RefCell::new(move |child_id: String| {
-            (stop.borrow_mut())(pane_id, child_id)
-        }))
-    };
     ChatView::new()
         .with_header(title)
         // The child's own rows, read from the store by its conversation id on
@@ -136,15 +117,11 @@ pub(crate) fn build_sub_agent_child_view(
         .with_tool_fold(state.tool_fold.clone())
         .with_on_copy_terminal(Some(actions.on_copy_terminal.clone()))
         // A child can itself spawn a child: the pane's live sub-agent records
-        // feed this view's rows too, so a nested spawn call inside the child's
-        // transcript is enterable from here, exactly as it is in the parent's.
+        // feed this view's rows too, so a nested child is drawn here as the
+        // same status line the parent's transcript draws.
         .with_sub_agents(session.sub_agents.clone())
         .with_pane_active(active)
-        .with_on_action(chat_action_relay(
-            actions.on_open_url.clone(),
-            open_sub_agent,
-            stop_sub_agent,
-        ))
+        .with_on_action(chat_action_relay(actions.on_open_url.clone()))
         .without_composer()
         .with_on_escape(move || (on_close.borrow_mut())(pane_id))
         .finish()

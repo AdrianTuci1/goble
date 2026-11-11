@@ -9,8 +9,8 @@ pub use caption::Caption;
 pub use caret::{caret_beam, CaretShape, CARET_HEIGHT};
 pub use chat_composer::{ChatComposer, CommandProposalUi, DiffFileStat, DiffSummary};
 pub use chat_content::{
-    tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentRow,
-    SubAgentRowStatus, ToolCall, ToolDisplayMode,
+    tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentPanel,
+    SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode,
 };
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};

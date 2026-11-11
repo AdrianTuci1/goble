@@ -1268,11 +1268,11 @@ fn the_mark_is_dimmed_while_the_call_is_folded() {
     );
 }
 
-/// The row and its body are drawn at 12 px, and the one action a row owns at
-/// 10 px while the row is retracted. The sizes are the row's shape, so a body
-/// line is never smaller than the row that names it.
+/// The row is drawn at 13 px, the fold mark included, and its retracted and
+/// open shapes draw the same text: the controls that enter and stop a child
+/// live in the pane's strip, so the row owns no action of its own.
 #[test]
-fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
+fn a_sub_agent_row_is_thirteen_px_with_no_action_text() {
     let call = spawn_call(ToolCallStatus::Running);
     let record = record(
         "conv-child-1",
@@ -1290,12 +1290,11 @@ fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
         .into_iter()
         .map(|(text, _, _, size)| (text, size))
         .collect();
-    assert_eq!(
-        sizes.get("open child"),
-        Some(&10.0),
-        "the action is a size down while the row is retracted, got {sizes:?}"
-    );
     assert_eq!(sizes.get("◆ "), Some(&13.0), "the row itself stays 13 px");
+    assert!(
+        !sizes.contains_key("open child"),
+        "the row draws no action, got {sizes:?}"
+    );
 
     let (open, _) = paint_sub_agent(
         vec![call.clone()],
@@ -1306,10 +1305,10 @@ fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
         .into_iter()
         .map(|(text, _, _, size)| (text, size))
         .collect();
-    assert_eq!(
-        sizes.get("open child"),
-        Some(&13.0),
-        "an open row draws its action at the row's own size, got {sizes:?}"
+    assert_eq!(sizes.get("◆ "), Some(&13.0), "an open row stays 13 px");
+    assert!(
+        !sizes.contains_key("open child"),
+        "an open row draws no action either, got {sizes:?}"
     );
 }
 

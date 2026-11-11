@@ -454,12 +454,34 @@ impl UiState {
             .collect()
     }
 
-    /// Mark `pane_id`'s child `child_id` cancelled, from the Stop its row draws.
-    /// The app cancels the child's own turn on the service; the row reads the
-    /// cancellation at once rather than waiting for the child's finish event,
-    /// and the pane's own turn — the one waiting on this child — is left
-    /// running. The row reaches the transcript through the per-frame snapshot,
-    /// so no store re-read is needed.
+    /// The rows the pane's sub-agent strip lists, sorted by the child they
+    /// belong to so the strip's order is stable frame to frame.
+    ///
+    /// A running child is always listed, including a background one that
+    /// outlives the turn that spawned it. A child that already ended stays
+    /// only while the pane's turn is busy: the strip reports the delegation of
+    /// the turn being read, and clears when that turn ends instead of keeping
+    /// a record per child the pane ever spawned.
+    pub fn pane_sub_agents(&self, pane_id: u64) -> Vec<SubAgentRow> {
+        let Some(rt) = self.pane_runtime.get(&pane_id) else {
+            return Vec::new();
+        };
+        let mut rows: Vec<SubAgentRow> = rt
+            .sub_agents
+            .values()
+            .filter(|record| record.row.is_running() || rt.busy)
+            .map(|record| record.row.clone())
+            .collect();
+        rows.sort_by(|a, b| a.child_id.cmp(&b.child_id));
+        rows
+    }
+
+    /// Mark `pane_id`'s child `child_id` cancelled, from the strip's stop
+    /// control. The app cancels the child's own turn on the service; the row
+    /// reads the cancellation at once rather than waiting for the child's
+    /// finish event, and the pane's own turn — the one waiting on this child —
+    /// is left running. The row reaches the strip through the per-frame
+    /// snapshot, so no store re-read is needed.
     pub fn cancel_sub_agent(&mut self, pane_id: u64, child_id: &str) {
         let Some(record) = self
             .pane_runtime

@@ -264,6 +264,7 @@ pub fn make_actions(
     let on_open_sub_agent = Rc::clone(&state);
     let on_stop_sub_agent = Rc::clone(&state);
     let on_close_sub_agent = Rc::clone(&state);
+    let on_toggle_sub_agent_panel = Rc::clone(&state);
     let desktop_open_sub_agent = desktop.clone();
     let desktop_stop_sub_agent = desktop.clone();
     let on_answer_ask = Rc::clone(&state);
@@ -1494,6 +1495,10 @@ pub fn make_actions(
             on_close_sub_agent
                 .borrow_mut()
                 .close_sub_agent_view(pane_id);
+        })),
+        on_toggle_sub_agent_panel: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_sub_agent_panel.borrow_mut();
+            state.sub_agent_panel_open = !state.sub_agent_panel_open;
         })),
         on_answer_ask: Rc::new(RefCell::new(
             move |response: String, credential: Option<(String, String)>| {

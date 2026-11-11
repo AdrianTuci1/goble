@@ -1436,10 +1436,10 @@ impl goble_harness_runtime::HarnessRuntime for HangingHarness {
     }
 }
 
-/// The Stop the parent transcript's row draws cancels the child's own running
-/// turn — by the child's conversation id, which is what the row carries — and
-/// marks that child's row cancelled at once. The parent's turn is not the one
-/// being stopped and is left alone.
+/// The stop control in the pane's sub-agent strip cancels the child's own
+/// running turn — by the child's conversation id, which is what the row
+/// carries — and marks that child's row cancelled at once. The parent's turn is
+/// not the one being stopped and is left alone.
 #[test]
 fn stopping_a_sub_agent_cancels_its_turn_and_marks_its_row() {
     let (desktop, _dir) = desktop_state();

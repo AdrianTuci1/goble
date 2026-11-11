@@ -596,6 +596,13 @@ impl ChatView {
             );
         }
 
+        // The pane's sub-agent strip sits directly under the bar and above the
+        // conversation: it is chrome around the transcript, so it takes the
+        // slot the header reserved rather than scrolling with the messages.
+        if let Some(panel) = self.sub_agent_panel.take() {
+            column = column.with_child(panel);
+        }
+
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
             && self.composer_proposal.is_none()
@@ -626,6 +633,7 @@ impl ChatView {
                     .with_reasoning_expanded(self.reasoning_expanded.clone())
                     .with_tool_fold(self.tool_fold.clone())
                     .with_sub_agents(self.sub_agents.clone())
+                    .with_sub_agent_model(self.sub_agent_model.clone())
                     .with_global_terminal_filter(self.global_terminal_filter.clone())
                     .with_on_copy_terminal(self.on_copy_terminal.clone())
                     .with_on_action(move |action| {

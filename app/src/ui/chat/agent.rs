@@ -302,6 +302,29 @@ pub fn build_agent_chat(
             (stop.borrow_mut())(pane_id, child_id)
         }))
     };
+    // The strip under the header owns the delegation chrome: its rows carry the
+    // controls that enter and stop a child, and the transcript only reports
+    // what the child is doing. A child view draws no strip of its own — the
+    // early return above keeps the child's surface free of the parent's.
+    let sub_agent_panel: Option<Box<dyn Element>> = {
+        let rows = session.sub_agent_panel_rows.clone();
+        if rows.is_empty() {
+            None
+        } else {
+            let on_toggle = actions.on_toggle_sub_agent_panel.clone();
+            Some(
+                goble_ui::SubAgentPanel::new(
+                    rows,
+                    controls.model.clone(),
+                    state.sub_agent_panel_open,
+                )
+                .with_on_open(on_open_sub_agent.clone())
+                .with_on_stop(on_stop_sub_agent.clone())
+                .with_on_toggle(move || (on_toggle.borrow_mut())())
+                .finish(),
+            )
+        }
+    };
     let on_select_harness = actions.on_select_harness.clone();
     let on_select_dir = actions.on_select_dir.clone();
     let on_select_branch = actions.on_select_branch.clone();
@@ -384,15 +407,12 @@ pub fn build_agent_chat(
         // their status, activity and elapsed time from these, not from the
         // spawn call's arguments.
         .with_sub_agents(session.sub_agents.clone())
-        // A link inside a paragraph dispatches `ChatAction::OpenUrl`; a
-        // sub-agent row dispatches `ChatAction::OpenSubAgent` and, while the
-        // child runs, `ChatAction::StopSubAgent`. This is the slot that carries
-        // them out of the view into the app's handlers.
-        .with_on_action(chat_action_relay(
-            on_open_url,
-            on_open_sub_agent,
-            on_stop_sub_agent,
-        ))
+        .with_sub_agent_model(controls.model.clone())
+        // The pane's strip: drawn under the header, above the transcript.
+        .with_sub_agent_panel(sub_agent_panel)
+        // A link inside a paragraph dispatches `ChatAction::OpenUrl`; the
+        // sub-agent controls are the strip's own, wired above.
+        .with_on_action(chat_action_relay(on_open_url))
         .with_composer_value(session.composer_draft.clone())
         // Only the active pane's composer is focused, so a background chat pane
         // never swallows keys before the active pane (e.g. a terminal) sees them.
@@ -870,38 +890,20 @@ mod link_action_tests {
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
         label: &str,
     ) {
-        let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        click_transcript(
-            message,
-            Default::default(),
-            on_open_url,
-            ignored.clone(),
-            ignored,
-            &[label],
-        )
+        click_transcript(message, on_open_url, &[label])
     }
 
-    /// The same clicks through a transcript that holds `sub_agents` for the pane
-    /// and routes a sub-agent row's actions to `on_open_sub_agent` and
-    /// `on_stop_sub_agent`.
-    #[allow(clippy::too_many_arguments)]
+    /// The same clicks through a transcript that dispatches its actions to
+    /// `on_open_url`.
     fn click_transcript(
         message: ChatMessage,
-        sub_agents: std::collections::HashMap<String, goble_ui::SubAgentRow>,
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
-        on_open_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
-        on_stop_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
         labels: &[&str],
     ) {
         let app = AppContext::default();
         let mut view = ChatView::new()
             .with_messages(vec![message])
-            .with_sub_agents(sub_agents)
-            .with_on_action(chat_action_relay(
-                on_open_url,
-                on_open_sub_agent,
-                on_stop_sub_agent,
-            ));
+            .with_on_action(chat_action_relay(on_open_url));
         for label in labels {
             view.layout(
                 SizeConstraint::loose(vec2f(600.0, 400.0)),
@@ -990,61 +992,56 @@ mod link_action_tests {
         );
     }
 
-    /// S5: the sub-agent row's click terminates in the app's child opener,
-    /// carrying the child's conversation id. The transcript reads the row from
-    /// the pane's live records, so the label it clicks is the record's own line.
+    /// The live sub-agent row is a status line in the transcript: the controls
+    /// that enter and stop the child belong to the pane's strip above it, so
+    /// the reply draws neither. The row still names the child's description and
+    /// the model the pane runs on.
     #[test]
-    fn a_sub_agent_row_click_reaches_the_app_child_opener() {
-        let opened = Rc::new(RefCell::new(Vec::new()));
-        let recorder = opened.clone();
+    fn a_sub_agent_row_draws_no_controls_in_the_transcript() {
+        let app = AppContext::default();
         let message = ChatMessage::new(ChatRole::Assistant, vec![])
             .with_tool_calls(vec![spawn_call(ToolCallStatus::Running)]);
-        let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        let opener: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(move |child_id| {
-            recorder.borrow_mut().push(child_id)
-        }));
-
-        click_transcript(
-            message,
-            HashMap::from([("call_spawn".to_string(), running_record())]),
-            ignored.clone(),
-            opener,
-            ignored,
-            &["open child"],
+        let mut view = ChatView::new()
+            .with_messages(vec![message])
+            .with_sub_agents(HashMap::from([(
+                "call_spawn".to_string(),
+                running_record(),
+            )]))
+            .with_sub_agent_model("deepseek");
+        view.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext,
+            &app,
         );
-        assert_eq!(
-            *opened.borrow(),
-            vec!["conv-child-1".to_string()],
-            "the row's click must reach the app carrying the child's conversation id"
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
+        let texts: Vec<String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("running: “audit the migration”")),
+            "the row names the delegation, got {texts:?}"
         );
-    }
-
-    /// The running child's row also draws a Stop, and its click terminates in
-    /// the app's stop handler carrying the child's conversation id — the child
-    /// the app cancels the turn of.
-    #[test]
-    fn a_sub_agent_row_stop_reaches_the_app_stop_handler() {
-        let stopped = Rc::new(RefCell::new(Vec::new()));
-        let recorder = stopped.clone();
-        let message = ChatMessage::new(ChatRole::Assistant, vec![])
-            .with_tool_calls(vec![spawn_call(ToolCallStatus::Running)]);
-        let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        let stop: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(move |child_id| {
-            recorder.borrow_mut().push(child_id)
-        }));
-
-        click_transcript(
-            message,
-            HashMap::from([("call_spawn".to_string(), running_record())]),
-            ignored.clone(),
-            ignored,
-            stop,
-            &["Stop"],
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("· Responding (deepseek)")),
+            "the row names the pane's model, got {texts:?}"
         );
-        assert_eq!(
-            *stopped.borrow(),
-            vec!["conv-child-1".to_string()],
-            "the Stop must reach the app carrying the child's conversation id"
+        assert!(
+            !texts.iter().any(|text| text == "Stop" || text == "open child"),
+            "the transcript row draws no controls, got {texts:?}"
         );
     }
 

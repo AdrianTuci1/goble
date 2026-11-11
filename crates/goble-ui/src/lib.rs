@@ -37,7 +37,7 @@ pub use elements::{
     Margin, Modal, Padding, Page, PaintContext, Point, QuickActionButton, Rect, RightPanel,
     RunningIndicator, ScrollState, Scrollable, SearchInput, Select, SelectOption,
     SelectableElement, Sidebar,
-    SidebarItem, SizeConstraint, Sheet, Spacer, SplitNode, Stack, SubAgentRow, SubAgentRowStatus,
+    SidebarItem, SizeConstraint, Sheet, Spacer, SplitNode, Stack, SubAgentPanel, SubAgentRow, SubAgentRowStatus,
     Switch, Tab, TabBar, TerminalBlock,
     TerminalData, TerminalFilter, TerminalLine, TerminalLineKind, TerminalStatus, Text, TextArea,
     TextInput,

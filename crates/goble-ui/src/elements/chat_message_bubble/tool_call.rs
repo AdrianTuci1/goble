@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::color::ColorU;
-use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
-use crate::elements::{resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Expanded, Flex, InlineText, MainAxisSize, Text, TextSpan};
+use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, ToolCall, ToolDisplayMode};
+use crate::elements::{resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Flex, InlineText, TextSpan};
 use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
@@ -24,14 +24,10 @@ const VERB_GROUP_MARK: &str = "◈";
 /// state never collides with the call that anchors the run.
 const VERB_GROUP_KEY_PREFIX: &str = "verb-group:";
 
-/// The row's own text size. An action hanging off a row is a size down while
-/// the row is collapsed and the row's own size once it is open: grok-build
-/// keeps its action hints off the row entirely, in the shortcuts bar, and
-/// goble draws the actions a row owns — opening a sub-agent's own view and
-/// stopping a running child — at 10 px while the row is retracted.
+/// The row's own text size. A sub-agent row draws nothing beside it: the
+/// controls that enter and stop a child belong to the pane's strip, not to the
+/// reply the child was spawned from.
 pub(super) const TOOL_ROW_FONT_SIZE: f32 = 13.0;
-
-pub(super) const TOOL_ACTION_FONT_SIZE: f32 = 10.0;
 
 /// How far a collapsed call's mark is blended into the background. grok-build
 /// dims the accent of a collapsed tool diamond by half and keeps an open row's
@@ -479,14 +475,13 @@ fn verb_group_header(
         .finish()
 }
 
-/// One call drawn on its own: its header (with the sub-agent actions: open the
-/// child, and stop it while it runs) and the body its own fold calls for.
+/// One call drawn on its own: its header and the body its own fold calls for.
 fn single_call_column(
     call: &ToolCall,
     index: usize,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
     sub_agents: &HashMap<String, SubAgentRow>,
-    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    sub_agent_model: &str,
     app: &crate::elements::AppContext,
 ) -> (Box<dyn Element>, bool) {
     let key = tool_fold_key(call, index);
@@ -494,32 +489,9 @@ fn single_call_column(
     let mode = fold.borrow().get(&key).copied().unwrap_or(fallback);
     // The record S4 holds for the child a call spawned, found by the call's
     // own id (`parent_call_id` is the spawn call's id). It exists only for a
-    // sub-agent-shaped call, so one lookup serves the row and its target.
+    // sub-agent-shaped call, so one lookup serves the row.
     let record = sub_agents.get(&call.id);
-    let header = tool_call_header(call, &key, fallback, mode, fold, record, app);
-    // A sub-agent's row carries its own hit targets beside the fold toggle: the
-    // one that opens the child's own view and, while the child runs, the one
-    // that stops it.
-    let targets: Vec<Box<dyn Element>> = [
-        sub_agent_open_target(record, on_action, mode, app),
-        sub_agent_stop_target(record, on_action, mode, app),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let header = if targets.is_empty() {
-        header
-    } else {
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(2.0)
-            // The header takes the space the actions leave, so a long subject
-            // wraps inside the pane instead of pushing them out.
-            .with_child(Expanded::new(header).with_flex(1.0).finish())
-            .with_children(targets)
-            .finish()
-    };
+    let header = tool_call_header(call, &key, fallback, mode, fold, record, sub_agent_model, app);
     // Stretch, so the header and the body are measured at the transcript's
     // width: a long command or path wraps inside the pane instead of running
     // past its right edge.
@@ -557,7 +529,7 @@ pub(super) fn build_tool_call_rows(
     tool_calls: &[ToolCall],
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
     sub_agents: &HashMap<String, SubAgentRow>,
-    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    sub_agent_model: &str,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Sm);
@@ -588,7 +560,14 @@ pub(super) fn build_tool_call_rows(
         // keeps its own rows, and the next folded call starts a fresh run.
         if !matches!(run_step(&tool_calls[index], mode), RunStep::Member(_)) {
             let (element, collapsed) =
-                single_call_column(&tool_calls[index], index, fold, sub_agents, on_action, app);
+                single_call_column(
+                    &tool_calls[index],
+                    index,
+                    fold,
+                    sub_agents,
+                    sub_agent_model,
+                    app,
+                );
             column = push(column, element, collapsed);
             index += 1;
             continue;
@@ -644,7 +623,7 @@ pub(super) fn build_tool_call_rows(
                 member,
                 fold,
                 sub_agents,
-                on_action,
+                sub_agent_model,
                 app,
             );
             group = group.with_child(element);
@@ -653,6 +632,34 @@ pub(super) fn build_tool_call_rows(
         index = end.max(start + 1);
     }
     column.finish()
+}
+
+/// The operand a live child's row draws: while it runs, the delegation itself
+/// (`running: “<description>”`); once it ends, the description alone, which is
+/// what grok-build's finished row reads.
+fn sub_agent_subject(record: &SubAgentRow) -> String {
+    let description = subagent_subject(&record.description);
+    if record.is_running() {
+        format!("running: {description}")
+    } else {
+        description
+    }
+}
+
+/// The dim tail a live child's row draws: what the child is doing while it
+/// runs — `Responding`, and the model it is responding with when the pane knows
+/// one — and its terminal phrase and outcome once it ends.
+fn sub_agent_detail(record: &SubAgentRow, model: &str) -> String {
+    if !record.is_running() {
+        return record.status_line();
+    }
+    let model = model.trim();
+    let doing = if model.is_empty() {
+        "Responding".to_string()
+    } else {
+        format!("Responding ({model})")
+    };
+    format!("· {doing}")
 }
 
 /// The row a call always draws: the rail while it is open, the status mark,
@@ -673,6 +680,7 @@ pub(super) fn tool_call_header(
     mode: ToolDisplayMode,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
     sub_agent: Option<&SubAgentRow>,
+    sub_agent_model: &str,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
     // A live child's record is the row's state; the row's own shape is whatever
@@ -692,9 +700,11 @@ pub(super) fn tool_call_header(
     }
     if let Some(record) = sub_agent {
         // A child's own record carries what the arguments cannot: what the
-        // child is doing and how long it has been doing it.
-        parsed.subject = subagent_subject(&record.description);
-        parsed.detail = record.status_line();
+        // child is doing and how long it has been doing it. The chat states
+        // the delegation and nothing else; the controls that enter and stop
+        // the child belong to the pane's strip.
+        parsed.subject = sub_agent_subject(record);
+        parsed.detail = sub_agent_detail(record, sub_agent_model);
     } else if parsed.kind == ToolKind::SubAgent {
         parsed.subject = match argument_str(&arguments, "description") {
             Some(description) => subagent_subject(description),
@@ -757,73 +767,6 @@ pub(super) fn tool_call_header(
         folds.insert(key.clone(), current.next());
     })
     .finish()
-}
-
-/// The sub-agent row's open target: a click fires [`ChatAction::OpenSubAgent`]
-/// carrying the child's own conversation id, which opens the child view — the
-/// child's own conversation shown in the pane, Esc back (S6). There is no
-/// target without a live record or without a handler to receive it — a dead
-/// affordance is not drawn.
-pub(super) fn sub_agent_open_target(
-    sub_agent: Option<&SubAgentRow>,
-    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
-    mode: ToolDisplayMode,
-    app: &crate::elements::AppContext,
-) -> Option<Box<dyn Element>> {
-    let record = sub_agent.filter(|record| !record.child_id.is_empty())?;
-    let on_action = on_action.clone()?;
-    let child_id = record.child_id.clone();
-    let size = match mode {
-        ToolDisplayMode::Collapsed => TOOL_ACTION_FONT_SIZE,
-        _ => TOOL_ROW_FONT_SIZE,
-    };
-    Some(
-        Chip::new(
-            Text::new("open child")
-                .with_theme_color(ColorToken::Accent, app)
-                .with_font_family(FontFamily::Mono)
-                .with_font_size(size)
-                .finish(),
-        )
-        .with_on_click(move || {
-            (on_action.borrow_mut())(ChatAction::OpenSubAgent(child_id.clone()));
-        })
-        .finish(),
-    )
-}
-
-/// The sub-agent row's stop target: a click fires [`ChatAction::StopSubAgent`]
-/// carrying the child's own conversation id, which cancels the child's turn on
-/// the app side. Drawn only while the child runs — a child that already ended
-/// has nothing left to stop, and a dead affordance is not drawn.
-pub(super) fn sub_agent_stop_target(
-    sub_agent: Option<&SubAgentRow>,
-    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
-    mode: ToolDisplayMode,
-    app: &crate::elements::AppContext,
-) -> Option<Box<dyn Element>> {
-    let record = sub_agent.filter(|record| {
-        record.status == SubAgentRowStatus::Running && !record.child_id.is_empty()
-    })?;
-    let on_action = on_action.clone()?;
-    let child_id = record.child_id.clone();
-    let size = match mode {
-        ToolDisplayMode::Collapsed => TOOL_ACTION_FONT_SIZE,
-        _ => TOOL_ROW_FONT_SIZE,
-    };
-    Some(
-        Chip::new(
-            Text::new("Stop")
-                .with_theme_color(ColorToken::Error, app)
-                .with_font_family(FontFamily::Mono)
-                .with_font_size(size)
-                .finish(),
-        )
-        .with_on_click(move || {
-            (on_action.borrow_mut())(ChatAction::StopSubAgent(child_id.clone()));
-        })
-        .finish(),
-    )
 }
 
 /// One body row of a tool call: mono, at the tool row's size.

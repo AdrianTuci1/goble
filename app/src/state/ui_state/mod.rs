@@ -148,6 +148,10 @@ pub struct UiState {
     /// row ([`UiState::open_sub_agent`]) and left again with Esc
     /// ([`UiState::close_sub_agent_view`]).
     pub sub_agent_views: HashMap<u64, SubAgentChildView>,
+    /// Whether the sub-agent strip under an agent pane's header is open. One
+    /// app-wide disclosure, so the strip folds and opens as the same strip in
+    /// every pane.
+    pub sub_agent_panel_open: bool,
     /// The pane drawn over the whole panes space, if any. Lives in app state so
     /// it survives the per-frame element rebuild; `None` is the tree's own
     /// layout. A pane id from another space simply does not match, so the

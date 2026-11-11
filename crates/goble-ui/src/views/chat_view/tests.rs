@@ -1023,6 +1023,65 @@ fn a_pending_command_hides_the_rich_input() {
     );
 }
 
+/// The question panel takes the same slot as the approval card: while it waits
+/// the rich input is gone, so a digit pressed at the pane picks an answer
+/// instead of being typed into a composer.
+#[test]
+fn a_pending_ask_hides_the_rich_input_and_takes_the_digits() {
+    use crate::elements::EventContext;
+    use crate::event::{DispatchedEvent, ModifiersState};
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let ask = AskUserUi::new(
+        "Which environment?",
+        vec!["staging".to_string(), "production".to_string()],
+    );
+    let probe = ask.clone();
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Ready when you are.")],
+        )])
+        // The composer held the keyboard before the question arrived.
+        .with_composer_focused(true)
+        .with_composer_value("a half-written prompt")
+        .with_pending_ask(Some(ask))
+        .finish();
+    let drawn: Vec<String> = render_element(&mut view, vec2f(600.0, 500.0), &app)
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    for hidden in ["Ask anything...", "a half-written prompt"] {
+        assert!(
+            !drawn.iter().any(|text| text == hidden),
+            "the rich input is not drawn while the question waits ({hidden:?}): {drawn:?}"
+        );
+    }
+    assert!(
+        drawn.iter().any(|text| text == "Agent questions"),
+        "the question panel is the only input surface: {drawn:?}"
+    );
+
+    let digit = DispatchedEvent::KeyDown {
+        key: "1".to_string(),
+        modifiers: ModifiersState::none(),
+    };
+    assert!(
+        view.dispatch_event(&digit, &mut EventContext::default(), &app),
+        "the panel takes the digit"
+    );
+    assert_eq!(
+        probe.selected_index(),
+        Some(0),
+        "the digit picks the first answer instead of typing into a composer"
+    );
+}
+
 /// The card keeps the keys while it waits, whatever the composer's last focus
 /// state was: typing edits the command Enter will run.
 #[test]

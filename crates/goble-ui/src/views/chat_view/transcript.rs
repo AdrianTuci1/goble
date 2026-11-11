@@ -654,10 +654,10 @@ impl ChatView {
             // model) so it scrolls with the conversation rather than pinning to
             // the bottom of the window.
             if let Some(ask) = &self.pending_ask {
-                let mut card = AskUserCard::from_ui(ask)
-                    // The rich input keeps its keys while it holds the
-                    // keyboard; otherwise the panel answers digits and Enter.
-                    .with_keys_enabled(!self.composer_focused);
+                // The rich input is not built while the question waits, so the
+                // panel is the pane's only typing surface and always holds the
+                // keys — whatever focus the composer had before it arrived.
+                let mut card = AskUserCard::from_ui(ask);
                 if let Some(cb) = self.on_answer_ask.clone() {
                     card = card.with_on_answer(move |resp, cred| (cb.borrow_mut())(resp, cred));
                 }
@@ -1021,12 +1021,12 @@ impl ChatView {
         // draft's own command list holds while the draft is a command, the way
         // grok-build puts them over the prompt and not over the pane.
         if self.show_composer {
-            // A waiting command puts the card's keys first: the command list,
-            // the instruction strip and the rich input all stay away, so the
-            // card's command field is the pane's only typing surface. The
-            // turn-status row (with its Stop) stays, because the turn is still
-            // in flight.
-            let waiting = self.composer_proposal.is_some();
+            // A card waiting on the user — a command to approve, or a question
+            // to answer — puts its keys first: the command list, the
+            // instruction strip and the rich input all stay away, so the card
+            // is the pane's only typing surface. The turn-status row (with its
+            // Stop) stays, because the turn is still in flight.
+            let waiting = self.composer_proposal.is_some() || self.pending_ask.is_some();
             if !waiting {
                 if let Some(menu) = self.slash_menu().or_else(|| self.model_menu()) {
                     column = column.with_child(menu);
@@ -1072,10 +1072,10 @@ impl ChatView {
             // open a gap under the rule. The shell pane's bar keeps its rows
             // `xs` under its own divider; this is the same edge.
             //
-            // A waiting command hides the whole input: the card above is the
-            // pane's only typing surface until Run or Reject settles the
-            // decision. The turn-status row stays as the mark that the turn is
-            // suspended.
+            // A waiting command or question hides the whole input: the card
+            // above is the pane's only typing surface until the decision or
+            // the answer settles it. The turn-status row stays as the mark
+            // that the turn is suspended.
             if !waiting {
                 let input = Flex::column()
                     .with_main_axis_size(MainAxisSize::Min)

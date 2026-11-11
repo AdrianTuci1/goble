@@ -4,8 +4,9 @@
 //! exactly where the answer belongs. It is grok-new's *Agent questions* band: a
 //! full-width flat surface, a header naming the question with its two controls,
 //! the question on its own row and one full-width row per answer. The rows are
-//! numbered, so a digit answers as well as a click, and the last row ("Other…")
-//! opens the free-text field.
+//! numbered, so a digit answers as well as a click; the arrows move the picked
+//! row and Enter sends it, like the command approval card. The last row
+//! ("Other…") opens the free-text field.
 //!
 //! The selected row, the free-text answer and the credential fields live in the
 //! [`AskUserUi`] the card is built from, so a click or a key survives the
@@ -68,6 +69,15 @@ impl AskUserUi {
             quick_replies,
             state: Rc::default(),
         }
+    }
+}
+
+impl AskUserUi {
+    /// The quick reply the panel has picked, for a host or a test that reads
+    /// the answer state without rebuilding the card.
+    #[cfg(test)]
+    pub(crate) fn selected_index(&self) -> Option<usize> {
+        self.state.borrow().selected
     }
 }
 
@@ -154,9 +164,9 @@ impl AskUserCard {
         self
     }
 
-    /// Whether digits, Enter, Escape and Ctrl-C answer the panel. Off while
-    /// another surface (the rich input) holds the keyboard, so its own typing
-    /// is not intercepted by a panel scrolled into the transcript.
+    /// Whether the arrows, digits, Enter, Escape and Ctrl-C answer the panel.
+    /// Off while another surface holds the keyboard, so its own typing is not
+    /// intercepted by a panel scrolled into the transcript.
     pub fn with_keys_enabled(mut self, enabled: bool) -> Self {
         self.keys_enabled = enabled;
         self
@@ -304,8 +314,10 @@ impl AskUserCard {
         .with_padding(EdgeInsets::new(md, sm, md, sm))
         .finish();
 
-        // The question reads on its own full-width row, under the header.
-        let question = Text::new(self.question.clone())
+        // The question reads on its own full-width row, under the header. A
+        // model that repeated the replies as a lettered list inside it would
+        // otherwise draw every option twice: once as prose and once as a row.
+        let question = Text::new(question_without_repeated_replies(&self.question, &replies))
             .with_theme_color(ColorToken::Text, app)
             .with_font_size(13.0)
             .finish();
@@ -473,7 +485,9 @@ impl AskUserCard {
         .finish();
 
         // The keyboard answers the panel before the free-text field sees the
-        // key: digits pick a row, Enter submits and Ctrl-C / Escape skip.
+        // key: the arrows move the picked row, digits pick one by number, Enter
+        // sends the picked answer (or opens the text field when "Other…" is the
+        // picked row), and Ctrl-C / Escape skip.
         let key_state = state.clone();
         let key_submit = submit.clone();
         let key_skip = skip.clone();
@@ -488,7 +502,46 @@ impl AskUserCard {
                     (key_skip.borrow_mut())();
                     true
                 }
+                "ArrowDown" | "ArrowUp"
+                    if !modifiers.command && !modifiers.ctrl && !modifiers.alt =>
+                {
+                    let mut state = key_state.borrow_mut();
+                    // A focused field owns the arrows: they move its caret.
+                    if state.focused.is_some() {
+                        return false;
+                    }
+                    let count = key_replies.len() + 1;
+                    let current = state.selected.map(|row| row as isize).or(if state.other {
+                        Some(key_replies.len() as isize)
+                    } else {
+                        None
+                    });
+                    let next = match key {
+                        "ArrowDown" => current.map_or(0, |row| row + 1).min(count as isize - 1),
+                        _ => current.map_or(count as isize - 1, |row| row - 1).max(0),
+                    };
+                    if next as usize == key_replies.len() {
+                        state.selected = None;
+                        state.other = true;
+                    } else {
+                        state.selected = Some(next as usize);
+                        state.other = false;
+                        state.free_text.clear();
+                        state.focused = None;
+                    }
+                    true
+                }
                 "Enter" if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
+                    // "Other…" picked with the arrows opens its field on Enter;
+                    // the field's own text is sent by the next Enter.
+                    let opens_free_text = {
+                        let state = key_state.borrow();
+                        state.other && state.focused.is_none()
+                    };
+                    if opens_free_text {
+                        key_state.borrow_mut().focused = Some(AskFocus::FreeText);
+                        return true;
+                    }
                     (key_submit.borrow_mut())();
                     true
                 }
@@ -572,6 +625,83 @@ fn set_field_focus(state: &Rc<RefCell<AskUserState>>, field: AskFocus, focused: 
     } else if state.focused == Some(field) {
         state.focused = None;
     }
+}
+
+/// The question as the panel reads it. A model that lists the answers inside
+/// the question ("A) ~8 seconds", "2. production") would draw every option
+/// twice: once as prose and once as the row it is answered with. Drop exactly
+/// those lines, keeping prose — and a question that names no options — intact.
+fn question_without_repeated_replies(question: &str, replies: &[String]) -> String {
+    if replies.is_empty() {
+        return question.to_string();
+    }
+    let wanted: Vec<String> = replies
+        .iter()
+        .map(|reply| normalize_option(reply))
+        .collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut dropped = false;
+    for line in question.lines() {
+        let repeated = option_body(line)
+            .is_some_and(|body| wanted.iter().any(|reply| *reply == normalize_option(body)));
+        if repeated {
+            dropped = true;
+            continue;
+        }
+        kept.push(line);
+    }
+    if !dropped {
+        return question.to_string();
+    }
+    // The gap an option list leaves behind reads as a blank row of its own.
+    let mut out: Vec<&str> = Vec::new();
+    for line in kept {
+        if line.trim().is_empty() && out.last().is_some_and(|last| last.trim().is_empty()) {
+            continue;
+        }
+        out.push(line);
+    }
+    while out.last().is_some_and(|last| last.trim().is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+/// The body of a line that enumerates an answer: `A) x`, `(b) x`, `3. x`,
+/// `- x`. `None` for prose, so only a listed option can be matched against a
+/// reply.
+fn option_body(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    for bullet in ["- ", "* ", "• "] {
+        if let Some(body) = trimmed.strip_prefix(bullet) {
+            let body = body.trim();
+            return (!body.is_empty()).then_some(body);
+        }
+    }
+    if let Some(inner) = trimmed.strip_prefix('(') {
+        let (marker, rest) = inner.split_once(')')?;
+        if !marker.is_empty() && marker.chars().all(|c| c.is_ascii_alphanumeric()) {
+            let body = rest.trim();
+            return (!body.is_empty()).then_some(body);
+        }
+        return None;
+    }
+    let (marker, rest) = trimmed.split_once(|c: char| matches!(c, ')' | '.' | ':'))?;
+    if marker.is_empty() || marker.len() > 3 || !marker.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let body = rest.trim();
+    (!body.is_empty()).then_some(body)
+}
+
+/// The comparison key for an option: spacing and case do not distinguish a
+/// listed answer from the reply row that draws it, nor does a trailing period.
+fn normalize_option(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(|c: char| matches!(c, '.' | ':' | ',' | ';'))
+        .to_lowercase()
 }
 
 /// One answer band: its number in a keycap and the label, with the picked row
@@ -855,6 +985,103 @@ mod tests {
         assert!(press(&mut element, "2", &app), "the digit is consumed");
         assert_eq!(state.borrow().selected, Some(1));
         assert!(!state.borrow().other, "the quick reply is the answer");
+    }
+
+    /// The arrows walk the answer rows and Enter sends the picked one: the
+    /// same keyboard the command approval card gives its variants.
+    #[test]
+    fn arrow_keys_pick_a_row_and_enter_sends_it() {
+        let app = AppContext::default();
+        let (answers, handler) = answers();
+        let card = card();
+        let state = card.state.clone();
+        let mut element = card.with_on_answer(handler).finish();
+        render_element(&mut element, vec2f(520.0, 800.0), &app);
+
+        assert!(
+            press(&mut element, "ArrowDown", &app),
+            "the first arrow is the panel's"
+        );
+        assert_eq!(state.borrow().selected, Some(0), "it picks the first row");
+        assert!(press(&mut element, "ArrowDown", &app));
+        assert_eq!(state.borrow().selected, Some(1), "the next moves down");
+        assert!(press(&mut element, "ArrowUp", &app));
+        assert_eq!(state.borrow().selected, Some(0), "and back up");
+        element.dispatch_event(
+            &key("Enter", ModifiersState::none()),
+            &mut EventContext::default(),
+            &app,
+        );
+        assert_eq!(
+            answers.borrow().as_slice(),
+            [("Postgres".to_string(), None)],
+            "Enter sends the highlighted row"
+        );
+    }
+
+    /// Enter on "Other…" opens its field instead of sending an empty answer; the
+    /// field's own text goes out on the next Enter.
+    #[test]
+    fn enter_on_other_opens_the_free_text_instead_of_sending() {
+        let app = AppContext::default();
+        let (answers, handler) = answers();
+        let card = card();
+        let state = card.state.clone();
+        let mut element = card.with_on_answer(handler).finish();
+        render_element(&mut element, vec2f(520.0, 800.0), &app);
+
+        // From no selection, Up picks the last row, which is "Other…".
+        assert!(press(&mut element, "ArrowUp", &app));
+        assert!(state.borrow().other, "Other… is the picked row");
+        assert!(press(&mut element, "Enter", &app));
+        assert_eq!(
+            state.borrow().focused,
+            Some(AskFocus::FreeText),
+            "Enter opens the field"
+        );
+        assert!(answers.borrow().is_empty(), "nothing was sent yet");
+
+        // The next frame draws the field, which takes the typed answer.
+        render_element(&mut element, vec2f(520.0, 800.0), &app);
+        for ch in ["n", "o"] {
+            press(&mut element, ch, &app);
+        }
+        press(&mut element, "Enter", &app);
+        assert_eq!(
+            answers.borrow().as_slice(),
+            [("no".to_string(), None)],
+            "Enter sends the typed answer"
+        );
+    }
+
+    /// A question that lists its answers in prose draws each option once: the
+    /// list is dropped, the question and the numbered rows stay.
+    #[test]
+    fn the_question_does_not_repeat_the_answer_rows() {
+        let app = AppContext::default();
+        let mut element = AskUserCard::new(
+            "Pick a host:\n\nA) staging\nB) production",
+            vec!["staging".to_string(), "production".to_string()],
+        )
+        .finish();
+        let commands = render_element(&mut element, vec2f(520.0, 800.0), &app);
+        let texts = drawn(&commands);
+
+        assert!(
+            texts.iter().any(|text| text == "Pick a host:"),
+            "the question stays: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text == "A) staging"),
+            "the lettered list is gone: {texts:?}"
+        );
+        for label in ["staging", "production"] {
+            assert_eq!(
+                texts.iter().filter(|text| *text == label).count(),
+                1,
+                "{label} is drawn once, as its row: {texts:?}"
+            );
+        }
     }
 
     /// Ctrl-C and Escape both skip the question.

@@ -290,10 +290,15 @@ pub struct UiState {
     /// Accounting only; nothing here is a price.
     pub conversation_usage: HashMap<String, goble_ui::TokenUsage>,
     /// Custom theme color overrides as `#rrggbb` hex, set via the color wheel
-    /// pickers in Settings→Appearance. `None` uses the built-in theme color.
+    /// pickers in Settings→Appearance. `None` uses the theme's built-in color.
     pub theme_primary: Option<String>,
     pub theme_secondary: Option<String>,
     pub theme_accent: Option<String>,
+    pub theme_bg: Option<String>,
+    pub theme_surface: Option<String>,
+    /// The preset palette in force (`ThemePreset::key`), or `None` for the
+    /// Default base the dark-mode switch styles.
+    pub theme_preset: Option<String>,
     /// Which theme channel the single color wheel in Settings→Appearance edits.
     pub theme_color_target: crate::ui::color_picker::ColorTarget,
     /// Active color-wheel drag (which region), owned here so the per-frame

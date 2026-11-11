@@ -275,7 +275,7 @@ fn the_old_goble_file_loads_with_its_models_and_theme_intact() {
     assert_eq!(config.models.default.as_deref(), Some("gpt-4o"));
     assert_eq!(config.default_model_id().as_deref(), Some("gpt-4o"));
     assert!(config.theme.dark);
-    assert_eq!(config.theme.accent, "#14b8a6");
+    assert_eq!(config.theme.accent.as_deref(), Some("#14b8a6"));
 }
 
 #[test]
@@ -424,13 +424,58 @@ fn the_seeded_default_is_the_new_shape() {
     let toml = GobleConfig::default().to_toml().expect("serialize");
 
     assert!(toml.contains("[theme]"), "{toml}");
-    assert!(toml.contains(r##"accent = "#14b8a6""##), "{toml}");
+    // No colour is seeded: every channel is an override the user opts into.
+    assert!(!toml.contains("accent ="), "{toml}");
     assert!(!toml.contains("[llm]"), "{toml}");
     assert!(!toml.contains("version"), "{toml}");
     assert_eq!(
         GobleConfig::from_toml(&toml).expect("parse"),
         GobleConfig::default()
     );
+}
+
+/// The appearance keys round-trip: a preset name plus every channel override,
+/// and the overrides are left out of the file when they are not set.
+#[test]
+fn the_theme_section_round_trips_its_preset_and_overrides() {
+    let mut config = GobleConfig::default();
+    config.theme.dark = false;
+    config.theme.preset = Some("rosepine-moon".to_string());
+    config.theme.accent = Some("#c4a7e7".to_string());
+    config.theme.primary = Some("#e0def4".to_string());
+    config.theme.secondary = Some("#6e6a86".to_string());
+    config.theme.bg = Some("#232136".to_string());
+    config.theme.surface = Some("#2a273f".to_string());
+
+    let toml = config.to_toml().expect("serialize");
+    assert!(toml.contains(r#"preset = "rosepine-moon""#), "{toml}");
+    assert!(toml.contains(r##"bg = "#232136""##), "{toml}");
+    assert!(toml.contains(r##"surface = "#2a273f""##), "{toml}");
+    assert_eq!(GobleConfig::from_toml(&toml).expect("parse"), config);
+
+    let bare = GobleConfig::default().to_toml().expect("serialize");
+    for key in ["preset", "bg", "surface", "accent", "primary", "secondary"] {
+        assert!(
+            !bare.contains(&format!("{key} =")),
+            "{key} is not written when it is unset:\n{bare}"
+        );
+    }
+}
+
+/// A `[theme]` table from before the presets and the two backgrounds still
+/// parses: the absent keys are `None`, not a parse failure.
+#[test]
+fn an_old_theme_table_defaults_the_new_keys_to_none() {
+    let config = GobleConfig::from_toml("[theme]\ndark = false\naccent = \"#14b8a6\"\n")
+        .expect("an old theme table parses");
+
+    assert!(!config.theme.dark);
+    assert_eq!(config.theme.accent.as_deref(), Some("#14b8a6"));
+    assert!(config.theme.primary.is_none());
+    assert!(config.theme.secondary.is_none());
+    assert!(config.theme.bg.is_none());
+    assert!(config.theme.surface.is_none());
+    assert!(config.theme.preset.is_none());
 }
 
 #[test]

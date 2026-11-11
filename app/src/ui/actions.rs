@@ -548,6 +548,14 @@ pub struct UiActions {
     pub on_set_theme_secondary: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: set the custom theme accent color (as `#rrggbb`).
     pub on_set_theme_accent: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: set the custom theme background color (as `#rrggbb`).
+    pub on_set_theme_bg: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: set the custom theme surface color (as `#rrggbb`).
+    pub on_set_theme_surface: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: pick a preset palette, or `None` for the Default base.
+    pub on_set_theme_preset: Rc<RefCell<dyn FnMut(Option<goble_ui::theme::ThemePreset>)>>,
+    /// Settings: clear all five colour overrides, keeping the current base.
+    pub on_reset_theme_colors: Rc<RefCell<dyn FnMut()>>,
     /// Settings: save the profile (name, email).
     pub on_save_profile: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Settings: save the LLM config (provider, model, api_key, base_url, temperature).

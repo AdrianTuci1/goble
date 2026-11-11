@@ -37,7 +37,10 @@ impl UiState {
         self.settings_dark_mode = theme.dark;
         self.theme_primary = theme.primary;
         self.theme_secondary = theme.secondary;
-        self.theme_accent = Some(theme.accent);
+        self.theme_accent = theme.accent;
+        self.theme_bg = theme.bg;
+        self.theme_surface = theme.surface;
+        self.theme_preset = theme.preset;
         self.settings_workers = desktop
             .list_workers()
             .into_iter()

@@ -103,6 +103,21 @@ fn settings_root_with_desktop(
     tempfile::TempDir,
     std::sync::Arc<goble_desktop_service::DesktopState>,
 ) {
+    let (root, state, dir, desktop, _app) = settings_tree(category);
+    (root, state, dir, desktop)
+}
+
+/// The whole tree plus the shared `AppContext` the root writes the live theme
+/// into each frame, for the tests about what the Appearance page applies.
+type SettingsTree = (
+    Box<dyn Element>,
+    Rc<RefCell<crate::state::UiState>>,
+    tempfile::TempDir,
+    std::sync::Arc<goble_desktop_service::DesktopState>,
+    Rc<RefCell<AppContext>>,
+);
+
+fn settings_tree(category: SettingsCategory) -> SettingsTree {
     use crate::root_view::RootView;
     use goble_core::store::Store;
     use goble_desktop_service::{DesktopState, ThreadStore};
@@ -118,7 +133,9 @@ fn settings_root_with_desktop(
     desktop.set_environment_path(dir.path().join("environment.toml"));
     // The Profile page's default model lands in `config.toml`; keep it here too.
     desktop.set_config_path(dir.path().join("config.toml"));
-    let root = RootView::new(&AppContext::default(), &desktop, None);
+    let app_context = Rc::new(RefCell::new(AppContext::default()));
+    let root = RootView::new(&AppContext::default(), &desktop, None)
+        .with_app_context(Rc::clone(&app_context));
     let state = root.state_rc();
     {
         let mut s = state.borrow_mut();
@@ -130,7 +147,13 @@ fn settings_root_with_desktop(
         s.open_settings_tab(Some(&desktop));
         s.settings_set_page(category);
     }
-    (Box::new(root) as Box<dyn Element>, state, dir, desktop)
+    (
+        Box::new(root) as Box<dyn Element>,
+        state,
+        dir,
+        desktop,
+        app_context,
+    )
 }
 
 fn key(name: &str) -> DispatchedEvent {
@@ -779,7 +802,7 @@ fn frame(root: &mut Box<dyn Element>, app: &AppContext, window: Vector2F) -> Vec
 
 /// Appearance draws exactly one color wheel — one hue ring and one
 /// saturation/value square — and the square reports into the channel the
-/// swatch column selected, not into all three at once.
+/// swatch column selected, not into all five at once.
 #[test]
 fn the_appearance_pane_has_one_wheel_wired_to_the_selected_channel() {
     use crate::ui::color_picker::SV_ROWS;
@@ -881,6 +904,370 @@ fn clicking_a_swatch_retargets_the_wheel() {
         "a click on the swatch row is handled"
     );
     assert_eq!(state.borrow().theme_color_target, ColorTarget::Accent);
+}
+
+/// The Colors section lists the three foreground channels and the two the pane
+/// is painted with, in the order the focus order walks them.
+#[test]
+fn the_colors_section_lists_five_channels_in_order() {
+    use crate::ui::color_picker::{ColorTarget, COLOR_TARGET_ORDER};
+
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 1200.0);
+    let (mut root, state, _dir) = settings_root(SettingsCategory::Appearance);
+    let commands = frame(&mut root, &app, window);
+
+    assert_eq!(
+        COLOR_TARGET_ORDER,
+        [
+            ColorTarget::Primary,
+            ColorTarget::Secondary,
+            ColorTarget::Accent,
+            ColorTarget::Background,
+            ColorTarget::Surface,
+        ]
+    );
+    let mut previous_y: Option<f32> = None;
+    for target in COLOR_TARGET_ORDER {
+        let origin = drawn_text(&commands, target.label())
+            .unwrap_or_else(|| panic!("{} is drawn", target.label()));
+        if let Some(y) = previous_y {
+            assert!(
+                origin.y > y,
+                "{} is drawn below the channel before it",
+                target.label()
+            );
+        }
+        previous_y = Some(origin.y);
+    }
+
+    let channels: Vec<ColorTarget> = state
+        .borrow()
+        .settings_pane_controls()
+        .into_iter()
+        .filter_map(|control| match control {
+            SettingsControl::ThemeChannel(target) => Some(target),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(channels, COLOR_TARGET_ORDER.to_vec());
+}
+
+/// A background row retargets the one wheel, exactly as a foreground row does:
+/// the wheel then edits the channel the row selected.
+#[test]
+fn clicking_a_background_row_retargets_the_wheel() {
+    use crate::ui::color_picker::ColorTarget;
+
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 1200.0);
+    let (mut root, state, _dir) = settings_root(SettingsCategory::Appearance);
+    let commands = frame(&mut root, &app, window);
+
+    let background = drawn_text(&commands, "Background").expect("the Background row is drawn");
+    click(&mut root, &app, background + vec2f(2.0, 2.0));
+    assert_eq!(state.borrow().theme_color_target, ColorTarget::Background);
+
+    let commands = frame(&mut root, &app, window);
+    let surface = drawn_text(&commands, "Surface").expect("the Surface row is drawn");
+    click(&mut root, &app, surface + vec2f(2.0, 2.0));
+    assert_eq!(state.borrow().theme_color_target, ColorTarget::Surface);
+}
+
+/// Moving the wheel on one of the two background channels sets that channel and
+/// persists it in `[theme]`, leaving the other one alone.
+#[test]
+fn moving_the_wheel_on_a_background_channel_persists_it() {
+    use crate::ui::color_picker::ColorTarget;
+
+    for target in [ColorTarget::Background, ColorTarget::Surface] {
+        let app = AppContext::default();
+        let window = vec2f(1024.0, 1200.0);
+        let (mut root, state, _dir, desktop) =
+            settings_root_with_desktop(SettingsCategory::Appearance);
+        state.borrow_mut().theme_color_target = target;
+        let commands = frame(&mut root, &app, window);
+        let ring = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawImage { rect, source, .. } if source.contains("ring") => {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the wheel is drawn");
+        let click_at = vec2f(
+            ring.min_x() + ring.width() * 0.5 + 40.0,
+            ring.min_y() + ring.height() * 0.5 - 40.0,
+        );
+        click(&mut root, &app, click_at);
+
+        let theme = desktop.config().theme;
+        let s = state.borrow();
+        match target {
+            ColorTarget::Background => {
+                assert_eq!(theme.bg, s.theme_bg, "bg is persisted");
+                assert!(theme.bg.is_some());
+                assert!(theme.surface.is_none(), "Surface was not touched");
+            }
+            ColorTarget::Surface => {
+                assert_eq!(theme.surface, s.theme_surface, "surface is persisted");
+                assert!(theme.surface.is_some());
+                assert!(theme.bg.is_none(), "Background was not touched");
+            }
+            _ => unreachable!("the loop only covers the background channels"),
+        }
+        assert!(
+            theme.primary.is_none(),
+            "{target:?}: Primary was not touched"
+        );
+        assert!(
+            theme.secondary.is_none(),
+            "{target:?}: Secondary was not touched"
+        );
+        assert!(theme.accent.is_none(), "{target:?}: Accent was not touched");
+    }
+}
+
+/// A custom colour on all five channels, in the pane's state and in the config
+/// it writes, the way the wheel leaves them before a base is picked.
+fn seed_theme_overrides(
+    state: &Rc<RefCell<crate::state::UiState>>,
+    desktop: &std::sync::Arc<goble_desktop_service::DesktopState>,
+) {
+    let seeded = ["#ff0000", "#00ff00", "#0000ff", "#101010", "#202020"];
+    {
+        let mut s = state.borrow_mut();
+        s.theme_primary = Some(seeded[0].to_string());
+        s.theme_secondary = Some(seeded[1].to_string());
+        s.theme_accent = Some(seeded[2].to_string());
+        s.theme_bg = Some(seeded[3].to_string());
+        s.theme_surface = Some(seeded[4].to_string());
+    }
+    let mut config = desktop.config();
+    config.theme.primary = Some(seeded[0].to_string());
+    config.theme.secondary = Some(seeded[1].to_string());
+    config.theme.accent = Some(seeded[2].to_string());
+    config.theme.bg = Some(seeded[3].to_string());
+    config.theme.surface = Some(seeded[4].to_string());
+    desktop
+        .save_config(&config)
+        .expect("save the seeded overrides");
+}
+
+/// Every channel is the base palette's own colour again, in the pane and in the
+/// config it persisted.
+fn assert_theme_overrides_cleared(
+    state: &Rc<RefCell<crate::state::UiState>>,
+    desktop: &std::sync::Arc<goble_desktop_service::DesktopState>,
+    what: &str,
+) {
+    {
+        let s = state.borrow();
+        assert!(s.theme_primary.is_none(), "{what}: Primary is cleared");
+        assert!(s.theme_secondary.is_none(), "{what}: Secondary is cleared");
+        assert!(s.theme_accent.is_none(), "{what}: Accent is cleared");
+        assert!(s.theme_bg.is_none(), "{what}: Background is cleared");
+        assert!(s.theme_surface.is_none(), "{what}: Surface is cleared");
+    }
+    let theme = desktop.config().theme;
+    assert!(
+        theme.primary.is_none(),
+        "{what}: Primary is cleared in the config"
+    );
+    assert!(
+        theme.secondary.is_none(),
+        "{what}: Secondary is cleared in the config"
+    );
+    assert!(
+        theme.accent.is_none(),
+        "{what}: Accent is cleared in the config"
+    );
+    assert!(
+        theme.bg.is_none(),
+        "{what}: Background is cleared in the config"
+    );
+    assert!(
+        theme.surface.is_none(),
+        "{what}: Surface is cleared in the config"
+    );
+}
+
+/// The Themes section offers the Default base and one row per preset, and a
+/// click shows that palette exactly: the preset is persisted and the five
+/// channel overrides are cleared, so the preset's own colours are what the
+/// next frame paints. The Default row goes back to the built-in base,
+/// clearing the preset and the overrides with it.
+#[test]
+fn clicking_a_preset_row_applies_and_persists_it() {
+    use goble_ui::theme::{ColorToken, Theme, ThemePreset};
+
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 1200.0);
+    let (mut root, state, _dir, desktop, theme_ctx) = settings_tree(SettingsCategory::Appearance);
+    let commands = frame(&mut root, &app, window);
+
+    assert!(drawn(&commands, "Default"), "the Default row is drawn");
+    for preset in ThemePreset::ALL {
+        assert!(
+            drawn(&commands, preset.display_name()),
+            "{} is drawn",
+            preset.display_name()
+        );
+        assert!(
+            drawn_text(&commands, preset.description()).is_some(),
+            "{}'s descriptor is drawn",
+            preset.display_name()
+        );
+    }
+    // The preset rows sit between the dark-mode switch and the channel rows.
+    let controls = state.borrow().settings_pane_controls();
+    assert_eq!(controls[0], SettingsControl::DarkMode);
+    assert_eq!(controls[1], SettingsControl::ThemePreset(None));
+    assert_eq!(
+        controls[2..7].to_vec(),
+        ThemePreset::ALL
+            .map(|preset| SettingsControl::ThemePreset(Some(preset)))
+            .to_vec()
+    );
+    assert_eq!(controls.last(), Some(&SettingsControl::ResetThemeColors));
+
+    // The wheel has refined the palette, and those overrides are stored: the
+    // preset has to drop them or its own colours never show.
+    seed_theme_overrides(&state, &desktop);
+    let commands = frame(&mut root, &app, window);
+    let row = drawn_text(&commands, "Tokyo Night").expect("the Tokyo Night row is drawn");
+    click(&mut root, &app, row + vec2f(2.0, 2.0));
+    assert_eq!(
+        state.borrow().theme_preset.as_deref(),
+        Some(ThemePreset::TokyoNight.key())
+    );
+    assert_eq!(
+        desktop.config().theme.preset.as_deref(),
+        Some(ThemePreset::TokyoNight.key())
+    );
+    assert_theme_overrides_cleared(&state, &desktop, "Tokyo Night");
+
+    // The next frame paints the preset exactly: its own palette, its key, and
+    // no override left on top.
+    frame(&mut root, &app, window);
+    let applied = theme_ctx.borrow().theme.clone();
+    assert_eq!(applied, Theme::preset(ThemePreset::TokyoNight));
+    assert_eq!(applied.name, ThemePreset::TokyoNight.key());
+    assert_eq!(
+        applied.color(ColorToken::Bg),
+        ThemePreset::TokyoNight.colors().bg
+    );
+    assert_eq!(
+        applied.color(ColorToken::Accent),
+        ThemePreset::TokyoNight.accent()
+    );
+
+    // Default goes back to the built-in base and clears the stored preset, and
+    // it clears the overrides just as a preset row does.
+    seed_theme_overrides(&state, &desktop);
+    let commands = frame(&mut root, &app, window);
+    let default = drawn_text(&commands, "Default").expect("the Default row is drawn");
+    click(&mut root, &app, default + vec2f(2.0, 2.0));
+    assert!(state.borrow().theme_preset.is_none());
+    assert!(desktop.config().theme.preset.is_none());
+    assert_theme_overrides_cleared(&state, &desktop, "Default");
+    frame(&mut root, &app, window);
+    let applied = theme_ctx.borrow().theme.clone();
+    assert_eq!(applied.name, "dark");
+    assert_eq!(applied, Theme::dark());
+
+    // The same rows answer Enter: the focus order puts every preset in reach,
+    // and Enter clears the overrides the click does.
+    seed_theme_overrides(&state, &desktop);
+    {
+        let mut s = state.borrow_mut();
+        let slot = s
+            .settings_pane_controls()
+            .iter()
+            .position(|control| {
+                *control == SettingsControl::ThemePreset(Some(ThemePreset::GrokNight))
+            })
+            .expect("Grok Night is in the focus order");
+        s.settings_focus = SettingsFocus::Pane;
+        s.settings_pane_focus = slot;
+    }
+    frame(&mut root, &app, window);
+    assert!(press(&mut root, &app, "Enter"));
+    assert_eq!(
+        state.borrow().theme_preset.as_deref(),
+        Some(ThemePreset::GrokNight.key())
+    );
+    assert_eq!(
+        desktop.config().theme.preset.as_deref(),
+        Some(ThemePreset::GrokNight.key())
+    );
+    assert_theme_overrides_cleared(&state, &desktop, "Enter on Grok Night");
+    frame(&mut root, &app, window);
+    assert_eq!(
+        theme_ctx.borrow().theme.clone(),
+        Theme::preset(ThemePreset::GrokNight)
+    );
+}
+
+/// Reset colors clears the five overrides and keeps the base palette selected.
+#[test]
+fn the_reset_row_clears_the_overrides_and_keeps_the_preset() {
+    use goble_ui::theme::ThemePreset;
+
+    let app = AppContext::default();
+    let window = vec2f(1024.0, 1200.0);
+    let (mut root, state, _dir, desktop, theme_ctx) = settings_tree(SettingsCategory::Appearance);
+    {
+        let mut s = state.borrow_mut();
+        s.theme_primary = Some("#ff0000".to_string());
+        s.theme_secondary = Some("#00ff00".to_string());
+        s.theme_accent = Some("#0000ff".to_string());
+        s.theme_bg = Some("#101010".to_string());
+        s.theme_surface = Some("#202020".to_string());
+    }
+    let mut config = desktop.config();
+    config.theme.preset = Some(ThemePreset::GrokNight.key().to_string());
+    config.theme.primary = Some("#ff0000".to_string());
+    config.theme.secondary = Some("#00ff00".to_string());
+    config.theme.accent = Some("#0000ff".to_string());
+    config.theme.bg = Some("#101010".to_string());
+    config.theme.surface = Some("#202020".to_string());
+    desktop
+        .save_config(&config)
+        .expect("save the fixture config");
+    state.borrow_mut().theme_preset = Some(ThemePreset::GrokNight.key().to_string());
+
+    let commands = frame(&mut root, &app, window);
+    let reset = drawn_text(&commands, "Reset colors").expect("the reset row is drawn");
+    click(&mut root, &app, reset + vec2f(2.0, 2.0));
+
+    let s = state.borrow();
+    assert!(s.theme_primary.is_none());
+    assert!(s.theme_secondary.is_none());
+    assert!(s.theme_accent.is_none());
+    assert!(s.theme_bg.is_none());
+    assert!(s.theme_surface.is_none());
+    assert_eq!(
+        s.theme_preset.as_deref(),
+        Some(ThemePreset::GrokNight.key()),
+        "the base palette stays"
+    );
+    drop(s);
+    let theme = desktop.config().theme;
+    assert!(theme.primary.is_none());
+    assert!(theme.secondary.is_none());
+    assert!(theme.accent.is_none());
+    assert!(theme.bg.is_none());
+    assert!(theme.surface.is_none());
+
+    frame(&mut root, &app, window);
+    let applied = theme_ctx.borrow().theme.clone();
+    assert_eq!(applied.name, ThemePreset::GrokNight.key());
+    assert_eq!(
+        applied.color(goble_ui::theme::ColorToken::Bg),
+        ThemePreset::GrokNight.colors().bg
+    );
 }
 
 // ---- The settings tab's two-region keyboard model --------------------------

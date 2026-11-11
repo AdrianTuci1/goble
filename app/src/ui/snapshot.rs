@@ -387,6 +387,10 @@ pub struct UiSnapshot {
     pub theme_primary: Option<String>,
     pub theme_secondary: Option<String>,
     pub theme_accent: Option<String>,
+    pub theme_bg: Option<String>,
+    pub theme_surface: Option<String>,
+    /// The preset palette in force (`ThemePreset::key`), or `None` for Default.
+    pub theme_preset: Option<String>,
     /// Which theme channel the single color wheel in Settings→Appearance edits.
     pub theme_color_target: color_picker::ColorTarget,
     pub theme_color_drag: Rc<RefCell<Option<color_picker::ColorPickerDrag>>>,

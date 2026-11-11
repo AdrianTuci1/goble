@@ -389,6 +389,11 @@ pub enum SettingsControl {
     DarkMode,
     /// Appearance: one channel of the colour-target column.
     ThemeChannel(super::color_picker::ColorTarget),
+    /// Appearance: one row of the Themes section. `None` is the Default row;
+    /// `Some` is a preset palette.
+    ThemePreset(Option<goble_ui::theme::ThemePreset>),
+    /// Appearance: clear the five colour overrides, keeping the base palette.
+    ResetThemeColors,
     /// Appearance: the colour wheel; it is a drag surface, so it takes a focus
     /// stop and the ring but no arrow adjustment.
     ColorWheel,

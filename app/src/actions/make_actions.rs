@@ -10,6 +10,7 @@ use goble_desktop_service::DesktopState;
 use goble_terminal::blocks::BlockView;
 use goble_ui::geometry::Vector2F;
 use goble_ui::platform::WindowControl;
+use goble_ui::theme::ThemePreset;
 use goble_ui::{ChatMessage, ChatRole, SettingsPage};
 
 use crate::media::MediaState;
@@ -402,6 +403,10 @@ pub fn make_actions(
     let on_set_theme_primary = Rc::clone(&state);
     let on_set_theme_secondary = Rc::clone(&state);
     let on_set_theme_accent = Rc::clone(&state);
+    let on_set_theme_bg = Rc::clone(&state);
+    let on_set_theme_surface = Rc::clone(&state);
+    let on_set_theme_preset = Rc::clone(&state);
+    let on_reset_theme_colors = Rc::clone(&state);
     let on_save_profile = Rc::clone(&state);
     let on_profile_name_change = Rc::clone(&state);
     let on_default_model_state = Rc::clone(&state);
@@ -455,6 +460,10 @@ pub fn make_actions(
     let desktop_theme_primary = desktop.clone();
     let desktop_theme_secondary = desktop.clone();
     let desktop_theme_accent = desktop.clone();
+    let desktop_theme_bg = desktop.clone();
+    let desktop_theme_surface = desktop.clone();
+    let desktop_theme_preset = desktop.clone();
+    let desktop_reset_theme = desktop.clone();
     let desktop_reload_model = desktop.clone();
     let desktop_reload_remote_agents = desktop.clone();
     let ui_zoom_font = ui_zoom.clone();
@@ -586,6 +595,55 @@ pub fn make_actions(
         Rc::new(RefCell::new(move |target: ColorTarget| {
             on_set_theme_target.borrow_mut().theme_color_target = target;
         }));
+    // A preset (or the Default row) is the whole palette, so picking one drops
+    // the five channel overrides as well: the page then shows the theme exactly
+    // as it is defined. The wheel still refines it afterwards.
+    let action_set_theme_preset: Rc<RefCell<dyn FnMut(Option<ThemePreset>)>> =
+        Rc::new(RefCell::new(move |preset: Option<ThemePreset>| {
+            let key = preset.map(|preset| preset.key().to_string());
+            {
+                let mut state = on_set_theme_preset.borrow_mut();
+                state.theme_preset = key.clone();
+                state.theme_primary = None;
+                state.theme_secondary = None;
+                state.theme_accent = None;
+                state.theme_bg = None;
+                state.theme_surface = None;
+            }
+            if let Some(desktop) = &desktop_theme_preset {
+                let mut config = desktop.config();
+                config.theme.preset = key;
+                config.theme.primary = None;
+                config.theme.secondary = None;
+                config.theme.accent = None;
+                config.theme.bg = None;
+                config.theme.surface = None;
+                if let Err(e) = desktop.save_config(&config) {
+                    log::warn!("save_config (theme) failed: {e}");
+                }
+            }
+        }));
+    let action_reset_theme_colors: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+        {
+            let mut state = on_reset_theme_colors.borrow_mut();
+            state.theme_primary = None;
+            state.theme_secondary = None;
+            state.theme_accent = None;
+            state.theme_bg = None;
+            state.theme_surface = None;
+        }
+        if let Some(desktop) = &desktop_reset_theme {
+            let mut config = desktop.config();
+            config.theme.primary = None;
+            config.theme.secondary = None;
+            config.theme.accent = None;
+            config.theme.bg = None;
+            config.theme.surface = None;
+            if let Err(e) = desktop.save_config(&config) {
+                log::warn!("save_config (theme) failed: {e}");
+            }
+        }
+    }));
     let action_toggle_invert_scroll: Rc<RefCell<dyn FnMut(bool)>> =
         Rc::new(RefCell::new(move |enabled: bool| {
             on_toggle_invert_scroll.borrow_mut().settings_invert_scroll = enabled;
@@ -2306,6 +2364,8 @@ pub fn make_actions(
             let on_dark = action_toggle_dark_mode.clone();
             let on_invert = action_toggle_invert_scroll.clone();
             let on_theme = action_set_theme_target.clone();
+            let on_preset = action_set_theme_preset.clone();
+            let on_reset_theme = action_reset_theme_colors.clone();
             let on_auto = action_toggle_auto_approve.clone();
             let on_vim = action_toggle_vim_mode.clone();
             let on_auto_save = action_toggle_auto_save_on_close.clone();
@@ -2330,6 +2390,8 @@ pub fn make_actions(
                     Some(SettingsControl::ThemeChannel(target)) => {
                         (on_theme.borrow_mut())(target);
                     }
+                    Some(SettingsControl::ThemePreset(preset)) => (on_preset.borrow_mut())(preset),
+                    Some(SettingsControl::ResetThemeColors) => (on_reset_theme.borrow_mut())(),
                     // A stepper advances: the same step the arrow keys take.
                     Some(SettingsControl::ScrollSpeed)
                     | Some(SettingsControl::FontSize)
@@ -3361,12 +3423,36 @@ pub fn make_actions(
             on_set_theme_accent.borrow_mut().theme_accent = Some(hex.clone());
             if let Some(desktop) = &desktop_theme_accent {
                 let mut config = desktop.config();
-                config.theme.accent = hex;
+                config.theme.accent = Some(hex);
                 if let Err(e) = desktop.save_config(&config) {
                     log::warn!("save_config (theme) failed: {e}");
                 }
             }
         })),
+        on_set_theme_bg: Rc::new(RefCell::new(move |hex: String| {
+            on_set_theme_bg.borrow_mut().theme_bg = Some(hex.clone());
+            if let Some(desktop) = &desktop_theme_bg {
+                let mut config = desktop.config();
+                config.theme.bg = Some(hex);
+                if let Err(e) = desktop.save_config(&config) {
+                    log::warn!("save_config (theme) failed: {e}");
+                }
+            }
+        })),
+        on_set_theme_surface: Rc::new(RefCell::new(move |hex: String| {
+            on_set_theme_surface.borrow_mut().theme_surface = Some(hex.clone());
+            if let Some(desktop) = &desktop_theme_surface {
+                let mut config = desktop.config();
+                config.theme.surface = Some(hex);
+                if let Err(e) = desktop.save_config(&config) {
+                    log::warn!("save_config (theme) failed: {e}");
+                }
+            }
+        })),
+        // Picking a preset (or Default) clears the channel overrides, so the
+        // palette shown is exactly the one the row names.
+        on_set_theme_preset: action_set_theme_preset.clone(),
+        on_reset_theme_colors: action_reset_theme_colors.clone(),
         on_save_profile: Rc::new(RefCell::new(move |name: String, email: String| {
             let mut state = on_save_profile.borrow_mut();
             state.settings_profile_name = name;

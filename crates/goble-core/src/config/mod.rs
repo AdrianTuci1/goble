@@ -63,8 +63,10 @@ pub const CONFIG_HEADER: &str = "\
 #   [mcp_servers.penpot]
 #   url = \"http://localhost:4400/mcp\"
 #
-# [theme] is goble's own section and grok has no equivalent: `dark`, `accent`,
-# and the optional `primary` / `secondary`.
+# [theme] is goble's own section and grok has no equivalent: `dark` picks the
+# built-in base, `preset` names a palette (groknight, grokday, tokyonight,
+# rosepine-moon, oscura-midnight), and `accent`, `primary`, `secondary`, `bg`
+# and `surface` override one colour each on top of whichever base is in force.
 #
 # Remote runs a harness somewhere other than this machine. It is configured
 # here, by hand: Settings -> Agent & Approval reports what these sections say,
@@ -484,26 +486,42 @@ impl Default for McpServerConfig {
 }
 
 /// `[theme]` — goble's own appearance settings.
+///
+/// Every key but `dark` is an override: absent means the base theme's own
+/// colour, whether that is the built-in dark/light scheme or a preset's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
     #[serde(default = "default_true")]
     pub dark: bool,
-    #[serde(default = "default_accent")]
-    pub accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secondary: Option<String>,
+    /// The page background override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg: Option<String>,
+    /// The pane surface override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
+    /// A predefined palette (`ThemePreset::key`). `None` is the Default base,
+    /// styled by `dark`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
             dark: true,
-            accent: default_accent(),
+            accent: None,
             primary: None,
             secondary: None,
+            bg: None,
+            surface: None,
+            preset: None,
         }
     }
 }
@@ -514,10 +532,6 @@ fn default_true() -> bool {
 
 fn is_true(value: &bool) -> bool {
     *value
-}
-
-fn default_accent() -> String {
-    "#14b8a6".to_string()
 }
 
 impl GobleConfig {

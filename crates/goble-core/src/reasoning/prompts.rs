@@ -53,8 +53,8 @@ pub(super) fn build_execution_prompt(goal: &str, reasoning_steps: &[ReasoningSte
         ));
     }
     prompt.push_str("\nUse available tools to create agents, workflows, discover MCPs, install/connect MCPs, deploy to workers, schedule workflows, and delegate work to sub-agents with spawn_subagent (run_in_background: false awaits the child and returns its output as the result; run_in_background: true returns its id at once and the child keeps running).\n");
-    // `ask_user` is a reasoning-phase tool; it is not in this phase's tool set,
-    // so a model told to "ask the user instead" must reply, not call it.
-    prompt.push_str("Only call a tool when you have enough information. If still missing info, reply with the question instead of calling a tool: ask_user belongs to the reasoning phase and is not available here.\n");
+    // `ask_user` is in this phase's tool set too, so a turn that never entered
+    // reasoning still hands the user numbered choices instead of prose.
+    prompt.push_str("Only call a tool when you have enough information. To ask the user a question, call ask_user with `question` and the choices in `quick_replies`: the turn suspends and the answer resumes it.\n");
     prompt
 }

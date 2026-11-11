@@ -172,6 +172,10 @@ pub(crate) fn run_mission(
         }
 
         let mut tools = harness_tool_definitions();
+        // A turn that never enters reasoning (a plain question, not a mission)
+        // would otherwise have no way to ask the user anything: the panel would
+        // never open and the model would write its options as prose.
+        tools.push(super::tools::ask_user_tool());
         if let Ok(mcp_tools) = mcp_manager.refresh_from_store(&store) {
             tools.extend(mcp_tools);
         }
@@ -492,6 +496,44 @@ pub(crate) fn run_mission(
                     yield HarnessEvent::Error("cancelled".to_string());
                     break;
                 }
+                // `ask_user` in execution suspends the turn like the command
+                // gate does: the model hands the user numbered options, the
+                // panel collects the answer, and the same mission resumes with
+                // it. The call is not a real tool result, so it is dropped from
+                // the planned batch — the assistant message must not carry
+                // `tool_calls` the next request has no response for.
+                if call.name == "ask_user" {
+                    if let Some(ask) = extract_ask_user(std::slice::from_ref(call)) {
+                        call_records.truncate(index);
+                        if let Some(id) = &assistant_msg_id {
+                            if let Err(e) = persist_tool_call_records(&store, id, &call_records) {
+                                yield HarnessEvent::Error(e.to_string());
+                                return;
+                            }
+                        }
+                        let now = Utc::now().to_rfc3339();
+                        if let Err(e) = store.insert_pending_ask(
+                            &ask.id,
+                            &chat_id,
+                            Some(&mission.id),
+                            &ask.question,
+                            &ask.quick_replies.join("\n"),
+                            "pending",
+                            &now,
+                            &now,
+                        ) {
+                            yield HarnessEvent::Error(e.to_string());
+                            return;
+                        }
+                        mission.pending_ask = Some(ask.clone());
+                        yield HarnessEvent::AskUser {
+                            question: ask.question,
+                            quick_replies: ask.quick_replies,
+                        };
+                        return;
+                    }
+                }
+
                 call_records[index].status = ToolCallStatus::Running;
                 if let Some(id) = &assistant_msg_id {
                     if let Err(e) = persist_tool_call_records(&store, id, &call_records) {

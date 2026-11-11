@@ -108,6 +108,68 @@ async fn test_ask_user_suspends_and_creates_pending_ask() {
     assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
 }
 
+/// A turn that never enters reasoning — a plain "give me a quiz" — still gets
+/// the question tool in its execution set. The call suspends the turn with the
+/// pending ask and the panel's event, and it never reaches the tool dispatcher,
+/// which has no `ask_user`.
+#[tokio::test]
+async fn an_execution_only_turn_can_ask_with_options() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let llm = llm_with_reasoning_tools(
+        "",
+        vec![LlmToolCall {
+            id: "tc_ask".to_string(),
+            name: "ask_user".to_string(),
+            arguments: serde_json::json!({
+                "question": "Care este capitala Australiei?",
+                "quick_replies": ["Canberra", "Sydney", "Melbourne", "Perth"]
+            }),
+        }],
+    );
+    let harness = Harness::new(store.clone()).with_llm(llm);
+    let events: Vec<_> = harness
+        .run_turn(
+            &chat_id,
+            "give me a quiz question with four options",
+            "mock",
+            "mock",
+        )
+        .collect()
+        .await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            HarnessEvent::AskUser { question, quick_replies }
+                if question == "Care este capitala Australiei?" && quick_replies.len() == 4
+        )),
+        "the execution turn suspends on the question: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            HarnessEvent::ToolCallError { message, .. } if message.contains("unknown tool")
+        )),
+        "the call is handled before dispatch: {events:?}"
+    );
+    let pending = store
+        .get_pending_ask(&chat_id)
+        .unwrap()
+        .expect("the question waits on the user");
+    assert_eq!(pending.3, "Care este capitala Australiei?");
+    assert!(pending.4.contains("Canberra"), "the options persist");
+
+    // The answer resumes the same mission and settles the question.
+    let llm2 = llm_with_reasoning_tools("Canberra este capitala Australiei.", vec![]);
+    let harness2 = Harness::new(store.clone()).with_llm(llm2);
+    let _: Vec<_> = harness2
+        .resume_turn(&chat_id, "Canberra", None, "mock", "mock")
+        .collect()
+        .await;
+    assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
+}
+
 #[tokio::test]
 async fn test_resume_stores_credential_by_name_not_value() {
     let store = Store::open_in_memory().unwrap();
@@ -268,6 +330,10 @@ fn reasoning_prompt_names_spawn_subagent_and_does_not_deny_delegation() {
     assert!(
         execution.contains("spawn_subagent"),
         "the execution prompt names the delegation tool: {execution}"
+    );
+    assert!(
+        execution.contains("ask_user") && execution.contains("quick_replies"),
+        "the execution prompt says how to ask with options: {execution}"
     );
 }
 

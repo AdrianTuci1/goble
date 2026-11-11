@@ -11,9 +11,9 @@ on:
         required: true
         type: string
       worker_targets:
-        description: 'Worker targets (comma separated)'
+        description: 'Worker targets as a JSON array'
         required: false
-        default: 'x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu'
+        default: '["x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu"]'
         type: string
       channel:
         description: 'Update channel written to channel_versions.json'
@@ -70,7 +70,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJson(format('[{0}]', inputs.worker_targets)) }}
+        # The input is a JSON array, and `||` supplies the default when a
+        # dispatch omits it. A comma-separated string here would make `fromJson`
+        # fail to parse the matrix, and a job with no matrix entries is never
+        # created: every job that needs the worker then quietly skips, as
+        # publish-release did.
+        target: ${{ fromJson(inputs.worker_targets || '["x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu"]') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -165,6 +170,14 @@ jobs:
       # `secrets` cannot be read in a step's `if`, so the certificate's presence
       # is hoisted here as a flag and the import step tests that instead.
       APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+      # Where an installed build looks for updates and which key it trusts.
+      # Both values are public, so they are baked in here: an install must not
+      # depend on the runner having a repository variable set. The key is the
+      # public half of GOBLE_UPDATE_SIGNING_KEY, printed by
+      # `packaging/sign-manifest.sh --print-pubkey`; a manifest whose signature
+      # does not verify against it is refused.
+      GOBLE_UPDATE_MANIFEST: https://get.octomus.dev/channel_versions.json
+      GOBLE_UPDATE_PUBLIC_KEY: d049abf5e7b5bc1f9068a7eb804066defbdfdf10185b5e4ab584dda89f51ad76
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -225,6 +238,10 @@ jobs:
         # Baked in with `option_env!`: the channel decides whether the build
         # reports crashes and accepts updates, and the version is what a crash
         # report and an update check compare against.
+        # PowerShell is the default shell on the Windows runners, and it does
+        # not continue a command over a trailing backslash: `-p` on the next
+        # line becomes a separate command. The step is bash on every platform.
+        shell: bash
         env:
           GOBLE_CHANNEL: ${{ inputs.channel }}
           GOBLE_RELEASE_VERSION: ${{ env.GOBLE_VERSION }}
@@ -314,7 +331,14 @@ jobs:
       # --- Windows ------------------------------------------------------------
       - name: Install Inno Setup
         if: matrix.platform == 'windows'
-        run: choco install innosetup --version=6.3.3 -y --no-progress
+        shell: pwsh
+        # The runner image ships a newer Inno Setup, and `choco install` refuses
+        # to downgrade it. Use whatever ISCC.exe is already there; install one
+        # only when the image has none.
+        run: |
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+          }
 
       - name: Build installer
         if: matrix.platform == 'windows'
@@ -451,11 +475,12 @@ jobs:
           workspaces: |
             . -> target
 
+      # The matrix jobs above already built and packaged every binary. This is
+      # the last compile gate for the workspace as a whole; formatting and the
+      # test suite stay with `ci.yml`, so style drift in untouched files cannot
+      # block a release.
       - name: Verify workspace
-        run: |
-          ./scripts/fmt.sh --check
-          cargo check --workspace --all-targets
-          cargo test --workspace
+        run: cargo check --workspace --all-targets
 
       - name: Download worker artifacts
         uses: actions/download-artifact@v4

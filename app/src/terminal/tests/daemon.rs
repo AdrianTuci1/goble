@@ -497,6 +497,133 @@ fn a_conversation_command_runs_in_its_own_shell() {
     );
 }
 
+/// The shell route an agent turn takes is the pane's *agent* shell, the same
+/// one `!` lines run in, never the terminal pane's shell. Esc back to the
+/// terminal therefore shows its own history and none of the turn's commands.
+#[test]
+fn an_agent_turns_command_runs_in_the_agents_own_shell() {
+    use crate::ui::{Pane, Space};
+    use goble_terminal::blocks::BlockView;
+
+    let daemon = TestDaemon::start();
+    let shell_cwd = tempfile::tempdir().expect("create a shell cwd");
+    let cwd = shell_cwd.path().to_str().expect("a path");
+
+    let mut state = UiState::mock();
+    state.spaces = vec![Space::new(
+        "Shell",
+        Pane::Leaf {
+            id: 1,
+            kind: PaneKind::Terminal,
+        },
+    )];
+    state
+        .terminal
+        .borrow_mut()
+        .use_socket(daemon.socket.clone());
+    state
+        .pane_sessions
+        .get_mut(&1)
+        .expect("pane 1 has a session")
+        .path = cwd.to_string();
+    let pane_id = state.active_pane_id;
+    {
+        let mut reg = state.terminal.borrow_mut();
+        reg.ensure_session(pane_id, cwd);
+        reg.ensure_agent_session(pane_id, cwd);
+    }
+    assert!(
+        wait_for(|| {
+            let mut reg = state.terminal.borrow_mut();
+            reg.pump_sessions();
+            reg.pane_session(pane_id, "conv-1").is_some()
+                && reg
+                    .agent_session(pane_id)
+                    .is_some_and(|session| session.is_bootstrapped())
+        }),
+        "both of the pane's shells bootstrap"
+    );
+
+    // A command of the terminal pane's own, so the two histories can be told
+    // apart afterwards.
+    state
+        .terminal
+        .borrow_mut()
+        .sessions
+        .get_mut(&pane_id)
+        .expect("the terminal session")
+        .write(b"printf 'TERMINAL-ONLY\\n'\n");
+    assert!(
+        wait_for(|| {
+            let mut reg = state.terminal.borrow_mut();
+            reg.pump_sessions();
+            reg.visible_blocks(pane_id, &BlockView::Terminal)
+                .iter()
+                .any(|block| block.output.contains("TERMINAL-ONLY"))
+        }),
+        "the terminal's own command runs in the terminal session"
+    );
+
+    // The turn's route is the pane's agent shell.
+    let route = state
+        .pane_session(pane_id, "conv-1")
+        .expect("a bootstrapped agent shell is the harness's route");
+    let runner = std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .expect("build a runtime")
+            .block_on(route.run_in_pane("printf 'AGENT-ROUTE\\n'"))
+    });
+
+    let conversation = BlockView::Agent {
+        conversation_id: "conv-1".to_string(),
+    };
+    assert!(
+        wait_for(|| {
+            let mut reg = state.terminal.borrow_mut();
+            reg.pump_sessions();
+            reg.agent_visible_blocks(pane_id, &conversation)
+                .iter()
+                .any(|block| block.output.contains("AGENT-ROUTE"))
+        }),
+        "the agent's command ran in the agent shell; agent blocks: {:?}",
+        state
+            .terminal
+            .borrow()
+            .agent_visible_blocks(pane_id, &conversation)
+            .iter()
+            .map(|block| (block.command.clone(), block.output.clone()))
+            .collect::<Vec<_>>()
+    );
+    let output = runner
+        .join()
+        .expect("the runner thread")
+        .expect("the command answered");
+    assert!(
+        output.contains("AGENT-ROUTE"),
+        "the tool call reads the agent shell's output: {output:?}"
+    );
+
+    let terminal = state.terminal.borrow();
+    let terminal_blocks = terminal.visible_blocks(pane_id, &BlockView::Terminal);
+    assert!(
+        !terminal_blocks
+            .iter()
+            .any(|block| block.command.contains("AGENT-ROUTE")
+                || block.output.contains("AGENT-ROUTE")),
+        "Escape shows a terminal that never ran the turn's command; terminal blocks: {:?}",
+        terminal_blocks
+            .iter()
+            .map(|block| (block.command.clone(), block.output.clone()))
+            .collect::<Vec<_>>()
+    );
+    drop(terminal);
+    assert_eq!(
+        daemon.list().iter().filter(|session| session.alive).count(),
+        2,
+        "the pane owns a terminal shell and an agent shell"
+    );
+}
+
 /// The launch that follows a force-quit closes the sessions the restored
 /// layout no longer owns, while a pane that is still there keeps its shell.
 #[test]

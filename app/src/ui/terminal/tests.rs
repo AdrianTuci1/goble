@@ -2185,6 +2185,64 @@ fn cmd_enter_on_a_pane_already_in_the_agent_view_pushes_nothing_again() {
     );
 }
 
+/// A custom harness owns its model and approval policy, so its agent surface
+/// draws the harness's own mark in the composer footer where the native
+/// surface draws the model selector and the approval mode. The bar leads with
+/// the same mark, so a pane on a custom harness draws it twice: once beside the
+/// title and once in the footer.
+#[test]
+fn a_custom_harness_agent_surface_draws_its_mark_in_the_footer() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let s = state.borrow();
+        s.terminal.borrow_mut().set_mode(
+            1,
+            crate::terminal::TerminalMode::Agent(crate::terminal::TuiAgent::Claude),
+        );
+    }
+    let model = state.borrow().pane_controls(1).model.clone();
+    {
+        let mut s = state.borrow_mut();
+        s.pane_controls_mut(1).harness_mode = true;
+        s.enter_agent_view(1, "c1", "A conversation");
+    }
+
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let marks: Vec<f32> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon { origin, name, .. }
+                if name == "harness-claude" && origin.x >= crate::ui::SIDEBAR_WIDTH =>
+            {
+                Some(origin.y)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        marks.len() >= 2,
+        "the bar and the composer footer both lead with the harness mark: {marks:?}"
+    );
+
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        !runs.iter().any(|(text, _)| *text == model),
+        "a custom harness draws no model control: {runs:?}"
+    );
+    assert!(
+        !pane_has(
+            &runs,
+            goble_ui::elements::chat_composer::MODEL_NOT_CONFIGURED
+        ),
+        "and no placeholder for one: {runs:?}"
+    );
+    assert!(
+        !pane_has(&runs, "manual"),
+        "a custom harness draws no approval control: {runs:?}"
+    );
+}
+
 /// S3: the busy guard, and the fact that it speaks. A pane whose own shell
 /// is running a command does not switch — the harness could not run in it,
 /// since its command could not be claimed — and the pane says why over the

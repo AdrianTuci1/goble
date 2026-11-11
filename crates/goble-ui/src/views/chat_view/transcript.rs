@@ -898,6 +898,9 @@ impl ChatView {
         if let Some(icon) = self.composer_harness_icon {
             composer = composer.with_harness_icon(icon);
         }
+        if let Some(harness) = self.composer_agent_harness {
+            composer = composer.with_agent_harness(harness);
+        }
         if let Some(label) = self.composer_branch_label.clone() {
             composer = composer.with_branch_label(label);
         }

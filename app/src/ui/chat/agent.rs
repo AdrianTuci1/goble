@@ -228,10 +228,16 @@ pub fn build_agent_chat(
     // pane's pty when one runs (the chip asks the registry first), else the
     // conversation's own harness, else the native one this view runs.
     let surface_harness = state
-        .conversations
-        .iter()
-        .find(|entry| entry.id == session.conversation_id)
-        .and_then(|entry| goble_core::harness::harness_for(&entry.harness))
+        .terminal
+        .borrow()
+        .pane_harness(pane_id)
+        .or_else(|| {
+            state
+                .conversations
+                .iter()
+                .find(|entry| entry.id == session.conversation_id)
+                .and_then(|entry| goble_core::harness::harness_for(&entry.harness))
+        })
         .or_else(|| goble_core::harness::harness_for("goble"));
     // A CLI harness owns its own model and approval policy. The app's model
     // switcher and always-approve control are the native agent's, so a pane
@@ -452,6 +458,12 @@ pub fn build_agent_chat(
             .with_composer_approval_mode(controls.approval_mode)
             .with_composer_approval_menu_open(controls.approval_menu_open.clone())
             .with_composer_approval_menu_highlight(controls.approval_menu_highlight.clone());
+    } else if session.worker.is_none() {
+        // A custom harness owns the agent turn: its mark names what answers,
+        // where the native agent would draw its model and approval controls.
+        if let Some(spec) = surface_harness.filter(|spec| spec.id != "goble") {
+            chat = chat.with_composer_agent_harness(spec.id);
+        }
     }
 
     // Modal (vim) editing of the agent composer, when the user turned it on.

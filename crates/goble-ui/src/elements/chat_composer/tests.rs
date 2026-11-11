@@ -822,6 +822,67 @@ fn the_model_control_reads_not_configured_when_nothing_is_configured() {
     );
 }
 
+/// A custom harness owns its model and approval policy, so its footer carries
+/// the harness's own mark where the native model and approval controls would
+/// be. A composer given both still draws only the mark: the two controls are
+/// the native agent's and say nothing about a CLI harness's turn.
+#[test]
+fn a_custom_harness_footer_draws_its_mark_in_place_of_model_and_approval() {
+    use crate::elements::ApprovalMode;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let mut custom = ChatComposer::new()
+        .with_value("hi")
+        .with_agent_harness("claude")
+        .with_model_label("gpt-4o")
+        .with_approval_mode(ApprovalMode::AutoReview);
+    let (_, commands) = paint_composer_in(&app, &mut custom, vec2f(600.0, 400.0));
+
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawIcon { name, .. } if name == "harness-claude"
+        )),
+        "the footer draws the harness's mark: {commands:?}"
+    );
+    let texts = drawn_texts(&commands);
+    assert!(
+        !texts.iter().any(|text| text == "gpt-4o"),
+        "a custom harness draws no model control: {commands:?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|text| text == ApprovalMode::AutoReview.label()),
+        "a custom harness draws no approval control: {commands:?}"
+    );
+
+    // The native surface is unchanged: both controls, and no harness mark.
+    let mut native = ChatComposer::new()
+        .with_value("hi")
+        .with_model_label("gpt-4o")
+        .with_approval_mode(ApprovalMode::AutoReview);
+    let (_, commands) = paint_composer_in(&app, &mut native, vec2f(600.0, 400.0));
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts.iter().any(|text| text == "gpt-4o"),
+        "the native footer keeps its model control: {commands:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == ApprovalMode::AutoReview.label()),
+        "the native footer keeps its approval control: {commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name.starts_with("harness-"))),
+        "the native footer draws no harness mark: {commands:?}"
+    );
+}
+
 /// The model control opens the models as the band the commands are drawn in: a
 /// full-width row list over the input, taken with Up/Down and Enter or Tab, put
 /// away with Escape — while the editor keeps the caret and the keys.

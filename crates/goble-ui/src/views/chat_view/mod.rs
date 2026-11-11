@@ -110,6 +110,10 @@ pub struct ChatView {
     /// The glyph beside the environment label: the computer for a local
     /// environment and the cloud for a worker.
     composer_harness_icon: Option<&'static str>,
+    /// The CLI harness the draft goes to, when this pane runs a custom harness:
+    /// its mark takes the footer slot of the native model and approval
+    /// controls.
+    composer_agent_harness: Option<&'static str>,
     composer_branch_label: Option<String>,
     on_composer_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_composer_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
@@ -266,6 +270,7 @@ impl ChatView {
             on_select_model_item: None,
             composer_harness_label: None,
             composer_harness_icon: None,
+            composer_agent_harness: None,
             composer_branch_label: None,
             composer_harness_items: Vec::new(),
             composer_harness_menu_open: Rc::new(RefCell::new(false)),

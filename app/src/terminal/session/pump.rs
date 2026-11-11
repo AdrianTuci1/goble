@@ -22,6 +22,17 @@ impl TerminalSession {
             .push((std::time::Instant::now() + delay, bytes));
     }
 
+    /// Feed a shell-integration hook into the screen and pump it, exactly as
+    /// the reader thread does with the bytes the shell wrote. A session with no
+    /// pty behind it — a test's — has no other way to report one.
+    #[cfg(test)]
+    pub(crate) fn feed_hook(&mut self, event: HookEvent) {
+        if let Ok(mut state) = self.state.lock() {
+            state.feed(&goble_terminal::hooks::encode_hook(&event));
+        }
+        self.pump();
+    }
+
     fn flush_due_writes(&mut self) {
         if self.pending_writes.is_empty() {
             return;

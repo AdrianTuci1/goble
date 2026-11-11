@@ -659,6 +659,33 @@ impl TerminalRegistry {
         )))
     }
 
+    /// The harness's shell-tool route for a pane's agent surface: the pane's
+    /// *agent* shell, which is the one `!` lines run in, never the shell the
+    /// terminal pane shows.
+    ///
+    /// The two are separate sessions on purpose: Escape returns the pane to
+    /// its terminal, and the commands a turn ran there must not be in that
+    /// shell's history — nor may a harness the agent launched take the
+    /// terminal's screen. The agent shell is spawned in `cwd` on first use.
+    /// `None` while it has not bootstrapped keeps the turn on the sandboxed
+    /// runner, the same contract as [`Self::pane_session`].
+    pub fn agent_pane_session(
+        &mut self,
+        pane_id: u64,
+        cwd: &str,
+        conversation_id: &str,
+    ) -> Option<Arc<dyn PaneSession>> {
+        self.ensure_agent_session(pane_id, cwd);
+        let session = self.agent_sessions.get(&pane_id)?;
+        if !session.is_bootstrapped() {
+            return None;
+        }
+        Some(Arc::new(PaneCommandRunner::new(
+            Arc::clone(&session.commands),
+            conversation_id,
+        )))
+    }
+
     /// If the pane's current input line names a known TUI agent, switch the pane
     /// to agent mode (native-first) and return the detected agent. Called right
     /// before the submitted enter is forwarded to the shell.

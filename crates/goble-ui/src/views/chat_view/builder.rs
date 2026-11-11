@@ -281,6 +281,14 @@ impl ChatView {
         self
     }
 
+    /// The CLI harness this pane talks to. Its mark is drawn in the footer in
+    /// place of the native agent's model and approval controls, which a custom
+    /// harness does not use.
+    pub fn with_composer_agent_harness(mut self, harness: &'static str) -> Self {
+        self.composer_agent_harness = Some(harness);
+        self
+    }
+
     pub fn with_composer_branch_label(mut self, label: impl Into<String>) -> Self {
         self.composer_branch_label = Some(label.into());
         self

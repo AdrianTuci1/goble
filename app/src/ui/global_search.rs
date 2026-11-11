@@ -276,7 +276,11 @@ fn run_search(
         return Ok(Some(Vec::new()));
     }
     if !Path::new(root).is_dir() {
-        return Err(format!("Global search cannot read {root}."));
+        // The band is a line of the sidebar, so the root reads from `~`.
+        return Err(format!(
+            "Global search cannot read {}.",
+            crate::state::display_path(root)
+        ));
     }
     match ripgrep_binary() {
         Some(rg) => search_with_ripgrep(&rg, root, query).map(Some),
@@ -608,6 +612,7 @@ pub(crate) fn build_search(
     let field = SearchInput::new()
         .with_value(state.global_search_query.clone())
         .with_focused(state.global_search_focused)
+        .with_caret(state.global_search_caret.clone())
         .with_placeholder("Search in files")
         .with_compact(true)
         .with_icon(false)
@@ -1397,5 +1402,143 @@ mod sidebar_scroll_tests {
             pixels <= ATLAS_PIXELS,
             "one frame's text needs {pixels} px of an atlas that holds {ATLAS_PIXELS}"
         );
+    }
+}
+
+/// The query field is a text field with a caret of its own: the arrows move it,
+/// a character typed after one lands where it stands, and `Enter` stays the
+/// field's key without touching the query.
+#[cfg(test)]
+mod field_tests {
+    use super::*;
+    use crate::root_view::RootView;
+    use crate::ui::SidebarView;
+    use goble_core::store::Store;
+    use goble_desktop_service::{DesktopState, ThreadStore};
+    use goble_ui::elements::{EventContext, LayoutContext, PaintContext, SizeConstraint};
+    use goble_ui::event::DispatchedEvent;
+    use goble_ui::render::{RenderCommand, Renderer};
+    use std::sync::Arc;
+
+    #[test]
+    fn the_query_field_edits_at_the_caret() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let home = tempfile::tempdir().expect("temp working directory");
+        let view = RootView::new(&app, &desktop, None);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.set_active_pane_path(home.path().to_string_lossy().to_string());
+            s.sidebar_view = SidebarView::Search;
+            s.global_search_query = "ab".to_string();
+            *s.global_search_caret.borrow_mut() = 2;
+        }
+        let state = view.state_rc();
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let window = vec2f(1024.0, 768.0);
+        let paint = |root: &mut Box<dyn Element>| {
+            let _ = root.layout(
+                SizeConstraint::loose(window),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            let mut ctx = PaintContext::new(Renderer::new());
+            root.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+            ctx.renderer.expect("renderer").commands().to_vec()
+        };
+        let commands = paint(&mut root);
+        // The field's own box is the one stroke in the band taller than a rule.
+        let field = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::StrokeRect { rect, .. }
+                    if rect.max_x() <= crate::ui::SIDEBAR_WIDTH
+                        && rect.min_y() >= crate::ui::shell::TOPBAR_HEIGHT
+                        && rect.height() > 2.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the search view draws its query field");
+        let at = vec2f(
+            (field.min_x() + field.max_x()) / 2.0,
+            (field.min_y() + field.max_y()) / 2.0,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            &mut EventContext::default(),
+            &app,
+        );
+        assert!(
+            state.borrow().global_search_focused,
+            "the press puts the caret in the field"
+        );
+
+        let key = |root: &mut Box<dyn Element>, key: &str| {
+            root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: key.to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut EventContext::default(),
+                &app,
+            )
+        };
+
+        assert!(key(&mut root, "ArrowLeft"));
+        assert_eq!(
+            *state.borrow().global_search_caret.borrow(),
+            1,
+            "the arrow moved the query field's caret"
+        );
+
+        assert!(key(&mut root, "X"));
+        assert_eq!(
+            state.borrow().global_search_query,
+            "aXb",
+            "the character landed before the last one"
+        );
+        assert_eq!(*state.borrow().global_search_caret.borrow(), 2);
+
+        assert!(key(&mut root, "Enter"), "enter is still the field's key");
+        assert_eq!(
+            state.borrow().global_search_query,
+            "aXb",
+            "and changes nothing"
+        );
+
+        // The next frame draws the value split where the caret is.
+        let commands = paint(&mut root);
+        let drawn: Vec<String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for run in ["aX", "b"] {
+            assert!(
+                drawn.iter().any(|text| text == run),
+                "the field draws the run {run:?} around its beam: {drawn:?}"
+            );
+        }
     }
 }

@@ -1,3 +1,4 @@
+use crate::color::ColorU;
 use crate::elements::terminal_block::TerminalData;
 use super::fragment::{ChatFragment, ChatFragmentKind, ListItem};
 use super::message::ChatAction;
@@ -18,6 +19,9 @@ pub enum InlineStyle {
 pub struct InlineSpan {
     pub text: String,
     pub style: InlineStyle,
+    /// An explicit colour the source named for this run. `None` keeps the
+    /// colour the style resolves to in the active theme.
+    pub color: Option<ColorU>,
 }
 
 /// A block of chat content. A paragraph holds inline spans that flow and wrap
@@ -27,6 +31,8 @@ pub enum ChatBlock {
     Paragraph(Vec<InlineSpan>),
     Heading { level: u8, text: String },
     CodeBlock { lang: Option<String>, code: String },
+    /// ANSI-coloured output, drawn as prose without a code panel.
+    Ansi { text: String },
     List {
         items: Vec<ListItem>,
         start: Option<u64>,
@@ -50,6 +56,9 @@ pub enum ChatBlock {
         text: String,
         done: bool,
     },
+    /// A session event, not something either side said: the harness's own note
+    /// about the conversation, drawn quiet and on its own line.
+    Notice { text: String },
 }
 
 impl InlineSpan {
@@ -57,6 +66,7 @@ impl InlineSpan {
         Self {
             text: text.into(),
             style: InlineStyle::Plain,
+            color: None,
         }
     }
 
@@ -64,6 +74,7 @@ impl InlineSpan {
         Self {
             text: text.into(),
             style: InlineStyle::Bold,
+            color: None,
         }
     }
 
@@ -71,6 +82,7 @@ impl InlineSpan {
         Self {
             text: text.into(),
             style: InlineStyle::Italic,
+            color: None,
         }
     }
 
@@ -78,6 +90,7 @@ impl InlineSpan {
         Self {
             text: text.into(),
             style: InlineStyle::Code,
+            color: None,
         }
     }
 
@@ -85,23 +98,27 @@ impl InlineSpan {
         Self {
             text: label.into(),
             style: InlineStyle::Link(url.into()),
+            color: None,
         }
     }
 }
 
-fn inline_span(kind: &ChatFragmentKind) -> Option<InlineSpan> {
-    match kind {
-        ChatFragmentKind::Text(t) => Some(InlineSpan::plain(t.clone())),
-        ChatFragmentKind::Bold(t) => Some(InlineSpan::bold(t.clone())),
-        ChatFragmentKind::Italic(t) => Some(InlineSpan::italic(t.clone())),
-        ChatFragmentKind::BoldItalic(t) => Some(InlineSpan {
+fn inline_span(fragment: &ChatFragment) -> Option<InlineSpan> {
+    let mut span = match &fragment.kind {
+        ChatFragmentKind::Text(t) => InlineSpan::plain(t.clone()),
+        ChatFragmentKind::Bold(t) => InlineSpan::bold(t.clone()),
+        ChatFragmentKind::Italic(t) => InlineSpan::italic(t.clone()),
+        ChatFragmentKind::BoldItalic(t) => InlineSpan {
             text: t.clone(),
             style: InlineStyle::BoldItalic,
-        }),
-        ChatFragmentKind::Code(t) => Some(InlineSpan::code(t.clone())),
-        ChatFragmentKind::Link { label, url } => Some(InlineSpan::link(label.clone(), url.clone())),
-        _ => None,
-    }
+            color: None,
+        },
+        ChatFragmentKind::Code(t) => InlineSpan::code(t.clone()),
+        ChatFragmentKind::Link { label, url } => InlineSpan::link(label.clone(), url.clone()),
+        _ => return None,
+    };
+    span.color = fragment.color;
+    Some(span)
 }
 
 /// Group a flat list of fragments into blocks: consecutive inline fragments
@@ -117,7 +134,7 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
     };
 
     for fragment in fragments {
-        if let Some(span) = inline_span(&fragment.kind) {
+        if let Some(span) = inline_span(fragment) {
             paragraph.push(span);
             continue;
         }
@@ -135,6 +152,9 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
                     code: code.clone(),
                 });
             }
+            ChatFragmentKind::Ansi(text) => blocks.push(ChatBlock::Ansi {
+                text: text.clone(),
+            }),
             ChatFragmentKind::List { items, start } => {
                 blocks.push(ChatBlock::List {
                     items: items.clone(),
@@ -151,6 +171,9 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
                 });
             }
             ChatFragmentKind::Rule => blocks.push(ChatBlock::Rule),
+            ChatFragmentKind::Notice(text) => blocks.push(ChatBlock::Notice {
+                text: text.clone(),
+            }),
             ChatFragmentKind::Image { alt, url } => {
                 blocks.push(ChatBlock::Image {
                     alt: alt.clone(),

@@ -24,12 +24,14 @@ mod session;
 mod settings;
 mod spaces;
 mod title;
+mod work_dock;
 mod worker;
 
 pub use agents::{PaneAgentState, TurnOutcome};
 pub use inbox::{InboxItem, InboxKind};
 pub use onboarding::{ONBOARDING_STEPS, ONBOARDING_USAGE};
 pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
+pub use title::prompt_subject;
 
 /// The title a conversation gets when it is created without a subject of its
 /// own. It is a placeholder, not a subject: a tab whose agent holds such a
@@ -82,6 +84,10 @@ pub struct UiState {
     pub selected_id: Option<String>,
     pub search_query: String,
     pub search_focused: bool,
+    /// The sidebar search field's insertion point. The element tree is rebuilt
+    /// every frame, so the caret lives here; it is reset to the end whenever
+    /// the app writes a query the field did not type itself.
+    pub sidebar_search_caret: Rc<RefCell<usize>>,
     pub new_conversation_draft: String,
     pub create_focused: bool,
     pub chat_messages: Vec<ChatMessage>,
@@ -147,6 +153,14 @@ pub struct UiState {
     /// row ([`UiState::open_sub_agent`]) and left again with Esc
     /// ([`UiState::close_sub_agent_view`]).
     pub sub_agent_views: HashMap<u64, SubAgentChildView>,
+    /// Whether each group of an agent pane's work dock is open, keyed by
+    /// [`goble_ui::WorkSection::key`]. An absent key is an open group, so a
+    /// section the user never folded lists its rows. Shared with the UI so a
+    /// fold survives the per-frame element rebuild.
+    pub work_dock_open: Rc<RefCell<HashMap<String, bool>>>,
+    /// Whether each group of the work dock has revealed the rows behind
+    /// `show N more`, keyed the same way.
+    pub work_dock_show_all: Rc<RefCell<HashMap<String, bool>>>,
     /// The pane drawn over the whole panes space, if any. Lives in app state so
     /// it survives the per-frame element rebuild; `None` is the tree's own
     /// layout. A pane id from another space simply does not match, so the
@@ -164,6 +178,10 @@ pub struct UiState {
     /// keyed by the call's id. Shared with the UI next to `reasoning_expanded`
     /// so a call the user folded stays folded across the per-frame rebuild.
     pub tool_fold: Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    /// The tool row (a chain's header, keyed by its group key) the pointer is
+    /// over, reported by the row's own paint. The next frame reads it to draw
+    /// the row's arrow and its white label without a hover band behind it.
+    pub tool_hover: Rc<RefCell<Option<String>>>,
     /// Whole-transcript terminal filter (open flag + selected filter) per pane,
     /// so the filter bar of one pty/agent pane does not open in its sibling.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,
@@ -171,11 +189,12 @@ pub struct UiState {
     /// Whether the workflow-runs overlay is up (it covers the workspace without
     /// replacing it).
     pub task_workflow_open: bool,
-    /// The workflow the overlay's run list has selected, and the phase — one of
-    /// that workflow's steps — selected inside its detail. Shared cells because
-    /// the element tree is rebuilt every frame: a row the user clicked writes
-    /// its index there and the next frame's rows read it back.
-    pub task_workflow_selected: Rc<RefCell<usize>>,
+    /// The run the overlay's list has selected — its key, not its row, because
+    /// a new run moves the list under the pointer — and the phase, one of that
+    /// run's steps, selected inside its detail. Shared cells because the
+    /// element tree is rebuilt every frame: a row the user clicked writes there
+    /// and the next frame's rows read it back.
+    pub task_workflow_selected: Rc<RefCell<Option<String>>>,
     pub task_workflow_phase: Rc<RefCell<usize>>,
     /// Whether the keyboard shortcuts panel is up.
     pub shortcuts_help_open: bool,
@@ -289,10 +308,15 @@ pub struct UiState {
     /// Accounting only; nothing here is a price.
     pub conversation_usage: HashMap<String, goble_ui::TokenUsage>,
     /// Custom theme color overrides as `#rrggbb` hex, set via the color wheel
-    /// pickers in Settings→Appearance. `None` uses the built-in theme color.
+    /// pickers in Settings→Appearance. `None` uses the theme's built-in color.
     pub theme_primary: Option<String>,
     pub theme_secondary: Option<String>,
     pub theme_accent: Option<String>,
+    pub theme_bg: Option<String>,
+    pub theme_surface: Option<String>,
+    /// The preset palette in force (`ThemePreset::key`), or `None` for the
+    /// Default base the dark-mode switch styles.
+    pub theme_preset: Option<String>,
     /// Which theme channel the single color wheel in Settings→Appearance edits.
     pub theme_color_target: crate::ui::color_picker::ColorTarget,
     /// Active color-wheel drag (which region), owned here so the per-frame
@@ -363,6 +387,9 @@ pub struct UiState {
     /// result: no ripgrep on this machine, or a query ripgrep refused.
     pub global_search_error: Option<String>,
     pub global_search_focused: bool,
+    /// The global search field's insertion point, held the way the sidebar
+    /// search's is.
+    pub global_search_caret: Rc<RefCell<usize>>,
     /// The walk behind the query, on a thread of its own: reading every file
     /// under the root is far too slow to run between two keystrokes. The field
     /// hands it the query and the frame collects the answer.
@@ -389,6 +416,11 @@ pub struct UiState {
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
     /// double-clicking the tab, or from its menu's "Rename tab" row).
     pub space_rename_editing: bool,
+    /// Whether the platform's chord modifier — Command on macOS, Ctrl elsewhere
+    /// — is held down. While it is, every workspace tab draws its own shortcut
+    /// number in its trailing slot (see `WorkspaceChip`). Not persisted: it
+    /// describes the keyboard this instant, and a restart has no key down.
+    pub command_held: bool,
     /// The run of presses on a workspace tab that the strip is counting: which
     /// tab, when it was pressed, and how many presses in a row this is.
     ///
@@ -472,6 +504,22 @@ pub struct UiState {
     /// reconnect offer survive a restart; a pane the user moved with a typed
     /// `ssh` line keeps the resolved session.
     pub pane_ssh: HashMap<u64, SshPaneBinding>,
+    /// The sidebar chat a pane's CLI harness conversation was registered under,
+    /// keyed by pane id and harness id: a harness launched in a pane opens one
+    /// conversation in the sidebar, and launching the same harness there again
+    /// returns to that conversation instead of stacking a duplicate.
+    pub harness_chats: HashMap<(u64, String), String>,
+    /// What the harness's own session store answered when a conversation still
+    /// named for its harness was looked up, keyed by conversation id: the title
+    /// it offered, or the empty string when it offered none. The store is the
+    /// filesystem, so a conversation is looked at once per run rather than on
+    /// every sidebar rebuild; see [`UiState::refresh_conversations`].
+    pub harness_title_attempts: HashMap<String, String>,
+    /// The harness conversations whose card was named from the session the
+    /// conversation owns, by conversation id. A conversation with a session is
+    /// named from that session once per run; the set keeps the store from being
+    /// read again on every sidebar rebuild.
+    pub harness_session_titles: std::collections::HashSet<String>,
     /// The saved hosts read from `~/.goble/hosts.toml`, in file order. Filled
     /// when the host picker opens, never while the window draws.
     pub ssh_host_entries: Vec<HostEntry>,
@@ -555,6 +603,16 @@ pub struct UiState {
     pub inbox_error: Option<String>,
     /// Scroll offset of the inbox overlay's list.
     pub inbox_scroll: Rc<RefCell<ScrollState>>,
+    /// The rect the topbar's inbox control painted at, recorded by the control
+    /// itself. The panel is a window-level popover hung from that rect, one
+    /// frame behind it — the same seam the settings model menu uses.
+    pub inbox_anchor: Rc<RefCell<Option<goble_ui::RectF>>>,
+    /// The id of the inbox item being announced at the top of the window, and
+    /// when that banner stops being drawn on its own. Set where the item is
+    /// raised, so it names a report this run produced and never one read back
+    /// from the store at startup.
+    pub announcement: Option<String>,
+    pub announcement_until: Option<std::time::Instant>,
     /// Monotonic id source for event-derived inbox items.
     pub next_inbox_id: u64,
     /// The agent-management panel (the topbar's dashboard): whether it is up,

@@ -263,7 +263,7 @@ fn a_long_command_output_wraps_inside_the_pane() {
 }
 
 #[test]
-fn a_long_sub_agent_row_keeps_its_open_action_in_the_pane() {
+fn a_long_sub_agent_row_wraps_inside_the_pane_without_controls() {
     let token = "c".repeat(600);
     let spawn = call(
         "task",
@@ -300,8 +300,8 @@ fn a_long_sub_agent_row_keeps_its_open_action_in_the_pane() {
         .take()
         .map(|r| r.commands().to_vec())
         .unwrap_or_default();
-    // The header takes the row's remaining width and the action keeps its place
-    // at the right edge: its label starts and ends inside the pane.
+    // The row wraps inside the pane and draws nothing at its right edge: the
+    // controls that enter and stop the child belong to the pane's strip.
     for command in &commands {
         if let RenderCommand::DrawText { origin, .. } = command {
             assert!(
@@ -311,35 +311,10 @@ fn a_long_sub_agent_row_keeps_its_open_action_in_the_pane() {
             );
         }
     }
-    let (origin, font_size, font_weight, font_family, font_italic) = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawText {
-                origin,
-                text,
-                font_size,
-                font_weight,
-                font_family,
-                font_italic,
-                ..
-            } if text == "open child" => {
-                Some((*origin, *font_size, *font_weight, *font_family, *font_italic))
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the open action stays drawn: {:?}", drawn_texts(&commands)));
-    let drawn = crate::platform::text_atlas::advance_width(
-        "open child",
-        font_size,
-        font_weight,
-        font_family,
-        font_italic,
-    );
+    let texts = drawn_texts(&commands);
     assert!(
-        origin.x + drawn <= size.x + 0.5,
-        "the open action ends at {} past the {}-wide pane",
-        origin.x + drawn,
-        size.x
+        !texts.iter().any(|text| text == "open child" || text == "Stop"),
+        "the transcript row draws no controls, got {texts:?}"
     );
 }
 
@@ -578,6 +553,44 @@ fn paint_tool_calls_with_run_open(
 ) -> (Vec<RenderCommand>, f32) {
     let fold = HashMap::from([(run_key(&calls, start), ToolDisplayMode::Expanded)]);
     paint_tool_calls_with_fold_map(calls, fold)
+}
+
+/// Paint `bubble` with the pointer resting on the row whose text starts with
+/// `prefix`. Hover is written while a row paints, so the frame that reads it
+/// is the next one: this lays the tree out and paints twice, and returns the
+/// second frame's commands.
+fn paint_with_pointer_over(
+    bubble: &mut ChatMessageBubble,
+    app: &AppContext,
+    prefix: &str,
+) -> Vec<RenderCommand> {
+    let constraint = SizeConstraint::loose(vec2f(400.0, 400.0));
+    bubble.layout(constraint, &mut LayoutContext::default(), app);
+    let mut first = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut first, app);
+    let origin = first
+        .renderer
+        .take()
+        .and_then(|renderer| {
+            renderer.commands().iter().find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text.starts_with(prefix) => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| panic!("the row {prefix:?} is drawn"));
+
+    bubble.layout(constraint, &mut LayoutContext::default(), app);
+    let mut pointer = PaintContext::new(Renderer::new());
+    pointer.cursor_inside = true;
+    pointer.cursor_position = vec2f(origin.x + 4.0, origin.y + 4.0);
+    bubble.paint(vec2f(0.0, 0.0), &mut pointer, app);
+    pointer
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec())
+        .unwrap_or_default()
 }
 
 fn paint_tool_calls_with_fold_map(
@@ -826,17 +839,6 @@ fn paint_sub_agent(
     paint_sub_agent_with_fold(calls, records, fold)
 }
 
-/// Paint a bubble with its first verb-group run opened, so the sub-agent member
-/// row — and the action target beside it — is on screen while the member itself
-/// stays folded.
-fn paint_sub_agent_run_open(
-    calls: Vec<ToolCall>,
-    records: HashMap<String, SubAgentRow>,
-) -> (Vec<RenderCommand>, Rc<RefCell<Vec<ChatAction>>>) {
-    let fold = HashMap::from([(run_key(&calls, 0), ToolDisplayMode::Expanded)]);
-    paint_sub_agent_with_fold(calls, records, fold)
-}
-
 fn paint_sub_agent_with_fold(
     calls: Vec<ToolCall>,
     records: HashMap<String, SubAgentRow>,
@@ -913,6 +915,31 @@ fn run_style(markdown: &str) -> (FontWeight, bool) {
     painted_runs(markdown)
         .into_iter()
         .find_map(|(text, weight, italic)| (text == "x").then_some((weight, italic)))
+        .unwrap_or_else(|| panic!("no run drawing \"x\" for {markdown:?}"))
+}
+
+/// The colour of the run drawing `x` in a painted Markdown message.
+fn run_color(markdown: &str) -> ColorU {
+    let app = AppContext::default();
+    let message = ChatMessage::from_markdown(ChatRole::Assistant, markdown);
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
+    bubble.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    paint_ctx
+        .renderer
+        .take()
+        .map(|r| r.commands().to_vec())
+        .unwrap_or_default()
+        .into_iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { text, color, .. } if text == "x" => Some(color),
+            _ => None,
+        })
         .unwrap_or_else(|| panic!("no run drawing \"x\" for {markdown:?}"))
 }
 

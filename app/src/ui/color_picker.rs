@@ -27,12 +27,14 @@ use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::ColorToken;
 use goble_ui::{hsv_to_rgb, rgb_to_hsv};
 
-/// Which of the three theme colors the wheel edits.
+/// Which of the theme colors the wheel edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorTarget {
     Primary,
     Secondary,
     Accent,
+    Background,
+    Surface,
 }
 
 impl ColorTarget {
@@ -42,6 +44,8 @@ impl ColorTarget {
             ColorTarget::Primary => "Primary",
             ColorTarget::Secondary => "Secondary",
             ColorTarget::Accent => "Accent",
+            ColorTarget::Background => "Background",
+            ColorTarget::Surface => "Surface",
         }
     }
 }
@@ -364,11 +368,14 @@ impl Element for ColorWheel {
     }
 }
 
-/// The label of each channel's swatch, in the order they are shown.
-pub const COLOR_TARGET_ORDER: [ColorTarget; 3] = [
+/// The label of each channel's swatch, in the order they are shown: the three
+/// foreground channels first, then the two the pane is painted with.
+pub const COLOR_TARGET_ORDER: [ColorTarget; 5] = [
     ColorTarget::Primary,
     ColorTarget::Secondary,
     ColorTarget::Accent,
+    ColorTarget::Background,
+    ColorTarget::Surface,
 ];
 
 #[cfg(test)]

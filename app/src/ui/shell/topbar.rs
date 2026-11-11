@@ -4,16 +4,19 @@ use std::rc::Rc;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Button, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
+    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
+    MainAxisSize,
     PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint, Stack, Text,
     TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY, BUTTON_SECONDARY};
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
+use goble_ui::platform::text_atlas::FontWeight;
 use goble_ui::theme::{ColorToken, SpacingToken, TabColor, TabTint};
 
 use crate::media::medium_icon;
 use crate::state::PaneDrag;
+use crate::ui::{PaneKind, Space};
 
 use super::super::tab_menu::{build_tab_menu, TabMenuAction, TabMenuTab};
 use super::super::{
@@ -39,10 +42,46 @@ pub const TOPBAR_HEIGHT: f32 = 36.0;
 #[cfg(not(target_os = "macos"))]
 pub const TOPBAR_HEIGHT: f32 = 40.0;
 
+/// The room the macOS traffic lights take at the bar's leading edge. They are
+/// real OS controls overlaying the content (the bar doubles as the titlebar),
+/// so the bar's controls start past them.
 #[cfg(target_os = "macos")]
-const TOPBAR_TRAFFIC_INSET: f32 = 76.0;
+pub(super) const TOPBAR_TRAFFIC_INSET: f32 = 76.0;
 #[cfg(not(target_os = "macos"))]
-const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
+pub(super) const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
+
+/// The bar's leading padding while the window is full screen: macOS hides the
+/// traffic lights then, so their room goes to the tabs and the bar only keeps
+/// enough to hold its first icon off the window's edge. warp-new does the same,
+/// falling back to its plain `TAB_BAR_PADDING_LEFT`
+/// (`app/src/workspace/view.rs:19649-19670`).
+#[cfg(target_os = "macos")]
+pub(super) const TOPBAR_FULLSCREEN_PADDING: f32 = 10.0;
+#[cfg(not(target_os = "macos"))]
+pub(super) const TOPBAR_FULLSCREEN_PADDING: f32 = 0.0;
+
+/// The bar's leading padding: the traffic lights' room while the window is
+/// windowed, and [`TOPBAR_FULLSCREEN_PADDING`] while it is full screen.
+pub(super) fn left_padding(fullscreen: bool) -> f32 {
+    if fullscreen {
+        TOPBAR_FULLSCREEN_PADDING
+    } else {
+        TOPBAR_TRAFFIC_INSET
+    }
+}
+
+/// The bar's trailing padding: the margin its content keeps from the window's
+/// own trailing edge — the same one the leading control keeps past the traffic
+/// lights ([`TOPBAR_FULLSCREEN_PADDING`]), so the Settings icon ends as far
+/// from the right edge as the first control starts from the bar's content
+/// edge. The traffic lights only buy room on the leading side, so this is the
+/// same in both window states and the right-hand group does not move when the
+/// window goes full screen.
+///
+/// The bar lays its content out between the two paddings, so the window's own
+/// 1 px rule (drawn at the content edge, see [`crate::ui::build_ui`]) sits in
+/// the margin rather than on top of the last control.
+pub(super) const TOPBAR_RIGHT_PADDING: f32 = TOPBAR_FULLSCREEN_PADDING;
 
 /// The box a topbar icon sits in: a 16 pt glyph with 3 pt of padding on every
 /// side, so the icon reads tight against the bar's edge.
@@ -56,37 +95,38 @@ const TOPBAR_RULE_HEIGHT: f32 = TOPBAR_HEIGHT - 8.0;
 /// the tab strip's leading rule.
 const TOPBAR_CONTROL_GAP: f32 = 3.0;
 
-/// The width a tab of the bar is never drawn narrower than, while the bar's
-/// room can afford it: warp-new's own minimum for a tab slot
-/// (`app/src/workspace/view.rs:19061`, `.with_min_width(80.)`).
-const MIN_TAB_WIDTH: f32 = 80.0;
-
 /// The width a tab never grows past, however wide the window is: warp-new caps
 /// a tab at 200 (`app/src/tab.rs:1841`, `.with_max_width(200.)`).
 const MAX_TAB_WIDTH: f32 = 200.0;
+
+/// The flex the empty spacer after the last tab of warp-new's tab bar takes,
+/// relative to a tab's own 1.0 (`app/src/workspace/view.rs:19393`,
+/// `Shrinkable::new(0.5, Empty::new().finish())`). The spacer lays out to the
+/// max a flex child is offered, so it *is* the room the tabs leave over, and
+/// the bar's own right-hand controls stay pinned to the right edge because of
+/// it.
+const TAB_STRIP_SPACER_FLEX: f32 = 0.5;
 
 /// The thickness of the rule between two neighbouring tabs. `Divider`'s own
 /// default, named here because the strip takes the rules out of its room before
 /// it divides that room between the tabs.
 const TAB_RULE_WIDTH: f32 = 1.0;
 
-/// The width one tab of the bar is drawn at, given the room the bar has for
+/// The width one tab of the bar is drawn at, given the room the strip has for
 /// tabs (`room`: the window's width less everything the bar draws itself) and
-/// how many tabs are on it — an equal share of that room, capped at
-/// [`MAX_TAB_WIDTH`] and, while the share can afford it, floored at
-/// [`MIN_TAB_WIDTH`].
+/// how many tabs are on it.
 ///
-/// A bar too crowded to give every tab the minimum divides the room it has
-/// instead: warp-new's tabs share the bar the same way (each one a `Shrinkable`
-/// of the row, capped at 200), and that is what keeps a rounded-up tab from
-/// being pushed past the bar's own controls.
+/// warp-new's tab bar is a flex row of one `Shrinkable::new(1.0, tab)` per tab
+/// with a `Shrinkable::new(0.5, Empty)` spacer after the last of them
+/// (`app/src/workspace/view.rs:19348-19395`), so the room is divided by the sum
+/// of the flex factors — `tabs + TAB_STRIP_SPACER_FLEX` — and every tab takes
+/// an equal part of it, capped at [`MAX_TAB_WIDTH`]. The spacer's half share is
+/// the room the tabs leave over: it stays at the end of the strip, between the
+/// last tab and the bar's own right-hand controls, and grows once the tabs
+/// reach the cap and stop taking their share.
 fn tab_slot(room: f32, tabs: usize) -> f32 {
-    let share = room.max(0.0) / tabs.max(1) as f32;
-    if share >= MIN_TAB_WIDTH {
-        share.min(MAX_TAB_WIDTH)
-    } else {
-        share
-    }
+    let flex = tabs.max(1) as f32 + TAB_STRIP_SPACER_FLEX;
+    (room.max(0.0) / flex).min(MAX_TAB_WIDTH)
 }
 
 /// Single general toolbar, reduced to the essentials: a sidebar toggle, the
@@ -192,8 +232,13 @@ pub fn build_topbar(
     // bar next to Settings. Pressing it toggles the overlay
     // (Cmd/Ctrl+Shift+I does the same), and the count is the snapshot's live
     // unread total.
-    let inbox_button =
-        build_inbox_control(app, state.inbox_unread_count, state.inbox_open, actions);
+    let inbox_button = build_inbox_control(
+        app,
+        state.inbox_unread_count,
+        state.inbox_open,
+        actions,
+        Rc::clone(&state.inbox_anchor),
+    );
 
     // Settings stays reachable as an icon pinned to the far right.
     let on_settings = actions.on_settings.clone();
@@ -236,8 +281,26 @@ pub fn build_topbar(
     // the shorter controls center against the tabs and the bar is exactly
     // `TOPBAR_HEIGHT` tall — the height the body reserves below it — with the
     // macOS traffic lights vertically centered inside it.
+    //
+    // The leading padding is the room those traffic lights need — but only while
+    // they are on screen: a full-screen window hides them, and the bar gives
+    // their room back to the tabs. The window's own state answers first (the
+    // event loop records it on every frame, the green button included); the app
+    // flag covers a tree built without a live window, where nothing has
+    // reported yet. The trailing padding is the bar's own content margin, so
+    // the right-hand group ends that far from the window's edge instead of
+    // sitting on it.
+    let fullscreen = app
+        .window_control
+        .window_fullscreen()
+        .unwrap_or(state.fullscreen);
     let bar: Box<dyn Element> = Container::new(row)
-        .with_padding(EdgeInsets::new(TOPBAR_TRAFFIC_INSET, 0.0, 0.0, 0.0))
+        .with_padding(EdgeInsets::new(
+            left_padding(fullscreen),
+            0.0,
+            TOPBAR_RIGHT_PADDING,
+            0.0,
+        ))
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .finish();
     // The card a pane being dragged onto the strip carries floats over the whole
@@ -288,11 +351,16 @@ fn build_space_menu(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element>
 /// The topbar's inbox control: the inbox glyph, with a small unread badge when
 /// the count is non-zero. The badge is an overlay so it does not make the
 /// button wider than the other topbar controls.
+///
+/// The control reports its own rect while it paints (`anchor`): the inbox panel
+/// is a window-level popover hung from this button's trailing edge, so it needs
+/// the button's bounds and cannot be the button's child.
 fn build_inbox_control(
     app: &AppContext,
     unread: usize,
     open: bool,
     actions: &UiActions,
+    anchor: Rc<RefCell<Option<RectF>>>,
 ) -> Box<dyn Element> {
     let on_inbox = actions.on_inbox.clone();
     let button = TopbarButton::new(
@@ -308,29 +376,31 @@ fn build_inbox_control(
     let button = Tooltip::new(button, "Inbox")
         .with_position(TooltipPosition::Below)
         .finish();
-    if unread == 0 {
-        return button;
-    }
-    let count = if unread > 99 {
-        "99+".to_string()
+    let control: Box<dyn Element> = if unread == 0 {
+        button
     } else {
-        unread.to_string()
+        let count = if unread > 99 {
+            "99+".to_string()
+        } else {
+            unread.to_string()
+        };
+        let badge = Container::new(
+            Text::new(count)
+                .with_font_size(9.0)
+                .with_theme_color(ColorToken::Bg, app)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .with_padding(EdgeInsets::new(3.0, 0.0, 3.0, 0.0))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Badge)))
+        .with_corner_radius(6.0)
+        .finish();
+        Stack::new()
+            .with_children(vec![button])
+            .with_overlay(badge, vec2f(16.0, 0.0))
+            .finish()
     };
-    let badge = Container::new(
-        Text::new(count)
-            .with_font_size(9.0)
-            .with_theme_color(ColorToken::Bg, app)
-            .with_max_lines(1)
-            .finish(),
-    )
-    .with_padding(EdgeInsets::new(3.0, 0.0, 3.0, 0.0))
-    .with_background(Fill::Solid(app.theme.color(ColorToken::Badge)))
-    .with_corner_radius(6.0)
-    .finish();
-    Stack::new()
-        .with_children(vec![button])
-        .with_overlay(badge, vec2f(16.0, 0.0))
-        .finish()
+    crate::ui::inbox::AnchorProbe::new(control, anchor).finish()
 }
 
 /// The topbar's live cue: a spinner and `◆ N`, where N is C1's count of work in
@@ -377,19 +447,59 @@ pub(super) fn build_live_indicator(
         .finish()
 }
 
-/// The font size every tab of the bar reads at.
+/// The font size every tab of the bar reads at: 12 pt, the toolkit's own UI text
+/// size (`Text`'s default and `LabelSize::Xs`), which is what warp-new's
+/// `appearance.ui_font_size()` is to its tabs (`TabStyles::default`,
+/// `app/src/tab.rs:800-812`). `goble-ui`'s `Theme` carries no UI font-size token
+/// — only the density factor — so there is nothing for this to be read from.
 const TAB_FONT_SIZE: f32 = 12.0;
 
-/// What a name cut down to its tab ends with.
+/// The font size a tab's shortcut hint reads at, a step under the name's so
+/// the hint reads as the tab's secondary line of information.
+const TAB_HINT_FONT_SIZE: f32 = 11.0;
+
+/// The chord's modifier, as the tab hints spell it: the Command symbol on
+/// macOS, the word on every other platform.
+#[cfg(target_os = "macos")]
+const CHORD: &str = "⌘";
+#[cfg(not(target_os = "macos"))]
+const CHORD: &str = "Ctrl+";
+
+/// The shortcut a tab advertises while the chord modifier is held: `⌘1` for the
+/// first tab on macOS, `Ctrl+1` for it elsewhere.
+pub(super) fn tab_hint(index: usize) -> String {
+    format!("{CHORD}{index}")
+}
+
+/// What a name cut down to its tab is marked with, at the end it lost.
 const ELLIPSIS: &str = "…";
 
+/// What a name too long for its tab keeps: warp-new's `ClipConfig`
+/// (`app/src/tab.rs:1101-1152`). A title derived from where the tab runs is cut
+/// at its **start**, so the last path component stays readable; a name the user
+/// typed, or an agent conversation's subject, is cut at its **end**, because
+/// the words that tell one such tab from another sit at the front
+/// (`should_clip_text_start`, `app/src/tab.rs:1363`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LabelClip {
+    Start,
+    End,
+}
+
 /// One tab's name, drawn on a single line: the name whole while the tab is wide
-/// enough to draw it, and cut from its end with an ellipsis when it is not — the
-/// way warp-new truncates a tab title — so a bar that has to share its room
-/// shortens the names instead of wrapping them out of the bar.
+/// enough to draw it, and otherwise cut with an ellipsis at the end
+/// [`LabelClip`] names — the way warp-new truncates a tab title, so a bar that
+/// has to share its room shortens the names instead of wrapping them out of the
+/// bar.
+///
+/// The run is drawn at the weight the tab's state gives it: warp-new draws the
+/// active tab's title in `Weight::Medium` over the inactive tabs' regular one
+/// (`TabStyles::default`, `app/src/tab.rs:800-812`).
 struct TabLabel {
     name: String,
     color: ColorToken,
+    weight: FontWeight,
+    clip: LabelClip,
     /// The run drawn this frame: the name whole, or as much of it as fits.
     run: Option<Text>,
     size: Option<Vector2F>,
@@ -397,21 +507,29 @@ struct TabLabel {
 }
 
 impl TabLabel {
-    fn new(name: impl Into<String>, color: ColorToken) -> Self {
+    fn new(
+        name: impl Into<String>,
+        color: ColorToken,
+        weight: FontWeight,
+        clip: LabelClip,
+    ) -> Self {
         Self {
             name: name.into(),
             color,
+            weight,
+            clip,
             run: None,
             size: None,
             origin: None,
         }
     }
 
-    /// The one-line run that draws `name` at a tab's font size.
+    /// The one-line run that draws `name` at a tab's font size and weight.
     fn run(&self, name: &str, app: &AppContext) -> Text {
         Text::new(name)
             .with_theme_color(self.color, app)
             .with_font_size(TAB_FONT_SIZE)
+            .with_weight(self.weight)
             .with_max_lines(1)
     }
 
@@ -428,7 +546,8 @@ impl TabLabel {
 
     /// The name as the run that fits `room` draws it: whole when it fits, and
     /// otherwise as much of it as leaves room for the ellipsis that replaces the
-    /// rest. Nothing at all when there is no room.
+    /// rest — the tail of the name for a start-clipped label, the head of it for
+    /// an end-clipped one. Nothing at all when there is no room.
     fn fit(&self, room: f32, app: &AppContext) -> String {
         let width = self.width_of(&self.name, app);
         if width <= room {
@@ -443,7 +562,14 @@ impl TabLabel {
         let per_char = (width / chars.len().max(1) as f32).max(1.0);
         let mut keep = ((room / per_char) as usize).min(chars.len().saturating_sub(1));
         while keep > 1 {
-            let candidate = format!("{}{ELLIPSIS}", chars[..keep].iter().collect::<String>());
+            let kept: String = match self.clip {
+                LabelClip::Start => chars[chars.len() - keep..].iter().collect(),
+                LabelClip::End => chars[..keep].iter().collect(),
+            };
+            let candidate = match self.clip {
+                LabelClip::Start => format!("{ELLIPSIS}{kept}"),
+                LabelClip::End => format!("{kept}{ELLIPSIS}"),
+            };
             if self.width_of(&candidate, app) <= room {
                 return candidate;
             }
@@ -460,9 +586,17 @@ impl Element for TabLabel {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let name = self.fit(constraint.max.x, app);
+        let room = constraint.max.x;
+        let name = self.fit(room, app);
+        // A cut run stands for the whole room it was cut to, so a parent that
+        // centres it leaves it at the inset it was measured from: the name only
+        // steps in from there while it is short.
+        let cut = name != self.name;
         let mut run = self.run(&name, app);
-        let size = run.layout(constraint, ctx, app);
+        let mut size = run.layout(constraint, ctx, app);
+        if cut {
+            size.x = room;
+        }
         self.run = Some(run);
         self.size = Some(size);
         size
@@ -543,6 +677,11 @@ impl Element for TabStrip {
     ) -> Vector2F {
         let tabs: usize = self.frames.iter().map(|frame| frame.tabs).sum();
         let rules: usize = self.frames.iter().map(|frame| frame.rules).sum();
+        // The strip divides the bar the way warp-new's tab-bar row does — flex
+        // shares, the trailing spacer included (see [`tab_slot`]) — and hands
+        // each frame the room its own tabs need, plus the rules between them. A
+        // frame only divides what it is given, so the last of the room the tabs
+        // leave over stays after the strip rather than inside it.
         let slot = tab_slot(constraint.max.x - rules as f32 * TAB_RULE_WIDTH, tabs);
         let mut total = Vector2F::zero();
         for frame in &mut self.frames {
@@ -588,11 +727,13 @@ impl Element for TabStrip {
     }
 }
 
-/// One frame of tabs: its tabs laid out in slots of equal width — every tab of
-/// the bar an equal share of the room the bar has for tabs, floored at
-/// [`MIN_TAB_WIDTH`] while the room can afford it and capped at
-/// [`MAX_TAB_WIDTH`] — with [`TAB_RULE_WIDTH`] of rule between neighbours, and
-/// as tall as the bar.
+/// One frame of tabs: its tabs laid out in slots of equal width — the room the
+/// strip handed the frame, less the rules between the tabs, divided evenly — with
+/// [`TAB_RULE_WIDTH`] of rule between neighbours, and as tall as the bar.
+///
+/// The strip has already applied warp-new's flex distribution to the bar (see
+/// [`tab_slot`]); a frame only divides the room it was handed among its own tabs,
+/// so a tab is the same width in every frame of the strip.
 struct TabFrame {
     children: Vec<FrameChild>,
     size: Option<Vector2F>,
@@ -639,21 +780,18 @@ impl Element for TabFrame {
     ) -> Vector2F {
         // The slot every tab of the frame is drawn in: an equal share of the
         // room the frame was handed, once the rules between the tabs are out of
-        // it. The floor yields to the share on a bar that cannot afford the
-        // minimum for every tab, so the tabs stay inside the room they were
-        // given.
-        let slot = tab_slot(
-            constraint.max.x - self.rule_count() as f32 * TAB_RULE_WIDTH,
-            self.tab_count(),
-        );
-        let floor = MIN_TAB_WIDTH.min(slot);
+        // it. The strip has divided the bar between the frames already (see
+        // [`tab_slot`]), so nothing is divided twice.
+        let tabs = self.tab_count().max(1) as f32;
+        let slot = (constraint.max.x - self.rule_count() as f32 * TAB_RULE_WIDTH).max(0.0) / tabs;
         let mut total = 0.0;
         for child in &mut self.children {
             let size = match child {
-                // A tab takes what its name needs between the readable minimum
-                // and its slot, and never more than its slot.
+                // A tab *is* its slot: warp-new's tabs are equal flexible
+                // children of the row, filling the share the row gives them
+                // rather than shrinking to their names.
                 FrameChild::Tab(tab) => tab.layout(
-                    SizeConstraint::new(vec2f(floor, 0.0), vec2f(slot, WorkspaceChip::height())),
+                    SizeConstraint::new(vec2f(slot, 0.0), vec2f(slot, WorkspaceChip::height())),
                     ctx,
                     app,
                 ),
@@ -721,7 +859,8 @@ impl Element for TabFrame {
 /// widths, the strip into the room that is left for it, and the right group as
 /// one compact run on the row's right edge, with `group_spacing` between its
 /// neighbours, every child centered on the bar's height (`SidebarLayout` solves
-/// the same problem for the shell's split).
+/// the same problem for the shell's split). The row is the bar's content: the
+/// bar's padding is what sets it off the window's own edges.
 struct TopbarRow {
     /// The controls before the strip, in draw order.
     leading: Vec<Box<dyn Element>>,
@@ -897,7 +1036,8 @@ impl Element for TopbarRow {
 
         // The cue, the inbox and Settings are one compact run pinned to the
         // row's right edge: `group_spacing` between neighbours, and the last
-        // control flush with the edge.
+        // control flush with that edge — which the bar's own trailing padding
+        // ([`TOPBAR_RIGHT_PADDING`]) sets off the window's edge.
         let right_widths: Vec<f32> = self
             .right
             .iter()
@@ -1005,7 +1145,16 @@ fn build_workspace_strip(
         let tab: Box<dyn Element> = if active && state.space_rename_editing {
             build_rename_tab(app, state, actions)
         } else {
-            build_workspace_chip(app, actions, index, &space.name, active, space.color)
+            build_workspace_chip(
+                app,
+                actions,
+                index,
+                &space.name,
+                active,
+                space.color,
+                state.command_held,
+                label_clip(space, state, index),
+            )
         };
         children.push(FrameChild::Tab(Box::new(TabRect::new(
             tab,
@@ -1039,11 +1188,39 @@ fn build_workspace_strip(
     )
 }
 
+/// Which end of the tab at `index` an over-long name loses, warp-new's
+/// `should_clip_text_start` (`app/src/tab.rs:1363`): the start for a label the
+/// tab derives from where it runs — its focused pane's directory or file, where
+/// the last component is the part worth reading — and the end for a name the
+/// user typed and for an agent conversation's subject, where the words that tell
+/// two tabs apart sit at the front.
+fn label_clip(space: &Space, state: &UiSnapshot, index: usize) -> LabelClip {
+    if space.named {
+        return LabelClip::End;
+    }
+    // The focused leaf of the active tab, and the first leaf of a tab that is
+    // not on screen — the pane a tab's label follows (see
+    // `UiState::space_label`).
+    let focused = if index == state.active_space && space.root.contains_leaf(state.active_pane_id) {
+        state.active_pane_id
+    } else {
+        space.root.first_leaf_id()
+    };
+    match space.leaf_kind(focused) {
+        Some(PaneKind::Chat) | Some(PaneKind::Worker) => LabelClip::End,
+        _ => LabelClip::Start,
+    }
+}
+
 /// One clickable workspace tab: the name plus an "x" that closes that
 /// workspace. A single click selects the space; a second click within the
 /// double-click window starts the inline rename — counted on the press, which
 /// is what [`WorkspaceChip`] reports here. A right click opens the tab's menu
 /// at the pointer.
+///
+/// While the chord modifier is held (`command_held`), the tab's trailing slot
+/// carries the shortcut that selects it — `⌘1` on macOS, `Ctrl+1` elsewhere —
+/// in place of the "x".
 fn build_workspace_chip(
     app: &AppContext,
     actions: &UiActions,
@@ -1051,13 +1228,26 @@ fn build_workspace_chip(
     name: &str,
     active: bool,
     color: Option<TabColor>,
+    command_held: bool,
+    clip: LabelClip,
 ) -> Box<dyn Element> {
-    let label_color = if active {
-        ColorToken::Text
+    // The active tab reads in the theme's text colour and, as in warp-new, at
+    // the medium weight its title carries; the others are muted and regular.
+    let (label_color, label_weight) = if active {
+        (ColorToken::Text, FontWeight::Medium)
     } else {
-        ColorToken::Muted
+        (ColorToken::Muted, FontWeight::Regular)
     };
-    let label = TabLabel::new(name, label_color).finish();
+    let label = TabLabel::new(name, label_color, label_weight, clip).finish();
+    // The hint reads as secondary text of the tab it sits in: the active tab's
+    // own colour, the muted one everywhere else — the same split its name has.
+    let hint = command_held.then(|| {
+        Text::new(tab_hint(index + 1))
+            .with_theme_color(label_color, app)
+            .with_font_size(TAB_HINT_FONT_SIZE)
+            .with_max_lines(1)
+            .finish()
+    });
     let on_click = actions.on_workspace_click.clone();
     let on_close = actions.on_close_space.clone();
     let on_press = actions.on_space_press.clone();
@@ -1083,16 +1273,30 @@ fn build_workspace_chip(
         .with_size(16.0)
         .with_on_click(move || (on_close.borrow_mut())(index))
         .finish(),
+        hint,
     }))
 }
 
-/// The inline rename field, centered in the active tab's full height so the
-/// strip keeps `TOPBAR_HEIGHT` while the name is being edited.
+/// The inline rename field, centred in the active tab's slot both ways — as
+/// warp-new centres it (`Align::new(TextInput…)`, `app/src/tab.rs:1118`) and in
+/// the tab's full height, so the strip keeps `TOPBAR_HEIGHT` while the name is
+/// being edited.
 fn build_rename_tab(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    // The column stretches to the tab's slot so the row below has the slot's
+    // width to centre the fixed-width field in; the column alone would shrink
+    // to the field and sit on the tab's left edge.
     Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::Center)
-        .with_child(build_rename_field(app, state, actions))
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::Center)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(build_rename_field(app, state, actions))
+                .finish(),
+        )
         .finish()
 }
 
@@ -1131,9 +1335,18 @@ fn build_rename_field(
 /// pointer is over it, 20 % otherwise, over the fill that state would have had
 /// anyway (see [`TabColor::tint_over`]). A tab with no colour paints exactly the
 /// three fills it painted before colours existed.
+///
+/// The trailing slot holds one control at a time: the "x" while the tab is
+/// hovered, or — while the chord modifier is held — the tab's own shortcut
+/// hint. The hint takes the "x"'s place rather than sitting beside it, so the
+/// slot is reserved once, the name keeps truncating into what is left, and a
+/// tab never carries two controls at the same point.
 pub(super) struct WorkspaceChip {
     child: Box<dyn Element>,
     close: Box<dyn Element>,
+    /// The shortcut the tab advertises while the chord modifier is held; `None`
+    /// on every other frame, when the tab draws its "x" as it always has.
+    hint: Option<Box<dyn Element>>,
     index: usize,
     active: bool,
     color: Option<TabColor>,
@@ -1146,6 +1359,9 @@ pub(super) struct WorkspaceChip {
     /// menu hangs from the pointer itself.
     on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     state: goble_ui::elements::interactive::InteractiveState,
+    /// The x the name is painted at inside the tab: the left inset while it
+    /// fills the room it was given, and a share further in while it is short.
+    child_x: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -1159,6 +1375,9 @@ pub(super) struct WorkspaceChipParts {
     pub on_press: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     pub on_right_click: Rc<RefCell<dyn FnMut(usize, Vector2F)>>,
     pub close: Box<dyn Element>,
+    /// The shortcut, drawn in the close control's slot while the chord modifier
+    /// is held; `None` draws the tab with its "x" alone.
+    pub hint: Option<Box<dyn Element>>,
 }
 
 impl WorkspaceChip {
@@ -1172,10 +1391,12 @@ impl WorkspaceChip {
             on_press,
             on_right_click,
             close,
+            hint,
         } = parts;
         Self {
             child,
             close,
+            hint,
             index,
             active,
             color,
@@ -1183,6 +1404,7 @@ impl WorkspaceChip {
             on_press,
             on_right_click,
             state: Default::default(),
+            child_x: Self::h_pad(),
             size: None,
             origin: None,
         }
@@ -1202,29 +1424,40 @@ impl WorkspaceChip {
         4.0
     }
 
-    /// What of a tab's slot is left for the name once the padding and the close
-    /// control's own slot are out of it. Both kinds of tab measure their name
-    /// against this, so a long name never runs under the control.
-    fn inner(constraint: SizeConstraint, close_width: f32) -> SizeConstraint {
+    /// What of a tab's slot is left for the name once the padding and the
+    /// trailing slot are out of it — the slot the close "x" or, while the chord
+    /// modifier is held, the shortcut hint is drawn in. Both kinds of tab
+    /// measure their name against this, so a long name never runs under the
+    /// control.
+    fn inner(constraint: SizeConstraint, trailing_width: f32) -> SizeConstraint {
         let room =
-            (constraint.max.x - Self::h_pad() * 2.0 - Self::close_gap() - close_width).max(0.0);
+            (constraint.max.x - Self::h_pad() * 2.0 - Self::close_gap() - trailing_width).max(0.0);
         SizeConstraint::new(Vector2F::zero(), vec2f(room, Self::height()))
     }
 
-    /// The tab's own width: what its name and its close control need, clamped
-    /// into the slot the frame gave it — never narrower than the slot's minimum
-    /// and never wider than the slot itself.
+    /// The tab's own width: the slot the strip gave it. warp-new's tab is a
+    /// flexible child of the tab-bar row that fills the share it is handed —
+    /// `Shrinkable::new(1.0, ConstrainedBox::new(tab).with_max_width(200.))`
+    /// (`app/src/tab.rs:1841`, `:1873`) — so a tab with a short name is as wide
+    /// as one with a long name, and never wider than [`MAX_TAB_WIDTH`]. A tab
+    /// laid out with no bound at all (a bare chip outside the strip) keeps what
+    /// its name and its trailing control need.
     fn width(intrinsic: f32, constraint: SizeConstraint) -> f32 {
-        intrinsic.max(constraint.min.x).min(constraint.max.x)
+        if constraint.max.x.is_finite() {
+            constraint.max.x.min(MAX_TAB_WIDTH)
+        } else {
+            intrinsic.min(MAX_TAB_WIDTH)
+        }
     }
 
-    /// The close control's origin inside a tab of `size`: pinned to the tab's
-    /// own right edge, so a tab the strip squeezed still draws — and hits — the
-    /// control inside its own bounds.
-    fn close_origin(origin: Vector2F, size: Vector2F, close_size: Vector2F) -> Vector2F {
+    /// The trailing control's origin inside a tab of `size`: pinned to the
+    /// tab's own right edge, so a tab the strip narrowed still draws — and
+    /// hits — the control inside its own bounds. The close "x" and the shortcut
+    /// hint share the slot, so they share this origin.
+    fn trailing_origin(origin: Vector2F, size: Vector2F, trailing_size: Vector2F) -> Vector2F {
         vec2f(
-            origin.x + (size.x - Self::h_pad() - close_size.x).max(Self::h_pad()),
-            origin.y + (size.y - close_size.y).max(0.0) / 2.0,
+            origin.x + (size.x - Self::h_pad() - trailing_size.x).max(Self::h_pad()),
+            origin.y + (size.y - trailing_size.y).max(0.0) / 2.0,
         )
     }
 
@@ -1246,19 +1479,42 @@ impl Element for WorkspaceChip {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        // The close "x"'s slot is reserved in the tab whether it is drawn or
-        // not, and it is reserved *before* the name is measured: the name gets
-        // what is left of the tab, so it never runs under the control.
+        // The trailing slot — the close "x", or the shortcut hint while the
+        // chord modifier is held — is reserved in the tab whether it is drawn
+        // or not, and it is reserved *before* the name is measured: the name
+        // gets what is left of the tab, so it never runs under the control. One
+        // of the two is drawn, but the "x" is measured on every frame too: the
+        // name is centred in the room it leaves, which is the same whether the
+        // "x" or the hint holds the slot.
+        let hint_size = self.hint.as_mut().map(|hint| {
+            hint.layout(
+                SizeConstraint::loose(vec2f(constraint.max.x, Self::height())),
+                ctx,
+                app,
+            )
+        });
         let close_size = self.close.layout(
             SizeConstraint::loose(vec2f(Self::height(), Self::height())),
             ctx,
             app,
         );
+        let trailing_size = hint_size.unwrap_or(close_size);
         let child_size = self
             .child
-            .layout(Self::inner(constraint, close_size.x), ctx, app);
-        let intrinsic = child_size.x + Self::close_gap() + close_size.x + Self::h_pad() * 2.0;
+            .layout(Self::inner(constraint, trailing_size.x), ctx, app);
+        let intrinsic = child_size.x + Self::close_gap() + trailing_size.x + Self::h_pad() * 2.0;
         let size = vec2f(Self::width(intrinsic, constraint), Self::height());
+        // Centre the name in the room the close slot leaves of the tab's own
+        // width — the way warp-new centres its tab titles
+        // (`app/src/tab.rs:1440-1457`, `MainAxisAlignment::Center`) — and keep
+        // the left inset when the name fills that room, so a cut run still
+        // starts there.
+        let room = (size.x - Self::h_pad() * 2.0 - Self::close_gap() - close_size.x).max(0.0);
+        let centred = (room - child_size.x).max(0.0) / 2.0;
+        // The name was cut to the room the drawn trailing control leaves; it
+        // never reaches back under a hint that is wider than the "x".
+        let fit_room = Self::inner(constraint, trailing_size.x).max.x;
+        self.child_x = Self::h_pad() + centred.min((fit_room - child_size.x).max(0.0));
         self.size = Some(size);
         size
     }
@@ -1288,22 +1544,27 @@ impl Element for WorkspaceChip {
             }
         }
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
-        let close_size = self.close.size().unwrap_or(Vector2F::zero());
         self.child.paint(
             vec2f(
-                origin.x + Self::h_pad(),
+                origin.x + self.child_x,
                 origin.y + (size.y - child_size.y).max(0.0) / 2.0,
             ),
             ctx,
             app,
         );
-        // The close "x" is drawn only while the pointer is over the tab. Its
-        // slot stays reserved in `layout`, so the strip's tabs keep their width
-        // (and their drop targets) instead of shifting under the pointer, and a
-        // tab that is not hovered carries no invisible hit target.
-        if hovered {
+        // The trailing slot draws the shortcut hint while the chord modifier is
+        // held, and the close "x" otherwise — only while the pointer is over the
+        // tab. The slot stays reserved in `layout`, so the strip's tabs keep
+        // their width (and their drop targets) instead of shifting under the
+        // pointer, and a tab that is not hovered carries no invisible hit
+        // target.
+        if let Some(hint) = self.hint.as_mut() {
+            let hint_size = hint.size().unwrap_or(Vector2F::zero());
+            hint.paint(Self::trailing_origin(origin, size, hint_size), ctx, app);
+        } else if hovered {
+            let close_size = self.close.size().unwrap_or(Vector2F::zero());
             self.close
-                .paint(Self::close_origin(origin, size, close_size), ctx, app);
+                .paint(Self::trailing_origin(origin, size, close_size), ctx, app);
         }
     }
 
@@ -1325,7 +1586,8 @@ impl Element for WorkspaceChip {
         // own bounds, so clicking the name still selects the workspace. It is
         // shown only while the pointer is over the tab (see `paint`), so it is
         // offered the pointer only there too — a tab that is not hovered has no
-        // close target to hit.
+        // close target to hit. While the shortcut hint holds the trailing slot
+        // the "x" is not on screen at all, so it is offered nothing either.
         let over_tab = match event {
             DispatchedEvent::MouseDown { position, .. }
             | DispatchedEvent::MouseUp { position, .. }
@@ -1335,7 +1597,7 @@ impl Element for WorkspaceChip {
                 .unwrap_or(false),
             _ => false,
         };
-        if over_tab && self.close.dispatch_event(event, ctx, app) {
+        if self.hint.is_none() && over_tab && self.close.dispatch_event(event, ctx, app) {
             return true;
         }
         // A right press is the tab's menu, hung from the point it landed on
@@ -2162,30 +2424,27 @@ mod tests {
         })
     }
 
-    /// The bar's tabs never fall below the readable minimum ([`MIN_TAB_WIDTH`])
-    /// while the bar can afford it: a short name no longer sets the tab's width
-    /// on its own — the tab keeps the width a tab is read at, and the room left
-    /// over stays with the bar.
+    /// A tab is a flexible child of the strip, as it is in warp-new: one
+    /// short-named tab in a wide window takes the share of the bar the tab strip
+    /// was given instead of shrinking to the width of its name, up to warp-new's
+    /// 200 pt cap.
     #[test]
-    fn a_tab_is_at_least_the_minimum_width() {
+    fn a_tab_fills_its_slot_up_to_the_maximum() {
         let app = AppContext::default();
         let (mut root, _state, _threads) = app_with_workspaces(vec!["One".to_string()]);
         let commands = render_element(&mut root, window(), &app);
         let tab = active_tab(&commands, &app);
 
         assert!(
-            tab.width() >= MIN_TAB_WIDTH,
-            "one short tab is drawn at the minimum, not at its name's width: {tab:?}"
+            tab.width() > 80.0,
+            "one short tab takes its share of the bar, not its name's width: {tab:?}"
         );
         assert!(
-            tab.width() <= MAX_TAB_WIDTH,
-            "and never past the maximum: {tab:?}"
+            (tab.width() - MAX_TAB_WIDTH).abs() < 0.01,
+            "and stops at the maximum however wide the window is: {tab:?}"
         );
     }
 
-    /// A tab stops at the maximum ([`MAX_TAB_WIDTH`]) however wide the window is
-    /// and however long its name: the room past the maximum stays with the bar,
-    /// and the name is cut to the tab's own width instead of being drawn past it.
     /// The agent-management control sits beside the tools toggle: the bar reads
     /// "tools, then the dashboard", the order the two panels are opened in.
     #[test]
@@ -2243,23 +2502,21 @@ mod tests {
         );
     }
 
+    /// A tab stops at the maximum ([`MAX_TAB_WIDTH`]) however wide the window is
+    /// and however long its name, and a name the user typed is cut at its **end**
+    /// — warp-new's `ClipConfig::end()` for a custom title — so the words that
+    /// tell two named tabs apart stay on screen.
     #[test]
-    fn a_long_name_is_cut_to_the_maximum_width() {
+    fn a_named_tab_cuts_its_long_name_at_the_end() {
         let app = AppContext::default();
         let name = "A workspace named far longer than any tab of the bar is wide";
         let (mut root, _state, _threads) = app_with_workspaces(vec![name.to_string()]);
         let commands = render_element(&mut root, window(), &app);
         let tab = active_tab(&commands, &app);
 
-        // The name is far wider than a tab ever gets, so the tab grows past the
-        // minimum — up to the cap, which the run it draws is cut to fit.
         assert!(
-            tab.width() <= MAX_TAB_WIDTH,
+            (tab.width() - MAX_TAB_WIDTH).abs() < 0.01,
             "the tab stops at the maximum in a wide window: {tab:?}"
-        );
-        assert!(
-            tab.width() > MIN_TAB_WIDTH,
-            "and a name longer than the cap fills the tab past the minimum: {tab:?}"
         );
         assert!(
             topbar_text(&commands, name).is_none(),
@@ -2272,6 +2529,206 @@ mod tests {
                 .any(|text| text.starts_with("A workspace") && text.ends_with(ELLIPSIS)),
             "the tab reads the name cut at its own width: {:?}",
             topbar_texts(&commands)
+        );
+        // A cut name keeps the left inset the tab has always drawn it at: the
+        // centring only applies while the name is short enough to fit whole.
+        let cut = topbar_texts(&commands)
+            .into_iter()
+            .find(|text| text.starts_with("A workspace") && text.ends_with(ELLIPSIS))
+            .expect("the tab reads the name cut at its own width");
+        let origin = topbar_text(&commands, &cut).expect("the cut run's origin");
+        assert!(
+            (origin.x - (tab.min_x() + WorkspaceChip::h_pad())).abs() < 0.01,
+            "a name too long for its tab starts at the left inset: {origin:?} in {tab:?}"
+        );
+        let cut_width = Text::new(cut.as_str())
+            .with_font_size(TAB_FONT_SIZE)
+            .with_weight(FontWeight::Medium)
+            .with_max_lines(1)
+            .layout(
+                SizeConstraint::loose(vec2f(f32::INFINITY, TOPBAR_HEIGHT)),
+                &mut LayoutContext,
+                &app,
+            )
+            .x;
+        assert!(
+            origin.x + cut_width <= tab.max_x() - WorkspaceChip::h_pad(),
+            "the cut run ends inside the tab: {origin:?} + {cut_width} in {tab:?}"
+        );
+    }
+
+    /// A tab whose label is derived from where it runs cuts that label at its
+    /// **start** — warp-new's `ClipConfig::start()` for a plain title — so the
+    /// last component of a long path stays readable in a narrow strip.
+    #[test]
+    fn a_tab_named_after_its_path_cuts_its_name_at_the_start() {
+        use crate::ui::{Pane, PaneKind, Space};
+
+        let app = AppContext::default();
+        // A tab nobody named, holding a file: its label is the file's path, far
+        // wider than a tab ever gets.
+        let path = format!("{}/src/ui/shell/topbar.rs", env!("CARGO_MANIFEST_DIR"));
+        let (mut root, state, _threads) = app_with_workspaces(vec!["One".to_string()]);
+        {
+            let mut s = state.borrow_mut();
+            let id = s.spaces[0].root.first_leaf_id();
+            s.spaces[0] = Space::unnamed(Pane::Leaf {
+                id,
+                kind: PaneKind::File { path },
+            });
+        }
+        // Narrow enough that the label is far wider than the tab.
+        let commands = render_element(&mut root, vec2f(500.0, 600.0), &app);
+        let drawn = topbar_texts(&commands);
+
+        assert!(
+            drawn
+                .iter()
+                .any(|text| text.starts_with(ELLIPSIS) && text.ends_with("shell/topbar.rs")),
+            "the tab keeps the end of the path it runs in: {drawn:?}"
+        );
+    }
+
+    /// Every tab of a strip is as wide as its neighbours, whatever its name:
+    /// the tabs divide the strip evenly (see [`tab_slot`]) instead of each one
+    /// taking the room its own name needs.
+    #[test]
+    fn every_tab_of_a_strip_is_the_same_width_whatever_its_name() {
+        let app = AppContext::default();
+        let names = vec![
+            "One".to_string(),
+            "A workspace named far longer than any tab of the bar is wide".to_string(),
+            "Two".to_string(),
+        ];
+        let (mut root, _state, _threads) = app_with_workspaces(names);
+        // A window narrow enough that the tabs stop short of the cap: the strip
+        // is shared, not capped, so the name is the only thing that could set a
+        // tab's width — and it does not.
+        let commands = render_element(&mut root, vec2f(800.0, 600.0), &app);
+
+        let first = active_tab(&commands, &app);
+        let rules = tab_rules(&commands, &app);
+        assert_eq!(rules.len(), 2, "one rule per boundary: {rules:?}");
+        assert!(
+            (rules[0] - first.max_x()).abs() < 0.01,
+            "the rule follows the first tab: {first:?} against {rules:?}"
+        );
+        let second = rules[1] - rules[0] - TAB_RULE_WIDTH;
+        assert!(
+            (first.width() - second).abs() < 0.01,
+            "the short-named tab and the long-named one are the same width: {} against {second}",
+            first.width()
+        );
+        assert!(
+            first.width() > 80.0 && first.width() < MAX_TAB_WIDTH,
+            "the strip is shared rather than capped in this window: {first:?}"
+        );
+    }
+
+    /// Once the tabs reach the cap, the room they no longer take stays at the
+    /// end of the strip — warp-new's `Shrinkable::new(0.5, Empty)` spacer: the
+    /// tabs start at the strip's own start, the "+ ▾" control follows the last
+    /// of them, and the right-hand group keeps the window's edge.
+    #[test]
+    fn the_room_past_the_cap_stays_at_the_end_of_the_strip() {
+        let app = AppContext::default();
+        let (mut root, _state, _threads) =
+            app_with_workspaces(vec!["One".to_string(), "Two".to_string()]);
+        let commands = render_element(&mut root, window(), &app);
+
+        let first = active_tab(&commands, &app);
+        assert!(
+            (first.width() - MAX_TAB_WIDTH).abs() < 0.01,
+            "two tabs in a wide window are both at the cap: {first:?}"
+        );
+        let rules = tab_rules(&commands, &app);
+        assert_eq!(rules.len(), 1, "one rule between the two tabs: {rules:?}");
+        let last_tab_max_x = rules[0] + TAB_RULE_WIDTH + MAX_TAB_WIDTH;
+
+        assert!(
+            first.min_x() < window().x / 4.0,
+            "the tabs start at the strip's own start rather than centring in the room: {first:?}"
+        );
+        let plus = topbar_icon(&commands, "plus").expect("the new-workspace control");
+        assert!(
+            plus.x > last_tab_max_x && plus.x - last_tab_max_x < 40.0,
+            "the bar's next control follows the last tab: {plus:?} after {last_tab_max_x}"
+        );
+        let settings = topbar_icon(&commands, "settings").expect("the settings control");
+        assert!(
+            settings.x - last_tab_max_x > 200.0,
+            "the room past the cap stays blank at the end of the strip: \
+             {settings:?} after {last_tab_max_x}"
+        );
+    }
+
+    /// The strip divides the window less both of the bar's paddings: the room
+    /// the tabs share ends before the right-hand group, so no tab runs under
+    /// the inbox or Settings and the bar's trailing margin stays empty.
+    #[test]
+    fn the_strip_stops_before_the_right_hand_group() {
+        let app = AppContext::default();
+        let names: Vec<String> = ["One", "Two", "Three", "Four", "Five"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let (mut root, _state, _threads) = app_with_workspaces(names);
+        let commands = render_element(&mut root, window(), &app);
+
+        let first = active_tab(&commands, &app);
+        assert!(
+            first.width() < MAX_TAB_WIDTH,
+            "five tabs share the strip rather than each taking the cap: {first:?}"
+        );
+        let rules = tab_rules(&commands, &app);
+        assert_eq!(rules.len(), 4, "one rule per boundary: {rules:?}");
+        let last_tab_right = rules[rules.len() - 1] + TAB_RULE_WIDTH + first.width();
+
+        let inbox = topbar_icon(&commands, "inbox-01").expect("the inbox control");
+        let inbox_left = inbox.x - TOPBAR_ICON_BUTTON_SIZE / 2.0;
+        assert!(
+            last_tab_right < inbox_left,
+            "the strip stops before the right-hand group: {last_tab_right} against {inbox_left}"
+        );
+
+        let settings = topbar_icon(&commands, "settings").expect("the settings control");
+        assert_eq!(
+            settings.x + TOPBAR_ICON_BUTTON_SIZE / 2.0,
+            window().x - TOPBAR_RIGHT_PADDING,
+            "the right-hand group keeps the bar's margin from the window's edge"
+        );
+    }
+
+    /// warp-new draws the active tab's title at `Weight::Medium` over the
+    /// inactive tabs' regular one (`TabStyles::default`, `app/src/tab.rs:800-812`),
+    /// both at the UI font size.
+    #[test]
+    fn the_active_tab_reads_in_medium_and_the_others_in_regular() {
+        let app = AppContext::default();
+        let (mut root, _state, _threads) =
+            app_with_workspaces(vec!["One".to_string(), "Two".to_string()]);
+        let commands = render_element(&mut root, window(), &app);
+
+        let runs: Vec<(&str, f32, FontWeight)> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText {
+                    text,
+                    origin,
+                    font_size,
+                    font_weight,
+                    ..
+                } if origin.y < TOPBAR_HEIGHT => Some((text.as_str(), *font_size, *font_weight)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            runs.contains(&("One", TAB_FONT_SIZE, FontWeight::Medium)),
+            "the active tab's title is drawn medium, at the tab font size: {runs:?}"
+        );
+        assert!(
+            runs.contains(&("Two", TAB_FONT_SIZE, FontWeight::Regular)),
+            "an inactive tab's title is drawn regular: {runs:?}"
         );
     }
 
@@ -2300,8 +2757,8 @@ mod tests {
         let share = widths[0];
         assert!(share > 0.0, "the tabs have room between them: {widths:?}");
         assert!(
-            share < MIN_TAB_WIDTH,
-            "the room is shared rather than every tab kept at the minimum: {widths:?}"
+            share < 80.0,
+            "the room is shared, narrower than the 80 pt a tab slot is read at: {widths:?}"
         );
         for width in &widths {
             assert!(
@@ -2352,16 +2809,16 @@ mod tests {
         );
     }
 
-    /// The same rule in a window too narrow for the tabs' minimum: the tabs come
-    /// down to an equal share of what is left and cut their names, and the bar's
-    /// own controls still land inside the window.
+    /// A crowded bar: the tabs come down to an equal share of the room that is
+    /// left — under the 80 pt a slot is read at — and cut their names, and the
+    /// bar's own controls still land inside the window.
     #[test]
     fn a_narrow_window_still_holds_every_control() {
-        // Narrow enough that the bar's controls leave less than the minimum for
-        // three tabs. The bar now carries two leading controls (tools and agent
+        // Narrow enough that the bar's controls leave less than 80 pt for three
+        // tabs. The bar now carries two leading controls (tools and agent
         // management), so the window needs a little more room than before for
         // the squeezed tabs to keep drawing a cut name; past this it still
-        // shares the room rather than holding every tab at the minimum.
+        // shares the room instead of holding every tab at the minimum.
         const WIDTH: f32 = 400.0;
         let app = AppContext::default();
         let names: Vec<String> = (0..3).map(|index| format!("Workspace {index}")).collect();
@@ -2372,8 +2829,8 @@ mod tests {
         assert_eq!(rules.len(), 2, "one rule per boundary: {rules:?}");
         let share = rules[1] - rules[0];
         assert!(
-            share < MIN_TAB_WIDTH,
-            "a narrow bar shares its room instead of holding every tab at the minimum: {rules:?}"
+            share < 80.0,
+            "a narrow bar shares its room instead of holding every tab at 80 pt: {rules:?}"
         );
         assert!(
             topbar_texts(&commands)

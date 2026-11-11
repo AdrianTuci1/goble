@@ -220,7 +220,33 @@ pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashComma
             move || (act.borrow_mut())(pane_id, model.clone()),
         ));
     }
+    // A CLI harness owns its own model and approval policy, so the app's
+    // switches for them do not belong in that conversation: nothing the input
+    // could write would reach the harness.
+    if active_conversation_harness(state).is_some() {
+        commands.retain(|command| {
+            command.name != "always-approve" && !command.name.starts_with("model ")
+        });
+    }
     commands
+}
+
+/// The CLI harness the active pane's conversation belongs to, when it belongs
+/// to one. The native harness is `None`: its model and approval policy are the
+/// app's, and their commands stay in the list.
+fn active_conversation_harness(
+    state: &UiSnapshot,
+) -> Option<&'static goble_core::harness::HarnessSpec> {
+    let conversation_id = state
+        .pane_chat
+        .get(&state.active_pane_id)
+        .map(|chat| chat.conversation_id.as_str())
+        .filter(|conversation_id| !conversation_id.is_empty())?;
+    let entry = state
+        .conversations
+        .iter()
+        .find(|entry| entry.id == conversation_id)?;
+    goble_core::harness::harness_for(&entry.harness).filter(|spec| spec.id != "goble")
 }
 
 /// The commands whose name contains `query`, in order. An empty query matches

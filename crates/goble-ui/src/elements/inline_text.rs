@@ -226,8 +226,7 @@ fn drawn_run_width(max_width: f32, cursor_x: f32, advance: f32) -> f32 {
 
 /// Add a run to the flow, appending it to the previous run when the two are
 /// adjacent on the same line and styled alike. A line of one style then draws
-/// as one run — one background box for a code span, one underline — rather than
-/// one per word.
+/// as one run — one underline, one colour — rather than one per word.
 fn push_chunk(placed: &mut Vec<PlacedSpan>, chunk: PlacedSpan, max_width: f32) {
     if let Some(last) = placed.last_mut() {
         let adjacent = (last.y - chunk.y).abs() < 0.5
@@ -565,11 +564,9 @@ pub fn resolve_span(
         FontWeight::Regular
     };
     let (family, color, background) = if is_code {
-        (
-            FontFamily::Mono,
-            app.theme.color(ColorToken::Text),
-            Some(app.theme.color(ColorToken::SurfaceRaised)),
-        )
+        // Code reads as one accent run: the transcript keeps a small palette,
+        // and a box per word turns a list of paths into a wall of chips.
+        (FontFamily::Mono, app.theme.color(ColorToken::Accent), None)
     } else if is_link {
         (
             FontFamily::System,

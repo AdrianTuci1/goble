@@ -124,6 +124,7 @@ impl DesktopState {
                     .with_reasoning(true)
                     .with_auto_approve(auto_approve)
                     .with_web_search(web_search)
+                    .with_context_window(self.model_context_window(&model_name))
                     .with_runner(runner)
                     .with_id(hid.clone());
                 // Run the harness with the pane's own working directory when

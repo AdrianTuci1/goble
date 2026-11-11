@@ -21,6 +21,12 @@ pub struct Theme {
     /// Optional override for the accent/brand color. When set, the `Accent`
     /// token resolves to this instead of `accent.color()`.
     pub custom_accent: Option<ColorU>,
+    /// Optional override for the page background. When set, the `Bg` token
+    /// resolves to this instead of `colors.bg`.
+    pub bg: Option<ColorU>,
+    /// Optional override for the pane surface. When set, the `Surface` token
+    /// resolves to this instead of `colors.surface`.
+    pub surface: Option<ColorU>,
     pub font: FontFamily,
     pub density: Density,
     pub radius: Radius,
@@ -55,6 +61,8 @@ impl Theme {
             primary: None,
             secondary: None,
             custom_accent: None,
+            bg: None,
+            surface: None,
             font: FontFamily::System,
             density: Density::Default,
             radius: Radius::Default,
@@ -89,6 +97,8 @@ impl Theme {
             primary: None,
             secondary: None,
             custom_accent: None,
+            bg: None,
+            surface: None,
             font: FontFamily::System,
             density: Density::Default,
             radius: Radius::Default,
@@ -123,6 +133,8 @@ impl Theme {
             primary: None,
             secondary: None,
             custom_accent: None,
+            bg: None,
+            surface: None,
             font: FontFamily::System,
             density: Density::Default,
             radius: Radius::Default,
@@ -130,17 +142,44 @@ impl Theme {
         }
     }
 
-    /// Return a copy with the custom primary/secondary/accent overrides applied
-    /// (`None` keeps the theme's built-in color).
+    /// A preset palette as the whole theme: the base scheme and its own accent,
+    /// with no channel overrides. Selecting a preset in the Appearance page
+    /// clears the overrides, so what is shown is exactly this palette; the wheel
+    /// can then refine it again.
+    pub fn preset(preset: ThemePreset) -> Self {
+        Self {
+            name: preset.key(),
+            colors: preset.colors(),
+            accent: AccentColor::Custom(preset.accent()),
+            primary: None,
+            secondary: None,
+            custom_accent: None,
+            bg: None,
+            surface: None,
+            font: FontFamily::System,
+            density: Density::Default,
+            radius: Radius::Default,
+            spacing: Spacing::default(),
+        }
+    }
+
+    /// Return a copy with the custom channel overrides applied (`None` keeps the
+    /// theme's built-in color). `accent` replaces the preset's own accent; the
+    /// background and surface overrides win over the base palette's `bg` and
+    /// `surface`.
     pub fn with_overrides(
         mut self,
         primary: Option<ColorU>,
         secondary: Option<ColorU>,
         accent: Option<ColorU>,
+        bg: Option<ColorU>,
+        surface: Option<ColorU>,
     ) -> Self {
         self.primary = primary;
         self.secondary = secondary;
         self.custom_accent = accent;
+        self.bg = bg;
+        self.surface = surface;
         self
     }
 
@@ -168,8 +207,8 @@ impl Theme {
     /// Resolve a named color token.
     pub fn color(&self, token: ColorToken) -> ColorU {
         match token {
-            ColorToken::Bg => self.colors.bg,
-            ColorToken::Surface => self.colors.surface,
+            ColorToken::Bg => self.bg.unwrap_or(self.colors.bg),
+            ColorToken::Surface => self.surface.unwrap_or(self.colors.surface),
             ColorToken::SurfaceRaised => self.colors.surface_raised,
             ColorToken::Border => self.colors.border,
             ColorToken::Text => self.primary.unwrap_or(self.colors.text),
@@ -181,7 +220,7 @@ impl Theme {
             ColorToken::Selection => self
                 .custom_accent
                 .unwrap_or_else(|| self.accent.color())
-                .mix(&self.colors.bg, SELECTION_BG_MIX),
+                .mix(&self.color(ColorToken::Bg), SELECTION_BG_MIX),
             ColorToken::Success => self.colors.success,
             ColorToken::Warning => self.colors.warning,
             ColorToken::Path => self.colors.path,
@@ -212,6 +251,202 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self::dark()
+    }
+}
+
+/// A ready-made palette the Appearance page offers beside the Default base.
+///
+/// The colours are grok-build's pager themes
+/// (`crates/codegen/xai-grok-pager-render/src/theme/`): the same palettes
+/// (`groknight.rs`, `grokday.rs`, `tokyonight.rs`, `rosepine.rs`,
+/// `oscura.rs`), mapped onto Goble's [`ColorScheme`]. The accent is the
+/// palette's own assistant/system accent, so a preset looks like it does in
+/// grok. Picking one clears the five channel overrides; the wheel can then
+/// override any channel it edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ThemePreset {
+    GobleNight,
+    GobleDay,
+    TokyoNight,
+    RosePineMoon,
+    OscuraMidnight,
+}
+
+impl ThemePreset {
+    /// The presets, in the order the Themes stepper walks them.
+    pub const ALL: [ThemePreset; 5] = [
+        ThemePreset::GobleNight,
+        ThemePreset::GobleDay,
+        ThemePreset::TokyoNight,
+        ThemePreset::RosePineMoon,
+        ThemePreset::OscuraMidnight,
+    ];
+
+    /// The key `[theme] preset` stores.
+    pub const fn key(self) -> &'static str {
+        match self {
+            ThemePreset::GobleNight => "goble-night",
+            ThemePreset::GobleDay => "goble-day",
+            ThemePreset::TokyoNight => "tokyonight",
+            ThemePreset::RosePineMoon => "rosepine-moon",
+            ThemePreset::OscuraMidnight => "oscura-midnight",
+        }
+    }
+
+    /// Read a stored key back. An unknown key is not a preset, so the caller
+    /// keeps its Default base rather than failing the whole config.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            // The first spelling the two Goble palettes shipped with, kept so
+            // a config written before the rename still resolves.
+            "groknight" => Some(Self::GobleNight),
+            "grokday" => Some(Self::GobleDay),
+            _ => Self::ALL.into_iter().find(|preset| preset.key() == key),
+        }
+    }
+
+    /// The name the selector shows.
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            ThemePreset::GobleNight => "Goble Night",
+            ThemePreset::GobleDay => "Goble Day",
+            ThemePreset::TokyoNight => "Tokyo Night",
+            ThemePreset::RosePineMoon => "Rose Pine Moon",
+            ThemePreset::OscuraMidnight => "Oscura Midnight",
+        }
+    }
+
+    /// One line saying what the palette looks like.
+    pub const fn description(self) -> &'static str {
+        match self {
+            ThemePreset::GobleNight => "Neutral gray, Tokyo Night accents",
+            ThemePreset::GobleDay => "The same accents on a light gray base",
+            ThemePreset::TokyoNight => "Deep navy with blue, violet and teal",
+            ThemePreset::RosePineMoon => "Muted rose, iris and pine",
+            ThemePreset::OscuraMidnight => "Near-black with purple accents",
+        }
+    }
+
+    /// The base colours, read from the palette constants named in each arm.
+    pub fn colors(self) -> ColorScheme {
+        match self {
+            // groknight.rs: BG_STORM, bg_dark, BG_HIGHLIGHT; the TokyoNight
+            // Night accents grok pairs with its neutral gray ramp.
+            ThemePreset::GobleNight => ColorScheme {
+                bg: ColorU::hex(0x141414),
+                surface: ColorU::hex(0x1c1c1c),
+                surface_raised: ColorU::hex(0x242424),
+                border: ColorU::hex(0x323237),
+                text: ColorU::hex(0xe1e1e1),
+                muted: ColorU::hex(0x6c6c6c),
+                hover: ColorU::hex(0x2c2c2c),
+                selected: ColorU::hex(0x363636),
+                focus: ColorU::hex(0x7aa2f7),
+                success: ColorU::hex(0x9ece6a),
+                warning: ColorU::hex(0xe0af68),
+                path: ColorU::hex(0xff9e64),
+                command: ColorU::hex(0xe0af68),
+                error: ColorU::hex(0xf7768e),
+                badge: ColorU::hex(0xbb9af7),
+                diff_insert_bg: ColorU::hex(0x063806),
+                diff_delete_bg: ColorU::hex(0x420e14),
+            },
+            // grokday.rs: the light counterpart, same hue family deepened for
+            // contrast on #eeeeee.
+            ThemePreset::GobleDay => ColorScheme {
+                bg: ColorU::hex(0xeeeeee),
+                surface: ColorU::hex(0xe4e4e4),
+                surface_raised: ColorU::hex(0xdedede),
+                border: ColorU::hex(0xc8c8cd),
+                text: ColorU::hex(0x262626),
+                muted: ColorU::hex(0x767676),
+                hover: ColorU::hex(0xd0d0d0),
+                selected: ColorU::hex(0xc6c6c6),
+                focus: ColorU::hex(0x2f64d2),
+                success: ColorU::hex(0x378e23),
+                warning: ColorU::hex(0xa27612),
+                path: ColorU::hex(0xc3691e),
+                command: ColorU::hex(0xa27612),
+                error: ColorU::hex(0xcd3048),
+                badge: ColorU::hex(0x7d4bc6),
+                diff_insert_bg: ColorU::hex(0xdaf2dc),
+                diff_delete_bg: ColorU::hex(0xf5dade),
+            },
+            // tokyonight.rs: Night `BG` under the Storm `BG_STORM` base, with
+            // the Storm highlight as the raised band.
+            ThemePreset::TokyoNight => ColorScheme {
+                bg: ColorU::hex(0x1a1b26),
+                surface: ColorU::hex(0x24283b),
+                surface_raised: ColorU::hex(0x292e42),
+                border: ColorU::hex(0x3c4b78),
+                text: ColorU::hex(0xc0caf5),
+                muted: ColorU::hex(0x565f89),
+                hover: ColorU::hex(0x28314c),
+                selected: ColorU::hex(0x283457),
+                focus: ColorU::hex(0x7aa2f7),
+                success: ColorU::hex(0x9ece6a),
+                warning: ColorU::hex(0xe0af68),
+                path: ColorU::hex(0xff9e64),
+                command: ColorU::hex(0xe0af68),
+                error: ColorU::hex(0xf7768e),
+                badge: ColorU::hex(0xbb9af7),
+                diff_insert_bg: ColorU::hex(0x0f4114),
+                diff_delete_bg: ColorU::hex(0x550f14),
+            },
+            // rosepine.rs: BASE, SURFACE, OVERLAY; the two highlight steps are
+            // the hover and selection bands.
+            ThemePreset::RosePineMoon => ColorScheme {
+                bg: ColorU::hex(0x232136),
+                surface: ColorU::hex(0x2a273f),
+                surface_raised: ColorU::hex(0x393552),
+                border: ColorU::hex(0x44415a),
+                text: ColorU::hex(0xe0def4),
+                muted: ColorU::hex(0x6e6a86),
+                hover: ColorU::hex(0x44415a),
+                selected: ColorU::hex(0x56526e),
+                focus: ColorU::hex(0x3e8fb0),
+                success: ColorU::hex(0x9ccfd8),
+                warning: ColorU::hex(0xf6c177),
+                path: ColorU::hex(0xea9a97),
+                command: ColorU::hex(0xf6c177),
+                error: ColorU::hex(0xeb6f92),
+                badge: ColorU::hex(0xc4a7e7),
+                diff_insert_bg: ColorU::hex(0x192d37),
+                diff_delete_bg: ColorU::hex(0x371e28),
+            },
+            // oscura.rs: BASE is a hair under SURFACE, so the raised bands use
+            // ELEVATED and the purple-tinted highlight ramp.
+            ThemePreset::OscuraMidnight => ColorScheme {
+                bg: ColorU::hex(0x030304),
+                surface: ColorU::hex(0x0f1216),
+                surface_raised: ColorU::hex(0x242034),
+                border: ColorU::hex(0x343048),
+                text: ColorU::hex(0xe4e4e4),
+                muted: ColorU::hex(0x81868f),
+                hover: ColorU::hex(0x242034),
+                selected: ColorU::hex(0x343048),
+                focus: ColorU::hex(0x7dcfdf),
+                success: ColorU::hex(0x50b48c),
+                warning: ColorU::hex(0xebd96e),
+                path: ColorU::hex(0xf1bd00),
+                command: ColorU::hex(0xebd96e),
+                error: ColorU::hex(0xdc5a64),
+                badge: ColorU::hex(0xc4a7e7),
+                diff_insert_bg: ColorU::hex(0x0a231e),
+                diff_delete_bg: ColorU::hex(0x2d0f19),
+            },
+        }
+    }
+
+    /// The palette's accent, which is also its badge hue in every arm.
+    pub const fn accent(self) -> ColorU {
+        match self {
+            ThemePreset::GobleNight => ColorU::hex(0xbb9af7),
+            ThemePreset::GobleDay => ColorU::hex(0x7d4bc6),
+            ThemePreset::TokyoNight => ColorU::hex(0x7aa2f7),
+            ThemePreset::RosePineMoon => ColorU::hex(0xc4a7e7),
+            ThemePreset::OscuraMidnight => ColorU::hex(0x9b7ece),
+        }
     }
 }
 
@@ -368,6 +603,9 @@ pub enum AccentColor {
     Green,
     Purple,
     Orange,
+    /// A preset's own accent, carried from its palette rather than one of the
+    /// four named colours the Settings page offers.
+    Custom(ColorU),
 }
 
 impl AccentColor {
@@ -378,6 +616,7 @@ impl AccentColor {
             AccentColor::Green => ColorU::hex(0x10b981),
             AccentColor::Purple => ColorU::hex(0x8b5cf6),
             AccentColor::Orange => ColorU::hex(0xf97316),
+            AccentColor::Custom(color) => *color,
         }
     }
 }
@@ -541,9 +780,85 @@ mod tests {
     #[test]
     fn a_custom_accent_tints_the_selection() {
         let accent = ColorU::hex(0x8b5cf6);
-        let theme = Theme::dark().with_overrides(None, None, Some(accent));
+        let theme = Theme::dark().with_overrides(None, None, Some(accent), None, None);
         let bg = theme.color(ColorToken::Bg);
         assert_eq!(theme.color(ColorToken::Selection), accent.mix(&bg, 0.55));
+    }
+
+    /// Every preset resolves a whole palette: its own background, surface, text
+    /// and accent, and the stored key reads back.
+    #[test]
+    fn each_preset_carries_its_own_palette() {
+        for preset in ThemePreset::ALL {
+            let theme = Theme::preset(preset);
+            assert_eq!(theme.name, preset.key());
+            assert_eq!(theme.color(ColorToken::Bg), preset.colors().bg);
+            assert_eq!(theme.color(ColorToken::Surface), preset.colors().surface);
+            assert_eq!(theme.color(ColorToken::Text), preset.colors().text);
+            assert_eq!(theme.color(ColorToken::Accent), preset.accent());
+            assert_eq!(ThemePreset::from_key(preset.key()), Some(preset));
+        }
+        assert_eq!(ThemePreset::from_key("no-such-theme"), None);
+    }
+
+    /// No two presets share a background, surface, text or accent, so the
+    /// selector's previews cannot be mistaken for one another.
+    #[test]
+    fn the_presets_are_distinct() {
+        for (i, a) in ThemePreset::ALL.iter().enumerate() {
+            for b in &ThemePreset::ALL[i + 1..] {
+                for (token, name) in [
+                    (ColorToken::Bg, "background"),
+                    (ColorToken::Surface, "surface"),
+                    (ColorToken::Text, "text"),
+                    (ColorToken::Accent, "accent"),
+                ] {
+                    assert_ne!(
+                        Theme::preset(*a).color(token),
+                        Theme::preset(*b).color(token),
+                        "{} and {} share a {name}",
+                        a.key(),
+                        b.key()
+                    );
+                }
+            }
+        }
+    }
+
+    /// The two background channels take the same override path as the text and
+    /// accent ones, and a selection band mixes against the overridden background.
+    #[test]
+    fn a_background_and_surface_override_reach_their_tokens() {
+        let bg = ColorU::hex(0x101020);
+        let surface = ColorU::hex(0x202030);
+        let theme = Theme::preset(ThemePreset::TokyoNight).with_overrides(
+            None,
+            None,
+            None,
+            Some(bg),
+            Some(surface),
+        );
+        assert_eq!(theme.color(ColorToken::Bg), bg);
+        assert_eq!(theme.color(ColorToken::Surface), surface);
+        assert_eq!(
+            theme.color(ColorToken::Selection),
+            theme.color(ColorToken::Accent).mix(&bg, 0.55)
+        );
+        assert_eq!(
+            theme.color(ColorToken::SurfaceRaised),
+            ThemePreset::TokyoNight.colors().surface_raised,
+            "the raised band follows the surface, not the override"
+        );
+    }
+
+    /// A preset is a base: an override that names no accent leaves the preset's
+    /// own accent in place.
+    #[test]
+    fn an_empty_override_keeps_the_preset_accent() {
+        let accent = ThemePreset::RosePineMoon.accent();
+        let theme =
+            Theme::preset(ThemePreset::RosePineMoon).with_overrides(None, None, None, None, None);
+        assert_eq!(theme.color(ColorToken::Accent), accent);
     }
 
     /// The focus blue is warp-new's own default dark theme accent, and it is

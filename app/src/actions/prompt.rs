@@ -139,12 +139,92 @@ pub(crate) fn send_agent_prompt(
     ran_turn
 }
 
+/// Run the text typed in a child view as that child's next turn.
+///
+/// A child view reads the child's own conversation, but the pane's bound
+/// conversation is its parent's, so the ordinary composer path would write to
+/// the parent. This runs the turn on `child_id` itself, with the pane's own
+/// model, environment and working directory, so a finished child can be woken
+/// with a follow-up (grok-build's takeover accepts a prompt in the child's own
+/// input the same way). A child that is still working is left alone: its turn
+/// already owns that conversation.
+pub(crate) fn send_sub_agent_prompt(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    media: &Rc<RefCell<MediaState>>,
+    pane_id: u64,
+    child_id: &str,
+    text: &str,
+) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    let Some(desktop) = desktop else {
+        return false;
+    };
+    if state
+        .live_sub_agent_row(pane_id, child_id)
+        .is_some_and(|row| row.is_running())
+    {
+        return false;
+    }
+    let model = state.pane_agent_model(pane_id);
+    let path = state
+        .pane_sessions
+        .get(&pane_id)
+        .map(|s| s.path.clone())
+        .unwrap_or_else(|| state.composer_path.clone());
+    let (medium_id, project_id) = {
+        let media = media.borrow();
+        match state.pane_environment(pane_id) {
+            Some(environment) => (
+                environment.clone(),
+                media.default_project_for_medium(&environment),
+            ),
+            None => (
+                media.selected_medium_id().to_string(),
+                media.selected_project_id().to_string(),
+            ),
+        }
+    };
+    // The turn runs under the child's own conversation id: the store keys the
+    // child's rows by it, and the view reads them back by the same id.
+    match crate::runtime::run_turn(
+        desktop,
+        child_id,
+        text,
+        &state.settings_llm_provider,
+        &model,
+        state.workspace_routing,
+        &medium_id,
+        &project_id,
+        child_id,
+        &path,
+        Some(state.selected_harness.as_str()),
+        None,
+    ) {
+        Ok(_) => {
+            state.refresh_messages(desktop);
+            true
+        }
+        Err(error) => {
+            log::warn!("run_chat_turn({child_id}) failed: {error}");
+            false
+        }
+    }
+}
+
 /// Run `text` as a shell command in `pane_id`'s real PTY session.
 ///
 /// Every pane (chat or terminal) is given a live [`TerminalSession`] on demand
 /// so a terminal command actually executes in a shell; the output lands in the
 /// pane's terminal buffer (rendered live for a terminal pane). The shell echoes
 /// the typed line, so no separate echo is needed.
+///
+/// A command typed inside a conversation runs in the conversation's own shell
+/// (`TerminalRegistry::agent_sessions`), a session separate from the pane's
+/// terminal: the agent view and the shell behind Esc are two surfaces, so a
+/// command stays on the one it was typed in and the terminal never shows it.
 ///
 /// The line is also read for where it leaves the pane's shell: an interactive
 /// `ssh` command binds the pane's session to the host it names — its alias
@@ -158,11 +238,12 @@ pub(crate) fn send_agent_prompt(
 /// leaves it out — a command typed inside a conversation is the conversation's
 /// (warp-new's split between a block created in the terminal and one created in
 /// an agent view). A command typed at the shell's own bar passes `None`.
-pub(super) fn run_terminal_command(
+pub(crate) fn run_terminal_command(
     state: &mut UiState,
     text: &str,
     pane_id: u64,
     conversation: Option<&str>,
+    desktop: Option<&DesktopState>,
 ) {
     // A viewer pane has no local shell, whatever the line: its commands belong
     // to the worker, and spawning a pty here would be exactly the local
@@ -175,21 +256,54 @@ pub(super) fn run_terminal_command(
         .get(&pane_id)
         .map(|s| s.path.clone())
         .unwrap_or_default();
+    // A line that names a CLI harness opens that harness's agent view: the
+    // TUI never starts in a pane's shell, on either surface, so Esc back to
+    // the terminal shows the shell rather than an agent's screen. The agent
+    // view is the surface goble runs a harness in, and the harness the line
+    // names gets a conversation of its own. A harness whose program is not
+    // installed stays a shell line, so the shell's own `command not found`
+    // reaches the user instead of a surface for a program that is not there.
+    let harness_spec = if crate::terminal::command_installed(text) {
+        crate::terminal::TuiAgent::launched_by(text).and_then(|agent| agent.spec())
+    } else {
+        None
+    };
+    if let Some(spec) = harness_spec {
+        let already = conversation
+            .and_then(|conversation_id| {
+                state
+                    .conversations
+                    .iter()
+                    .find(|entry| entry.id == conversation_id)
+            })
+            .and_then(|entry| goble_core::harness::harness_for(&entry.harness))
+            .is_some_and(|current| current.id == spec.id);
+        if !already {
+            state.bind_pane_harness_chat(pane_id, spec, desktop);
+        }
+        state.open_harness_agent_view(pane_id);
+        return;
+    }
     // Where this line leaves the pane's shell: an interactive `ssh` command
     // binds the pane to the host it names, `exit` returns it to the local
     // shell. The line is read here, where the user's own command is submitted —
     // the shell's bar and the pane's agent view (`!command`) both arrive here —
     // and any other line leaves the binding where it was: whether it ran locally
     // or on the remote cannot be told from the line, so it is not guessed.
-    // `~/.ssh` is only read for a line that opens a session.
-    let ssh_session = match goble_core::ssh_command::parse_ssh_command(text) {
-        Some(target) => {
-            let hosts = state.ssh_hosts_for_command();
-            Some(target.resolve(hosts.as_ref(), &goble_core::ssh_hosts::current_user()))
-        }
-        None => None,
+    // `~/.ssh` is only read for a line that opens a session. A conversation's
+    // own shell has its own binding, so it never moves the pane's terminal.
+    let ssh_session = match conversation {
+        None => match goble_core::ssh_command::parse_ssh_command(text) {
+            Some(target) => {
+                let hosts = state.ssh_hosts_for_command();
+                Some(target.resolve(hosts.as_ref(), &goble_core::ssh_hosts::current_user()))
+            }
+            None => None,
+        },
+        Some(_) => None,
     };
-    let leaves_the_shell = goble_core::ssh_command::returns_to_local_shell(text);
+    let leaves_the_shell =
+        conversation.is_none() && goble_core::ssh_command::returns_to_local_shell(text);
     {
         let mut reg = state.terminal.borrow_mut();
         if let Some(session) = ssh_session.clone() {
@@ -197,22 +311,31 @@ pub(super) fn run_terminal_command(
         } else if leaves_the_shell {
             reg.set_ssh_session(pane_id, None);
         }
-        // A line naming a TUI agent flips the pane native-first before the
-        // agent paints, exactly as the same line typed at the grid prompt does:
-        // the pane then hides its own rich input and lets the agent own keys.
-        reg.note_command(pane_id, text);
-        reg.ensure_session(pane_id, &cwd);
-        if let Some(session) = reg.sessions.get_mut(&pane_id) {
-            if let Some(conversation) = conversation {
-                session.run_block_for_conversation(conversation);
+        match conversation {
+            // The conversation's own shell: a `!` line runs there, in its own
+            // blocks, and the pane's terminal is untouched.
+            Some(conversation) => {
+                reg.run_agent_command(pane_id, &cwd, conversation, text);
             }
-            let mut line = text.trim_end().to_string();
-            line.push('\n');
-            session.write(line.as_bytes());
+            // The pane's shell: the line runs in the shell's own blocks. A
+            // line naming a harness never reaches here — it opened the
+            // harness's agent view above, so no TUI is started in the shell.
+            None => {
+                reg.note_command(pane_id, text);
+                reg.ensure_session(pane_id, &cwd);
+                if let Some(session) = reg.sessions.get_mut(&pane_id) {
+                    let mut line = text.trim_end().to_string();
+                    line.push('\n');
+                    session.write(line.as_bytes());
+                }
+            }
         }
     }
     // A typed `ssh` line and a saved-host pane share one binding record: the
     // line clears a saved host's name (it named its own target), and `exit`
-    // leaves a saved host behind as the reconnect offer.
-    state.note_shell_line(pane_id, text);
+    // leaves a saved host behind as the reconnect offer. A conversation's
+    // command belongs to its own shell, so it does not move the pane.
+    if conversation.is_none() {
+        state.note_shell_line(pane_id, text);
+    }
 }

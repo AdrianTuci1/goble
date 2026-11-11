@@ -119,17 +119,23 @@ fn a_reported_cwd_moves_the_panes_directory() {
 
     // The shell was started in one directory; `cd ..` moved it to `/b`, and the
     // prompt that followed reported where it now is.
-    hook_cwd(&state, HookEvent::InitShell(InitShellValue {
-        cwd: Some("/a".to_string()),
-        ..Default::default()
-    }));
+    hook_cwd(
+        &state,
+        HookEvent::InitShell(InitShellValue {
+            cwd: Some("/a".to_string()),
+            ..Default::default()
+        }),
+    );
     state.borrow_mut().adopt_reported_cwds();
     assert_eq!(state.borrow().composer_path, "/a");
 
-    hook_cwd(&state, HookEvent::Precmd(PrecmdValue {
-        pwd: Some("/b".to_string()),
-        ..Default::default()
-    }));
+    hook_cwd(
+        &state,
+        HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/b".to_string()),
+            ..Default::default()
+        }),
+    );
     state.borrow_mut().adopt_reported_cwds();
 
     let s = state.borrow();
@@ -177,10 +183,13 @@ fn a_report_of_the_directory_the_pane_already_has_changes_nothing() {
     let target = home.path().to_string_lossy().to_string();
 
     (actions.on_select_dir.borrow_mut())(1, target.clone());
-    hook_cwd(&state, HookEvent::Precmd(PrecmdValue {
-        pwd: Some(target.clone()),
-        ..Default::default()
-    }));
+    hook_cwd(
+        &state,
+        HookEvent::Precmd(PrecmdValue {
+            pwd: Some(target.clone()),
+            ..Default::default()
+        }),
+    );
     state.borrow_mut().adopt_reported_cwds();
 
     let s = state.borrow();
@@ -198,10 +207,13 @@ fn a_directory_chosen_from_the_menu_is_not_reverted_while_its_cd_runs() {
 
     // The shell has been sitting in /a and its prompt reported it; the app has
     // not looked at that report yet.
-    hook_cwd(&state, HookEvent::Precmd(PrecmdValue {
-        pwd: Some("/a".to_string()),
-        ..Default::default()
-    }));
+    hook_cwd(
+        &state,
+        HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/a".to_string()),
+            ..Default::default()
+        }),
+    );
 
     (actions.on_select_dir.borrow_mut())(1, "/b".to_string());
     state.borrow_mut().adopt_reported_cwds();
@@ -213,10 +225,13 @@ fn a_directory_chosen_from_the_menu_is_not_reverted_while_its_cd_runs() {
     );
 
     // The prompt that followed the `cd` reports where the shell now is.
-    hook_cwd(&state, HookEvent::Precmd(PrecmdValue {
-        pwd: Some("/b".to_string()),
-        ..Default::default()
-    }));
+    hook_cwd(
+        &state,
+        HookEvent::Precmd(PrecmdValue {
+            pwd: Some("/b".to_string()),
+            ..Default::default()
+        }),
+    );
     state.borrow_mut().adopt_reported_cwds();
 
     let s = state.borrow();
@@ -253,10 +268,13 @@ fn a_shells_start_does_not_move_a_pane_opened_at_a_chosen_directory() {
             .insert(1, TerminalSession::started(Emulator::new(80, 24)));
     }
 
-    hook_cwd(&state, HookEvent::InitShell(InitShellValue {
-        cwd: Some("/Users/me".to_string()),
-        ..Default::default()
-    }));
+    hook_cwd(
+        &state,
+        HookEvent::InitShell(InitShellValue {
+            cwd: Some("/Users/me".to_string()),
+            ..Default::default()
+        }),
+    );
     state.borrow_mut().adopt_reported_cwds();
 
     assert_eq!(
@@ -266,10 +284,13 @@ fn a_shells_start_does_not_move_a_pane_opened_at_a_chosen_directory() {
     );
 
     // A `cd` typed at that shell's prompt still moves the pane.
-    hook_cwd(&state, HookEvent::Precmd(PrecmdValue {
-        pwd: Some(format!("{project}/src")),
-        ..Default::default()
-    }));
+    hook_cwd(
+        &state,
+        HookEvent::Precmd(PrecmdValue {
+            pwd: Some(format!("{project}/src")),
+            ..Default::default()
+        }),
+    );
     state.borrow_mut().adopt_reported_cwds();
 
     assert_eq!(state.borrow().composer_path, format!("{project}/src"));

@@ -661,3 +661,62 @@ fn a_second_frame_of_the_same_transcript_measures_no_text() {
         "the frame after an invalidation measures its runs again"
     );
 }
+
+/// A run's quad is anchored on the run's own origin, never on its ink: every
+/// glyph inside it lands at `origin + glyph.x`, whatever the glyphs around it
+/// overhang. Anchoring the quad on the ink's overhang instead put a run whose
+/// first glyph reaches left of its cell two pixels right of its own pen — and
+/// put the same glyph, drawn as a run of its own, somewhere else again. That is
+/// the shift a caret caused when it redrew the letter it covered.
+#[test]
+fn a_runs_quad_is_anchored_on_the_origin_not_on_its_ink() {
+    for (text, mono, italic, what) in [
+        ("j", false, false, "a prose `j`, whose ink overhangs its cell"),
+        ("jolt", false, false, "a prose word that starts with one"),
+        ("A", true, true, "an oblique mono `A`"),
+        ("xA", true, true, "the same `A` inside a run"),
+        ("Hello", false, false, "a run with no overhang at all"),
+    ] {
+        let (entry, atlas, width, _, _) = super::fonts::rasterize_text_with_emoji(
+            text,
+            12.0,
+            FontWeight::Regular,
+            mono,
+            italic,
+            f32::INFINITY,
+            1.2,
+        )
+        .expect("the run rasterizes");
+        let set = font_set().expect("the bundled fonts load");
+        let family = if mono {
+            FontFamily::Mono
+        } else {
+            FontFamily::System
+        };
+        let font = set.select(FontWeight::Regular, family, italic);
+        let mut layout =
+            fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
+        layout.reset(&fontdue::layout::LayoutSettings {
+            max_width: None,
+            max_height: None,
+            line_height: 1.2,
+            ..Default::default()
+        });
+        layout.append(&[font], &fontdue::layout::TextStyle::new(text, 12.0, 0));
+        let glyph = layout.glyphs().first().expect("the run laid out a glyph");
+
+        // The run's first inked atlas column, and where the quad puts it on
+        // screen.
+        let rows = atlas.len() / width as usize;
+        let first_ink = (0..width)
+            .find(|col| (0..rows).any(|row| atlas[row * width as usize + *col as usize] > 0))
+            .expect("the run has ink") as f32;
+        assert_eq!(
+            entry.offset[0] + first_ink,
+            glyph.x,
+            "{what}: {text:?} draws its first glyph where its own layout puts \
+             it, offset {:?} and ink column {first_ink}",
+            entry.offset[0]
+        );
+    }
+}

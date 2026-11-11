@@ -72,10 +72,15 @@ impl UiState {
         {
             let rt = self.pane_runtime.entry(pane_id).or_default();
             if call.status == ToolCallStatus::Running {
+                rt.in_flight_since
+                    .entry(call.id.clone())
+                    .or_insert_with(std::time::Instant::now);
+                rt.work_started_at.get_or_insert_with(std::time::Instant::now);
                 rt.in_flight_tools
                     .insert(call.id.clone(), tool_call_from_event(call));
             } else {
                 rt.in_flight_tools.remove(&call.id);
+                rt.in_flight_since.remove(&call.id);
             }
             overlay_in_flight(&mut rt.messages, &rt.in_flight_tools);
         }
@@ -136,6 +141,11 @@ impl UiState {
             let rt = self.pane_runtime.entry(pane_id).or_default();
             rt.pending_ask = Some(AskUserUi::new(question.to_string(), quick_replies));
             rt.agent_state = PaneAgentState::NeedsInput;
+        }
+        // The panel takes the keyboard when it appears: its digits pick an
+        // answer and Enter submits it, until the user clicks the composer.
+        if pane_id == self.active_pane_id {
+            self.composer_focused = false;
         }
         self.raise_inbox(
             pane_id,
@@ -367,6 +377,10 @@ impl UiState {
         self.pane_runtime
             .entry(pane_id)
             .or_default()
+            .start_dock_clock();
+        self.pane_runtime
+            .entry(pane_id)
+            .or_default()
             .apply_subagent_spawned(event);
     }
 
@@ -447,6 +461,46 @@ impl UiState {
             .values()
             .map(|record| (record.parent_call_id.clone(), record.row.clone()))
             .collect()
+    }
+
+    /// The rows the pane's sub-agent strip lists, sorted by the child they
+    /// belong to so the strip's order is stable frame to frame.
+    ///
+    /// A running child is always listed, including a background one that
+    /// outlives the turn that spawned it. A child that already ended stays
+    /// only while the pane's turn is busy: the strip reports the delegation of
+    /// the turn being read, and clears when that turn ends instead of keeping
+    /// a record per child the pane ever spawned.
+    pub fn pane_sub_agents(&self, pane_id: u64) -> Vec<SubAgentRow> {
+        let Some(rt) = self.pane_runtime.get(&pane_id) else {
+            return Vec::new();
+        };
+        let mut rows: Vec<SubAgentRow> = rt
+            .sub_agents
+            .values()
+            .filter(|record| record.row.is_running() || rt.busy)
+            .map(|record| record.row.clone())
+            .collect();
+        rows.sort_by(|a, b| a.child_id.cmp(&b.child_id));
+        rows
+    }
+
+    /// Mark `pane_id`'s child `child_id` cancelled, from the strip's stop
+    /// control. The app cancels the child's own turn on the service; the row
+    /// reads the cancellation at once rather than waiting for the child's
+    /// finish event, and the pane's own turn — the one waiting on this child —
+    /// is left running. The row reaches the strip through the per-frame
+    /// snapshot, so no store re-read is needed.
+    pub fn cancel_sub_agent(&mut self, pane_id: u64, child_id: &str) {
+        let Some(record) = self
+            .pane_runtime
+            .get_mut(&pane_id)
+            .and_then(|rt| rt.sub_agents.get_mut(child_id))
+        else {
+            return;
+        };
+        record.row.status = SubAgentRowStatus::Cancelled;
+        record.row.activity.clear();
     }
 
     /// How many of `pane_id`'s spawned sub-agent children are still running. A
@@ -672,6 +726,8 @@ impl UiState {
             messages: Vec::new(),
             returned_to,
             parse_cache: MessageParseCache::default(),
+            draft: Rc::new(RefCell::new(String::new())),
+            caret: Rc::new(RefCell::new(0)),
         };
         if let Some(desktop) = desktop {
             let row = view.row.clone();
@@ -708,7 +764,7 @@ impl UiState {
 /// The chip's line for one in-flight tool call: the row its family gives it,
 /// the same phrasing the footer draws (`Run cargo test`, `Search "fn main"`),
 /// rather than the tool's own name. A call no family claims keeps its name.
-fn work_call_description(call: &ToolCall) -> String {
+pub(super) fn work_call_description(call: &ToolCall) -> String {
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
     let row = goble_core::harness::tool_row(&call.name, &arguments, None);

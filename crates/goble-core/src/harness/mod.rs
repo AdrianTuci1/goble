@@ -28,6 +28,7 @@ use anyhow::Result;
 use futures::{Stream, StreamExt};
 
 mod agents;
+pub mod catalog;
 mod commands;
 mod credentials;
 mod definitions;
@@ -46,9 +47,11 @@ mod workflows;
 #[cfg(test)]
 mod tests;
 
+pub use catalog::{detect_harness, harness_by_id, harness_for, HarnessSpec, HARNESSES};
 pub use presentation::{
     edit_change_counts, edit_diffstat, is_hidden_tool, one_line, skill_name, string_argument,
-    subagent_subject, tool_kind_for, tool_row, web_search_sources, ToolKind, ToolRow,
+    subagent_subject, tool_display_name, tool_kind_for, tool_row, web_search_sources, ToolKind,
+    ToolRow,
 };
 pub use runner::{
     harness_sandbox, harness_sandbox_profile, CommandRunner, MockCommandRunner, PaneSession,
@@ -61,8 +64,9 @@ pub use types::{
 };
 
 pub(crate) use commands::{command_candidates, run_approved_command, COMMAND_TOOL};
+pub use definitions::RICH_TEXT_GUIDE;
 pub(crate) use definitions::{
-    harness_tool_definitions, HARNESS_SYSTEM_PROMPT, SPAWN_SUBAGENT_TOOL,
+    harness_system_prompt, harness_tool_definitions, SPAWN_SUBAGENT_TOOL,
 };
 pub(crate) use dispatch::{arc_to_sender_ref, execute_tool_call, ToolTurnContext};
 
@@ -78,6 +82,10 @@ pub struct Harness {
     reasoning_enabled: bool,
     auto_approve: bool,
     web_search: WebSearchConfig,
+    /// The model's context window, when the configuration states one. A turn
+    /// that would fill it compacts its history first; `None` leaves the
+    /// transcript alone.
+    context_window: Option<u64>,
     /// The sub-agent children this harness has spawned (S3). Shared with every
     /// turn and every child, so the records outlive the turn that spawned them.
     subagents: SubAgentRegistry,
@@ -102,6 +110,7 @@ impl Harness {
             reasoning_enabled: false,
             auto_approve: false,
             web_search: WebSearchConfig::default(),
+            context_window: None,
             subagents: SubAgentRegistry::default(),
         }
     }
@@ -111,8 +120,9 @@ impl Harness {
         self
     }
 
-    /// When set, the agent does not suspend to ask the user a question: an
-    /// `ask_user` tool call is auto-skipped and the mission continues.
+    /// When set, a command tool runs without suspending on the approval gate.
+    /// A question is not an approval: `ask_user` always suspends the turn and
+    /// reaches the user, whatever this is set to.
     pub fn with_auto_approve(mut self, auto_approve: bool) -> Self {
         self.auto_approve = auto_approve;
         self
@@ -167,6 +177,14 @@ impl Harness {
     /// hosted backend is used; otherwise `web_search` falls back to DuckDuckGo.
     pub fn with_web_search(mut self, config: WebSearchConfig) -> Self {
         self.web_search = config;
+        self
+    }
+
+    /// The model's context window, from the resolved model configuration. A
+    /// turn whose history would fill it summarises the earlier turns before
+    /// the call; the transcript itself is left intact.
+    pub fn with_context_window(mut self, window: Option<u64>) -> Self {
+        self.context_window = window;
         self
     }
 
@@ -259,6 +277,7 @@ impl Harness {
                 self.reasoning_enabled,
                 self.auto_approve,
                 self.web_search.clone(),
+                self.context_window,
                 self.subagent_host(),
             ),
         );
@@ -318,6 +337,7 @@ impl Harness {
                 model.to_string(),
                 self.auto_approve,
                 self.web_search.clone(),
+                self.context_window,
                 self.subagent_host(),
             ),
         );
@@ -354,6 +374,7 @@ impl Harness {
                 self.reasoning_enabled,
                 self.auto_approve,
                 self.web_search.clone(),
+                self.context_window,
                 self.subagent_host(),
             ),
         );

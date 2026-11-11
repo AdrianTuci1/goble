@@ -42,6 +42,15 @@ pub enum DispatchedEvent {
         key: String,
         modifiers: ModifiersState,
     },
+    /// The keyboard modifiers changed without a key carrying the change.
+    ///
+    /// A modifier key reports itself here and not as a [`Self::KeyDown`]: press
+    /// and release Command and there is no key event at all, only this. The app
+    /// reads it to know the chord modifier is held (the workspace tabs advertise
+    /// their shortcut numbers while it is), which no key press can tell it.
+    Modifiers {
+        modifiers: ModifiersState,
+    },
     /// The window gained or lost the OS keyboard focus. A terminal can be asked
     /// to report this to the program that is running (mode 1004), which is how
     /// a TUI tells its user's absence from their presence.

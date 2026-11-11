@@ -35,6 +35,9 @@ pub enum ToolKind {
     MemorySearch,
     /// A read of a skill definition, named by the skill rather than the file.
     Skill,
+    /// A question to the user: the question, then the answer that resumed the
+    /// turn.
+    Ask,
     /// A sub-agent: the child's own record and rows.
     SubAgent,
     /// No family claims the call: the row names the tool itself.
@@ -74,6 +77,7 @@ pub fn tool_kind_for(name: &str) -> ToolKind {
         "use_tool" => ToolKind::UseTool,
         "memory_search" => ToolKind::MemorySearch,
         "skill" => ToolKind::Skill,
+        "ask_user" => ToolKind::Ask,
         "create_agent" | "run_agent" | SPAWN_SUBAGENT_TOOL => ToolKind::SubAgent,
         _ => ToolKind::Other,
     }
@@ -212,6 +216,14 @@ pub fn tool_row(name: &str, arguments: &Value, result: Option<&str>) -> ToolRow 
             subject,
             detail: String::new(),
         },
+        // The question the agent asked, and the answer it got is the body: the
+        // row reads `Ask User <question>` the way a read reads `Read <path>`.
+        ToolKind::Ask => ToolRow {
+            kind,
+            verb: "Ask User ",
+            subject,
+            detail: String::new(),
+        },
         // A server's tool is named by the server and the tool, the way the
         // reference pager names it; the operand is the tool itself.
         ToolKind::UseTool => ToolRow {
@@ -237,9 +249,38 @@ fn named_row(name: &str, arguments: &Value) -> ToolRow {
     ToolRow {
         kind: ToolKind::Other,
         verb: "",
-        subject: name.to_string(),
+        subject: tool_display_name(name),
         detail: first_string_argument(arguments),
     }
+}
+
+/// The words a tool name reads as. An underscore is a word break, never a mark
+/// under the name: `read_file` reads `Read File` and `mcp__postgres__query`
+/// reads `MCP Postgres Query`. A name already spelled in words, or known by its
+/// short capitalisation, is left as it came.
+pub fn tool_display_name(name: &str) -> String {
+    if !name.contains('_') {
+        return name.to_string();
+    }
+    name.split('_')
+        .filter(|word| !word.is_empty())
+        .map(|word| match word.to_ascii_lowercase().as_str() {
+            "mcp" => "MCP".to_string(),
+            "api" => "API".to_string(),
+            "id" => "ID".to_string(),
+            "llm" => "LLM".to_string(),
+            "ssh" => "SSH".to_string(),
+            "url" => "URL".to_string(),
+            _ => {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().chain(chars).collect(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The argument a family's row is named by.
@@ -253,6 +294,7 @@ fn operand(kind: ToolKind, arguments: &Value) -> Option<String> {
         ToolKind::WebFetch => "url",
         ToolKind::UseTool => "name",
         ToolKind::Skill => "skill",
+        ToolKind::Ask => "question",
         ToolKind::SubAgent | ToolKind::Other => return None,
     };
     let value = string_argument(arguments, key)
@@ -517,7 +559,31 @@ mod tests {
     fn a_recognised_call_with_no_operand_is_named_by_its_tool() {
         let row = row("read_file", r#"{}"#);
         assert_eq!(row.kind, ToolKind::Other);
-        assert_eq!(row.subject, "read_file");
+        assert_eq!(row.subject, "Read File");
+    }
+
+    /// A tool name reads as words: the underscore is a word break, so no row
+    /// draws an underscore under its name. A name with none is left as it came.
+    #[test]
+    fn a_tool_name_reads_as_words() {
+        assert_eq!(tool_display_name("read_file"), "Read File");
+        assert_eq!(tool_display_name("ask_user"), "Ask User");
+        assert_eq!(tool_display_name("mcp__postgres__query"), "MCP Postgres Query");
+        assert_eq!(tool_display_name("credentials"), "credentials");
+    }
+
+    /// The question the agent asked draws as its own family: `Ask User` leads
+    /// the row and the question is its operand, the way a read leads with its
+    /// path. The answer is the call's result, so the row states it as a body.
+    #[test]
+    fn an_asked_question_is_the_ask_user_row() {
+        let row = row(
+            "ask_user",
+            r#"{"question":"Which environment?","quick_replies":["staging","production"]}"#,
+        );
+        assert_eq!(row.kind, ToolKind::Ask);
+        assert_eq!(row.verb, "Ask User ");
+        assert_eq!(row.subject, "Which environment?");
     }
 
     #[test]

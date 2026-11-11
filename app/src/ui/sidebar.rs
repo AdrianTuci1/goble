@@ -141,6 +141,7 @@ fn agents_view(
     let search = SearchInput::new()
         .with_value(state.search_query.clone())
         .with_focused(state.search_focused)
+        .with_caret(state.sidebar_search_caret.clone())
         .with_placeholder("Search")
         .with_compact(true)
         .with_icon(false)
@@ -457,20 +458,42 @@ fn conversation_card(
     ConversationListItem::new(
         entry.id.clone(),
         entry.name.clone(),
-        entry.last_response.clone(),
         entry.timestamp.clone(),
         ui,
         selected,
     )
     .with_workspace_routing(entry.workspace_routing.clone())
     .with_status(entry.status)
-    .with_directory(entry.directory.clone())
+    .with_harness(entry.harness.clone())
+    .with_directory(card_directory(state, entry))
     .with_starred(state.starred.iter().any(|id| id == &entry.id))
     .with_dots_inset(dots_inset)
     .with_on_click(move || (on_select.borrow_mut())(click_id.clone()))
     .with_on_delete(move || (on_delete.borrow_mut())(delete_id.clone()))
     .with_on_toggle_star(move || (on_star.borrow_mut())(star_id.clone()))
     .finish()
+}
+
+/// The directory a card labels itself with. A conversation that has run
+/// somewhere names its own directory; one that has not names where it would
+/// run — the pane already holding it, or the focused pane's, which is where a
+/// conversation opened from the list starts. Every card therefore carries the
+/// row, and only the label is collapsed to `~`: the stored path stays real.
+fn card_directory(state: &UiSnapshot, entry: &ConversationEntry) -> String {
+    let directory = entry.directory.trim();
+    if !directory.is_empty() {
+        return crate::state::display_path(directory);
+    }
+    let pane_path = state
+        .pane_chat
+        .values()
+        .find(|pane| pane.conversation_id == entry.id)
+        .map(|pane| pane.composer_path.trim())
+        .filter(|path| !path.is_empty());
+    match pane_path.unwrap_or_else(|| state.composer_path.trim()) {
+        "" => crate::state::display_path(&crate::state::current_dir_display()),
+        path => crate::state::display_path(path),
+    }
 }
 
 #[cfg(test)]
@@ -579,6 +602,14 @@ mod sidebar_surface_tests {
         // The tray's own rows: a rounded fill that holds one of them is the
         // tray's card and not a row that went back to being a widget.
         let tray_rows = ["Star", "Delete conversation"];
+        // The card's status badge is the one rounded mark on the card itself:
+        // an 8 pt dot with a 4 pt radius, drawn on the harness mark's corner.
+        // It is a mark, not a card surface, so the flatness rule ignores it.
+        let is_status_badge = |rect: &RectF, radius: f32| {
+            (radius - 4.0).abs() < 0.01
+                && (rect.width() - 8.0).abs() < 0.01
+                && (rect.height() - 8.0).abs() < 0.01
+        };
         let holds_a_tray_row = |rect: &RectF| {
             tray_open
                 && commands.iter().any(|other| match other {
@@ -605,7 +636,10 @@ mod sidebar_surface_tests {
                     rect,
                     corner_radius,
                     ..
-                } if in_band(*rect) && *corner_radius > 0.0 && !holds_a_tray_row(rect) => {
+                } if in_band(*rect)
+                    && *corner_radius > 0.0
+                    && !is_status_badge(rect, *corner_radius)
+                    && !holds_a_tray_row(rect) => {
                     Some(format!("fill {rect:?} radius {corner_radius}"))
                 }
                 _ => None,
@@ -1333,6 +1367,108 @@ mod sidebar_surface_tests {
         );
     }
 
+    /// The search field takes the keyboard: the arrows move its own caret, a
+    /// character typed after one lands before the last one, and `Enter` is
+    /// still consumed without touching the query.
+    #[test]
+    fn the_search_field_edits_at_the_caret() {
+        use goble_ui::elements::EventContext;
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = seeded_view(&app, &desktop);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.search_query = "ab".to_string();
+            *s.sidebar_search_caret.borrow_mut() = 2;
+        }
+
+        let mut root: Box<dyn Element> = Box::new(view);
+        let window = vec2f(1024.0, 768.0);
+        let paint = |root: &mut Box<dyn Element>| {
+            let _ = root.layout(
+                SizeConstraint::loose(window),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            let mut ctx = PaintContext::new(Renderer::new());
+            root.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+            ctx.renderer.expect("renderer").commands().to_vec()
+        };
+        let commands = paint(&mut root);
+        // The field's own box is the one stroke in the band taller than a rule.
+        let field = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::StrokeRect { rect, .. } if in_band(*rect) && rect.height() > 2.0 => {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the sidebar draws its search field");
+        let at = vec2f(
+            (field.min_x() + field.max_x()) / 2.0,
+            (field.min_y() + field.max_y()) / 2.0,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            &mut EventContext::default(),
+            &app,
+        );
+        assert!(
+            state.borrow().search_focused,
+            "the press puts the caret in the field"
+        );
+
+        let key = |root: &mut Box<dyn Element>, key: &str| {
+            root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: key.to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut EventContext::default(),
+                &app,
+            )
+        };
+
+        assert!(key(&mut root, "ArrowLeft"));
+        assert_eq!(
+            *state.borrow().sidebar_search_caret.borrow(),
+            1,
+            "the arrow moved the field's caret, which the field then reads"
+        );
+
+        assert!(key(&mut root, "X"));
+        assert_eq!(
+            state.borrow().search_query,
+            "aXb",
+            "the character landed before the last one"
+        );
+        assert_eq!(*state.borrow().sidebar_search_caret.borrow(), 2);
+
+        assert!(key(&mut root, "Enter"), "enter is still the field's key");
+        assert_eq!(state.borrow().search_query, "aXb", "and changes nothing");
+
+        // The next frame draws the value split where the caret is.
+        let commands = paint(&mut root);
+        let drawn = drawn_text(&commands);
+        for run in ["aX", "b"] {
+            assert!(
+                drawn.iter().any(|text| text == run),
+                "the field draws the run {run:?} around its beam: {drawn:?}"
+            );
+        }
+    }
+
     /// The box a frame painted a card's 3-dot control in: the control's box is
     /// the glyph's own box, so the icon command is its bounds. It is looked for
     /// inside the sidebar's own band, because the pane header draws the same
@@ -1566,6 +1702,202 @@ mod sidebar_surface_tests {
                 }
             }
         }
+    }
+
+    /// Every run of text the sidebar's list drew, with where it drew it, in
+    /// paint order: left of the workspace and below the topbar.
+    fn list_runs(commands: &[RenderCommand]) -> Vec<(String, goble_ui::geometry::Vector2F)> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.x < crate::ui::SIDEBAR_WIDTH
+                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                {
+                    Some((text.clone(), *origin))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A card names the directory its conversation works in, directly under the
+    /// subject, in the form the user reads it: a path under the home directory
+    /// collapses to `~`. A conversation that has run nowhere names the directory
+    /// it would run in, so its card carries the row too. Nothing follows that
+    /// row: the last response is not a line of the card.
+    #[test]
+    fn a_conversation_card_draws_the_working_directory_under_its_subject() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let home = crate::state::home_directory().expect("the machine has a home directory");
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        {
+            let state = view.state_rc();
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.conversations = vec![
+                conversation("c1", "Ada", "Frontend")
+                    .with_directory(format!("{home}/Projects/goble")),
+                // Nowhere yet: it names the pane's directory, where it would run.
+                conversation("c2", "Coder", "Frontend"),
+            ];
+            s.set_active_pane_path(format!("{home}/Projects/warp"));
+        }
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let runs = list_runs(&commands);
+
+        let at = |text: &str| {
+            runs.iter()
+                .find_map(|(run, origin)| (run == text).then_some(*origin))
+                .unwrap_or_else(|| panic!("the sidebar draws {text:?}: {runs:?}"))
+        };
+        let title = at("Ada");
+        let path = at("~/Projects/goble");
+        assert!(
+            title.y < path.y,
+            "the path is under the subject: title {title:?} path {path:?}"
+        );
+        assert!(
+            !runs
+                .iter()
+                .any(|(run, _)| run == "Let's ship hot reload today"),
+            "the card draws no last response: {runs:?}"
+        );
+
+        // The path row starts at the title's own x — the folder icon leads it,
+        // the way the title's gutter does — so the two read as one column.
+        let folder = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if name == "folder" && origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .find(|origin| origin.y > title.y)
+            .expect("the path row leads with the folder icon");
+        assert_eq!(folder.x, title.x, "the path sits under the subject's x");
+
+        // A conversation with no directory of its own still shows one: where its
+        // pane runs.
+        let coder = at("Coder");
+        let fallback = at("~/Projects/warp");
+        assert!(
+            coder.y < fallback.y,
+            "the fallback directory is under its own card's subject: \
+             coder {coder:?} path {fallback:?}"
+        );
+    }
+
+    /// The path row is one line: a long directory elides at the band's edge
+    /// instead of wrapping under the title, so the card keeps its height and the
+    /// title stays readable at the sidebar's narrowest width.
+    #[test]
+    fn a_long_path_keeps_one_line_and_leaves_the_title_readable() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let home = crate::state::home_directory().expect("the machine has a home directory");
+        let app = AppContext::default();
+        let width = 200.0_f32;
+
+        let render = |directory: String| {
+            let view = RootView::new(&app, &desktop, None);
+            {
+                let state = view.state_rc();
+                let mut s = state.borrow_mut();
+                s.show_workspace_choice = false;
+                s.show_llm_key_banner = false;
+                s.right_sidebar_open = false;
+                s.crons_open = false;
+                s.sidebar_width = width;
+                s.conversations =
+                    vec![conversation("c1", "Ada", "Frontend").with_directory(directory)];
+            }
+            let mut root: Box<dyn Element> = Box::new(view);
+            render_element(&mut root, vec2f(1024.0, 768.0), &app)
+        };
+
+        let blank = render(format!("{home}/p"));
+        let long = render(format!(
+            "{home}/Projects/goble/crates/goble-ui/src/elements"
+        ));
+
+        let subject = |commands: &[RenderCommand]| {
+            list_runs(commands)
+                .into_iter()
+                .find_map(|(run, origin)| (run == "Ada").then_some(origin))
+                .unwrap_or_else(|| panic!("the sidebar draws the card's subject"))
+        };
+        let (short_title, long_title) = (subject(&blank), subject(&long));
+        assert_eq!(
+            short_title.y, long_title.y,
+            "a longer path adds no line above the subject"
+        );
+        assert_eq!(short_title.x, long_title.x, "and does not move the title");
+
+        // The path is the card's last row: the subject, the path under it and
+        // nothing else — the last response is not a line of the card.
+        // The card shows the directory with the home directory collapsed to
+        // `~` (`crate::state::display_path`), so that is the run to look for.
+        let long_path = format!("{home}/Projects/goble/crates/goble-ui/src/elements");
+        let shown_path = crate::state::display_path(&long_path);
+        let path = list_runs(&long)
+            .into_iter()
+            .find_map(|(run, origin)| (run == shown_path).then_some(origin))
+            .expect("the card draws its path");
+        assert!(
+            path.y > long_title.y,
+            "the path is under the subject: path {path:?} title {long_title:?}"
+        );
+        assert!(
+            !list_runs(&long)
+                .iter()
+                .any(|(run, _)| run == "Let's ship hot reload today"),
+            "the card draws no last response below the path"
+        );
+
+        // The subject is drawn whole at this width: the gutter holds and a short
+        // title still ends inside the card's own edge.
+        let card_edge = width - app.theme.spacing_px(SpacingToken::Xs);
+        let title_run = long
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text,
+                    origin,
+                    font_size,
+                    line_height,
+                    max_width,
+                    ..
+                } if text == "Ada" => Some(
+                    goble_ui::elements::text::measure_text(
+                        text,
+                        *font_size,
+                        *line_height,
+                        *max_width,
+                    ) + *origin,
+                ),
+                _ => None,
+            })
+            .expect("the narrow card draws its subject");
+        assert!(
+            title_run.x <= card_edge,
+            "the title ends inside the card: {title_run:?} edge {card_edge}"
+        );
     }
 
     /// "View all (N)" / "Show less" is the list's own control: its label and its
@@ -2068,6 +2400,38 @@ mod sidebar_surface_tests {
         );
         let open = frame_at(&mut root, &app, on_dots);
 
+        // Each row leads with its own glyph, on the row's line and left of the
+        // label. The tray carries the star and the red delete mark; a frame
+        // that drops them reads as two plain labels.
+        for (icon, label) in [("star", "Star"), ("trash-02", "Delete conversation")] {
+            let label_origin = open
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText {
+                        text: run, origin, ..
+                    } if run == label => Some(*origin),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label:?} is drawn in the tray"));
+            let (origin, size) = open
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawIcon {
+                        name, origin, size, ..
+                    } if name == icon => Some((*origin, *size)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the {label:?} row draws {icon:?}"));
+            assert!(
+                origin.x < label_origin.x,
+                "{icon:?} leads the {label:?} row: icon {origin:?}, label {label_origin:?}"
+            );
+            assert!(
+                ((origin.y + size / 2.0) - (label_origin.y + 6.0)).abs() <= 6.0,
+                "{icon:?} sits on the {label:?} row's line: icon {origin:?}, label {label_origin:?}"
+            );
+        }
+
         let star_row = on_tray_text(&open, "Star");
         let delete_row = on_tray_text(&open, "Delete conversation");
         assert!(delete_row.y > star_row.y, "star is the tray's first row");
@@ -2222,6 +2586,31 @@ mod sidebar_action_tests {
 
         (actions.on_select_sidebar_view.borrow_mut())(SidebarView::Search);
         assert_eq!(state.borrow().sidebar_view, SidebarView::Search);
+    }
+
+    /// Opening a view puts its field's caret at the end of the query it holds:
+    /// an index from the query the field last typed into never lands in it.
+    #[test]
+    fn opening_a_view_puts_its_caret_at_the_end_of_the_query() {
+        let (state, actions, _dir) = harness();
+        state.borrow_mut().search_query = "abc".to_string();
+        *state.borrow().sidebar_search_caret.borrow_mut() = 0;
+        state.borrow_mut().global_search_query = "xy".to_string();
+        *state.borrow().global_search_caret.borrow_mut() = 0;
+
+        (actions.on_select_sidebar_view.borrow_mut())(SidebarView::Agents);
+        assert_eq!(
+            *state.borrow().sidebar_search_caret.borrow(),
+            3,
+            "the sidebar's field opens with its caret at the query's end"
+        );
+
+        (actions.on_select_sidebar_view.borrow_mut())(SidebarView::Search);
+        assert_eq!(
+            *state.borrow().global_search_caret.borrow(),
+            2,
+            "and so does the global search's"
+        );
     }
 
     /// A section header toggles that one section; the others keep their state.

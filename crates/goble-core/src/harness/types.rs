@@ -180,6 +180,18 @@ pub enum HarnessEvent {
         cached: Option<u64>,
         output: u64,
     },
+    /// Auto-compaction of the conversation's history, emitted when the next
+    /// model call would overflow the window. `phase` is `started` or
+    /// `completed`; `percentage` is how full the window was when it began, and
+    /// the token counts bracket the compaction. The transcript's own notice row
+    /// carries the words; this event tells a live host to re-read it.
+    ContextCompaction {
+        chat_id: String,
+        phase: String,
+        percentage: u8,
+        before: u64,
+        after: u64,
+    },
     Done,
     Error(String),
 }

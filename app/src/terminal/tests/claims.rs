@@ -6,250 +6,250 @@ use goble_terminal::HookEvent;
 
 use super::*;
 
-    // -- The claim protocol (P2) --------------------------------------------
+// -- The claim protocol (P2) --------------------------------------------
 
-    #[test]
-    fn a_claim_writes_the_command_to_the_pty() {
-        let mut session = detached();
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+#[test]
+fn a_claim_writes_the_command_to_the_pty() {
+    let mut session = detached();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
 
-        session.claim_command("git status", agent_owner()).unwrap();
+    session.claim_command("git status", agent_owner()).unwrap();
 
-        assert_eq!(&*captured.lock().unwrap(), b"git status\r");
-        assert_eq!(
-            session.pending_claim().map(|c| c.command.as_str()),
-            Some("git status")
-        );
-    }
+    assert_eq!(&*captured.lock().unwrap(), b"git status\r");
+    assert_eq!(
+        session.pending_claim().map(|c| c.command.as_str()),
+        Some("git status")
+    );
+}
 
-    /// A multi-line command reaches the editor wrapped as one paste, so its
-    /// own newlines do not run it line by line: only the claim's carriage
-    /// return submits it.
-    #[test]
-    fn a_multi_line_claim_reaches_the_editor_as_one_paste() {
-        let mut session = detached();
-        feed_bytes(&mut session, b"\x1b[?2004h");
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+/// A multi-line command reaches the editor wrapped as one paste, so its
+/// own newlines do not run it line by line: only the claim's carriage
+/// return submits it.
+#[test]
+fn a_multi_line_claim_reaches_the_editor_as_one_paste() {
+    let mut session = detached();
+    feed_bytes(&mut session, b"\x1b[?2004h");
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
 
+    session
+        .claim_command("bash -c 'one\ntwo'", agent_owner())
+        .unwrap();
+
+    assert_eq!(
+        &*captured.lock().unwrap(),
+        b"\x1b[200~bash -c 'one\ntwo'\x1b[201~\r"
+    );
+}
+
+/// A command approved from the proposal composer runs under the harness's
+/// claim, so the transcript's inline block — the user's own newest command —
+/// leaves it alone: the conversation draws it as the agent's tool call.
+#[test]
+fn a_claimed_command_is_not_the_transcripts_inline_block() {
+    let mut session = detached();
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+    let owner = agent_owner();
+    assert!(
         session
-            .claim_command("bash -c 'one\ntwo'", agent_owner())
-            .unwrap();
+            .state
+            .lock()
+            .unwrap()
+            .claim_active_block(owner.clone()),
+        "the shell is at a prompt and can arm the claim"
+    );
+    session.claim_command("echo approved", owner).unwrap();
+    run_hook(&mut session, preexec("echo approved"));
+    feed_bytes(&mut session, b"approved\r\n");
 
-        assert_eq!(
-            &*captured.lock().unwrap(),
-            b"\x1b[200~bash -c 'one\ntwo'\x1b[201~\r"
-        );
-    }
+    assert!(
+        crate::ui::terminal::executed_command_block_at(&session).is_none(),
+        "an agent's command is drawn by its tool call, not as the user's block"
+    );
 
-    /// A command approved from the proposal composer runs under the harness's
-    /// claim, so the transcript's inline block — the user's own newest command —
-    /// leaves it alone: the conversation draws it as the agent's tool call.
-    #[test]
-    fn a_claimed_command_is_not_the_transcripts_inline_block() {
-        let mut session = detached();
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
-        let owner = agent_owner();
-        assert!(
-            session
-                .state
-                .lock()
-                .unwrap()
-                .claim_active_block(owner.clone()),
-            "the shell is at a prompt and can arm the claim"
-        );
-        session.claim_command("echo approved", owner).unwrap();
-        run_hook(&mut session, preexec("echo approved"));
-        feed_bytes(&mut session, b"approved\r\n");
+    // The user's own command still is that block.
+    run_hook(&mut session, HookEvent::Precmd(Default::default()));
+    run_hook(&mut session, preexec("echo mine"));
+    feed_bytes(&mut session, b"mine\r\n");
+    let (block, _) = crate::ui::terminal::executed_command_block_at(&session)
+        .expect("the user's command draws its block");
+    assert_eq!(block.lines[0].text, "echo mine");
+}
 
-        assert!(
-            crate::ui::terminal::executed_command_block_at(&session).is_none(),
-            "an agent's command is drawn by its tool call, not as the user's block"
-        );
+/// The line editor can hand the command back with different spacing than
+/// it was written with (a newline becomes a break in bash's history, a
+/// trailing space is dropped); that is the same command, and the claim
+/// resolves rather than failing the tool call.
+#[test]
+fn a_claim_resolves_across_spacing_the_editor_changed() {
+    let mut session = detached();
+    let owner = agent_owner();
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+    session
+        .claim_command("bash -c 'one\ntwo'  ", owner.clone())
+        .unwrap();
 
-        // The user's own command still is that block.
-        run_hook(&mut session, HookEvent::Precmd(Default::default()));
-        run_hook(&mut session, preexec("echo mine"));
-        feed_bytes(&mut session, b"mine\r\n");
-        let (block, _) = crate::ui::terminal::executed_command_block_at(&session)
-            .expect("the user's command draws its block");
-        assert_eq!(block.lines[0].text, "echo mine");
-    }
+    run_hook(&mut session, preexec("bash -c 'one two'"));
 
-    /// The line editor can hand the command back with different spacing than
-    /// it was written with (a newline becomes a break in bash's history, a
-    /// trailing space is dropped); that is the same command, and the claim
-    /// resolves rather than failing the tool call.
-    #[test]
-    fn a_claim_resolves_across_spacing_the_editor_changed() {
-        let mut session = detached();
-        let owner = agent_owner();
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
-        session
-            .claim_command("bash -c 'one\ntwo'  ", owner.clone())
-            .unwrap();
+    assert_eq!(
+        session.claim_outcomes(),
+        vec![ClaimOutcome::Resolved {
+            owner,
+            command: "bash -c 'one\ntwo'".to_string(),
+        }]
+    );
+}
 
-        run_hook(&mut session, preexec("bash -c 'one two'"));
+#[test]
+fn a_claimed_command_resolves_on_its_own_preexec() {
+    let mut session = detached();
+    let owner = agent_owner();
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+    session.claim_command("echo hi", owner.clone()).unwrap();
 
-        assert_eq!(
-            session.claim_outcomes(),
-            vec![ClaimOutcome::Resolved {
-                owner,
-                command: "bash -c 'one\ntwo'".to_string(),
-            }]
-        );
-    }
+    run_hook(&mut session, preexec("echo hi"));
 
-    #[test]
-    fn a_claimed_command_resolves_on_its_own_preexec() {
-        let mut session = detached();
-        let owner = agent_owner();
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
-        session.claim_command("echo hi", owner.clone()).unwrap();
+    assert!(session.pending_claim().is_none(), "the claim is consumed");
+    assert_eq!(
+        session.claim_outcomes(),
+        vec![ClaimOutcome::Resolved {
+            owner,
+            command: "echo hi".to_string(),
+        }]
+    );
+}
 
-        run_hook(&mut session, preexec("echo hi"));
+#[test]
+fn a_claim_that_never_gets_a_preexec_times_out() {
+    let mut session = detached();
+    let owner = agent_owner();
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+    // A zero bounded wait, so the claim expires on the next pump without
+    // the test sleeping.
+    session.claim_timeout = Duration::ZERO;
+    session.claim_command("echo hi", owner.clone()).unwrap();
 
-        assert!(session.pending_claim().is_none(), "the claim is consumed");
-        assert_eq!(
-            session.claim_outcomes(),
-            vec![ClaimOutcome::Resolved {
-                owner,
-                command: "echo hi".to_string(),
-            }]
-        );
-    }
+    session.pump();
 
-    #[test]
-    fn a_claim_that_never_gets_a_preexec_times_out() {
-        let mut session = detached();
-        let owner = agent_owner();
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
-        // A zero bounded wait, so the claim expires on the next pump without
-        // the test sleeping.
-        session.claim_timeout = Duration::ZERO;
-        session.claim_command("echo hi", owner.clone()).unwrap();
+    assert!(session.pending_claim().is_none(), "the claim is failed");
+    assert_eq!(
+        session.claim_outcomes(),
+        vec![ClaimOutcome::TimedOut {
+            owner,
+            expected: "echo hi".to_string(),
+        }]
+    );
+    // A late `Preexec` cannot revive a claim that already failed.
+    run_hook(&mut session, preexec("echo hi"));
+    assert!(session.claim_outcomes().is_empty());
+}
 
-        session.pump();
+#[test]
+fn a_claim_is_refused_when_a_user_command_arrives_first() {
+    let mut session = detached();
+    let owner = agent_owner();
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+    session.claim_command("echo agent", owner.clone()).unwrap();
 
-        assert!(session.pending_claim().is_none(), "the claim is failed");
-        assert_eq!(
-            session.claim_outcomes(),
-            vec![ClaimOutcome::TimedOut {
-                owner,
-                expected: "echo hi".to_string(),
-            }]
-        );
-        // A late `Preexec` cannot revive a claim that already failed.
-        run_hook(&mut session, preexec("echo hi"));
-        assert!(session.claim_outcomes().is_empty());
-    }
+    // The user hit enter before the agent's command reached the shell, so
+    // the next `Preexec` is theirs.
+    run_hook(&mut session, preexec("ls -la"));
 
-    #[test]
-    fn a_claim_is_refused_when_a_user_command_arrives_first() {
-        let mut session = detached();
-        let owner = agent_owner();
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
-        session.claim_command("echo agent", owner.clone()).unwrap();
+    assert!(session.pending_claim().is_none(), "the claim is consumed");
+    assert_eq!(
+        session.claim_outcomes(),
+        vec![ClaimOutcome::Refused {
+            owner: owner.clone(),
+            expected: "echo agent".to_string(),
+            actual: "ls -la".to_string(),
+        }]
+    );
 
-        // The user hit enter before the agent's command reached the shell, so
-        // the next `Preexec` is theirs.
-        run_hook(&mut session, preexec("ls -la"));
+    // The agent's command running afterwards does not resurrect the claim:
+    // the tool call already failed, and a guess is exactly what rule three
+    // forbids.
+    run_hook(&mut session, preexec("echo agent"));
+    assert!(session.claim_outcomes().is_empty());
+}
 
-        assert!(session.pending_claim().is_none(), "the claim is consumed");
-        assert_eq!(
-            session.claim_outcomes(),
-            vec![ClaimOutcome::Refused {
-                owner: owner.clone(),
-                expected: "echo agent".to_string(),
-                actual: "ls -la".to_string(),
-            }]
-        );
+#[test]
+fn a_preexec_without_a_command_refuses_the_claim() {
+    let mut session = detached();
+    let owner = agent_owner();
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+    session.claim_command("echo hi", owner.clone()).unwrap();
 
-        // The agent's command running afterwards does not resurrect the claim:
-        // the tool call already failed, and a guess is exactly what rule three
-        // forbids.
-        run_hook(&mut session, preexec("echo agent"));
-        assert!(session.claim_outcomes().is_empty());
-    }
+    // The shell reported a command start but not what it was: it cannot be
+    // matched, so it is refused rather than attached blind.
+    run_hook(
+        &mut session,
+        HookEvent::Preexec(PreexecValue { command: None }),
+    );
 
-    #[test]
-    fn a_preexec_without_a_command_refuses_the_claim() {
-        let mut session = detached();
-        let owner = agent_owner();
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
-        session.claim_command("echo hi", owner.clone()).unwrap();
+    assert_eq!(
+        session.claim_outcomes(),
+        vec![ClaimOutcome::Refused {
+            owner,
+            expected: "echo hi".to_string(),
+            actual: String::new(),
+        }]
+    );
+}
 
-        // The shell reported a command start but not what it was: it cannot be
-        // matched, so it is refused rather than attached blind.
-        run_hook(
-            &mut session,
-            HookEvent::Preexec(PreexecValue { command: None }),
-        );
+#[test]
+fn a_second_claim_while_one_is_pending_is_refused() {
+    let mut session = detached();
+    run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
+    session.claim_command("echo one", agent_owner()).unwrap();
 
-        assert_eq!(
-            session.claim_outcomes(),
-            vec![ClaimOutcome::Refused {
-                owner,
-                expected: "echo hi".to_string(),
-                actual: String::new(),
-            }]
-        );
-    }
+    assert_eq!(
+        session.claim_command("echo two", agent_owner()),
+        Err(ClaimError::AlreadyPending)
+    );
+    assert_eq!(
+        session.claim_command("   ", agent_owner()),
+        Err(ClaimError::EmptyCommand)
+    );
+    assert_eq!(
+        session.pending_claim().map(|c| c.command.as_str()),
+        Some("echo one"),
+        "the refused claims changed nothing"
+    );
+}
 
-    #[test]
-    fn a_second_claim_while_one_is_pending_is_refused() {
-        let mut session = detached();
-        run_hook(&mut session, HookEvent::Bootstrapped(Default::default()));
-        session.claim_command("echo one", agent_owner()).unwrap();
+#[test]
+fn an_unclaimed_preexec_leaves_no_outcome() {
+    let mut session = detached();
+    run_hook(&mut session, preexec("ls"));
+    assert!(session.claim_outcomes().is_empty());
+    assert!(session.pending_claim().is_none());
+}
 
-        assert_eq!(
-            session.claim_command("echo two", agent_owner()),
-            Err(ClaimError::AlreadyPending)
-        );
-        assert_eq!(
-            session.claim_command("   ", agent_owner()),
-            Err(ClaimError::EmptyCommand)
-        );
-        assert_eq!(
-            session.pending_claim().map(|c| c.command.as_str()),
-            Some("echo one"),
-            "the refused claims changed nothing"
-        );
-    }
+/// A claim can only resolve if the shell reports a `Preexec`, which needs
+/// the bootstrapped integration. A session that never bootstrapped refuses
+/// the claim at once — nothing is written and nothing is left waiting for
+/// the bounded timeout.
+#[test]
+fn a_claim_on_a_shell_that_never_bootstrapped_fails_immediately() {
+    let mut session = detached();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+    // The full wait would otherwise be spent before the claim failed.
+    session.claim_timeout = Duration::from_secs(3600);
 
-    #[test]
-    fn an_unclaimed_preexec_leaves_no_outcome() {
-        let mut session = detached();
-        run_hook(&mut session, preexec("ls"));
-        assert!(session.claim_outcomes().is_empty());
-        assert!(session.pending_claim().is_none());
-    }
-
-    /// A claim can only resolve if the shell reports a `Preexec`, which needs
-    /// the bootstrapped integration. A session that never bootstrapped refuses
-    /// the claim at once — nothing is written and nothing is left waiting for
-    /// the bounded timeout.
-    #[test]
-    fn a_claim_on_a_shell_that_never_bootstrapped_fails_immediately() {
-        let mut session = detached();
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
-        // The full wait would otherwise be spent before the claim failed.
-        session.claim_timeout = Duration::from_secs(3600);
-
-        assert_eq!(
-            session.claim_command("echo hi", agent_owner()),
-            Err(ClaimError::NotBootstrapped)
-        );
-        assert!(
-            session.pending_claim().is_none(),
-            "no claim is left waiting to time out"
-        );
-        assert!(
-            captured.lock().unwrap().is_empty(),
-            "the command is not written to a shell that cannot answer"
-        );
-    }
+    assert_eq!(
+        session.claim_command("echo hi", agent_owner()),
+        Err(ClaimError::NotBootstrapped)
+    );
+    assert!(
+        session.pending_claim().is_none(),
+        "no claim is left waiting to time out"
+    );
+    assert!(
+        captured.lock().unwrap().is_empty(),
+        "the command is not written to a shell that cannot answer"
+    );
+}

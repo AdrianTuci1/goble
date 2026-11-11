@@ -18,6 +18,7 @@ fn every_harness_tool_parses_into_a_family() {
         ("run_agent", ToolKind::SubAgent),
         (SPAWN_SUBAGENT_TOOL, ToolKind::SubAgent),
         ("delete_file", ToolKind::Delete),
+        ("ask_user", ToolKind::Ask),
         // A tool with no family of its own is named by its own name.
         ("credentials", ToolKind::Other),
         ("memory_read", ToolKind::Other),
@@ -39,7 +40,8 @@ fn the_parse_answers_for_every_defined_tool() {
         let expected = if row.kind == ToolKind::SubAgent {
             String::new()
         } else {
-            definition.name.clone()
+            // A name reads as words, so no row draws an underscore.
+            tool_display_name(&definition.name)
         };
         assert_eq!(
             row.subject, expected,

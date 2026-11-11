@@ -1,5 +1,23 @@
 use crate::llm::ToolDefinition;
 
+/// `ask_user`: the one question tool both phases use. In reasoning it is a
+/// planning step; in execution it is the only way a turn that needs an answer
+/// before it can continue hands the user numbered choices instead of prose.
+pub(crate) fn ask_user_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "ask_user".to_string(),
+        description: "Ask the user a question before continuing. Put the choices in quick_replies so they are drawn as numbered options; the turn suspends until the user answers.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "question": { "type": "string" },
+                "quick_replies": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["question"]
+        }),
+    }
+}
+
 pub fn build_reasoning_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -32,18 +50,7 @@ pub fn build_reasoning_tools() -> Vec<ToolDefinition> {
                 "properties": {}
             }),
         },
-        ToolDefinition {
-            name: "ask_user".to_string(),
-            description: "Ask the user for clarification before continuing.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "question": { "type": "string" },
-                    "quick_replies": { "type": "array", "items": { "type": "string" } }
-                },
-                "required": ["question"]
-            }),
-        },
+        ask_user_tool(),
         ToolDefinition {
             name: "create_mission".to_string(),
             description: "Create or update a mission tracking a complex goal.".to_string(),

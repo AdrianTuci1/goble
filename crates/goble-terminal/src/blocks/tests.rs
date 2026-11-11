@@ -561,17 +561,42 @@ fn a_conversation_block_sits_between_shell_blocks() {
     assert!(!block.kind().is_shell());
     assert_eq!(block.text(), "", "a conversation block holds no output");
 
-    // The next command lands after the card, so the card keeps its place in
-    // the history.
+    // The card takes the slot the conversation happened in: above the prompt
+    // waiting for the next command, so that command's output lands below the
+    // card and the card stays where it was started.
+    let order: Vec<BlockId> = ids(list.blocks().iter().collect());
+    let at = |id: BlockId| order.iter().position(|candidate| *candidate == id).unwrap();
+    assert!(at(card) < at(shell), "the card sits above the prompt");
+
     list.apply(preexec("echo after"));
     list.feed(b"after\r\n");
     list.apply(finished(0));
     let after = list.active_block().id();
     let order: Vec<BlockId> = ids(list.blocks().iter().collect());
     let at = |id: BlockId| order.iter().position(|candidate| *candidate == id).unwrap();
-    assert!(at(shell) < at(card));
-    assert!(at(card) < at(after));
+    assert!(at(card) < at(shell));
+    assert!(at(shell) < at(after));
     assert_eq!(list.get(card).unwrap().text(), "");
+}
+
+#[test]
+fn a_conversation_block_pushed_mid_command_sits_after_the_running_command() {
+    let mut list = booted();
+    list.apply(preexec("sleep 5"));
+    let running = list.active_block().id();
+
+    let card = list.push_agent_view_block("conv-1", "Fix the build");
+
+    // There is no prompt to insert above while a command runs, so the card
+    // takes the point the command leaves behind: below it, above the prompt
+    // that `finished` starts.
+    let order: Vec<BlockId> = ids(list.blocks().iter().collect());
+    let at = |id: BlockId| order.iter().position(|candidate| *candidate == id).unwrap();
+    assert!(at(running) < at(card));
+
+    list.apply(finished(0));
+    assert_eq!(list.blocks().last().unwrap().id(), list.active_block().id());
+    assert_ne!(list.active_block().id(), card, "the card owns no command");
 }
 
 #[test]

@@ -35,6 +35,52 @@ fn italic_is_not_bold_and_bold_italic_is_both() {
 }
 
 #[test]
+fn a_coloured_run_is_painted_in_its_colour() {
+    assert_eq!(
+        run_color("{color:#ef4444}x{/color}"),
+        ColorU::hex(0xef4444),
+        "the marker's colour must reach the painted glyphs"
+    );
+}
+
+/// Inline code is one accent run. A list of paths must not become a wall of
+/// raised chips, which is what a per-run background box reads as.
+#[test]
+fn inline_code_is_one_accent_run_without_a_box() {
+    use crate::theme::FontFamily;
+
+    let app = AppContext::default();
+    let message = ChatMessage::from_markdown(
+        ChatRole::Assistant,
+        "Directories: `crates/`, `app/`, `docs/`",
+    );
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
+    let commands = paint_bubble(&mut bubble, &app);
+
+    for word in ["crates/", "app/", "docs/"] {
+        let run = text_runs(&commands)
+            .into_iter()
+            .find(|(text, ..)| text == word)
+            .unwrap_or_else(|| panic!("{word:?} is drawn, got {commands:?}"));
+        assert_eq!(
+            run.1,
+            app.theme.color(ColorToken::Accent),
+            "{word:?} takes the accent colour"
+        );
+        assert_eq!(run.2, FontFamily::Mono, "{word:?} stays code-shaped");
+        assert_eq!(run.3, 14.0, "{word:?} sits at the message's size");
+    }
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. } if *color == raised
+        )),
+        "inline code draws no raised box, got {commands:?}"
+    );
+}
+
+#[test]
 fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
     use crate::color::ColorU;
 
@@ -72,8 +118,8 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
     );
     assert_eq!(header.0, "Thought", "the finished label is exactly grok-build's");
     assert!(
-        texts.iter().any(|(text, _, _)| text == "◆ "),
-        "a thinking row wears the tool diamond while its header is visible, got {texts:?}"
+        !texts.iter().any(|(text, _, _)| text == "◆ " || text == "◈ "),
+        "a thinking row draws no tool mark, got {texts:?}"
     );
     assert!(
         !texts
@@ -104,6 +150,25 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
         )),
         "an expanded row draws the rail beside its body, got {open_commands:?}"
     );
+}
+
+/// A harness notice — a context compaction, say — is a session event, not a
+/// reply: it draws quiet, one size below the message, and reads as the
+/// conversation's own footnote.
+#[test]
+fn a_notice_draws_quiet_at_note_size() {
+    let app = AppContext::default();
+    let mut bubble = ChatMessageBubble::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::notice("Context 82% full. Compacting…")],
+    );
+    let commands = paint_bubble(&mut bubble, &app);
+    let run = text_runs(&commands)
+        .into_iter()
+        .find(|(text, ..)| text.starts_with("Context 82%"))
+        .unwrap_or_else(|| panic!("the notice is drawn, got {commands:?}"));
+    assert_eq!(run.1, app.theme.color(ColorToken::Muted), "the notice is quiet");
+    assert_eq!(run.3, 12.0, "the notice sits below the message's size");
 }
 
 #[test]
@@ -285,6 +350,122 @@ fn fenced_code_block_is_a_band_not_a_rounded_box() {
     assert!(
         body_colours.len() > 1,
         "the fenced body must stay highlighted, got {body_colours:?}"
+    );
+}
+
+/// The agent's coloured output is chat text: the escapes colour the glyphs and
+/// the block draws no raised panel behind them.
+#[test]
+fn an_ansi_fence_paints_coloured_prose_without_a_panel() {
+    use crate::theme::FontFamily;
+
+    let app = AppContext::default();
+    let message = ChatMessage::from_markdown(
+        ChatRole::Assistant,
+        "```ansi\n\u{1b}[31mred\u{1b}[0m and \u{1b}[1;32mbold green\u{1b}[0m\n```",
+    );
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
+    bubble.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+
+    let runs = text_runs(&commands);
+    let run = |needle: &str| {
+        runs.iter()
+            .find(|(text, ..)| text == needle)
+            .unwrap_or_else(|| panic!("{needle:?} is drawn, got {runs:?}"))
+    };
+    let red = run("red");
+    assert_eq!(red.1, ColorU::new(205, 0, 0, 255), "the named foreground colours the run");
+    assert_eq!(red.2, FontFamily::System, "coloured output is prose, not code");
+    let green = run("bold green");
+    assert_eq!(green.1, ColorU::new(0, 205, 0, 255));
+    assert_eq!(green.3, 14.0, "coloured output sits at the message's size");
+
+    let panel = app.theme.color(ColorToken::SurfaceRaised);
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. } if *color == panel
+        )),
+        "coloured output draws no code panel, got {commands:?}"
+    );
+}
+
+/// The model may spell the escape as text. The transcript reads it the same way
+/// rather than showing a backslash sequence.
+#[test]
+fn a_textual_escape_in_an_ansi_fence_still_colours_the_run() {
+    let app = AppContext::default();
+    let message =
+        ChatMessage::from_markdown(ChatRole::Assistant, "```\n\\033[35mviolet\\033[0m\n```");
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
+    bubble.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+
+    let violet = text_runs(&commands)
+        .into_iter()
+        .find(|(text, ..)| text == "violet")
+        .unwrap_or_else(|| panic!("the coloured run is drawn, got {commands:?}"));
+    assert_eq!(violet.1, ColorU::new(205, 0, 205, 255));
+}
+
+/// The block a model actually wrote when asked for colour: a plain fence of
+/// textual SGR escapes. It is painted as colour now, not shown as backslashes.
+#[test]
+fn the_colour_a_model_wrote_in_a_plain_fence_is_painted() {
+    let app = AppContext::default();
+    let message = ChatMessage::from_markdown(
+        ChatRole::Assistant,
+        "```\n\\033[31mROȘU\\033[0m  \\033[32mVERDE\\033[0m  \\033[34mALBASTRU\\033[0m\n\
+         \\033[33mGALBEN\\033[0m  \\033[35mMAGENTA\\033[0m  \\033[36mCYAN\\033[0m\n```",
+    );
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
+    bubble.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
+
+    let runs = text_runs(&commands);
+    let colors: Vec<ColorU> = ["ROȘU", "VERDE", "ALBASTRU", "GALBEN", "MAGENTA", "CYAN"]
+        .iter()
+        .map(|word| {
+            runs.iter()
+                .find(|(text, ..)| text == word)
+                .map(|(_, color, ..)| *color)
+                .unwrap_or_else(|| panic!("{word:?} is drawn, got {runs:?}"))
+        })
+        .collect();
+    assert_eq!(
+        colors,
+        vec![
+            ColorU::new(205, 0, 0, 255),
+            ColorU::new(0, 205, 0, 255),
+            ColorU::new(0, 0, 238, 255),
+            ColorU::new(205, 205, 0, 255),
+            ColorU::new(205, 0, 205, 255),
+            ColorU::new(0, 205, 205, 255),
+        ],
+        "each named foreground reaches its word"
+    );
+    assert!(
+        !runs.iter().any(|(text, ..)| text.contains("\\033")),
+        "the escapes are never drawn as text, got {runs:?}"
     );
 }
 

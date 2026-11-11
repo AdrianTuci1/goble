@@ -77,7 +77,7 @@ pub struct RootView {
     diff_files: Rc<RefCell<DiffFileCache>>,
     /// The callbacks built on the last rebuild; kept here so the root can
     /// dispatch global keyboard shortcuts (split/space) before the tree does.
-    actions: Option<UiActions>,
+    pub(crate) actions: Option<UiActions>,
     /// The control socket's server and its UI-command receiver. The server's
     /// handler forwards non-PTY verbs here; [`Self::process_control_requests`]
     /// answers them on this thread, once per frame.
@@ -90,4 +90,10 @@ pub struct RootView {
     hover_chips: HoverChipLayer,
     size: Option<Vector2F>,
     origin: Option<Point>,
+    /// Set when an event changed something the tree draws but earns no frame of
+    /// its own: a chord modifier that went down or came up (the tab hints), or
+    /// a window that lost the keyboard. [`Element::wants_animation`] reports it
+    /// once, so the platform pulls the frame in instead of waiting out the idle
+    /// heartbeat, and the frame that draws the change clears it.
+    redraw_requested: bool,
 }

@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use super::proposal::CommandProposalUi;
 use crate::elements::{
-    AppContext, ApprovalMode, Chip, Clipped, ComposerButton, ConstrainedBox, Container, ContextPill,
+    harness_bar_mark, AppContext, ApprovalMode, Chip, Clipped, ComposerButton, ConstrainedBox,
+    Container, ContextPill,
     CrossAxisAlignment, DiffSummary, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize,
     Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
     PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea,
@@ -53,6 +54,10 @@ pub struct ChatComposer {
     placeholder: String,
     attachments: Vec<String>,
     model_label: Option<String>,
+    /// The CLI harness the draft goes to, when this pane runs a custom harness:
+    /// the footer draws its mark in place of the model and approval controls,
+    /// which are the native agent's own. `None` on the native surface.
+    agent_harness: Option<&'static str>,
     pub(super) path_label: Option<String>,
     /// The SSH session this pane's shell is bound to, when a submitted `ssh`
     /// line put it on a host (S1). While it is set the context row draws a chip
@@ -210,6 +215,7 @@ impl ChatComposer {
             placeholder: String::from("Ask anything..."),
             attachments: Vec::new(),
             model_label: None,
+            agent_harness: None,
             path_label: None,
             ssh_session: None,
             focused: false,
@@ -292,6 +298,15 @@ impl ChatComposer {
 
     pub fn with_attachments(mut self, attachments: Vec<String>) -> Self {
         self.attachments = attachments;
+        self
+    }
+
+    /// Name the CLI harness this pane's draft goes to. A custom harness owns
+    /// its own model and approval policy, so its mark is the footer's only
+    /// agent control; the model and approval switchers are the native agent's
+    /// and stay off that surface.
+    pub fn with_agent_harness(mut self, harness: &'static str) -> Self {
+        self.agent_harness = Some(harness);
         self
     }
 
@@ -1238,16 +1253,32 @@ impl ChatComposer {
 
     /// The action controls, left to right: the model the draft runs on, stop
     /// while a turn streams, and the modal-editing badge. A plain shell command
-    /// runs no model, so a terminal composer contributes nothing here.
+    /// runs no model, so a terminal composer contributes nothing here. A custom
+    /// harness owns its own model and approvals, so its mark stands alone where
+    /// those two controls would be.
     fn action_children(&self, app: &AppContext) -> Vec<Box<dyn Element>> {
         let mut children: Vec<Box<dyn Element>> = Vec::new();
         let has_stop = self.stop_visible && self.on_stop.is_some();
         let badge = self.vim.as_ref().map(|vim| self.mode_badge(app, vim));
-        if let Some(label) = self.model_label.clone() {
-            children.push(self.model_control(app, label));
-        }
-        if let Some(mode) = self.approval_mode {
-            children.push(self.approval_control(app, mode));
+        if let Some(harness) = self.agent_harness {
+            let name = goble_core::harness::harness_for(harness)
+                .map(|spec| spec.name)
+                .unwrap_or(harness);
+            let mark = Container::new(harness_bar_mark(harness, 16.0, app))
+                .with_padding(EdgeInsets::new(CONTROL_H_PAD, 0.0, CONTROL_H_PAD, 0.0))
+                .finish();
+            children.push(
+                Tooltip::new(mark, format!("{name} harness"))
+                    .with_position(TooltipPosition::Above)
+                    .finish(),
+            );
+        } else {
+            if let Some(label) = self.model_label.clone() {
+                children.push(self.model_control(app, label));
+            }
+            if let Some(mode) = self.approval_mode {
+                children.push(self.approval_control(app, mode));
+            }
         }
         if has_stop {
             if let Some(cb) = self.on_stop.clone() {

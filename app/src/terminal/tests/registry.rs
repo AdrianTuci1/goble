@@ -5,261 +5,325 @@ use goble_terminal::{BlockOwner, HookEvent};
 
 use super::*;
 
-    #[test]
-    fn registry_mode_defaults_to_shell() {
-        let mut reg = TerminalRegistry::default();
-        assert_eq!(reg.mode(1), TerminalMode::Shell);
-        reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
-        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Codex));
-        reg.drop_pane(1);
-        assert_eq!(reg.mode(1), TerminalMode::Shell);
-    }
+#[test]
+fn registry_mode_defaults_to_shell() {
+    let mut reg = TerminalRegistry::default();
+    assert_eq!(reg.mode(1), TerminalMode::Shell);
+    reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
+    assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Codex));
+    reg.drop_pane(1);
+    assert_eq!(reg.mode(1), TerminalMode::Shell);
+}
 
-    #[test]
-    fn update_mode_from_input_detects_and_settles() {
-        let mut reg = TerminalRegistry::default();
-        reg.set_input(1, "claude".to_string());
-        let agent = reg.update_mode_from_input(1);
-        assert_eq!(agent, Some(TuiAgent::Claude));
-        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Claude));
+#[test]
+fn update_mode_from_input_detects_and_settles() {
+    let mut reg = TerminalRegistry::default();
+    // The machine's own PATH is not the subject here.
+    reg.assume_installed(|_| true);
+    reg.set_input(1, "claude".to_string());
+    let agent = reg.update_mode_from_input(1);
+    assert_eq!(agent, Some(TuiAgent::Claude));
+    assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Claude));
 
-        reg.set_input(1, "ls".to_string());
-        assert_eq!(reg.update_mode_from_input(1), None);
-        // A non-agent input never *downgrades* an already-agent pane; only a
-        // detected agent switches the mode, so it stays agent-native here.
-        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Claude));
-    }
+    reg.set_input(1, "ls".to_string());
+    assert_eq!(reg.update_mode_from_input(1), None);
+    // A non-agent input never *downgrades* an already-agent pane; only a
+    // detected agent switches the mode, so it stays agent-native here.
+    assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Claude));
+}
 
-    /// The agent mode is sticky, so the screen is only owned while the shell
-    /// still runs the agent. Once the command finishes, the pane is a shell
-    /// again and its rich input must come back.
-    #[test]
-    fn a_finished_agent_gives_the_screen_back_to_the_shell() {
-        let mut reg = TerminalRegistry::default();
-        reg.sessions.insert(1, detached());
-        {
-            let session = reg.sessions.get_mut(&1).expect("the session is there");
-            run_hook(session, HookEvent::Bootstrapped(Default::default()));
-            run_hook(session, preexec("codex"));
-        }
-        reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
-        assert!(
-            reg.program_owns_screen(1),
-            "the running agent owns the screen"
-        );
-
+/// The agent mode is sticky, so the screen is only owned while the shell
+/// still runs the agent. Once the command finishes, the pane is a shell
+/// again and its rich input must come back.
+#[test]
+fn a_finished_agent_gives_the_screen_back_to_the_shell() {
+    let mut reg = TerminalRegistry::default();
+    reg.sessions.insert(1, detached());
+    {
         let session = reg.sessions.get_mut(&1).expect("the session is there");
-        run_hook(session, HookEvent::CommandFinished(Default::default()));
-        assert!(
-            !reg.program_owns_screen(1),
-            "the shell prompt has the screen again"
-        );
-    }
-
-    /// The mode outlives the agent that set it, so a later shell command in
-    /// the same pane is not mistaken for the agent: the pane's own bar stays.
-    #[test]
-    fn a_later_shell_command_is_not_the_agent() {
-        let mut reg = TerminalRegistry::default();
-        reg.sessions.insert(1, detached());
-        {
-            let session = reg.sessions.get_mut(&1).expect("the session is there");
-            run_hook(session, HookEvent::Bootstrapped(Default::default()));
-            run_hook(session, preexec("cargo build"));
-        }
-        reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
-        assert!(
-            !reg.program_owns_screen(1),
-            "a build is not the agent, so the rich input stays"
-        );
-    }
-
-    /// The rich input is the pane's usual command surface, so a line submitted
-    /// there flips the pane the same way a grid-typed one does.
-    #[test]
-    fn a_command_submitted_from_the_rich_input_flips_the_pane() {
-        let mut reg = TerminalRegistry::default();
-        assert_eq!(
-            reg.note_command(1, "grok"),
-            Some(TuiAgent::Grok),
-            "the line names a TUI agent"
-        );
-        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Grok));
-        assert_eq!(
-            reg.note_command(1, "cargo build"),
-            None,
-            "a plain command leaves the mode alone"
-        );
-    }
-
-    #[test]
-    fn launch_agent_sets_agent_mode_even_for_unknown_commands() {
-        let mut reg = TerminalRegistry::default();
-        // No session spawned in a unit test, but mode is still set.
-        reg.launch_agent(1, "codex");
-        assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Codex));
-        reg.launch_agent(2, "some-custom-agent");
-        assert_eq!(reg.mode(2), TerminalMode::Agent(TuiAgent::Other));
-        // Blank is a no-op.
-        reg.launch_agent(3, "  ");
-        assert_eq!(reg.mode(3), TerminalMode::Shell);
-    }
-
-    #[test]
-    fn a_pane_without_a_terminal_has_no_pane_session() {
-        let reg = TerminalRegistry::default();
-        assert!(reg.pane_session(1, "conv-1").is_none());
-    }
-
-    /// A pane only offers its own shell once that shell has bootstrapped the
-    /// integration and can report a `Preexec`; a shell that cannot (anything
-    /// outside bash/zsh, or one whose script failed to load) leaves the
-    /// harness on the sandboxed runner instead of stranding a claim.
-    #[test]
-    fn a_pane_whose_shell_never_bootstrapped_has_no_pane_session() {
-        let mut reg = TerminalRegistry::default();
-        reg.sessions.insert(1, detached());
-
-        assert!(
-            reg.pane_session(1, "conv-1").is_none(),
-            "a shell that cannot answer keeps the sandbox"
-        );
-
-        // The integration handshake is what makes the shell able to answer.
-        run_hook(
-            reg.sessions.get_mut(&1).expect("the session is there"),
-            HookEvent::Bootstrapped(Default::default()),
-        );
-        assert!(
-            reg.pane_session(1, "conv-1").is_some(),
-            "a bootstrapped shell is the harness's route"
-        );
-    }
-
-    // -- The owner in the two views (P6) ------------------------------------
-
-    /// The terminal view and a conversation's agent view are two filters over
-    /// one block list. After a mix of commands the user typed and one the agent
-    /// ran, the terminal view shows all of them and the agent view shows only
-    /// the agent's block.
-    #[test]
-    fn the_two_views_show_the_right_blocks_after_a_mixed_sequence() {
-        let mut reg = TerminalRegistry::default();
-        reg.sessions.insert(1, detached());
-        let session = reg.sessions.get_mut(&1).expect("the session is there");
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
         run_hook(session, HookEvent::Bootstrapped(Default::default()));
+        run_hook(session, preexec("codex"));
+    }
+    reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
+    assert!(
+        reg.program_owns_screen(1),
+        "the running agent owns the screen"
+    );
 
-        // The user types `ls`.
-        run_hook(session, preexec("ls"));
-        run_hook(session, HookEvent::CommandFinished(Default::default()));
+    let session = reg.sessions.get_mut(&1).expect("the session is there");
+    run_hook(session, HookEvent::CommandFinished(Default::default()));
+    assert!(
+        !reg.program_owns_screen(1),
+        "the shell prompt has the screen again"
+    );
+}
 
-        // The agent runs `echo hi` in the same shell, through P4's route.
-        let answer = submit(session, "echo hi");
-        session.pump();
-        feed_bytes(session, b"echo hi\r\n");
-        run_hook(session, preexec("echo hi"));
-        feed_bytes(session, b"hi\r\n");
-        run_hook(session, HookEvent::CommandFinished(Default::default()));
-        assert_eq!(
-            answer.blocking_recv().expect("the pane answers"),
-            Ok("hi".to_string())
-        );
+/// The mode outlives the agent that set it, so a later shell command in
+/// the same pane is not mistaken for the agent: the pane's own bar stays.
+#[test]
+fn a_later_shell_command_is_not_the_agent() {
+    let mut reg = TerminalRegistry::default();
+    reg.sessions.insert(1, detached());
+    {
+        let session = reg.sessions.get_mut(&1).expect("the session is there");
+        run_hook(session, HookEvent::Bootstrapped(Default::default()));
+        run_hook(session, preexec("cargo build"));
+    }
+    reg.set_mode(1, TerminalMode::Agent(TuiAgent::Codex));
+    assert!(
+        !reg.program_owns_screen(1),
+        "a build is not the agent, so the rich input stays"
+    );
+}
 
-        // The user types `pwd` afterwards.
-        run_hook(session, preexec("pwd"));
-        run_hook(session, HookEvent::CommandFinished(Default::default()));
+/// `agy` paints its TUI inline instead of taking the alternate screen, so
+/// the command the shell reports is the whole signal that it owns the
+/// pane. The rich input must step aside for it all the same.
+#[test]
+fn an_inline_tui_agent_owns_the_screen_from_its_reported_command() {
+    let mut reg = TerminalRegistry::default();
+    reg.sessions.insert(1, detached());
+    {
+        let session = reg.sessions.get_mut(&1).expect("the session is there");
+        run_hook(session, HookEvent::Bootstrapped(Default::default()));
+        run_hook(session, preexec("agy"));
+    }
+    assert!(
+        !reg.sessions[&1].is_alt_screen(),
+        "agy does not take the alternate screen"
+    );
+    reg.set_mode(1, TerminalMode::Agent(TuiAgent::Antigravity));
+    assert!(
+        reg.program_owns_screen(1),
+        "the running CLI owns the pane even without the alternate screen"
+    );
+}
 
-        let terminal: Vec<String> = reg
-            .visible_blocks(1, &BlockView::Terminal)
+/// A pane reattached from the daemon starts in Shell mode while the CLI it
+/// left running is still there. The reported command is what brings the
+/// agent surface back, so the composer does not sit over the CLI.
+#[test]
+fn a_running_agent_owns_the_screen_even_before_the_mode_catches_up() {
+    let mut reg = TerminalRegistry::default();
+    reg.sessions.insert(1, detached());
+    {
+        let session = reg.sessions.get_mut(&1).expect("the session is there");
+        run_hook(session, HookEvent::Bootstrapped(Default::default()));
+        run_hook(session, preexec("agy"));
+    }
+    assert_eq!(reg.mode(1), TerminalMode::Shell);
+    assert!(
+        reg.program_owns_screen(1),
+        "the reported agent command is enough to own the pane"
+    );
+}
+
+/// The rich input is the pane's usual command surface, so a line submitted
+/// there flips the pane the same way a grid-typed one does.
+#[test]
+fn a_command_submitted_from_the_rich_input_flips_the_pane() {
+    let mut reg = TerminalRegistry::default();
+    // The machine's own PATH is not the subject here.
+    reg.assume_installed(|_| true);
+    assert_eq!(
+        reg.note_command(1, "grok"),
+        Some(TuiAgent::Grok),
+        "the line names a TUI agent"
+    );
+    assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Grok));
+    assert_eq!(
+        reg.note_command(1, "cargo build"),
+        None,
+        "a plain command leaves the mode alone"
+    );
+}
+
+/// A harness that is not installed is the shell's own error: the line must be
+/// forwarded, and the pane must stay a shell instead of opening a surface for a
+/// program that is not there.
+#[test]
+fn a_detected_harness_that_is_not_installed_leaves_the_pane_a_shell() {
+    let mut reg = TerminalRegistry::default();
+    reg.assume_installed(|command| !command.trim_start().starts_with("pi"));
+    reg.set_input(1, "pi".to_string());
+    assert_eq!(
+        reg.update_mode_from_input(1),
+        None,
+        "the line is not a harness the pane can switch to"
+    );
+    assert_eq!(reg.mode(1), TerminalMode::Shell);
+    assert_eq!(reg.note_command(1, "pi --session abc"), None);
+    assert_eq!(reg.mode(1), TerminalMode::Shell);
+}
+
+#[test]
+fn launch_agent_sets_agent_mode_even_for_unknown_commands() {
+    let mut reg = TerminalRegistry::default();
+    // No session spawned in a unit test, but mode is still set.
+    reg.launch_agent(1, "codex");
+    assert_eq!(reg.mode(1), TerminalMode::Agent(TuiAgent::Codex));
+    reg.launch_agent(2, "some-custom-agent");
+    assert_eq!(reg.mode(2), TerminalMode::Agent(TuiAgent::Other));
+    // Blank is a no-op.
+    reg.launch_agent(3, "  ");
+    assert_eq!(reg.mode(3), TerminalMode::Shell);
+}
+
+#[test]
+fn a_pane_without_a_terminal_has_no_pane_session() {
+    let reg = TerminalRegistry::default();
+    assert!(reg.pane_session(1, "conv-1").is_none());
+}
+
+/// A pane only offers its own shell once that shell has bootstrapped the
+/// integration and can report a `Preexec`; a shell that cannot (anything
+/// outside bash/zsh, or one whose script failed to load) leaves the
+/// harness on the sandboxed runner instead of stranding a claim.
+#[test]
+fn a_pane_whose_shell_never_bootstrapped_has_no_pane_session() {
+    let mut reg = TerminalRegistry::default();
+    reg.sessions.insert(1, detached());
+
+    assert!(
+        reg.pane_session(1, "conv-1").is_none(),
+        "a shell that cannot answer keeps the sandbox"
+    );
+
+    // The integration handshake is what makes the shell able to answer.
+    run_hook(
+        reg.sessions.get_mut(&1).expect("the session is there"),
+        HookEvent::Bootstrapped(Default::default()),
+    );
+    assert!(
+        reg.pane_session(1, "conv-1").is_some(),
+        "a bootstrapped shell is the harness's route"
+    );
+}
+
+// -- The owner in the two views (P6) ------------------------------------
+
+/// The terminal view and a conversation's agent view are two filters over
+/// one block list. After a mix of commands the user typed and one the agent
+/// ran, the terminal view shows all of them and the agent view shows only
+/// the agent's block.
+#[test]
+fn the_two_views_show_the_right_blocks_after_a_mixed_sequence() {
+    let mut reg = TerminalRegistry::default();
+    reg.sessions.insert(1, detached());
+    let session = reg.sessions.get_mut(&1).expect("the session is there");
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
+    run_hook(session, HookEvent::Bootstrapped(Default::default()));
+
+    // The user types `ls`.
+    run_hook(session, preexec("ls"));
+    run_hook(session, HookEvent::CommandFinished(Default::default()));
+
+    // The agent runs `echo hi` in the same shell, through P4's route.
+    let answer = submit(session, "echo hi");
+    session.pump();
+    feed_bytes(session, b"echo hi\r\n");
+    run_hook(session, preexec("echo hi"));
+    feed_bytes(session, b"hi\r\n");
+    run_hook(session, HookEvent::CommandFinished(Default::default()));
+    assert_eq!(
+        answer.blocking_recv().expect("the pane answers"),
+        Ok("hi".to_string())
+    );
+
+    // The user types `pwd` afterwards.
+    run_hook(session, preexec("pwd"));
+    run_hook(session, HookEvent::CommandFinished(Default::default()));
+
+    let terminal: Vec<String> = reg
+        .visible_blocks(1, &BlockView::Terminal)
+        .into_iter()
+        .map(|block| block.command)
+        .filter(|command| !command.is_empty())
+        .collect();
+    let agent = reg.visible_blocks(
+        1,
+        &BlockView::Agent {
+            conversation_id: "conv-1".to_string(),
+        },
+    );
+
+    // The user's `ls`, the agent's `echo hi` (a real block in the same
+    // shell) and the user's `pwd`. The empty preamble/pending blocks are
+    // not commands.
+    assert_eq!(terminal, vec!["ls", "echo hi", "pwd"]);
+    // Only the agent's command is in the conversation's view; the two the
+    // user typed are not.
+    assert_eq!(
+        agent.iter().map(|b| b.command.as_str()).collect::<Vec<_>>(),
+        vec!["echo hi"]
+    );
+    assert_eq!(
+        agent[0].owner,
+        BlockOwner::Agent {
+            conversation_id: "conv-1".to_string(),
+            call_id: "call-1".to_string(),
+        }
+    );
+}
+
+/// A command typed inside a conversation — a `!` line in the agent input —
+/// is the conversation's own block: the agent view draws it and the
+/// terminal's history leaves it out. That is the split warp-new keeps
+/// between a block created in the terminal and one created inside an agent
+/// view, and it is why the command is not left behind the shell's view the
+/// user gets back with Esc.
+#[test]
+fn a_command_typed_in_a_conversation_belongs_to_it_and_not_the_shell() {
+    let mut reg = TerminalRegistry::default();
+    reg.sessions.insert(1, detached());
+    let session = reg.sessions.get_mut(&1).expect("the session is there");
+    run_hook(session, HookEvent::Bootstrapped(Default::default()));
+
+    // `ls` at the shell, then `!pwd` typed inside the conversation.
+    run_hook(session, preexec("ls"));
+    run_hook(session, HookEvent::CommandFinished(Default::default()));
+    assert!(
+        session.run_block_for_conversation("conv-1"),
+        "the shell is at a prompt, so the block is the command's"
+    );
+    run_hook(session, preexec("pwd"));
+    run_hook(session, HookEvent::CommandFinished(Default::default()));
+
+    let commands = |view: BlockView| -> Vec<String> {
+        reg.visible_blocks(1, &view)
             .into_iter()
             .map(|block| block.command)
             .filter(|command| !command.is_empty())
-            .collect();
-        let agent = reg.visible_blocks(
-            1,
-            &BlockView::Agent {
-                conversation_id: "conv-1".to_string(),
-            },
-        );
+            .collect()
+    };
+    assert_eq!(
+        commands(BlockView::Terminal),
+        vec!["ls"],
+        "the shell's own history keeps what was typed at it"
+    );
+    assert_eq!(
+        commands(BlockView::Agent {
+            conversation_id: "conv-1".to_string(),
+        }),
+        vec!["pwd"],
+        "the conversation draws the command typed inside it"
+    );
+}
 
-        // The user's `ls`, the agent's `echo hi` (a real block in the same
-        // shell) and the user's `pwd`. The empty preamble/pending blocks are
-        // not commands.
-        assert_eq!(terminal, vec!["ls", "echo hi", "pwd"]);
-        // Only the agent's command is in the conversation's view; the two the
-        // user typed are not.
-        assert_eq!(
-            agent.iter().map(|b| b.command.as_str()).collect::<Vec<_>>(),
-            vec!["echo hi"]
-        );
-        assert_eq!(
-            agent[0].owner,
-            BlockOwner::Agent {
-                conversation_id: "conv-1".to_string(),
-                call_id: "call-1".to_string(),
-            }
-        );
-    }
+/// A command is only the conversation's while the shell is at a prompt: a
+/// line written into a running command is not a block of its own, so
+/// nothing is marked.
+#[test]
+fn a_command_is_not_the_conversations_while_one_is_still_running() {
+    let mut reg = TerminalRegistry::default();
+    reg.sessions.insert(1, detached());
+    let session = reg.sessions.get_mut(&1).expect("the session is there");
+    run_hook(session, HookEvent::Bootstrapped(Default::default()));
+    run_hook(session, preexec("sleep 30"));
 
-    /// A command typed inside a conversation — a `!` line in the agent input —
-    /// is the conversation's own block: the agent view draws it and the
-    /// terminal's history leaves it out. That is the split warp-new keeps
-    /// between a block created in the terminal and one created inside an agent
-    /// view, and it is why the command is not left behind the shell's view the
-    /// user gets back with Esc.
-    #[test]
-    fn a_command_typed_in_a_conversation_belongs_to_it_and_not_the_shell() {
-        let mut reg = TerminalRegistry::default();
-        reg.sessions.insert(1, detached());
-        let session = reg.sessions.get_mut(&1).expect("the session is there");
-        run_hook(session, HookEvent::Bootstrapped(Default::default()));
-
-        // `ls` at the shell, then `!pwd` typed inside the conversation.
-        run_hook(session, preexec("ls"));
-        run_hook(session, HookEvent::CommandFinished(Default::default()));
-        assert!(
-            session.run_block_for_conversation("conv-1"),
-            "the shell is at a prompt, so the block is the command's"
-        );
-        run_hook(session, preexec("pwd"));
-        run_hook(session, HookEvent::CommandFinished(Default::default()));
-
-        let commands = |view: BlockView| -> Vec<String> {
-            reg.visible_blocks(1, &view)
-                .into_iter()
-                .map(|block| block.command)
-                .filter(|command| !command.is_empty())
-                .collect()
-        };
-        assert_eq!(
-            commands(BlockView::Terminal),
-            vec!["ls"],
-            "the shell's own history keeps what was typed at it"
-        );
-        assert_eq!(
-            commands(BlockView::Agent {
-                conversation_id: "conv-1".to_string(),
-            }),
-            vec!["pwd"],
-            "the conversation draws the command typed inside it"
-        );
-    }
-
-    /// A command is only the conversation's while the shell is at a prompt: a
-    /// line written into a running command is not a block of its own, so
-    /// nothing is marked.
-    #[test]
-    fn a_command_is_not_the_conversations_while_one_is_still_running() {
-        let mut reg = TerminalRegistry::default();
-        reg.sessions.insert(1, detached());
-        let session = reg.sessions.get_mut(&1).expect("the session is there");
-        run_hook(session, HookEvent::Bootstrapped(Default::default()));
-        run_hook(session, preexec("sleep 30"));
-
-        assert!(
-            !session.run_block_for_conversation("conv-1"),
-            "a running command owns the block; there is no prompt to type at"
-        );
-    }
+    assert!(
+        !session.run_block_for_conversation("conv-1"),
+        "a running command owns the block; there is no prompt to type at"
+    );
+}

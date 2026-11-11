@@ -61,7 +61,7 @@ fn test_user_guide_missing_dir_is_helpful() {
 
 #[test]
 fn test_system_prompt_mentions_user_guide() {
-    assert!(HARNESS_SYSTEM_PROMPT.contains("user_guide"));
+    assert!(harness_system_prompt().contains("user_guide"));
     assert!(harness_tool_definitions()
         .iter()
         .any(|t| t.name == "user_guide"));

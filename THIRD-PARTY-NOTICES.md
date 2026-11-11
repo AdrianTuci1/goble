@@ -48,6 +48,24 @@ The crate is pinned by path in the root `Cargo.toml`. Upgrading means
 re-extracting the new archive into `vendor/alacritty_terminal`, updating the
 version and SHA-256 here, and re-running `cargo test -p goble-terminal`.
 
+## Harness marks
+
+`crates/goble-ui/assets/icons/harness-claude.svg`, `harness-codex.svg`,
+`harness-grok.svg` and `harness-gemini.svg` are the provider marks from the
+Paseo repository's asset set, reduced to a single-colour silhouette for the
+sidebar's icon atlas:
+
+- Upstream: <https://github.com/getpaseo/paseo> (`packages/app/assets/icons`
+  and `packages/app/src/assets/acp-provider-icons`)
+- License: Apache-2.0, Copyright (c) 2025-present Mohamed Boudra
+- Location: `crates/goble-ui/assets/icons/`
+- Used by: the conversation sidebar's harness mark and the harness chip in a
+  pane's topbar, one mark per id in `crates/goble-core/src/harness/catalog.rs`
+
+The Claude, OpenAI, Grok and Gemini names and marks are trademarks of their
+respective owners and are used only to identify the provider a conversation
+runs against. `harness-goble.svg` is our own mark.
+
 ## Reference-only, not linked or copied
 
 Warp's terminal implementation (studied for its command-block model) is

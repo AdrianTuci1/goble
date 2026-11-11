@@ -588,12 +588,30 @@ impl ChatView {
             .with_main_axis_size(MainAxisSize::Max)
             .with_spacing(spacing);
 
+        // The pane's chrome — the height the floating bar takes and the
+        // sub-agent strip under it — is one band. The strip continues the bar's
+        // surface, so the column's spacing opens between the band and the
+        // conversation and never inside the band.
+        let mut chrome = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        let mut has_chrome = false;
         if header_height > 0.0 && self.header.is_some() {
-            column = column.with_child(
+            chrome = chrome.with_child(
                 Empty::new()
                     .with_size(Vector2F::new(0.0, header_height))
                     .finish(),
             );
+            has_chrome = true;
+        }
+
+        // The pane's work dock sits directly under the bar and above the
+        // conversation: it is chrome around the transcript, so it takes the
+        // slot the header reserved rather than scrolling with the messages.
+        if let Some(dock) = self.work_dock.take() {
+            chrome = chrome.with_child(dock);
+            has_chrome = true;
+        }
+        if has_chrome {
+            column = column.with_child(chrome.finish());
         }
 
         let message_area: Box<dyn Element> = if self.messages.is_empty()
@@ -615,7 +633,7 @@ impl ChatView {
                 message_column = message_column.with_child(notice);
             }
             // The rows the sticky turn header reads: the latest user message and
-            // the reply after it, recorded as they paint.
+            // the next prompt after it, recorded as they paint.
             let sticky = StickyTurn::for_messages(&self.messages);
             for (index, message) in self.messages.iter().enumerate() {
                 let on_action = self.on_action.clone();
@@ -625,7 +643,9 @@ impl ChatView {
                     .with_terminal_filters(self.terminal_filters.clone())
                     .with_reasoning_expanded(self.reasoning_expanded.clone())
                     .with_tool_fold(self.tool_fold.clone())
+                    .with_tool_hover(self.tool_hover.clone())
                     .with_sub_agents(self.sub_agents.clone())
+                    .with_sub_agent_model(self.sub_agent_model.clone())
                     .with_global_terminal_filter(self.global_terminal_filter.clone())
                     .with_on_copy_terminal(self.on_copy_terminal.clone())
                     .with_on_action(move |action| {
@@ -654,7 +674,10 @@ impl ChatView {
             // model) so it scrolls with the conversation rather than pinning to
             // the bottom of the window.
             if let Some(ask) = &self.pending_ask {
-                let mut card = AskUserCard::new(ask.question.clone(), ask.quick_replies.clone());
+                // The rich input is not built while the question waits, so the
+                // panel is the pane's only typing surface and always holds the
+                // keys — whatever focus the composer had before it arrived.
+                let mut card = AskUserCard::from_ui(ask);
                 if let Some(cb) = self.on_answer_ask.clone() {
                     card = card.with_on_answer(move |resp, cred| (cb.borrow_mut())(resp, cred));
                 }
@@ -771,9 +794,10 @@ impl ChatView {
                 None => transcript,
             };
             // The latest user message pins to the transcript's top edge while
-            // its own bubble is above it (grok-build's sticky turn). The header
-            // is an overlay of the transcript's stack, so it covers the top
-            // strip instead of taking a row from the scrolling content.
+            // its own bubble is above it (grok-build's sticky turn), and stays
+            // for the whole turn it opens. The header is an overlay of the
+            // transcript's stack, so it covers the top strip instead of taking
+            // a row from the scrolling content.
             let transcript: Box<dyn Element> = match sticky.overlay() {
                 Some(header) => Stack::new()
                     .with_children(vec![transcript])
@@ -893,6 +917,9 @@ impl ChatView {
         }
         if let Some(icon) = self.composer_harness_icon {
             composer = composer.with_harness_icon(icon);
+        }
+        if let Some(harness) = self.composer_agent_harness {
+            composer = composer.with_agent_harness(harness);
         }
         if let Some(label) = self.composer_branch_label.clone() {
             composer = composer.with_branch_label(label);
@@ -1014,12 +1041,12 @@ impl ChatView {
         // draft's own command list holds while the draft is a command, the way
         // grok-build puts them over the prompt and not over the pane.
         if self.show_composer {
-            // A waiting command puts the card's keys first: the command list,
-            // the instruction strip and the rich input all stay away, so the
-            // card's command field is the pane's only typing surface. The
-            // turn-status row (with its Stop) stays, because the turn is still
-            // in flight.
-            let waiting = self.composer_proposal.is_some();
+            // A card waiting on the user — a command to approve, or a question
+            // to answer — puts its keys first: the command list, the
+            // instruction strip and the rich input all stay away, so the card
+            // is the pane's only typing surface. The turn-status row (with its
+            // Stop) stays, because the turn is still in flight.
+            let waiting = self.composer_proposal.is_some() || self.pending_ask.is_some();
             if !waiting {
                 if let Some(menu) = self.slash_menu().or_else(|| self.model_menu()) {
                     column = column.with_child(menu);
@@ -1065,10 +1092,10 @@ impl ChatView {
             // open a gap under the rule. The shell pane's bar keeps its rows
             // `xs` under its own divider; this is the same edge.
             //
-            // A waiting command hides the whole input: the card above is the
-            // pane's only typing surface until Run or Reject settles the
-            // decision. The turn-status row stays as the mark that the turn is
-            // suspended.
+            // A waiting command or question hides the whole input: the card
+            // above is the pane's only typing surface until the decision or
+            // the answer settles it. The turn-status row stays as the mark
+            // that the turn is suspended.
             if !waiting {
                 let input = Flex::column()
                     .with_main_axis_size(MainAxisSize::Min)

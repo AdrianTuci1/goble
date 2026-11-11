@@ -244,7 +244,7 @@ pub(crate) fn build_explorer(
         let on_toggle_dir = on_toggle_dir.clone();
         let on_open_file = on_open_file.clone();
         let is_dir = row.is_dir;
-        let file_hint = path.clone();
+        let file_hint = crate::state::display_path(&path);
         let mut row = HoverRow::new(line.finish())
             .with_padding(EdgeInsets::new(8.0, ITEM_PADDING, 8.0, ITEM_PADDING))
             .with_corner_radius(ROW_RADIUS)

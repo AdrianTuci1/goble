@@ -10,8 +10,9 @@ use goble_ui::elements::terminal_block::terminal_filter_bar;
 use goble_ui::elements::{
     AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
     Fill, Flex, GridRange, MainAxisAlignment, MainAxisSize, Scrollable, SearchInput,
-    SizeConstraint, Stack, TerminalBlockPlumbing, TerminalFilter, TerminalGrid,
-    TerminalTextSelection, Text, TopbarButton, CONTEXT_PILL_HEIGHT,
+    SizeConstraint, Stack, TerminalBlockCursor, TerminalBlockPlumbing, TerminalCursorShape,
+    TerminalFilter, TerminalGrid, TerminalTextSelection, TerminalTextStyle, Text, TopbarButton,
+    CONTEXT_PILL_HEIGHT,
 };
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
@@ -20,7 +21,7 @@ use crate::terminal::{Cell, FindBar, Selection, TerminalMode, TerminalRegistry};
 use crate::ui::chat;
 
 use super::blocks::{section_data, styled_section_data};
-use super::cards::{build_card, CardProbe};
+use super::cards::{build_card, card_infos, CardInfo, CardProbe};
 use super::grid::GridProbe;
 use super::TerminalView;
 use super::{FONT_SIZE, LINE_HEIGHT};
@@ -96,6 +97,9 @@ pub fn build_terminal(
         actions,
         pane_id,
         false,
+        // A shell names the CLI agent running in it, never the conversation the
+        // pane happens to hold: out of agent mode this pane is the shell.
+        None,
         Some(chat::PaneHeading::Path(cwd.clone())),
     );
     // Whether the pane's whole-output filter bar holds the caret (see the input
@@ -120,11 +124,26 @@ pub fn build_terminal(
         .is_some_and(|ui| ui.copy.active || ui.find.open);
     // A program that owns the screen — a TUI agent (codex, claude, pi, grok,
     // hermes, ...) or any full-screen program in the alternate screen — draws
-    // its own input. The pane's rich input is not built at all while it does:
-    // the program keeps the whole pane and the keys, including the keys that
-    // would otherwise focus the bar.
+    // its own screen and keeps the keys. A recognised CLI agent still gets the
+    // pane's rich input under its screen, the way warp-new's rich input sits
+    // under a CLI agent: the bar is the agent's prompt line, and the line it
+    // submits goes to the agent's own stdin. Any other full-screen program
+    // keeps the whole pane, bar included.
     let owns_screen = owner.program_owns_screen(pane_id);
-    let bar_focused = active && !owns_screen && !filter_typing && !copy_or_find;
+    // The bar is the prompt line of a CLI agent only while that agent owns the
+    // screen. The pane's mode is sticky, so a harness that exited leaves the
+    // mode behind and must not keep a bar that would write into a shell prompt.
+    let agent = owns_screen
+        .then(|| owner.pane_harness(pane_id))
+        .flatten()
+        .filter(|spec| spec.tui);
+    // The agent owns the keys while its screen is up, so the bar stays
+    // unfocused until the user clicks into it (`composer_focused`). At a plain
+    // shell the bar is the only typing surface and holds the keys.
+    let bar_focused = active
+        && !filter_typing
+        && !copy_or_find
+        && (!owns_screen || (agent.is_some() && state.composer_focused));
     drop(owner);
     // A command the harness suspended on closes the shell's output, the way the
     // same card closes the agent transcript. The bar's own keys decide it, so
@@ -138,12 +157,13 @@ pub fn build_terminal(
     // is not drawn, so there is no rich input under the decision. It comes back
     // with the pane's draft once the command is approved or rejected.
     let bar_focused = bar_focused && approval.is_none();
-    let bar = if approval.is_none() && !owns_screen {
+    let bar = if approval.is_none() && (!owns_screen || agent.is_some()) {
         Some(chat::build_terminal_composer(
             state,
             actions,
             pane_id,
             bar_focused,
+            agent,
         ))
     } else {
         None
@@ -176,6 +196,7 @@ pub fn build_terminal(
         actions.on_copy_terminal.clone(),
     )
     .with_harness_refusal(refusal)
+    .with_conversation_info(card_infos(state))
     .with_approval(approval)
     // The pane's history scrolls on the app's own per-pane state, and each
     // section draws through the same block plumbing the transcript uses, so a
@@ -467,9 +488,11 @@ impl TerminalView {
             on_copy,
             geometry: Rc::new(RefCell::new(None)),
             cards: Rc::new(RefCell::new(Vec::new())),
+            conversation_info: HashMap::new(),
             block_geometry: Rc::new(RefCell::new(Vec::new())),
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
-            plumbing: TerminalBlockPlumbing::new(Rc::new(RefCell::new(HashMap::new())), None, None),
+            plumbing: TerminalBlockPlumbing::new(Rc::new(RefCell::new(HashMap::new())), None, None)
+                .with_text_style(TerminalTextStyle::new(FONT_SIZE, LINE_HEIGHT)),
             pressed: None,
             last_cell: None,
             pointer: None,
@@ -485,10 +508,23 @@ impl TerminalView {
         self
     }
 
+    /// Attach what the app's conversation list knows about the conversations
+    /// this pane draws cards for.
+    pub(super) fn with_conversation_info(mut self, info: HashMap<String, CardInfo>) -> Self {
+        self.conversation_info = info;
+        self
+    }
+
     /// Attach how this pane draws a terminal block: the app-owned per-block
     /// filter map, the pane's whole-history filter and the copy handler.
+    ///
+    /// The blocks draw at the pane's own cell pitch. The pty sets its column
+    /// count from this pane's [`FONT_SIZE`] cell, so a captured row of
+    /// `columns` cells only fits the pane when the block draws at that same
+    /// size; at the transcript's larger body font the last word of every full
+    /// row wraps onto a second line.
     pub(super) fn with_block_plumbing(mut self, plumbing: TerminalBlockPlumbing) -> Self {
-        self.plumbing = plumbing;
+        self.plumbing = plumbing.with_text_style(TerminalTextStyle::new(FONT_SIZE, LINE_HEIGHT));
         self
     }
 
@@ -557,7 +593,12 @@ impl TerminalView {
             .max(1.0) as usize;
 
         let mut reg = self.terminal.borrow_mut();
-        let mode = reg.mode(self.pane_id);
+        // A program that owns the pane — an alternate-screen TUI or an inline
+        // one like `agy` that the shell reported as its running command — draws
+        // its own screen. The pane paints that screen, not the command blocks:
+        // a TUI's frames are cursor-addressed redraws, and reading them as one
+        // output block piles every frame up as text.
+        let program_owns_screen = reg.program_owns_screen(self.pane_id);
         let mut screen = crate::terminal::TerminalViewState::empty();
         if let Some(session) = reg.sessions.get_mut(&self.pane_id) {
             session.set_palette(palette);
@@ -580,6 +621,9 @@ impl TerminalView {
         }
         let pane_ui = reg.pane_ui(self.pane_id).cloned().unwrap_or_default();
         drop(reg);
+        // What the pane paints as its body: the program's live screen while it
+        // owns the pane, and the command blocks otherwise.
+        let live_screen = screen.alt_screen || program_owns_screen;
 
         // The block list, filtered by this pane's view, is what the agent view
         // draws and what its conversation cards name. The cards are reset here
@@ -595,8 +639,23 @@ impl TerminalView {
             .terminal
             .borrow()
             .block_output_lines(self.pane_id, &self.view);
+        // The cursor of every block still running, so a command's own caret is
+        // drawn where the command put it instead of only in a full-screen grid.
+        let block_cursors = self
+            .terminal
+            .borrow()
+            .block_output_cursors(self.pane_id, &self.view);
         self.cards.borrow_mut().clear();
         self.block_geometry.borrow_mut().clear();
+
+        // Every row of shell output keeps the pane's inset. The conversation
+        // card and the refusal band are surfaces of their own, so they run the
+        // pane's whole width and hold their padding internally.
+        let inset = |element: Box<dyn Element>| -> Box<dyn Element> {
+            Container::new(element)
+                .with_padding(EdgeInsets::new(lg, 0.0, lg, 0.0))
+                .finish()
+        };
 
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
@@ -605,12 +664,12 @@ impl TerminalView {
         // The scrollback find bar (Cmd+F): the query, its regex toggle and the
         // current/total match count, scoped to this pane.
         if pane_ui.find.open {
-            column = column.with_child(find_bar(
+            column = column.with_child(inset(find_bar(
                 &pane_ui.find,
                 app,
                 Rc::clone(&self.terminal),
                 self.pane_id,
-            ));
+            )));
         }
 
         // The pane's whole-output filter (Cmd+Alt+F): one bar over every block the
@@ -618,55 +677,57 @@ impl TerminalView {
         // surface a block's own filter bar is, so the query is typed and edited
         // the same way in both. A full-screen program owns its screen, so it has
         // no blocks to filter.
-        if !screen.alt_screen {
+        if !live_screen {
             if let Some(filter) = self.plumbing.global_filter().filter(|f| f.is_open()) {
                 let (matched, total) = filter_line_counts(&blocks, &filter);
-                column = column.with_child(terminal_filter_bar(
+                column = column.with_child(inset(terminal_filter_bar(
                     &filter,
                     TERMINAL_FILTER_PLACEHOLDER,
                     matched,
                     total,
                     app,
-                ));
+                )));
             }
         }
 
-        // When the pane is hosting a real TUI agent, mark it so the user knows
-        // goble kept the agent's native input (native-first). The badge is the
-        // first line of the pane so it reads as a header.
-        if let TerminalMode::Agent(agent) = &mode {
-            let badge = Text::new(format!("agent · {}", agent.label()))
-                .with_font_size(FONT_SIZE)
-                .with_line_height(LINE_HEIGHT)
-                .with_font_family(FontFamily::Mono)
-                .with_theme_color(ColorToken::Accent, app)
-                .finish();
-            column = column.with_child(badge);
-        }
+        // No badge sits above a program's screen: a TUI owns the whole pane it
+        // paints into, and the bar already names the harness that is running.
 
         // The shell's own view is the block list: one section per command, with
         // the directory it ran in and how long it took on the section's top line
-        // (warp-new's block view), and a card where a conversation happened. The
-        // sections are drawn inside one following viewport, so the newest command
-        // sits on the rich input and the history scrolls above it.
+        // (warp-new's block view), and a card where a conversation happened and
+        // the agent answered in it. The sections are drawn inside one following
+        // viewport, so the newest command sits on the rich input and the history
+        // scrolls above it.
         //
-        // A full-screen program owns its screen instead — a TUI paints a layout,
-        // not a list of commands — so the alternate screen keeps the live grid,
-        // and so does a shell whose integration has not delimited a block yet.
+        // A program that owns the screen draws the live grid instead — a TUI
+        // paints a layout, not a list of commands — and so does a shell whose
+        // integration has not delimited a block yet.
         let mut list = Flex::column()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(sm);
         let mut listed = 0usize;
-        if !screen.alt_screen {
+        if !live_screen {
             let block_geometry = Rc::clone(&self.block_geometry);
             let block_selection = pane_ui.block_selection;
             let mut line_base = 0usize;
             for block in &blocks {
                 if let Some(card) = &block.card {
+                    // A card stands for an exchange: a conversation the app's
+                    // list has answered in, titled by its subject. One with no
+                    // reply yet — or one the list does not know — draws
+                    // nothing, not even its empty slot.
+                    let Some(info) = self
+                        .conversation_info
+                        .get(&card.conversation_id)
+                        .filter(|info| info.has_agent_reply)
+                    else {
+                        continue;
+                    };
                     list = list.with_child(
                         CardProbe {
-                            inner: build_card(card),
+                            inner: build_card(card, Some(info)),
                             cards: Rc::clone(&self.cards),
                             conversation_id: card.conversation_id.clone(),
                             size: None,
@@ -685,12 +746,32 @@ impl TerminalView {
                     let selection = block_selection.and_then(|selection| {
                         block_text_selection(selection, line_base, data.lines.len())
                     });
-                    list = list.with_child(self.plumbing.element_with_selection(
+                    // The section draws its command line first, so the block's
+                    // own output rows sit one line below the screen's row 0.
+                    let cursor = block_cursors.get(&block.id).map(|cursor| {
+                        TerminalBlockCursor {
+                            line: cursor.line + 1,
+                            column: cursor.column,
+                            shape: match cursor.shape {
+                                goble_terminal::CursorShape::Block => TerminalCursorShape::Block,
+                                goble_terminal::CursorShape::HollowBlock => {
+                                    TerminalCursorShape::HollowBlock
+                                }
+                                goble_terminal::CursorShape::Beam => TerminalCursorShape::Beam,
+                                goble_terminal::CursorShape::Underline => {
+                                    TerminalCursorShape::Underline
+                                }
+                                goble_terminal::CursorShape::Hidden => TerminalCursorShape::Beam,
+                            },
+                        }
+                    });
+                    list = list.with_child(inset(self.plumbing.element_with_selection_and_cursor(
                         &data,
                         selection,
+                        cursor,
                         line_base,
                         Rc::clone(&block_geometry),
-                    ));
+                    )));
                     line_base += data.lines.len();
                     listed += 1;
                 }
@@ -708,7 +789,7 @@ impl TerminalView {
         // mapped to the pointer. An image in the viewport takes the grid too:
         // block sections are text, so the live grid is the surface that can
         // paint the image on its cell.
-        let show_grid = screen.alt_screen
+        let show_grid = live_screen
             || pane_ui.copy.active
             || pane_ui.find.open
             || !screen.images.is_empty();
@@ -757,15 +838,16 @@ impl TerminalView {
                     .with_state(Rc::clone(&self.scroll))
                     // The shell's history grows upwards from the rich input below
                     // it (warp-new), so a history shorter than the pane ends on the
-                    // input instead of floating at the top. A full-screen program
-                    // painted its own layout; its rows stay where it put them.
-                    .with_bottom_anchor(!screen.alt_screen)
+                    // input instead of floating at the top. A program that owns
+                    // the screen painted its own layout; its rows stay where it
+                    // put them.
+                    .with_bottom_anchor(!live_screen)
                     .finish()
             }
         } else if show_grid || screen.has_content {
             // The grid is the only surface that can paint an image, so an
             // image-only viewport takes it even when every cell is blank.
-            GridProbe {
+            let probe = GridProbe {
                 // The grid is this pane's output; the pane's input is the rich
                 // input bar below it, and that bar owns the caret. A cursor
                 // painted in the grid too would read as a second, competing
@@ -775,10 +857,20 @@ impl TerminalView {
                     .with_font_size(FONT_SIZE)
                     .with_line_height(LINE_HEIGHT)
                     // The shell's history grows upwards from the rich input
-                    // below it (warp-new); a full-screen program painted its
-                    // own layout, so its rows stay where it put them.
-                    .with_bottom_anchor(!screen.alt_screen)
-                    .with_cursor_visible(false)
+                    // below it (warp-new); a program that owns the screen
+                    // painted its own layout, so its rows stay where it put them.
+                    .with_bottom_anchor(!live_screen)
+                    // A program that owns the screen draws its own caret as the
+                    // pty's cursor — its position, its shape (`DECSCUSR`) and
+                    // whether it asked for one (`?25l`). That is the native
+                    // cursor of the terminal it believes it is running in, so a
+                    // TUI's editing point follows the program instead of the
+                    // pane. Only when the pane's own input owns the caret — a
+                    // plain shell, copy mode, the find bar — is the grid's
+                    // cursor hidden.
+                    .with_cursor_visible(
+                        live_screen && !pane_ui.copy.active && !pane_ui.find.open,
+                    )
                     .with_selection(selection)
                     .with_selection_color(app.theme.color(ColorToken::Selection))
                     .with_highlights(highlights, active_highlight)
@@ -791,7 +883,8 @@ impl TerminalView {
                     ),
                 geometry: Rc::clone(&self.geometry),
             }
-            .finish()
+            .finish();
+            inset(probe)
         } else {
             *self.geometry.borrow_mut() = None;
             // The shell's directory hugs the bottom of the body, just above the
@@ -803,11 +896,13 @@ impl TerminalView {
                 .with_font_family(FontFamily::Mono)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish();
-            Flex::column()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_main_axis_alignment(MainAxisAlignment::End)
-                .with_child(hint)
-                .finish()
+            inset(
+                Flex::column()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::End)
+                    .with_child(hint)
+                    .finish(),
+            )
         };
         column = column.with_child(Expanded::new(body).finish());
 
@@ -819,14 +914,25 @@ impl TerminalView {
         if let Some(reason) = self.harness_refusal.take() {
             column = column.with_child(
                 Container::new(
-                    Text::new(reason)
-                        .with_theme_color(ColorToken::Error, app)
-                        .with_font_size(FONT_SIZE)
-                        .with_line_height(LINE_HEIGHT)
-                        .finish(),
+                    Container::new(
+                        // The row fills the pane's width so the band does: the
+                        // background runs edge to edge, and only the text keeps
+                        // its side padding.
+                        Flex::row()
+                            .with_main_axis_size(MainAxisSize::Max)
+                            .with_child(
+                                Text::new(reason)
+                                    .with_theme_color(ColorToken::Error, app)
+                                    .with_font_size(FONT_SIZE)
+                                    .with_line_height(LINE_HEIGHT)
+                                    .finish(),
+                            )
+                            .finish(),
+                    )
+                    .with_padding(EdgeInsets::new(md, md, md, md))
+                    .finish(),
                 )
                 .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_padding(EdgeInsets::uniform(md))
                 .finish(),
             );
         }
@@ -836,11 +942,13 @@ impl TerminalView {
         // element, taken by this frame's build (the tree is rebuilt per frame).
         // A rule separates it from the shell's output, so the input reads as its
         // own surface rather than another line of the transcript.
-        // The pane's output carries the pane's padding; the rich input below it
-        // runs edge to edge, so the input is the pane's width rather than an
+        // The pane's output holds only its vertical padding here: each row of
+        // shell output applies the side inset itself, so the conversation card
+        // and the refusal band paint edge to edge. The rich input below runs
+        // edge to edge too, so the input is the pane's width rather than an
         // inset card inside it.
         let body = Container::new(column.finish())
-            .with_padding(EdgeInsets::new(lg, lg, lg, 0.0))
+            .with_padding(EdgeInsets::new(0.0, lg, 0.0, 0.0))
             .finish();
         let mut outer = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)

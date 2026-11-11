@@ -1,3 +1,4 @@
+use super::session::is_unnamed_harness_title;
 use super::title::agent_subject;
 use super::*;
 
@@ -24,6 +25,7 @@ impl UiState {
             conversations: Vec::new(),
             search_query: String::new(),
             search_focused: false,
+            sidebar_search_caret: Rc::new(RefCell::new(0)),
             new_conversation_draft: String::new(),
             create_focused: false,
             chat_messages: Vec::new(),
@@ -55,14 +57,17 @@ impl UiState {
             right_sidebar_open: false,
             fullscreen: false,
             sub_agent_views: HashMap::new(),
+            work_dock_open: Rc::new(RefCell::new(HashMap::new())),
+            work_dock_show_all: Rc::new(RefCell::new(HashMap::new())),
             maximized_pane: None,
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
+            tool_hover: Rc::new(RefCell::new(None)),
             terminal_global_filters: HashMap::new(),
             crons_open: false,
             task_workflow_open: false,
-            task_workflow_selected: Rc::new(RefCell::new(0)),
+            task_workflow_selected: Rc::new(RefCell::new(None)),
             task_workflow_phase: Rc::new(RefCell::new(0)),
             shortcuts_help_open: false,
             shortcuts_help_filter: String::new(),
@@ -116,6 +121,9 @@ impl UiState {
             theme_primary: None,
             theme_secondary: None,
             theme_accent: None,
+            theme_bg: None,
+            theme_surface: None,
+            theme_preset: None,
             theme_color_target: crate::ui::color_picker::ColorTarget::Primary,
             theme_color_drag: Rc::new(RefCell::new(None)),
             show_llm_key_banner: false,
@@ -148,6 +156,7 @@ impl UiState {
             global_search_searched: false,
             global_search_error: None,
             global_search_focused: false,
+            global_search_caret: Rc::new(RefCell::new(0)),
             global_search_worker: Rc::new(SearchWorker::new()),
             sidebar_scroll: Rc::new(RefCell::new(ScrollState::default())),
             explorer_hover: Rc::new(RefCell::new(None)),
@@ -158,6 +167,7 @@ impl UiState {
             settings_model_anchor: Rc::new(RefCell::new(None)),
             settings_model_painted: Rc::new(RefCell::new(false)),
             space_rename_editing: false,
+            command_held: false,
             space_press_run: Rc::new(RefCell::new(None)),
             space_rename_draft: String::new(),
             space_rename_focused: false,
@@ -189,6 +199,9 @@ impl UiState {
             pane_runtime: HashMap::new(),
             pane_workers: HashMap::new(),
             pane_ssh: HashMap::new(),
+            harness_chats: HashMap::new(),
+            harness_title_attempts: HashMap::new(),
+            harness_session_titles: std::collections::HashSet::new(),
             ssh_host_entries: Vec::new(),
             ssh_host_picker_open: false,
             ssh_host_picker_index: 0,
@@ -214,6 +227,9 @@ impl UiState {
             inbox_index: 0,
             inbox_error: None,
             inbox_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            inbox_anchor: Rc::new(RefCell::new(None)),
+            announcement: None,
+            announcement_until: None,
             next_inbox_id: 1,
             agent_dashboard: AgentDashboardState::default(),
             show_onboarding_tip: false,
@@ -324,6 +340,12 @@ impl UiState {
                     })
                     .collect(),
                 started_at: time_ago(&run.started_at),
+                // A settled run's duration is its whole span; a live one is
+                // measured to now, so its clock keeps moving.
+                elapsed: match run.finished_at.as_deref() {
+                    Some(finished_at) => elapsed_between(&run.started_at, finished_at),
+                    None => elapsed_since(&run.started_at),
+                },
                 finished_at: run.finished_at.as_deref().map(time_ago),
                 output: run.output,
                 log: run.log,
@@ -492,6 +514,28 @@ impl UiState {
     /// conversation no pane accounts for is read the same way: an agent reply
     /// means the last turn finished ([`ConversationStatus::Success`]), and no
     /// reply means there is nothing to report ([`ConversationStatus::Default`]).
+    /// Whether a CLI harness is running in the pane that holds
+    /// `conversation_id`. A harness keeps its turns in its own terminal, so this
+    /// is the sign that the conversation is live even when the store holds no
+    /// assistant row for it.
+    fn conversation_runs_a_harness(&self, conversation_id: &str) -> bool {
+        self.pane_id_for_conversation(conversation_id)
+            .is_some_and(|pane_id| self.terminal.borrow().pane_harness(pane_id).is_some())
+    }
+
+    /// The harness a conversation's sidebar card draws its mark from: the CLI
+    /// agent running in the pane that holds it, else the model provider the
+    /// store recorded, else Goble's own native harness.
+    fn conversation_harness(&self, conversation_id: &str, provider: Option<&str>) -> String {
+        if let Some(harness) = self
+            .pane_id_for_conversation(conversation_id)
+            .and_then(|pane_id| self.terminal.borrow().pane_harness(pane_id))
+        {
+            return harness.id.to_string();
+        }
+        provider.unwrap_or("goble").to_string()
+    }
+
     pub fn conversation_status(
         &self,
         conversation_id: &str,
@@ -561,6 +605,255 @@ impl UiState {
         }
     }
 
+    /// The directory a harness conversation ran in.
+    ///
+    /// A harness conversation is opened without a working directory of its own,
+    /// so the pane bound to it names where the harness ran — the directory the
+    /// card labels itself with. Without it the lookup below would have nothing
+    /// to ask a session store about.
+    fn harness_directory(
+        &self,
+        chat: &goble_desktop_service::Chat,
+        harness: &goble_core::harness::HarnessSpec,
+        peers: &[goble_desktop_service::Chat],
+    ) -> String {
+        let direct = self.direct_harness_directory(chat, harness);
+        if !direct.is_empty() {
+            return direct;
+        }
+        // A card with neither a directory of its own nor a pane still works in
+        // the workspace its sibling conversations of the same harness use, when
+        // they all agree on one. Two projects leave it unnamed rather than
+        // guessing which session store its thread lives in.
+        let mut siblings: Vec<String> = peers
+            .iter()
+            .filter(|peer| peer.id != chat.id && peer.provider.as_deref() == Some(harness.id))
+            .map(|peer| self.direct_harness_directory(peer, harness))
+            .filter(|directory| !directory.is_empty())
+            // Two cards may spell one directory as `/Users/me/...` and as
+            // `~/...`; they name the same workspace and must not look like two.
+            .map(|directory| crate::state::display_path(&directory))
+            .collect();
+        siblings.sort_unstable();
+        siblings.dedup();
+        match siblings.as_slice() {
+            [directory] => directory.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// The directory `chat` names itself, without asking a sibling: what it
+    /// recorded, the pane that holds it, or the old `Harness · directory` title.
+    fn direct_harness_directory(
+        &self,
+        chat: &goble_desktop_service::Chat,
+        harness: &goble_core::harness::HarnessSpec,
+    ) -> String {
+        if let Some(directory) = chat
+            .working_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|directory| !directory.is_empty())
+        {
+            return directory.to_string();
+        }
+        if let Some(directory) = self
+            .pane_id_for_conversation(&chat.id)
+            .and_then(|pane| self.pane_sessions.get(&pane))
+            .map(|session| session.path.trim())
+            .filter(|path| !path.is_empty())
+        {
+            return directory.to_string();
+        }
+        // A card created before the directory was recorded still carries it in
+        // the old `Harness · directory` title. Recovering it here is what lets
+        // those conversations find their session store and be renamed.
+        let prefix = format!("{} · ", harness.name);
+        chat.title
+            .strip_prefix(&prefix)
+            .map(str::trim)
+            .filter(|directory| directory.starts_with('/') || directory.starts_with('~'))
+            .map(crate::state::expand_path)
+            .unwrap_or_default()
+    }
+
+    /// Name the harness conversations that are still named for their harness,
+    /// from the title the harness recorded for the session each one owns.
+    ///
+    /// A CLI harness writes its turns into its own store, so the naming native
+    /// conversations get from their transcript never reaches one. What the
+    /// harness does keep is a title — a summary, the first prompt — for the
+    /// session it ran in the conversation's directory, and that is the
+    /// conversation's name, read the same way a native conversation's is. The
+    /// session is the one the conversation claimed for itself
+    /// ([`Self::claim_harness_sessions`]), so two conversations of one directory
+    /// keep two names.
+    ///
+    /// The lookup reads the filesystem, so each conversation is looked at once
+    /// per run: a store that names nothing is not walked again when the next
+    /// event rebuilds the list ([`UiState::harness_title_attempts`]), and a
+    /// conversation named from its own session is not read again either
+    /// ([`UiState::harness_session_titles`]). Returns the titles written, by
+    /// conversation id, because the rows built from this refresh were read from
+    /// the store before the write.
+    fn retitle_harness_conversations(
+        &mut self,
+        desktop: &DesktopState,
+        chats: &[goble_desktop_service::Chat],
+    ) -> HashMap<String, String> {
+        // Which session each conversation owns is settled first: the titles
+        // below are read from those sessions, and a directory holding several
+        // conversations would otherwise name them all from the newest one.
+        self.claim_harness_sessions(desktop, chats);
+        let chats = desktop.list_chats();
+        let mut retitled = HashMap::new();
+        for chat in &chats {
+            // Only a conversation the store records a CLI harness for: a model
+            // provider's own chats are named from their transcript, and an
+            // empty provider is the native harness.
+            let Some(harness) = chat
+                .provider
+                .as_deref()
+                .and_then(goble_core::harness::harness_by_id)
+                .filter(|spec| spec.tui)
+            else {
+                continue;
+            };
+            let session = chat
+                .agent_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty());
+            // The title the card carries now, when the app wrote it: a name the
+            // user typed is theirs and is left alone.
+            let ours = self.harness_title_attempts.get(&chat.id) == Some(&chat.title);
+            let directory = self.harness_directory(chat, harness, &chats);
+            if session.is_some() && self.harness_session_titles.contains(&chat.id) {
+                continue;
+            }
+            if session.is_none() && ours {
+                continue;
+            }
+            if !ours && !is_unnamed_harness_title(&chat.title, harness, &directory) {
+                continue;
+            }
+            // The directory recovered from an old title is the key the harness
+            // store is read with and the row the card draws, so it is recorded
+            // with the conversation rather than re-derived every refresh.
+            if !directory.is_empty()
+                && chat
+                    .working_dir
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .is_empty()
+            {
+                if let Err(e) = desktop
+                    .set_chat_working_dir(&chat.id, &crate::state::display_path(&directory))
+                {
+                    log::warn!("set_chat_working_dir for {} failed: {e}", chat.id);
+                }
+            }
+            let directory = crate::state::expand_path(&directory);
+            let title = match session {
+                Some(session) => {
+                    crate::terminal::session_title_for(harness.id, &directory, session)
+                }
+                // A store with no list to choose from still names its newest
+                // session; a store whose sessions all belong to other
+                // conversations names nothing here, so two cards never carry
+                // the same title.
+                None if crate::terminal::sessions_newest_first(harness.id, &directory)
+                    .is_empty() =>
+                {
+                    crate::terminal::session_title(harness.id, &directory)
+                }
+                None => None,
+            };
+            if session.is_some() && title.is_some() {
+                self.harness_session_titles.insert(chat.id.clone());
+            }
+            self.harness_title_attempts
+                .insert(chat.id.clone(), title.clone().unwrap_or_default());
+            let Some(title) = title else {
+                continue;
+            };
+            if self.retitle_unnamed_harness_conversation(
+                &chat.id,
+                harness,
+                Some(title.clone()),
+                desktop,
+            ) {
+                retitled.insert(chat.id.clone(), title);
+            }
+        }
+        retitled
+    }
+
+    /// Give every harness conversation of a directory the session its own
+    /// timestamp points at.
+    ///
+    /// Pairing starts from the closest timestamp and works outwards, so two
+    /// conversations in one directory take two sessions and a conversation with
+    /// no session of its own takes none — never a neighbour's. A session another
+    /// conversation already recorded is out of the running.
+    fn claim_harness_sessions(
+        &mut self,
+        desktop: &DesktopState,
+        chats: &[goble_desktop_service::Chat],
+    ) {
+        let taken: std::collections::HashSet<String> = chats
+            .iter()
+            .filter_map(|chat| chat.agent_id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect();
+        let mut groups: HashMap<(&'static str, String), Vec<&goble_desktop_service::Chat>> =
+            HashMap::new();
+        for chat in chats {
+            if chat
+                .agent_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+            {
+                continue;
+            }
+            let Some(harness) = chat
+                .provider
+                .as_deref()
+                .and_then(goble_core::harness::harness_by_id)
+                .filter(|spec| spec.tui)
+            else {
+                continue;
+            };
+            let directory = self.harness_directory(chat, harness, chats);
+            if directory.trim().is_empty() {
+                continue;
+            }
+            groups
+                .entry((harness.id, directory))
+                .or_default()
+                .push(chat);
+        }
+        for ((harness, directory), group) in groups {
+            let directory = crate::state::expand_path(&directory);
+            let sessions: Vec<(String, std::time::SystemTime)> =
+                crate::terminal::sessions_newest_first(harness, &directory)
+                    .into_iter()
+                    .filter(|(id, _)| !taken.contains(id))
+                    .collect();
+            if sessions.is_empty() {
+                continue;
+            }
+            for (conversation, session) in sessions_for_chats(&group, &sessions) {
+                if let Err(e) = desktop.set_chat_agent_id(&conversation, Some(&session)) {
+                    log::warn!("set_chat_agent_id for {conversation} failed: {e}");
+                }
+            }
+        }
+    }
+
     /// Rebuild the sidebar's conversation list from the service.
     ///
     /// A conversation the agent has answered in is also named here: the subject
@@ -570,6 +863,9 @@ impl UiState {
     /// only when the subject actually changes — a conversation the agent has
     /// already named, or one the user named, is left alone — so the
     /// `chats:updated` the write emits cannot feed this call back into itself.
+    /// A conversation that ran in a CLI harness has no transcript here, so it is
+    /// named from the title the harness recorded for its session
+    /// ([`Self::retitle_harness_conversations`]) instead.
     ///
     /// A conversation whose turn is still running keeps the preview and reply
     /// flag its card already carries. Every streamed delta rewrites its
@@ -590,12 +886,20 @@ impl UiState {
                 )
             })
             .collect();
+        // A harness conversation is named by the harness's own session store
+        // rather than by its messages (there are none in the store), so those
+        // titles are read before the list is built: the rows below carry the
+        // names this pass wrote.
+        let retitled = self.retitle_harness_conversations(desktop, &chats);
         self.conversations = chats
             .iter()
             .map(|c| {
                 let live = self.conversation_is_live(&c.id);
                 let previous = settled.get(&c.id);
-                let mut title = c.title.clone();
+                let mut title = retitled
+                    .get(&c.id)
+                    .cloned()
+                    .unwrap_or_else(|| c.title.clone());
                 let (last, has_agent_reply) = match previous {
                     Some((last, has_agent_reply)) if live => (last.clone(), *has_agent_reply),
                     _ => {
@@ -648,10 +952,31 @@ impl UiState {
                     // The directory the conversation works in, drawn on its
                     // card under the subject.
                     .with_directory(c.working_dir.clone().unwrap_or_default())
-                    .with_has_agent_reply(has_agent_reply)
-                    // What the card's status square reports, from the pane
-                    // that is running the conversation right now.
+                    // A CLI harness writes its turns into its own terminal, so
+                    // its conversation has no assistant row in the store — and
+                    // a card with no reply is not listed. The pane running the
+                    // harness is the proof the conversation is live, so it is
+                    // what keeps that card in the sidebar.
+                    .with_has_agent_reply(
+                        has_agent_reply
+                            || self.conversation_runs_a_harness(&c.id)
+                            // A conversation opened for a CLI harness records
+                            // that harness as its provider; it stays listed
+                            // after the CLI exits, because its thread lives in
+                            // the terminal's scrollback, not in the store.
+                            || c.provider.as_deref().is_some_and(|provider| {
+                                goble_core::harness::harness_by_id(provider).is_some()
+                            }),
+                    )
+                    // What the badge on the card's harness mark reports, from
+                    // the pane that is running the conversation right now.
                     .with_status(self.conversation_status(&c.id, has_agent_reply))
+                    // Which harness's mark the card leads with. The pane that
+                    // holds the conversation knows the CLI agent running in it;
+                    // a chat with no live pane falls back to its model provider
+                    // (the only harness identity the store records), and a chat
+                    // with neither runs the native harness.
+                    .with_harness(self.conversation_harness(&c.id, c.provider.as_deref()))
             })
             .collect();
         // Keep one shared card-state entry per conversation id so hover / the
@@ -659,6 +984,8 @@ impl UiState {
         let ids: std::collections::HashSet<String> =
             self.conversations.iter().map(|c| c.id.clone()).collect();
         self.agent_cards.retain(|id, _| ids.contains(id));
+        self.harness_title_attempts.retain(|id, _| ids.contains(id));
+        self.harness_session_titles.retain(|id| ids.contains(id));
         for c in &self.conversations {
             self.agent_cards
                 .entry(c.id.clone())
@@ -703,6 +1030,45 @@ impl UiState {
         }
         self.sync_active_view();
     }
+}
+
+/// Pair conversations with the sessions of their directory, by the distance
+/// between the conversation's `updated_at` and the session's own time.
+///
+/// Pairs are taken nearest first, and neither side is paired twice, so the
+/// conversation whose timestamp sits on a session gets it, and a conversation
+/// that sits on nothing is left without one.
+fn sessions_for_chats(
+    chats: &[&goble_desktop_service::Chat],
+    sessions: &[(String, std::time::SystemTime)],
+) -> Vec<(String, String)> {
+    let mut pairs: Vec<(std::time::Duration, &str, &str)> = Vec::new();
+    for chat in chats {
+        let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&chat.updated_at) else {
+            continue;
+        };
+        let updated = std::time::SystemTime::from(updated);
+        for (session, when) in sessions {
+            let distance = when
+                .duration_since(updated)
+                .or_else(|_| updated.duration_since(*when))
+                .unwrap_or_default();
+            pairs.push((distance, chat.id.as_str(), session.as_str()));
+        }
+    }
+    pairs.sort_by_key(|(distance, _, _)| *distance);
+    let mut paired_chats: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut paired_sessions: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut paired = Vec::new();
+    for (_, conversation, session) in pairs {
+        if paired_chats.contains(conversation) || paired_sessions.contains(session) {
+            continue;
+        }
+        paired_chats.insert(conversation);
+        paired_sessions.insert(session);
+        paired.push((conversation.to_string(), session.to_string()));
+    }
+    paired
 }
 
 #[cfg(test)]
@@ -842,6 +1208,115 @@ mod tests {
         assert_eq!(
             state.conversations[0].last_response, "the reply, half",
             "the settled refresh reads the finished transcript"
+        );
+    }
+
+    /// A harness conversation the user named is not looked up in the harness's
+    /// session store at all: the store is the filesystem, and a name the user
+    /// typed is not the harness's to replace.
+    #[test]
+    fn a_harness_conversation_named_by_the_user_is_not_looked_up() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("thread store"),
+        );
+        let chat = desktop
+            .create_chat("Planul de lansare", Some("grok"), None)
+            .expect("harness chat");
+        desktop
+            .set_chat_working_dir(&chat, "/Users/me/Projects/goble")
+            .expect("working dir");
+
+        let mut state = UiState::mock();
+        state.refresh_conversations(&desktop);
+
+        let card = state
+            .conversations
+            .iter()
+            .find(|entry| entry.id == chat)
+            .expect("the harness card");
+        assert_eq!(card.name, "Planul de lansare");
+        assert!(
+            state.harness_title_attempts.is_empty(),
+            "a named conversation is not read from the harness store"
+        );
+    }
+
+    /// A harness conversation is opened without a directory of its own, so the
+    /// pane that ran the harness names where its session store is read.
+    #[test]
+    fn a_harness_conversation_is_looked_up_where_its_pane_runs() {
+        let mut state = UiState::mock();
+        let harness = goble_core::harness::harness_by_id("grok").expect("grok harness");
+        {
+            let pane = state.pane_sessions.get_mut(&1).expect("pane 1");
+            pane.conversation_id = "harness-chat".to_string();
+            pane.path = "/Users/me/Projects/goble".to_string();
+        }
+        let chat = goble_desktop_service::Chat {
+            id: "harness-chat".to_string(),
+            title: "Grok".to_string(),
+            provider: Some("grok".to_string()),
+            model: None,
+            agent_id: None,
+            worker_id: None,
+            workspace_routing: None,
+            working_dir: None,
+            updated_at: String::new(),
+        };
+        assert_eq!(
+            state.harness_directory(&chat, harness, &[]),
+            "/Users/me/Projects/goble",
+            "the pane's directory names the harness conversation"
+        );
+
+        let stored = goble_desktop_service::Chat {
+            working_dir: Some("/Users/me/Projects/other".to_string()),
+            ..chat.clone()
+        };
+        assert_eq!(
+            state.harness_directory(&stored, harness, &[]),
+            "/Users/me/Projects/other",
+            "a conversation that recorded its own directory keeps it"
+        );
+
+        let unbound = goble_desktop_service::Chat {
+            id: "no-pane".to_string(),
+            ..chat.clone()
+        };
+        assert_eq!(
+            state.harness_directory(&unbound, harness, &[]),
+            "",
+            "a conversation no pane holds names no directory"
+        );
+
+        // A harness card that never recorded a directory takes the one its
+        // siblings use, so its session store is still reachable.
+        let sibling = goble_desktop_service::Chat {
+            id: "sibling".to_string(),
+            working_dir: Some("/Users/me/Projects/goble".to_string()),
+            ..chat.clone()
+        };
+        assert_eq!(
+            state.harness_directory(&unbound, harness, &[chat.clone(), sibling]),
+            "/Users/me/Projects/goble",
+            "a lone sibling directory names the unbound harness conversation"
+        );
+
+        let home = crate::state::home_directory().expect("a home directory");
+        let legacy = goble_desktop_service::Chat {
+            id: "legacy".to_string(),
+            title: format!(
+                "Grok · {}/Projects/goble",
+                crate::state::display_path(&home)
+            ),
+            ..chat.clone()
+        };
+        assert_eq!(
+            state.harness_directory(&legacy, harness, &[]),
+            format!("{}/Projects/goble", home.trim_end_matches('/')),
+            "the old title still names the directory its session store is read with"
         );
     }
 }

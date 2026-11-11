@@ -135,7 +135,10 @@ impl TerminalSession {
 
     /// One row by absolute index, oldest first.
     pub fn line_at(&self, index: usize) -> Option<ScreenLine> {
-        self.state.lock().ok().and_then(|state| state.line_at(index))
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.line_at(index))
     }
 
     /// The last occupied column count of a row.

@@ -71,6 +71,7 @@ impl RootView {
             hover_chips: HoverChipLayer::new(),
             size: None,
             origin: None,
+            redraw_requested: false,
         };
         view.rebuild(app);
         view

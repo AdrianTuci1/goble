@@ -102,10 +102,19 @@ fn agent_pane_over_a_child_view() -> Fixture {
         // command runs in is at a prompt, which is the block a `!cmd` claims.
         let mut emulator = Emulator::new(80, 24);
         emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-        s.terminal
-            .borrow_mut()
+        // The pane's agent shell, where `!cmd` lines and agent turns run. It is
+        // a session of its own, so the terminal's history stays clean.
+        let mut agent_emulator = Emulator::new(80, 24);
+        agent_emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+        // A prompt waiting for a command, which is what `!cmd` claims.
+        agent_emulator.feed(&encode_hook(&HookEvent::Precmd(Default::default())));
+        let mut registry = s.terminal.borrow_mut();
+        registry
             .sessions
             .insert(1, TerminalSession::with_emulator(emulator));
+        registry
+            .agent_sessions
+            .insert(1, TerminalSession::with_emulator(agent_emulator));
     }
 
     // The app's own callbacks, as the mounted root built them.
@@ -258,9 +267,10 @@ impl Fixture {
         );
 
         // 3. A `!cmd` typed into the pane's agent surface carries the pane's
-        // conversation: Cmd+Enter reopens that view, and the block the command
-        // runs in becomes the conversation's own — the shell's history leaves it
-        // out, which is the whole of what an owner does to a block.
+        // conversation: Cmd+Enter reopens that view, the command runs in the
+        // pane's agent shell, and its `Preexec` files the block under the
+        // conversation. The terminal's own history never sees it, which is what
+        // Escape back to the shell shows.
         let conversation = self
             .state
             .borrow()
@@ -276,22 +286,30 @@ impl Fixture {
         );
         let before = terminal_block_ids(&self.state, pane_id);
         (self.send.borrow_mut())("!ls".to_string());
-        let after = terminal_block_ids(&self.state, pane_id);
-        let claimed: Vec<BlockId> = before
-            .into_iter()
-            .filter(|id| !after.contains(id))
-            .collect();
+        // The line is written into the agent shell; its `Preexec` is what
+        // files the block under the conversation.
+        {
+            let state = self.state.borrow();
+            let mut registry = state.terminal.borrow_mut();
+            let agent = registry
+                .agent_sessions
+                .get_mut(&pane_id)
+                .expect("the pane's agent shell");
+            agent.feed_hook(HookEvent::Preexec(goble_terminal::hooks::PreexecValue {
+                command: Some("ls".to_string()),
+            }));
+        }
         assert_eq!(
-            claimed.len(),
-            1,
-            "exactly one shell block became the conversation's"
+            terminal_block_ids(&self.state, pane_id),
+            before,
+            "the shell's history holds none of the conversation's `!cmd`"
         );
         assert!(
             self.state
                 .borrow()
                 .pane_agent_view(pane_id, &conversation)
                 .iter()
-                .any(|block| block.id == claimed[0]),
+                .any(|block| block.command == "ls"),
             "the `!cmd` runs in the conversation's own block"
         );
     }

@@ -8,10 +8,12 @@
 //! every phase's own status (from the script's `phase` calls), the failure
 //! reason, the value a script passed to `complete()`, and its log lines. A
 //! workflow that has never run falls back to its definition plus the execution
-//! ledger, and says so. What grok-build reports and goble has no source for —
-//! the agent budget and the pause / resume / stop / save affordances — is left
-//! out rather than invented. The full tasks / executions dump is still its own
-//! page, so nothing is dropped for being out of place here.
+//! ledger, and says so. Run starts the selected workflow through the same
+//! action as the crons drawer's trigger, which matters for a manual workflow:
+//! nothing else starts one. What grok-build reports and goble has no source for
+//! — the agent budget and the pause / resume / stop / save affordances — is
+//! left out rather than invented. The full tasks / executions dump is still its
+//! own page, so nothing is dropped for being out of place here.
 //!
 //! It is an overlay rather than a page: the workspace (the pane tree and its
 //! transcript) stays mounted underneath, the backdrop closes it, and nothing
@@ -19,26 +21,27 @@
 //! drawn once.
 
 use goble_ui::elements::{
-    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, MainAxisAlignment, MainAxisSize, Scrollable,
-    Spacer, Text, TopbarButton,
+    AppContext, Axis, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
+    Divider, EdgeInsets, Element, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler,
+    MainAxisAlignment, MainAxisSize, ProgressBar, Scrollable, Spacer, Text, TopbarButton,
+    SPINNER_FRAMES,
 };
+use goble_ui::elements::chat_content::format_elapsed;
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::harness::{
-    build_execution_row, build_workflow_run_row, workflow_run_agent_count, workflow_run_step_count,
+    build_execution_row, workflow_run_agent_count, workflow_run_step_count,
 };
 use super::{
-    ExecutionEntry, UiActions, UiSnapshot, WorkflowEntry, WorkflowRunEntry, WorkflowStepEntry,
+    ExecutionEntry, UiActions, UiSnapshot, WorkflowEntry, WorkflowRunEntry,
 };
 
 /// How far the panel stands off every edge of the window. The overlay is a card
 /// floating over the workspace, never a strip of the layout.
 pub const OVERLAY_MARGIN: f32 = 32.0;
 
-/// The width of the run list beside the detail, and of the phase rail inside it.
+/// The width of the run list beside the detail.
 const RUN_LIST_WIDTH: f32 = 300.0;
-const PHASE_RAIL_WIDTH: f32 = 200.0;
 
 /// A section heading: a name and its count, in the pages' muted caption style.
 fn section(app: &AppContext, title: &str, count: usize) -> Box<dyn Element> {
@@ -74,9 +77,219 @@ fn close_control(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
     .finish()
 }
 
+/// One row of the run list: a recorded run beside the definition it belongs
+/// to, or a definition that has never run.
+#[derive(Clone, Copy)]
+struct RunEntry<'a> {
+    definition: &'a WorkflowEntry,
+    run: Option<&'a WorkflowRunEntry>,
+}
+
+impl<'a> RunEntry<'a> {
+    /// What the row stands for across frames. A run's own id names the row; a
+    /// definition that has never run is named by the workflow, so the two
+    /// kinds of row cannot collide.
+    fn key(&self) -> String {
+        match self.run {
+            Some(run) => format!("run:{}", run.id),
+            None => format!("workflow:{}", self.definition.id),
+        }
+    }
+}
+
+/// The rows the overlay lists: running runs first, then the other recorded runs
+/// (the ledger is newest first), then the definitions that have never run.
+fn run_entries(state: &UiSnapshot) -> Vec<RunEntry<'_>> {
+    let mut entries: Vec<RunEntry<'_>> = state
+        .workflow_runs
+        .iter()
+        .filter_map(|run| {
+            state
+                .workflows
+                .iter()
+                .find(|definition| definition.id == run.workflow_id)
+                .map(|definition| RunEntry {
+                    definition,
+                    run: Some(run),
+                })
+        })
+        .collect();
+    for definition in &state.workflows {
+        if !state
+            .workflow_runs
+            .iter()
+            .any(|run| run.workflow_id == definition.id)
+        {
+            entries.push(RunEntry {
+                definition,
+                run: None,
+            });
+        }
+    }
+    entries.sort_by_key(|entry| entry.run.map_or(true, |run| run.status != "running"));
+    entries
+}
+
+/// The row the selection names, falling back to the first row when the named
+/// run has settled out of the ledger.
+fn selected_index(entries: &[RunEntry<'_>], selected: Option<&str>) -> usize {
+    selected
+        .and_then(|key| entries.iter().position(|entry| entry.key() == key))
+        .unwrap_or(0)
+        .min(entries.len().saturating_sub(1))
+}
+
+/// The colour a run or phase status reads in.
+fn status_token(status: &str) -> ColorToken {
+    match status {
+        "running" => ColorToken::Warning,
+        "success" | "succeeded" | "completed" | "done" => ColorToken::Success,
+        "failure" | "failed" | "error" => ColorToken::Error,
+        "suspended" | "pending" | "scheduled" | "queued" => ColorToken::Warning,
+        _ => ColorToken::Muted,
+    }
+}
+
+/// The short word a status reads as, in the panel's own voice.
+fn status_word(status: &str) -> &str {
+    match status {
+        "" => "never run",
+        "failure" | "error" => "failed",
+        other => other,
+    }
+}
+
+/// The glyph a status leads with: the spinner while a run is live, a filled
+/// circle once it settles, an open one while it waits. The mark carries the
+/// state's colour; the word beside it names the state, so colour is never the
+/// only signal.
+fn status_glyph(status: &str, phase: f32) -> &'static str {
+    match status {
+        "running" | "active" => {
+            let count = SPINNER_FRAMES.len();
+            let index = (phase * count as f32) as usize;
+            SPINNER_FRAMES[index.min(count - 1)]
+        }
+        "success" | "succeeded" | "completed" | "done" | "complete" => "●",
+        "failure" | "failed" | "error" => "●",
+        "cancelled" | "skipped" | "cleared" => "○",
+        _ => "○",
+    }
+}
+
+fn status_mark(app: &AppContext, status: &str, phase: f32) -> Box<dyn Element> {
+    Text::new(status_glyph(status, phase))
+        .with_font_size(10.0)
+        .with_font_family(goble_ui::theme::FontFamily::Mono)
+        .with_theme_color(status_token(status), app)
+        .finish()
+}
+
+/// A status word on a wash of its own colour: the detail header's badge. The
+/// colour is the state's, carried by the text and by a light tint behind it so
+/// the badge reads as one object against the surface.
+fn status_pill(app: &AppContext, status: &str) -> Box<dyn Element> {
+    let token = status_token(status);
+    let color = app.theme.color(token);
+    Container::new(
+        Text::new(status_word(status))
+            .with_font_size(11.0)
+            .with_theme_color(token, app)
+            .finish(),
+    )
+    .with_background(Fill::Solid(goble_ui::color::ColorU::new(
+        color.r, color.g, color.b, 30,
+    )))
+    .with_corner_radius(4.0)
+    .with_padding(EdgeInsets::new(6.0, 2.0, 6.0, 2.0))
+    .finish()
+}
+
+/// The list row: the run's name and time on the first line, its status and how
+/// far it has got on the second.
+fn build_run_row(
+    app: &AppContext,
+    entry: RunEntry<'_>,
+    selected: bool,
+    phase: f32,
+    on_click: impl FnMut() + 'static,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let status = entry.run.map(|run| run.status.as_str()).unwrap_or("");
+    let token = status_token(status);
+    let when = entry
+        .run
+        .map(|run| run.started_at.clone())
+        .unwrap_or_else(|| entry.definition.created_at.clone());
+    let summary = match entry.run {
+        Some(run) => format!(
+            "{}/{} phases{}",
+            completed_phases(run),
+            run.steps.len().max(entry.definition.steps.len()),
+            run.elapsed
+                .map(|elapsed| format!(" · {}", format_elapsed(elapsed)))
+                .unwrap_or_default()
+        ),
+        None => run_counts(entry.definition),
+    };
+    let name_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(status_mark(app, status, phase))
+        .with_child(
+            Text::new(entry.definition.name.clone())
+                .with_font_size(13.0)
+                .with_theme_color(ColorToken::Text, app)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish())
+        .with_child(muted(app, &when, 11.0))
+        .finish();
+    let detail_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0)
+        .with_child(
+            Text::new(status_word(status))
+                .with_font_size(11.0)
+                .with_theme_color(token, app)
+                .finish(),
+        )
+        .with_child(muted(app, &format!("· {summary}"), 11.0))
+        .finish();
+    HoverRow::new(
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(3.0)
+            .with_child(name_row)
+            .with_child(detail_row)
+            .finish(),
+    )
+    .with_selected(selected)
+    .with_padding(EdgeInsets::new(sm, 8.0, sm, 8.0))
+    .with_on_click(on_click)
+    .finish()
+}
+
+/// How many of a run's phases have settled: succeeded, failed, skipped or
+/// cancelled. A running phase is not counted until it settles.
+fn completed_phases(run: &WorkflowRunEntry) -> usize {
+    run.steps
+        .iter()
+        .filter(|step| {
+            matches!(
+                step.status.as_str(),
+                "succeeded" | "success" | "failed" | "failure" | "skipped" | "cancelled"
+            )
+        })
+        .count()
+        .min(run.steps.len())
+}
+
 /// What a run declares, beside its name in either column: its phases and the
-/// agents that run them. Both are counts of the record — goble keeps no run
-/// progress to report against them.
+/// agents that run them. Both are counts of the record.
 fn run_counts(wf: &WorkflowEntry) -> String {
     format!(
         "{} · {}",
@@ -85,101 +298,212 @@ fn run_counts(wf: &WorkflowEntry) -> String {
     )
 }
 
-/// The run list: one row per registered workflow, each selecting the run whose
-/// detail the panel shows beside it.
-fn build_run_list(app: &AppContext, state: &UiSnapshot, selected: usize) -> Box<dyn Element> {
-    let mut column = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0);
-    if state.workflows.is_empty() {
-        return column
-            .with_child(muted(app, "No workflow runs in this session yet.", 11.0))
-            .finish();
-    }
-    for (index, wf) in state.workflows.iter().enumerate() {
-        let selected_cell = state.task_workflow_selected.clone();
-        let phase_cell = state.task_workflow_phase.clone();
-        column = column.with_child(build_workflow_run_row(app, wf, index == selected, move || {
-            *selected_cell.borrow_mut() = index;
-            // The phases belong to the run that was selected, so the phase
-            // selection starts over with it.
-            *phase_cell.borrow_mut() = 0;
-        }));
-    }
-    column.finish()
+/// One phase as the detail draws it: the definition's step, with the recorded
+/// run's own state when there is one.
+struct PhaseView {
+    name: String,
+    agent: String,
+    status: String,
+    detail: Option<String>,
 }
 
-/// The detail column: the selected run's objective and status, then its phases
-/// beside the roster of the phase it has selected.
+/// The workflow's phases in order. A recorded run owns the status of each
+/// phase; a phase with no recorded step keeps the definition's name and agent.
+fn phase_views(definition: &WorkflowEntry, run: Option<&WorkflowRunEntry>) -> Vec<PhaseView> {
+    let mut phases: Vec<PhaseView> = definition
+        .steps
+        .iter()
+        .map(|step| PhaseView {
+            name: step.name.clone(),
+            agent: step.agent_id.clone(),
+            status: String::new(),
+            detail: None,
+        })
+        .collect();
+    if let Some(run) = run {
+        for (index, step) in run.steps.iter().enumerate() {
+            if let Some(phase) = phases.get_mut(index) {
+                phase.name = step.name.clone();
+                phase.status = step.status.clone();
+                phase.detail = step.detail.clone();
+            } else {
+                phases.push(PhaseView {
+                    name: step.name.clone(),
+                    agent: String::new(),
+                    status: step.status.clone(),
+                    detail: step.detail.clone(),
+                });
+            }
+        }
+    }
+    phases
+}
+
+/// What a phase row states on the right, and the colour it reads in.
+fn phase_state(
+    state: &UiSnapshot,
+    phase: &PhaseView,
+) -> (String, ColorToken) {
+    if !phase.status.is_empty() {
+        let label = match &phase.detail {
+            Some(detail) if !detail.trim().is_empty() => {
+                format!("{} · {}", status_word(&phase.status), short_detail(detail))
+            }
+            _ => status_word(&phase.status).to_string(),
+        };
+        return (label, status_token(&phase.status));
+    }
+    if phase.agent.trim().is_empty() {
+        return ("no agent named".to_string(), ColorToken::Muted);
+    }
+    let executions = executions_for_agent(state, &phase.agent);
+    if executions.iter().any(|execution| execution.status == "running") {
+        return ("running".to_string(), ColorToken::Warning);
+    }
+    match executions.first() {
+        Some(execution) => (
+            status_word(&execution.status).to_string(),
+            status_token(&execution.status),
+        ),
+        None => ("pending".to_string(), ColorToken::Muted),
+    }
+}
+
+/// The first line of a phase's detail, capped: the rail gives it one line, and
+/// the phase's name needs the rest of the row.
+fn short_detail(detail: &str) -> String {
+    let line = detail.lines().next().unwrap_or_default().trim();
+    let mut short: String = line.chars().take(32).collect();
+    if line.chars().count() > 32 {
+        short.push('…');
+    }
+    short
+}
+
+/// The detail column: the selected run's name, objective and progress, its
+/// phases beside the agents of the selected phase, then the run's result and
+/// log. The two body columns share the width, so a run with a few phases does
+/// not leave the right half of the panel empty.
 fn build_run_detail(
     app: &AppContext,
     state: &UiSnapshot,
-    wf: &WorkflowEntry,
+    entry: RunEntry<'_>,
     phase: usize,
+    actions: &UiActions,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let wf = entry.definition;
+    let phases = phase_views(wf, entry.run);
+    let selected_phase = if phases.is_empty() {
+        0
+    } else {
+        phase.min(phases.len() - 1)
+    };
+    let status = entry.run.map(|run| run.status.as_str()).unwrap_or("");
 
+    let on_run = actions.on_cron_trigger.clone();
+    let run_id = wf.id.clone();
+    let run_button = Button::new(
+        Text::new("Run")
+            .with_font_size(12.0)
+            .with_theme_color(ColorToken::Accent, app)
+            .finish(),
+    )
+    .with_variant(ButtonVariant::Outline)
+    .with_border_color(app.theme.color(ColorToken::Accent))
+    .with_corner_radius(6.0)
+    .with_on_click(move || (on_run.borrow_mut())(run_id.clone()))
+    .finish();
+
+    let elapsed = entry
+        .run
+        .and_then(|run| run.elapsed)
+        .map(|elapsed| format!(" · {}", format_elapsed(elapsed)))
+        .unwrap_or_default();
     let header = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(sm)
+        .with_child(status_mark(app, status, state.work_dock_phase))
         .with_child(
             Text::new(wf.name.clone())
-                .with_font_size(13.0)
-                .with_theme_color(ColorToken::Accent, app)
+                .with_font_size(16.0)
+                .with_theme_color(ColorToken::Text, app)
+                .with_max_lines(1)
                 .finish(),
         )
+        .with_child(status_pill(app, status))
         .with_child(Spacer::new().finish())
-        .with_child(muted(app, &run_counts(wf), 11.0))
+        .with_child(muted(
+            app,
+            &format!("{}{elapsed}", run_counts(wf)),
+            11.0,
+        ))
+        .with_child(run_button)
         .finish();
 
-    // The newest recorded run is the run's status. A workflow that never ran
-    // reports its definition instead, which is what the panel always did.
-    let run = state.latest_run(&wf.id);
-    let status = match run {
-        Some(run) => format!(
-            "{} · started {}{}",
-            run.status,
-            run.started_at,
-            run.finished_at
-                .as_ref()
-                .map(|finished| format!(" · finished {finished}"))
-                .unwrap_or_default()
-        ),
-        None => format!(
-            "never run · {} · {} · created {}",
-            wf.trigger,
-            if wf.enabled { "enabled" } else { "disabled" },
-            wf.created_at
-        ),
-    };
-
-    let selected_phase = phase.min(wf.steps.len().saturating_sub(1));
-    let body = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(sm)
-        .with_child(
-            ConstrainedBox::new(build_phase_rail(app, state, wf, selected_phase, run))
-                .with_width(PHASE_RAIL_WIDTH)
-                .with_min_width(PHASE_RAIL_WIDTH)
-                .finish(),
-        )
-        .with_child(Divider::vertical().finish())
-        .with_child(Expanded::new(build_roster(app, state, wf.steps.get(selected_phase))).finish());
-
     let mut column = Flex::column()
-        .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(spacing)
         .with_child(header)
         .with_child(
             Text::new(wf.description.clone())
-                .with_font_size(12.0)
+                .with_font_size(13.0)
                 .with_theme_color(ColorToken::Text, app)
                 .finish(),
-        )
-        .with_child(muted(app, &status, 11.0));
+        );
+    if let Some(run) = entry.run {
+        if !phases.is_empty() {
+            let colors = phases
+                .iter()
+                .map(|phase| {
+                    let token = if phase.status.is_empty() {
+                        ColorToken::Border
+                    } else {
+                        status_token(&phase.status)
+                    };
+                    app.theme.color(token)
+                })
+                .collect();
+            column = column.with_child(
+                ProgressBar::new(colors)
+                    .with_height(4.0)
+                    .finish(),
+            );
+        }
+        column = column.with_child(muted(
+            app,
+            &format!(
+                "started {}{}",
+                run.started_at,
+                run.finished_at
+                    .as_ref()
+                    .map(|finished| format!(" · finished {finished}"))
+                    .unwrap_or_default()
+            ),
+            11.0,
+        ));
+        if let Some(error) = run.error.as_deref().filter(|error| !error.trim().is_empty()) {
+            column = column.with_child(
+                Text::new(error.to_string())
+                    .with_font_size(12.0)
+                    .with_theme_color(ColorToken::Error, app)
+                    .finish(),
+            );
+        }
+    } else {
+        column = column.with_child(muted(
+            app,
+            &format!(
+                "never run · {} · {} · created {}",
+                wf.trigger,
+                if wf.enabled { "enabled" } else { "disabled" },
+                wf.created_at
+            ),
+            11.0,
+        ));
+    }
     if !wf.enabled {
         column = column.with_child(muted(
             app,
@@ -187,18 +511,133 @@ fn build_run_detail(
             11.0,
         ));
     }
-    if let Some(run) = run {
-        if let Some(error) = &run.error {
-            column = column.with_child(muted(app, &format!("failed: {error}"), 11.0));
-        }
+    if wf.trigger == "manual" {
+        column = column.with_child(muted(
+            app,
+            "Manual workflow: a schedule never starts it; press Run.",
+            11.0,
+        ));
+    }
+    column = column.with_child(Divider::horizontal().finish());
+
+    let body = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(spacing)
+        .with_child(
+            Expanded::new(build_phases(app, state, &phases, selected_phase))
+                .with_flex(3.0)
+                .finish(),
+        )
+        .with_child(
+            Expanded::new(build_roster(app, state, phases.get(selected_phase)))
+                .with_flex(2.0)
+                .finish(),
+        )
+        .finish();
+    column = column.with_child(body);
+
+    if let Some(run) = entry.run {
         if let Some(output) = &run.output {
-            column = column.with_child(muted(app, &format!("result: {}", compact_output(output)), 11.0));
+            column = column.with_child(Divider::horizontal().finish());
+            column = column.with_child(section(app, "Result", 1));
+            column = column.with_child(
+                Text::new(compact_output(output))
+                    .with_font_size(11.0)
+                    .with_font_family(goble_ui::theme::FontFamily::Mono)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            );
         }
-        for line in run.log.iter().take(6) {
-            column = column.with_child(muted(app, line, 11.0));
+        if !run.log.is_empty() {
+            column = column.with_child(Divider::horizontal().finish());
+            column = column.with_child(section(app, "Log", run.log.len()));
+            for line in run.log.iter().take(8) {
+                column = column.with_child(muted(app, line, 11.0));
+            }
+            if run.log.len() > 8 {
+                column = column.with_child(muted(
+                    app,
+                    &format!("{} more lines", run.log.len() - 8),
+                    11.0,
+                ));
+            }
         }
     }
-    column.with_child(Expanded::new(body.finish()).finish()).finish()
+    column.finish()
+}
+
+/// The phases column: the run's steps in order, numbered, with the selected
+/// one marked and each one's own state on the right. A phase the run has not
+/// reached reads as pending, and a workflow with no steps says so.
+fn build_phases(
+    app: &AppContext,
+    state: &UiSnapshot,
+    phases: &[PhaseView],
+    selected: usize,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let mut column = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(2.0)
+        .with_child(section(app, "Phases", phases.len()));
+    if phases.is_empty() {
+        return column
+            .with_child(muted(app, "No steps recorded for this workflow.", 11.0))
+            .finish();
+    }
+    for (index, phase) in phases.iter().enumerate() {
+        let (label, label_token) = phase_state(state, phase);
+        let is_selected = index == selected;
+        let marker = if is_selected { "❯" } else { " " };
+        let number_token = if phase.status.is_empty() && label == "pending" {
+            ColorToken::Muted
+        } else {
+            label_token
+        };
+        let phase_cell = state.task_workflow_phase.clone();
+        let row = HoverRow::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(sm)
+                .with_child(
+                    Text::new(format!("{marker} {}", index + 1))
+                        .with_font_size(11.0)
+                        .with_font_family(goble_ui::theme::FontFamily::Mono)
+                        .with_theme_color(number_token, app)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new(phase.name.clone())
+                        .with_font_size(13.0)
+                        .with_theme_color(
+                            if is_selected {
+                                ColorToken::Text
+                            } else {
+                                ColorToken::Muted
+                            },
+                            app,
+                        )
+                        .with_max_lines(1)
+                        .finish(),
+                )
+                .with_child(Spacer::new().finish())
+                .with_child(
+                    Text::new(label)
+                        .with_font_size(11.0)
+                        .with_theme_color(label_token, app)
+                        .finish(),
+                )
+                .finish(),
+        )
+        .with_selected(is_selected)
+        .with_padding(EdgeInsets::new(0.0, 4.0, 0.0, 4.0))
+        .with_on_click(move || *phase_cell.borrow_mut() = index)
+        .finish();
+        column = column.with_child(row);
+    }
+    column.finish()
 }
 
 /// One JSON value on one line, capped so a large `complete()` value cannot
@@ -212,99 +651,27 @@ fn compact_output(value: &serde_json::Value) -> String {
     out
 }
 
-/// The phases of `wf`, in the record's own order. `❯` marks the phase the roster
-/// is showing; a phase whose agent has a running execution is marked `●` and
-/// labelled `running`, the way grok-build marks the phase a run is in.
-fn build_phase_rail(
-    app: &AppContext,
-    state: &UiSnapshot,
-    wf: &WorkflowEntry,
-    selected: usize,
-    run: Option<&WorkflowRunEntry>,
-) -> Box<dyn Element> {
-    let sm = app.theme.spacing_px(SpacingToken::Sm);
-    let steps = &wf.steps;
-
-    let mut column = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0)
-        .with_child(section(app, "Phases", steps.len()));
-    if steps.is_empty() {
-        return column
-            .with_child(muted(app, "No steps recorded for this workflow.", 11.0))
-            .finish();
-    }
-
-    for (index, step) in steps.iter().enumerate() {
-        let executions = executions_for_agent(state, &step.agent_id);
-        let running = executions.iter().any(|ex| ex.status == "running");
-        // A recorded run owns the phase status. Without one, fall back to the
-        // phase's own agent's ledger: running, its last status, or nothing.
-        let phase_state = match run.and_then(|run| run.steps.get(index)) {
-            Some(step) => match &step.detail {
-                Some(detail) => format!("failed · {detail}"),
-                None => step.status.clone(),
-            },
-            None if step.agent_id.trim().is_empty() => "no agent named".to_string(),
-            None if running => "● running".to_string(),
-            None if executions.is_empty() => "no execution yet".to_string(),
-            None => executions[0].status.clone(),
-        };
-        let marker = if index == selected { "❯" } else { " " };
-        let phase_cell = state.task_workflow_phase.clone();
-        let row = HoverRow::new(
-            Flex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(sm)
-                .with_child(
-                    Text::new(format!("{marker} {}", step.name))
-                        .with_font_size(11.0)
-                        .with_theme_color(
-                            if index == selected {
-                                ColorToken::Text
-                            } else {
-                                ColorToken::Muted
-                            },
-                            app,
-                        )
-                        .with_max_lines(1)
-                        .finish(),
-                )
-                .with_child(Spacer::new().finish())
-                .with_child(muted(app, &phase_state, 11.0))
-                .finish(),
-        )
-        .with_selected(index == selected)
-        .with_padding(EdgeInsets::uniform(sm))
-        .with_on_click(move || *phase_cell.borrow_mut() = index)
-        .finish();
-        column = column.with_child(row);
-    }
-    column.finish()
-}
-
-/// The roster of the selected phase: the executions the daemon's ledger holds
-/// for that phase's agent. A phase with no agent, or an agent with no execution,
-/// says so rather than drawing an empty column.
+/// The roster of the selected phase: the agent the definition names and the
+/// executions the daemon's ledger holds for it. A phase with no agent, or an
+/// agent with no execution, says so rather than drawing an empty column.
 fn build_roster(
     app: &AppContext,
     state: &UiSnapshot,
-    step: Option<&WorkflowStepEntry>,
+    phase: Option<&PhaseView>,
 ) -> Box<dyn Element> {
-    let Some(step) = step else {
+    let Some(phase) = phase else {
         return Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(section(app, "Agents", 0))
-            .with_child(muted(app, "No phase selected.", 11.0))
+            .with_child(muted(app, "No phase to show.", 11.0))
             .finish();
     };
 
-    let executions = executions_for_agent(state, &step.agent_id);
-    let agent = if step.agent_id.trim().is_empty() {
+    let executions = executions_for_agent(state, &phase.agent);
+    let agent = if phase.agent.trim().is_empty() {
         "—".to_string()
     } else {
-        step.agent_id.clone()
+        phase.agent.clone()
     };
     let mut column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -335,7 +702,7 @@ fn executions_for_agent<'a>(state: &'a UiSnapshot, agent_id: &str) -> Vec<&'a Ex
         .collect()
 }
 
-/// The panel: header (title, count, close), then the run list beside the
+/// The panel: header (title, counts, close), then the run list beside the
 /// selected run's detail.
 pub fn build_task_workflow_overlay(
     app: &AppContext,
@@ -344,27 +711,79 @@ pub fn build_task_workflow_overlay(
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Md);
     let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let entries = run_entries(state);
 
+    let counts = match (state.workflow_runs.len(), state.workflows.len()) {
+        (0, 0) => "No workflows registered".to_string(),
+        (runs, workflows) => format!(
+            "{runs} run{} · {workflows} workflow{}",
+            if runs == 1 { "" } else { "s" },
+            if workflows == 1 { "" } else { "s" }
+        ),
+    };
     let header = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(sm)
         .with_child(
             Text::new("Workflow Runs")
-                .with_font_size(12.0)
+                .with_font_size(15.0)
                 .with_theme_color(ColorToken::Text, app)
                 .finish(),
         )
-        .with_child(muted(app, &format!("{} registered", state.workflows.len()), 11.0))
+        .with_child(muted(app, &counts, 11.0))
         .with_child(Spacer::new().finish())
         .with_child(close_control(app, actions))
         .finish();
 
-    let selected_run =
-        (*state.task_workflow_selected.borrow()).min(state.workflows.len().saturating_sub(1));
+    let selected_key = state.task_workflow_selected.borrow().clone();
+    let selected_run = selected_index(&entries, selected_key.as_deref());
     let selected_phase = *state.task_workflow_phase.borrow();
 
-    let detail: Box<dyn Element> = match state.workflows.get(selected_run) {
-        Some(wf) => build_run_detail(app, state, wf, selected_phase),
+    let list: Box<dyn Element> = if entries.is_empty() {
+        Container::new(muted(
+            app,
+            "No workflow runs in this session yet.",
+            11.0,
+        ))
+        .with_padding(EdgeInsets::uniform(sm))
+        .finish()
+    } else {
+        let mut rows = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(2.0);
+        for (index, entry) in entries.iter().enumerate() {
+            let selected_cell = state.task_workflow_selected.clone();
+            let phase_cell = state.task_workflow_phase.clone();
+            let key = entry.key();
+            rows = rows.with_child(build_run_row(
+                app,
+                *entry,
+                index == selected_run,
+                state.work_dock_phase,
+                move || {
+                    *selected_cell.borrow_mut() = Some(key.clone());
+                    // The phases belong to the run that was selected, so the
+                    // phase selection starts over with it.
+                    *phase_cell.borrow_mut() = 0;
+                },
+            ));
+        }
+        // The list column fills the body so its scroll region takes the height
+        // the heading leaves, instead of asking for the heading on top of it.
+        let column = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(app.theme.spacing_px(SpacingToken::Sm))
+            .with_child(section(app, "Runs", entries.len()))
+            .with_child(
+                Expanded::new(Scrollable::new(rows.finish(), Axis::Vertical).finish()).finish(),
+            );
+        column.finish()
+    };
+
+    let detail: Box<dyn Element> = match entries.get(selected_run) {
+        Some(entry) => build_run_detail(app, state, *entry, selected_phase, actions),
         None => Flex::column()
             .with_child(muted(
                 app,
@@ -380,12 +799,9 @@ pub fn build_task_workflow_overlay(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(
             ConstrainedBox::new(
-                Container::new(
-                    Scrollable::new(build_run_list(app, state, selected_run), Axis::Vertical)
-                        .finish(),
-                )
-                .with_padding(EdgeInsets::uniform(sm))
-                .finish(),
+                Container::new(list)
+                    .with_padding(EdgeInsets::uniform(sm))
+                    .finish(),
             )
             .with_width(RUN_LIST_WIDTH)
             .with_min_width(RUN_LIST_WIDTH)
@@ -395,7 +811,7 @@ pub fn build_task_workflow_overlay(
         .with_child(
             Expanded::new(
                 Container::new(Scrollable::new(detail, Axis::Vertical).finish())
-                    .with_padding(EdgeInsets::uniform(sm))
+                    .with_padding(EdgeInsets::uniform(spacing))
                     .finish(),
             )
             .finish(),
@@ -416,6 +832,7 @@ pub fn build_task_workflow_overlay(
     KeyHandler::new(
         Container::new(column.finish())
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .with_corner_radius(10.0)
             .with_padding(EdgeInsets::uniform(spacing))
             .finish(),
         move |key: &str, modifiers| {
@@ -457,17 +874,26 @@ mod tests {
     /// names an agent, and the execution the ledger holds for that agent. The
     /// ledger's own refresh path is covered by the observability tests; what is
     /// under test here is that the overlay draws the records it is given.
-    fn app_with_records() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
+    fn app_with_records() -> (
+        Box<dyn Element>,
+        Rc<RefCell<UiState>>,
+        Arc<DesktopState>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
-        let desktop = Arc::new(DesktopState::new(
+        let desktop = DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
             ThreadStore::new(dir.path()).expect("thread store"),
-        ));
+        );
+        // A body with no agent() calls: pressing Run settles it without an LLM.
         desktop
-            .create_workflow(
+            .create_workflow_with_script(
                 "Nightly digest",
                 "summarise the day",
-                vec![],
+                r#"let meta = #{ name: "Nightly digest", description: "summarise the day", phases: [#{ title: "Digest" }] };
+phase("Digest");
+complete(#{ summary: "done" });
+"#,
                 Trigger::Cron {
                     expression: "0 12 * * *".to_string(),
                 },
@@ -506,7 +932,7 @@ mod tests {
                 step_count: 4,
             }];
         }
-        (Box::new(root), state, dir)
+        (Box::new(root), state, desktop, dir)
     }
 
     /// One frame through the whole app, returning what it painted. The rebuild
@@ -595,7 +1021,7 @@ mod tests {
     #[test]
     fn the_overlay_is_an_inset_panel_and_every_route_closes_it() {
         let app = AppContext::default();
-        let (mut root, state, _dir) = app_with_records();
+        let (mut root, state, _desktop, _dir) = app_with_records();
 
         // Closed, none of it is drawn.
         let commands = frame(&mut root, &app);
@@ -612,15 +1038,17 @@ mod tests {
         let commands = frame(&mut root, &app);
         for run in [
             "Workflow Runs",
-            "1 registered",
+            "0 runs · 1 workflow",
             "Nightly digest",
             "summarise the day",
             "never run · cron 0 12 * * * · enabled · created 3 min ago",
             "1 phase · 1 agent",
             "Phases",
-            "❯ Digest",
-            "● running",
+            "❯ 1",
+            "Digest",
+            "running",
             "Agents",
+            "agent agent-1",
             "exec-3",
         ] {
             assert!(drawn(&commands, run), "the overlay draws {run:?}");
@@ -714,7 +1142,7 @@ mod tests {
     #[test]
     fn the_detail_draws_the_latest_recorded_run() {
         let app = AppContext::default();
-        let (mut root, state, _dir) = app_with_records();
+        let (mut root, state, _desktop, _dir) = app_with_records();
         {
             let mut s = state.borrow_mut();
             s.workflow_runs = vec![WorkflowRunEntry {
@@ -728,6 +1156,7 @@ mod tests {
                     detail: None,
                 }],
                 started_at: "2 min ago".to_string(),
+                elapsed: Some(std::time::Duration::from_secs(120)),
                 finished_at: Some("just now".to_string()),
                 output: Some(serde_json::json!({ "summary": "done" })),
                 log: vec!["phase Run".to_string()],
@@ -736,8 +1165,8 @@ mod tests {
         }
         let commands = frame(&mut root, &app);
         for text in [
-            "succeeded · started 2 min ago · finished just now",
-            "result: {\"summary\":\"done\"}",
+            "started 2 min ago · finished just now",
+            "{\"summary\":\"done\"}",
             "phase Run",
             "succeeded",
         ] {
@@ -747,6 +1176,62 @@ mod tests {
             &commands,
             "never run · cron 0 12 * * * · enabled · created 3 min ago"
         ));
+
+        // A failed run states the reason the ledger recorded for it.
+        state.borrow_mut().workflow_runs[0].status = "failed".to_string();
+        state.borrow_mut().workflow_runs[0].error =
+            Some("phase Digest: model unavailable".to_string());
+        let commands = frame(&mut root, &app);
+        assert!(
+            drawn(&commands, "phase Digest: model unavailable"),
+            "the detail draws the run's failure reason"
+        );
+    }
+
+    /// A workflow with no clock — a manual one, or any workflow the user wants
+    /// started now — starts from the panel's Run control, and the run lands in
+    /// the ledger with that workflow's id.
+    #[test]
+    fn the_run_control_starts_the_selected_workflow() {
+        let app = AppContext::default();
+        let (mut root, state, desktop, _dir) = app_with_records();
+        let stored = desktop.list_workflows().remove(0);
+        {
+            let mut s = state.borrow_mut();
+            s.workflows[0].id = stored.id.clone();
+            s.workflows[0].trigger = "manual".to_string();
+            s.task_workflow_open = true;
+        }
+        let commands = frame(&mut root, &app);
+        assert!(
+            drawn(&commands, "never run · manual · enabled · created 3 min ago"),
+            "the workflow reports that it has never run"
+        );
+        let run_origin = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Run" => Some(*origin),
+                _ => None,
+            })
+            .expect("the detail draws a Run control");
+
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: run_origin,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: run_origin,
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, &app);
+        }
+
+        let runs = desktop.list_workflow_runs();
+        assert_eq!(runs.len(), 1, "the press starts one run");
+        assert_eq!(runs[0].workflow_id, stored.id, "the run is this workflow's");
     }
 
     /// The run list picks the run whose detail is drawn, and a phase row moves
@@ -754,7 +1239,7 @@ mod tests {
     #[test]
     fn the_run_list_and_the_phase_rail_carry_the_selection() {
         let app = AppContext::default();
-        let (mut root, state, _dir) = app_with_records();
+        let (mut root, state, _desktop, _dir) = app_with_records();
         state.borrow_mut().workflows.push(WorkflowEntry {
             id: "wf-2".to_string(),
             name: "Weekly report".to_string(),
@@ -776,13 +1261,15 @@ mod tests {
         state.borrow_mut().task_workflow_open = true;
         let commands = frame(&mut root, &app);
         // The first run is selected by default, so its detail is the one drawn.
-        assert!(drawn(&commands, "❯ Digest"), "the first run's phase");
-        assert!(!drawn(&commands, "❯ Collect"));
+        assert!(drawn(&commands, "Digest"), "the first run's phase");
+        assert!(!drawn(&commands, "Collect"), "and not the other run's");
+        assert!(drawn(&commands, "❯ 1"), "the first phase is marked");
 
         // Selecting the second run moves the detail onto it.
-        *state.borrow_mut().task_workflow_selected.borrow_mut() = 1;
+        *state.borrow_mut().task_workflow_selected.borrow_mut() =
+            Some("workflow:wf-2".to_string());
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "❯ Collect"), "the second run's phases");
+        assert!(drawn(&commands, "Collect"), "the second run's phases");
         assert!(
             drawn(
                 &commands,
@@ -791,16 +1278,110 @@ mod tests {
             "a disabled run says so"
         );
         assert!(
-            !drawn(&commands, "❯ Digest"),
+            !drawn(&commands, "Digest"),
             "the previous run's phases are gone"
         );
 
         *state.borrow_mut().task_workflow_phase.borrow_mut() = 1;
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "❯ Write"), "the selected phase is marked");
+        assert!(drawn(&commands, "Write"), "the selected phase is drawn");
+        assert!(
+            drawn(&commands, "❯ 2"),
+            "the second phase carries the marker and the first does not"
+        );
+        assert!(
+            !drawn(&commands, "❯ 1"),
+            "the marker moved off the first phase"
+        );
         assert!(
             drawn(&commands, "No execution recorded for this agent yet."),
             "a phase whose agent has no execution says so"
+        );
+    }
+
+    /// The selection names a run, not a row: a run that starts while the panel
+    /// is open moves to the top of the list without taking the detail with it.
+    #[test]
+    fn a_new_run_does_not_move_the_selection() {
+        let app = AppContext::default();
+        let (mut root, state, _desktop, _dir) = app_with_records();
+        state.borrow_mut().workflows.push(WorkflowEntry {
+            id: "wf-2".to_string(),
+            name: "Weekly report".to_string(),
+            description: "write the week up".to_string(),
+            steps: vec![
+                WorkflowStepEntry {
+                    name: "Collect".to_string(),
+                    agent_id: "agent-2".to_string(),
+                },
+                WorkflowStepEntry {
+                    name: "Write".to_string(),
+                    agent_id: "agent-3".to_string(),
+                },
+            ],
+            trigger: "manual".to_string(),
+            enabled: true,
+            created_at: "1 h ago".to_string(),
+        });
+        *state.borrow_mut().task_workflow_selected.borrow_mut() =
+            Some("workflow:wf-2".to_string());
+        state.borrow_mut().task_workflow_open = true;
+        let commands = frame(&mut root, &app);
+        assert!(drawn(&commands, "Write"), "the second workflow is selected");
+
+        // A run of the other workflow arrives while the panel is open.
+        state.borrow_mut().workflow_runs = vec![WorkflowRunEntry {
+            id: "run-2".to_string(),
+            workflow_id: "wf-1".to_string(),
+            status: "running".to_string(),
+            error: None,
+            steps: Vec::new(),
+            started_at: "now".to_string(),
+            elapsed: Some(std::time::Duration::from_secs(3)),
+            finished_at: None,
+            output: None,
+            log: Vec::new(),
+        }];
+        let commands = frame(&mut root, &app);
+        assert!(
+            drawn(&commands, "running"),
+            "the new run is listed at the top"
+        );
+        assert!(
+            drawn(&commands, "Write") && !drawn(&commands, "Digest"),
+            "the detail stays on the workflow the user selected"
+        );
+    }
+
+    /// The detail's body is two columns — the phase rail beside the selected
+    /// phase's agents — so a short run does not leave half the panel blank.
+    #[test]
+    fn the_detail_splits_its_body_between_phases_and_agents() {
+        let app = AppContext::default();
+        let (mut root, state, _desktop, _dir) = app_with_records();
+        state.borrow_mut().task_workflow_open = true;
+        let commands = frame(&mut root, &app);
+        let x = |text: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text: run, origin, .. } if run == text => {
+                        Some(origin.x)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{text:?} is drawn"))
+        };
+        let phase = x("Digest");
+        let agent = x("agent agent-1");
+        assert!(
+            agent > phase + 80.0,
+            "the agents column sits to the right of the phases: {phase} against {agent}"
+        );
+        let panel = panel_rect(&commands, &app);
+        assert!(
+            agent < panel.max_x(),
+            "the agents column stays inside the panel"
         );
     }
 
@@ -809,7 +1390,7 @@ mod tests {
     #[test]
     fn empty_records_are_named_not_faked() {
         let app = AppContext::default();
-        let (mut root, state, _dir) = app_with_records();
+        let (mut root, state, _desktop, _dir) = app_with_records();
         {
             let mut s = state.borrow_mut();
             s.workflows = vec![WorkflowEntry {
@@ -829,7 +1410,7 @@ mod tests {
 
         state.borrow_mut().workflows = vec![];
         let commands = frame(&mut root, &app);
-        assert!(drawn(&commands, "0 registered"));
+        assert!(drawn(&commands, "No workflows registered"));
         assert!(drawn(&commands, "No workflow runs in this session yet."));
     }
 }

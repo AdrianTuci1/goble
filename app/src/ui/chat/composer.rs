@@ -45,6 +45,7 @@ pub(crate) fn build_terminal_composer(
     actions: &UiActions,
     pane_id: u64,
     focused: bool,
+    agent: Option<&'static goble_core::harness::HarnessSpec>,
 ) -> Box<dyn Element> {
     let session = pane_session_snapshot(state, pane_id);
     let controls = state
@@ -77,6 +78,8 @@ pub(crate) fn build_terminal_composer(
 
     let on_activate_for_send = actions.on_pane_activate.clone();
     let on_run_shell_command = actions.on_run_shell_command.clone();
+    let on_agent_prompt = actions.on_agent_prompt.clone();
+    let agent_name = agent.map(|spec| spec.name);
     let on_activate_for_cmd = actions.on_pane_activate.clone();
     let on_harness_mode_for_cmd = actions.on_set_pane_harness_mode.clone();
     let on_cmd_enter = actions.on_cmd_enter.clone();
@@ -109,22 +112,32 @@ pub(crate) fn build_terminal_composer(
         // The bar is the pane's own bottom surface, so it spans the pane: no
         // gutter of its own between the input and the pane's side edges.
         .with_edge_to_edge(true)
-        // What the bar answers, written where the bar is: Cmd/Ctrl+Enter is the
-        // one gesture that leaves the shell (it opens the agent on a new
-        // conversation), so it is the one instruction the strip names — and it
-        // is the one entry this pane keeps inside the input, under the editor,
-        // rather than over the separator with the agent view's strip.
-        .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
+        // What the bar answers, written where the bar is: under a CLI agent the
+        // bar is that agent's prompt line, so Enter is the whole instruction.
+        // At a plain shell Cmd/Ctrl+Enter is the one gesture that leaves the
+        // shell (it opens the agent on a new conversation).
+        .with_hints(match agent_name {
+            Some(name) => vec![ShortcutHint::new(&["↵"], format!("send to {name}"))],
+            None => vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")],
+        })
         .with_on_change(move |text| (on_composer_change.borrow_mut())(text))
         .with_on_send(move |text| {
-            // Enter at the shell's bar runs the draft as a command in this
-            // pane's own PTY — the shell's side of the warp-new input model,
-            // where the agent composer's `!cmd` is the same thing. The harness
-            // is not opened by it: Cmd/Ctrl+Enter is what opens the agent view,
-            // and the agent view's composer is the one that takes prompts.
             (on_activate_for_send.borrow_mut())(pane_id);
-            if let Some(InputClass::TerminalCommand(command)) = classify_input(&text, false) {
-                (on_run_shell_command.borrow_mut())(pane_id, command);
+            match agent {
+                // A CLI agent owns the pane's screen: the rich input is its
+                // prompt line, and the line goes to its own stdin exactly as
+                // warp-new's rich input does. The agent answers in its native
+                // TUI above the bar.
+                Some(_) => (on_agent_prompt.borrow_mut())(pane_id, text),
+                // No agent: Enter at the shell's bar runs the draft as a command
+                // in this pane's own PTY — the shell's side of the warp-new
+                // input model, where the agent composer's `!cmd` is the same
+                // thing.
+                None => {
+                    if let Some(InputClass::TerminalCommand(command)) = classify_input(&text, false) {
+                        (on_run_shell_command.borrow_mut())(pane_id, command);
+                    }
+                }
             }
         })
         .with_on_cmd_enter(move |text| {
@@ -141,6 +154,9 @@ pub(crate) fn build_terminal_composer(
             (on_composer_focus.borrow_mut())(focused);
         })
         .with_on_stop(move || (on_stop.borrow_mut())());
+    if let Some(name) = agent_name {
+        composer = composer.with_placeholder(format!("Message {name}…"));
+    }
     // A suspended command is the bar while it lasts: the same approval
     // surface the agent view draws, answering the same decision handler.
     if let Some(proposal) = session.pending_command.clone() {

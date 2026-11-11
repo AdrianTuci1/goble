@@ -77,6 +77,61 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("code", "code.svg"),
     icon_bytes!("link", "link.svg"),
     icon_bytes!("folder", "folder.svg"),
+    // The harness a conversation runs on, one mark per provider family. They
+    // lead the sidebar's conversation cards; the unfamiliar ones are the same
+    // brand marks the providers publish, reduced to a silhouette because the
+    // atlas tints every glyph a single colour.
+    icon_bytes!("harness-agoragentic-acp", "harness-agoragentic-acp.svg"),
+    icon_bytes!("harness-aider", "harness-aider.svg"),
+    icon_bytes!("harness-amp-acp", "harness-amp-acp.svg"),
+    icon_bytes!("harness-antigravity", "harness-antigravity.svg"),
+    icon_bytes!("harness-auggie", "harness-auggie.svg"),
+    icon_bytes!("harness-autohand", "harness-autohand.svg"),
+    icon_bytes!("harness-claude", "harness-claude.svg"),
+    icon_bytes!("harness-cline", "harness-cline.svg"),
+    icon_bytes!("harness-codebuddy-code", "harness-codebuddy-code.svg"),
+    icon_bytes!("harness-codewhale", "harness-codewhale.svg"),
+    icon_bytes!("harness-codex", "harness-codex.svg"),
+    icon_bytes!("harness-copilot", "harness-copilot.svg"),
+    icon_bytes!("harness-cortex-code", "harness-cortex-code.svg"),
+    icon_bytes!("harness-corust-agent", "harness-corust-agent.svg"),
+    icon_bytes!("harness-crow-cli", "harness-crow-cli.svg"),
+    icon_bytes!("harness-cursor", "harness-cursor.svg"),
+    icon_bytes!("harness-deepagents", "harness-deepagents.svg"),
+    icon_bytes!("harness-devin", "harness-devin.svg"),
+    icon_bytes!("harness-dimcode", "harness-dimcode.svg"),
+    icon_bytes!("harness-dirac", "harness-dirac.svg"),
+    icon_bytes!("harness-factory-droid", "harness-factory-droid.svg"),
+    icon_bytes!("harness-fast-agent", "harness-fast-agent.svg"),
+    icon_bytes!("harness-fx", "harness-fx.svg"),
+    icon_bytes!("harness-gemini", "harness-gemini.svg"),
+    icon_bytes!("harness-github-copilot-cli", "harness-github-copilot-cli.svg"),
+    icon_bytes!("harness-gjc", "harness-gjc.svg"),
+    icon_bytes!("harness-glm-acp-agent", "harness-glm-acp-agent.svg"),
+    icon_bytes!("harness-goble", "harness-goble.svg"),
+    icon_bytes!("harness-goose", "harness-goose.svg"),
+    icon_bytes!("harness-grok", "harness-grok.svg"),
+    icon_bytes!("harness-hermes", "harness-hermes.svg"),
+    icon_bytes!("harness-hoplite", "harness-hoplite.svg"),
+    icon_bytes!("harness-junie", "harness-junie.svg"),
+    icon_bytes!("harness-kilo", "harness-kilo.svg"),
+    icon_bytes!("harness-kimi", "harness-kimi.svg"),
+    icon_bytes!("harness-kiro", "harness-kiro.svg"),
+    icon_bytes!("harness-minimax", "harness-minimax.svg"),
+    icon_bytes!("harness-minimax-code", "harness-minimax-code.svg"),
+    icon_bytes!("harness-minion-code", "harness-minion-code.svg"),
+    icon_bytes!("harness-mistral-vibe", "harness-mistral-vibe.svg"),
+    icon_bytes!("harness-nova", "harness-nova.svg"),
+    icon_bytes!("harness-omp", "harness-omp.svg"),
+    icon_bytes!("harness-opencode", "harness-opencode.svg"),
+    icon_bytes!("harness-pi", "harness-pi.svg"),
+    icon_bytes!("harness-poolside", "harness-poolside.svg"),
+    icon_bytes!("harness-qoder", "harness-qoder.svg"),
+    icon_bytes!("harness-qwen-code", "harness-qwen-code.svg"),
+    icon_bytes!("harness-sigit", "harness-sigit.svg"),
+    icon_bytes!("harness-stakpak", "harness-stakpak.svg"),
+    icon_bytes!("harness-traecli", "harness-traecli.svg"),
+    icon_bytes!("harness-vtcode", "harness-vtcode.svg"),
     icon_bytes!("git-branch", "git-branch.svg"),
     icon_bytes!("stop", "stop.svg"),
     icon_bytes!("arrow-up", "arrow-up.svg"),
@@ -380,6 +435,25 @@ mod tests {
             }
         }
         assert_eq!(found, 2, "expected both new context-pill icons");
+    }
+
+    /// Every harness mark is a filled silhouette in the atlas's one tint. A
+    /// path that resvg cannot parse, or one that only sets `currentColor`,
+    /// would draw nothing at the 16 pt the sidebar gives it.
+    #[test]
+    fn harness_marks_rasterize_with_ink() {
+        for (name, bytes) in ICON_FILES
+            .iter()
+            .filter(|(icon, _)| icon.starts_with("harness-"))
+        {
+            let (alpha, width, height) =
+                rasterize_icon(bytes).unwrap_or_else(|| panic!("{name} should rasterize"));
+            assert!(width > 0 && height > 0, "{name} rasterized to an empty box");
+            assert!(
+                alpha.iter().any(|&a| a > 0),
+                "{name} rendered no opaque pixels"
+            );
+        }
     }
 
     /// The explorer's tab drew the reference tool's *prohibition* banner: the

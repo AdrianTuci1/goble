@@ -477,6 +477,7 @@ fn create_session(state: &SharedState, request: NewSession) -> Result<SessionInf
     for (key, value) in &env {
         command.env(key, value);
     }
+    apply_terminal_environment(&mut command);
     let mut child = pair
         .slave
         .spawn_command(command)
@@ -750,6 +751,21 @@ fn send_signal(state: &SharedState, id: u64, session_id: &str, name: &str) -> Se
     }
 }
 
+/// Tell the child what kind of terminal it is running in.
+///
+/// The daemon inherits the environment that started it — a launcher, an editor,
+/// a script, or a non-interactive shell with `TERM=dumb` and `NO_COLOR=1` — and
+/// a program in the pane reads that as "this terminal cannot colour or draw".
+/// Goble paints a full-colour 256-colour grid, so the child is told that,
+/// whatever the parent looked like. The daemon is the one that knows what this
+/// terminal is, so its answer wins over a `TERM` or `NO_COLOR` in the request.
+fn apply_terminal_environment(command: &mut CommandBuilder) {
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+    command.env("TERM_PROGRAM", "Goble");
+    command.env_remove("NO_COLOR");
+}
+
 fn parse_signal(name: &str) -> Result<nix::sys::signal::Signal, String> {
     if let Ok(number) = name.parse::<i32>() {
         return nix::sys::signal::Signal::try_from(number)
@@ -767,6 +783,26 @@ fn parse_signal(name: &str) -> Result<nix::sys::signal::Signal, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_child_is_told_it_has_a_colour_terminal() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.env("NO_COLOR", "1");
+        command.env("TERM", "dumb");
+
+        apply_terminal_environment(&mut command);
+
+        assert_eq!(command.get_env("TERM"), Some(std::ffi::OsStr::new("xterm-256color")));
+        assert_eq!(
+            command.get_env("COLORTERM"),
+            Some(std::ffi::OsStr::new("truecolor"))
+        );
+        assert_eq!(
+            command.get_env("TERM_PROGRAM"),
+            Some(std::ffi::OsStr::new("Goble"))
+        );
+        assert_eq!(command.get_env("NO_COLOR"), None);
+    }
 
     #[test]
     fn signals_accept_names_and_numbers() {

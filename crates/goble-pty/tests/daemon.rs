@@ -392,6 +392,60 @@ fn a_create_passes_its_args_and_environment_to_the_shell() {
     assert!(matches!(killed, ServerMessage::Ok { .. }), "{killed:?}");
 }
 
+/// The daemon may be started by anything — a launcher, an editor, a script —
+/// so the shell it spawns cannot inherit "this is not a terminal" from it. A
+/// `TERM=dumb`/`NO_COLOR=1` parent still gets a colour terminal, or every
+/// program in the pane draws plain ASCII.
+#[test]
+fn the_spawned_shell_is_told_it_has_a_colour_terminal() {
+    let server = TestServer::start();
+    let shell_cwd = tempfile::tempdir().unwrap();
+
+    let mut client = server.connect("term");
+    let id = client.next_id();
+    let info = match client
+        .request(Request::Create {
+            id,
+            pane_id: "pane-term".into(),
+            cwd: shell_cwd.path().display().to_string(),
+            cols: 80,
+            rows: 24,
+            shell: Some("/bin/sh".into()),
+            args: vec![
+                "-c".into(),
+                "printf 'F1B-TERM:%s|%s|%s|%s\\n' \"$TERM\" \"$COLORTERM\" \
+                 \"$TERM_PROGRAM\" \"${NO_COLOR-unset}\"; exec sleep 30"
+                    .into(),
+            ],
+            env: vec![
+                ("TERM".into(), "dumb".into()),
+                ("NO_COLOR".into(), "1".into()),
+            ],
+        })
+        .unwrap()
+    {
+        ServerMessage::Ok {
+            session: Some(info),
+            ..
+        } => info,
+        other => panic!("create failed: {other:?}"),
+    };
+    attach(&mut client, &info.session_id, 0);
+
+    let seen = wait_for_output(&mut client, b"F1B-TERM:");
+    let text = String::from_utf8_lossy(&joined(&seen)).into_owned();
+    assert!(
+        text.contains("F1B-TERM:xterm-256color|truecolor|Goble|unset"),
+        "the shell was handed a colour terminal: {text:?}"
+    );
+
+    let id = client.next_id();
+    let _ = client.request(Request::Kill {
+        id,
+        session_id: info.session_id,
+    });
+}
+
 #[test]
 fn a_stale_socket_is_cleaned_and_the_daemon_auto_starts() {
     let dir = tempfile::tempdir().unwrap();

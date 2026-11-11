@@ -112,9 +112,11 @@ impl Element for ChatView {
         if let DispatchedEvent::KeyDown { key, modifiers } = event {
             let transcript_key = self.pane_active
                 && !self.composer_focused
-                // A waiting command card owns the keys: its editor needs the
-                // arrows and letters these folds would otherwise take.
+                // A card waiting on the user owns the keys: the command
+                // editor's arrows, and the question panel's arrows and
+                // letters, would otherwise be taken by these folds.
                 && self.composer_proposal.is_none()
+                && self.pending_ask.is_none()
                 && !modifiers.ctrl
                 && !modifiers.command
                 && !modifiers.alt;

@@ -230,6 +230,10 @@ pub struct WorkflowRunEntry {
     pub steps: Vec<WorkflowRunStepEntry>,
     /// Relative label, e.g. `2m ago`.
     pub started_at: String,
+    /// How long the run has been going, when its recorded start parsed. The
+    /// work dock states it on a running row; a run with no parseable start
+    /// states none rather than inventing a clock.
+    pub elapsed: Option<std::time::Duration>,
     pub finished_at: Option<String>,
     /// The value a script passed to `complete()`.
     pub output: Option<serde_json::Value>,
@@ -385,10 +389,13 @@ pub enum SettingsControl {
     DefaultModel,
     /// Agent & Approval: the app-wide command-approval policy.
     ApprovalMode,
-    /// Appearance: the dark-mode switch.
-    DarkMode,
     /// Appearance: one channel of the colour-target column.
     ThemeChannel(super::color_picker::ColorTarget),
+    /// Appearance: the Themes stepper. `Left`/`Right` and the two arrow
+    /// buttons walk the Default base and the presets in order.
+    ThemeStepper,
+    /// Appearance: clear the five colour overrides, keeping the base palette.
+    ResetThemeColors,
     /// Appearance: the colour wheel; it is a drag surface, so it takes a focus
     /// stop and the ring but no arrow adjustment.
     ColorWheel,
@@ -455,6 +462,7 @@ impl SettingsControl {
             SettingsControl::ScrollSpeed
                 | SettingsControl::FontSize
                 | SettingsControl::ThemeChannel(_)
+                | SettingsControl::ThemeStepper
                 | SettingsControl::ApprovalMode
         )
     }

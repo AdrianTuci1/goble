@@ -14,9 +14,35 @@ pub(super) async fn build_history(
     _execution_tools: &[ToolDefinition],
     _mode: ThinkingMode,
 ) -> Vec<Message> {
-    let Ok(rows) = store.list_chat_messages(chat_id) else {
+    let Ok(all_rows) = store.list_chat_messages(chat_id) else {
         return Vec::new();
     };
+    // A compacted conversation reads only what came after the boundary, with
+    // the model's own summary of everything before it in front. The rows are
+    // still all in the store: the transcript the user scrolls keeps every
+    // message, and only the request is shortened.
+    let compaction = store
+        .latest_chat_compaction(chat_id)
+        .ok()
+        .flatten()
+        .filter(|c| !c.summary.trim().is_empty())
+        .and_then(|c| {
+            let boundary = all_rows
+                .iter()
+                .position(|(id, ..)| id == &c.boundary_message_id)?;
+            Some((boundary + 1, c))
+        });
+    let (start, compaction) = match compaction {
+        Some((start, c)) => (start, Some(c)),
+        None => (0, None),
+    };
+    let rows: Vec<_> = all_rows
+        .into_iter()
+        .skip(start)
+        // A notice is a session event, not something the model said or was
+        // told: it belongs in the transcript, never in the request.
+        .filter(|(_, role, ..)| role != "notice")
+        .collect();
     // The chain of thought each assistant turn streamed. A thinking model
     // (DeepSeek) rejects the next request when an assistant message is replayed
     // without it, so the history carries it back exactly as it arrived.
@@ -52,8 +78,22 @@ pub(super) async fn build_history(
         .map(|record| record.id)
         .collect();
 
-    rows.into_iter()
-        .filter_map(|(id, role, content, tool_calls, _)| {
+    let mut messages: Vec<Message> = compaction
+        .map(|c| Message {
+            role: Role::System,
+            content: format!(
+                "This conversation was compacted to fit the context window. Summary of the earlier turns:\n{}",
+                c.summary
+            ),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_status: None,
+            reasoning_content: None,
+        })
+        .into_iter()
+        .collect();
+    messages.extend(rows.into_iter().filter_map(
+        |(id, role, content, tool_calls, _)| {
             let is_tool = role.as_str() == "tool";
             let (content, tool_call_id, tool_status) = if is_tool {
                 match content.split_once('\n') {
@@ -89,6 +129,16 @@ pub(super) async fn build_history(
                 }
                 calls = None;
             }
+            // A provider rejects an assistant message that carries neither
+            // text nor calls ("content or tool_calls must be set"), and a
+            // suspended, cancelled or empty reply can leave exactly that row
+            // behind. It is not part of the conversation the model reads back.
+            if (role == "assistant" || role == "tool_calls")
+                && content.trim().is_empty()
+                && calls.as_ref().is_none_or(Vec::is_empty)
+            {
+                return None;
+            }
             Some(Message {
                 role: match role.as_str() {
                     "system" => Role::System,
@@ -103,6 +153,7 @@ pub(super) async fn build_history(
                 tool_status,
                 reasoning_content: reasoning.get(&id).cloned(),
             })
-        })
-        .collect()
+        },
+    ));
+    messages
 }

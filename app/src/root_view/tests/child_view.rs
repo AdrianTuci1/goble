@@ -1,11 +1,10 @@
 use super::*;
 
-    /// S6's acceptance: entering from a sub-agent's transcript row shows the
+    /// S6's acceptance: entering from the pane's sub-agent strip shows the
     /// child's own conversation with the messages the store holds under the
     /// child's chat id, Esc returns to the parent's transcript, and the round
     /// trip can be made twice. The click and the key go through the mounted
-    /// root, so the row, the relay, the state and the rebuilt frame are the
-    /// app's own.
+    /// root, so the strip, the state and the rebuilt frame are the app's own.
     #[test]
     fn entering_a_sub_agent_row_shows_the_childs_conversation_and_esc_returns() {
         use crate::emulator::Emulator;
@@ -22,8 +21,8 @@ use super::*;
             Store::open_in_memory().expect("in-memory store"),
             ThreadStore::new(dir.path()).expect("thread store"),
         ));
-        // The parent's conversation: a line of its own, and the spawn call whose
-        // row the user clicks.
+        // The parent's conversation: a line of its own, and the spawn call the
+        // strip's row names.
         let parent = desktop
             .create_chat("Parent conversation", None, None)
             .expect("parent chat");
@@ -124,20 +123,19 @@ use super::*;
                 })
                 .collect()
         };
-        let click_run = |root: &mut Box<dyn Element>, needle: &str| {
+        let click_icon = |root: &mut Box<dyn Element>, name: &str| {
             let commands = render_element(root, vec2f(1024.0, 768.0), &app);
-            let origin = commands
+            let position = commands
                 .iter()
                 .find_map(|c| match c {
-                    RenderCommand::DrawText { origin, text, .. }
-                        if text == needle && origin.x >= crate::ui::SIDEBAR_WIDTH =>
-                    {
-                        Some(*origin)
+                    RenderCommand::DrawIcon {
+                        origin, name: drawn, size, ..
+                    } if drawn == name && origin.x >= crate::ui::SIDEBAR_WIDTH => {
+                        Some(*origin + vec2f(size / 2.0, size / 2.0))
                     }
                     _ => None,
                 })
-                .unwrap_or_else(|| panic!("the pane draws the {needle:?} run"));
-            let position = origin + vec2f(2.0, 4.0);
+                .unwrap_or_else(|| panic!("the pane draws the {name:?} icon"));
             let mut ctx = EventContext;
             for event in [
                 DispatchedEvent::MouseDown {
@@ -184,17 +182,14 @@ use super::*;
                 .any(|t| t.contains("CHILD CONVERSATION MARKER")),
             "the child's conversation is not on screen yet: {texts:?}"
         );
-        // The spawn call starts folded into its run; opening the run is what
-        // draws the row that carries the target.
-        click_run(&mut root, "Running 1 subagent");
-        let texts = pane_texts(&mut root);
+        // The strip under the header owns the control that enters the child.
         assert!(
-            texts.iter().any(|t| t == "open child"),
-            "the row carries the target that enters the child: {texts:?}"
+            pane_texts(&mut root).iter().any(|t| t == "Subagents"),
+            "the pane's strip names the group the spawned child belongs to"
         );
 
-        // Trip one: the row's click shows the child's own conversation.
-        click_run(&mut root, "open child");
+        // Trip one: the strip's open control shows the child's own conversation.
+        click_icon(&mut root, "arrow-up");
         assert_eq!(
             state.borrow().pane_view(1),
             BlockView::Agent {
@@ -239,7 +234,7 @@ use super::*;
         );
         assert!(
             !texts.iter().any(|t| t.contains("Ask anything")),
-            "the child's view has no composer of its own: {texts:?}"
+            "a running child's view stays read-only: {texts:?}"
         );
 
         // Esc returns to the parent's transcript, leaving the child's card.
@@ -266,8 +261,9 @@ use super::*;
             "the child's transcript leaves with the child view: {texts:?}"
         );
 
-        // The child ends while the parent's transcript is showing, so trip two
-        // titles the view from a finished record.
+        // The child ends while the parent's turn is still in flight, so the
+        // strip keeps the ended row and its open control; trip two titles the
+        // view from the finished record.
         state
             .borrow_mut()
             .apply_subagent_finished(&SubAgentFinishedEvent {
@@ -281,9 +277,15 @@ use super::*;
                 tool_calls: 5,
                 tokens: 2048,
             });
+        state
+            .borrow_mut()
+            .pane_runtime
+            .get_mut(&1)
+            .expect("the pane runtime exists")
+            .busy = true;
 
-        // Trip two: the same round trip again, through the same row.
-        click_run(&mut root, "open child");
+        // Trip two: the same round trip again, through the same strip.
+        click_icon(&mut root, "arrow-up");
         let texts = pane_texts(&mut root);
         assert!(
             texts
@@ -294,6 +296,14 @@ use super::*;
         assert!(
             texts.iter().any(|t| t == "completed in 12s"),
             "the title follows the record's new status: {texts:?}"
+        );
+        // The child has ended, so its conversation can be woken with a
+        // follow-up: the view offers its own composer (see
+        // `send_sub_agent_prompt`), the way grok-build's takeover accepts a
+        // prompt in the child's input.
+        assert!(
+            texts.iter().any(|t| t.contains("Ask anything")),
+            "a finished child's view offers a composer: {texts:?}"
         );
         assert_eq!(
             child_cards(&state),

@@ -2,16 +2,23 @@
 //! transcript while its own bubble has scrolled above the viewport's top edge.
 //!
 //! The row is grok-build's sticky turn, not a header for the whole scroll: it
-//! shows while the user's bubble is passing the top edge and is released as
-//! soon as the reply under it reaches that edge, so the pin never outlives the
-//! gap between the two messages it names.
+//! shows while the user's bubble is passing the top edge and stays for the
+//! whole turn that bubble opens — through every assistant row and tool row —
+//! until the next user prompt reaches that edge. The pin names a turn, so it
+//! must not give way at the first reply under it.
+//!
+//! The pinned row is the user's own prompt band, not a header of its own: the
+//! same grey fill, the same `❯` marker at the same offset and the same 14 px
+//! text as the bubble it pins, so the strip reads as that band's top edge while
+//! the rest of the band scrolls underneath.
 //!
 //! The tree is rebuilt every frame and no message stores its own geometry, so
-//! the two rows the pin reads are wrapped in [`RowProbe`]s: each records where
-//! it was painted (window coordinates, the transcript's own scroll already
-//! applied) and the header, painted after the transcript in the same frame,
-//! decides from those recordings. That is the transcript's row recording, not
-//! a second measurement pass over every message.
+//! the rows the pin reads — the prompt it names, and the next prompt when one
+//! follows — are wrapped in [`RowProbe`]s: each records where it was painted
+//! (window coordinates, the transcript's own scroll already applied) and the
+//! header, painted after the transcript in the same frame, decides from those
+//! recordings. That is the transcript's row recording, not a second measurement
+//! pass over every message.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,9 +32,16 @@ use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
-/// The pinned row's one line of text.
-const TEXT_FONT_SIZE: f32 = 12.0;
-const TEXT_LINE_HEIGHT: f32 = 1.2;
+/// The prompt marker that leads the user's own message, its room before the
+/// text, and the paragraph size of the row. They mirror the constants of
+/// [`ChatMessageBubble`](crate::elements::ChatMessageBubble)'s user row so the
+/// pinned line is the size and shape of the message it pins; the sticky turn's
+/// tests compare the pin against that row's own render commands, which is what
+/// keeps the two in step.
+const PROMPT_ARROW_SIZE: f32 = 11.0;
+const PROMPT_ARROW_GAP: f32 = 4.0;
+const MESSAGE_FONT_SIZE: f32 = 14.0;
+const MESSAGE_LINE_HEIGHT: f32 = 1.2;
 
 /// The rule under the pinned row, in points.
 const DIVIDER_HEIGHT: f32 = 1.0;
@@ -110,8 +124,8 @@ impl Element for RowProbe {
 }
 
 /// Which rows the pin reads, and what it says: the last user message and the
-/// message after it. `text` is `None` when there is nothing to pin, in which
-/// case no probe is wrapped and no header is drawn.
+/// next user message after it. `text` is `None` when there is nothing to pin,
+/// in which case no probe is wrapped and no header is drawn.
 pub(super) struct StickyTurn {
     text: Option<String>,
     user_index: Option<usize>,
@@ -122,8 +136,11 @@ pub(super) struct StickyTurn {
 
 impl StickyTurn {
     /// Read the transcript for the one row that can pin. Only the latest user
-    /// message pins, and only when another message follows it: with no reply
-    /// to release the pin on, the row would stay for the whole scroll.
+    /// message pins. The pin gives way at the next user prompt, not at the
+    /// first row under it: every assistant row and tool row between the two
+    /// belongs to the turn the header names, so the header stays while that
+    /// turn is being read. A transcript with no later prompt has no release
+    /// anchor and keeps the pin for the whole scroll.
     pub(super) fn for_messages(messages: &[ChatMessage]) -> Self {
         let mut sticky = Self {
             text: None,
@@ -138,13 +155,14 @@ impl StickyTurn {
         let Some(text) = first_line(&messages[user_index]) else {
             return sticky;
         };
-        let next_index = user_index + 1;
-        if messages.get(next_index).is_none() {
-            return sticky;
-        }
+        let next_index = messages
+            .iter()
+            .enumerate()
+            .skip(user_index + 1)
+            .find_map(|(index, message)| (message.role == ChatRole::User).then_some(index));
         sticky.text = Some(text);
         sticky.user_index = Some(user_index);
-        sticky.next_index = Some(next_index);
+        sticky.next_index = next_index;
         sticky
     }
 
@@ -175,8 +193,9 @@ impl StickyTurn {
     }
 }
 
-/// The pinned row itself: the transcript background over the viewport's top
-/// strip, one line of the user's message and a rule under it.
+/// The pinned row itself: the first line of the user's own prompt band over the
+/// viewport's top strip, with the rule under it that separates the band from
+/// the content scrolled beneath.
 struct StickyHeader {
     text: String,
     user: Slot,
@@ -186,9 +205,17 @@ struct StickyHeader {
 }
 
 impl StickyHeader {
-    /// The strip's height: the text's line box and the inset over and under it.
+    /// The strip's height: one line of the bubble's padded band — the marker's
+    /// column and the message's first line, inset by `Md` over and under it.
     fn height(app: &AppContext) -> f32 {
-        TEXT_FONT_SIZE * TEXT_LINE_HEIGHT + 2.0 * app.theme.spacing_px(SpacingToken::Xs)
+        MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT + 2.0 * app.theme.spacing_px(SpacingToken::Md)
+    }
+
+    /// Where the marker and the text sit inside the band, as the user's row
+    /// lays them out: the marker is centred on the first line's box and the
+    /// text starts one marker and one gap past it.
+    fn marker_top() -> f32 {
+        (MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT - PROMPT_ARROW_SIZE) / 2.0
     }
 }
 
@@ -220,36 +247,48 @@ impl Element for StickyHeader {
         if size.x <= 0.0 {
             return;
         }
-        let (Some(user), Some(next)) = (*self.user.borrow(), *self.next.borrow()) else {
+        let Some(user) = *self.user.borrow() else {
             return;
         };
-        // The pin is on only while the user's bubble has crossed the top edge
-        // and the reply under it has not reached that edge yet.
+        // The pin is on while the user's bubble has crossed the top edge, and
+        // off again once the next prompt reaches that edge: the rows between
+        // the two are this turn's own replies and tool calls, and they leave
+        // the pin in place. With no later prompt the row stays for the whole
+        // scroll.
         let top = origin.y;
-        if user.top + EDGE_EPSILON >= top || next.height <= 0.0 || next.top <= top {
+        let next = *self.next.borrow();
+        let next_reached_top = next.is_some_and(|next| next.height > 0.0 && next.top <= top);
+        if user.top + EDGE_EPSILON >= top || next_reached_top {
             return;
         }
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
         };
-        let pad_x = app.theme.spacing_px(SpacingToken::Md);
+        // The band the user's row draws, its marker and its first line, at the
+        // same insets: the strip must read as that band's top edge, not as a
+        // surface of its own.
+        let pad = app.theme.spacing_px(SpacingToken::Md);
         renderer.fill_rect(
             rectf(origin.x, top, size.x, size.y),
-            app.theme.color(ColorToken::Bg),
+            app.theme.color(ColorToken::SurfaceRaised),
         );
-        let available = (size.x - 2.0 * pad_x).max(0.0);
+        renderer.draw_icon(
+            vec2f(origin.x + pad, top + pad + Self::marker_top()),
+            "prompt-arrow",
+            PROMPT_ARROW_SIZE,
+            app.theme.color(ColorToken::Accent),
+        );
+        let text_x = origin.x + pad + PROMPT_ARROW_SIZE + PROMPT_ARROW_GAP;
+        let available = (size.x - pad - PROMPT_ARROW_SIZE - PROMPT_ARROW_GAP - pad).max(0.0);
         if available > 0.0 {
             let line = elide_to_width(&self.text, available);
             renderer.draw_text_with_font(
-                vec2f(
-                    origin.x + pad_x,
-                    top + (size.y - TEXT_FONT_SIZE * TEXT_LINE_HEIGHT) / 2.0,
-                ),
+                vec2f(text_x, top + pad),
                 line,
-                TEXT_FONT_SIZE,
+                MESSAGE_FONT_SIZE,
                 app.theme.color(ColorToken::Text),
                 available,
-                TEXT_LINE_HEIGHT,
+                MESSAGE_LINE_HEIGHT,
                 FontWeight::Regular,
                 FontFamily::System,
                 false,
@@ -291,6 +330,7 @@ fn first_line(message: &ChatMessage) -> Option<String> {
             ChatFragmentKind::Link { label, .. } => label.as_str(),
             ChatFragmentKind::LineBreak
             | ChatFragmentKind::CodeBlock { .. }
+            | ChatFragmentKind::Ansi(_)
             | ChatFragmentKind::List { .. }
             | ChatFragmentKind::BlockQuote(_)
             | ChatFragmentKind::Table { .. }
@@ -298,6 +338,7 @@ fn first_line(message: &ChatMessage) -> Option<String> {
             | ChatFragmentKind::Image { .. }
             | ChatFragmentKind::Action { .. }
             | ChatFragmentKind::Terminal(_)
+            | ChatFragmentKind::Notice(_)
             | ChatFragmentKind::Reasoning { .. } => break,
         };
         if let Some((first, _)) = text.split_once('\n') {
@@ -315,7 +356,7 @@ fn first_line(message: &ChatMessage) -> Option<String> {
 /// from drawing past the pane.
 fn elide_to_width(text: &str, max_width: f32) -> String {
     let width = |candidate: &str| {
-        measure_text(candidate, TEXT_FONT_SIZE, TEXT_LINE_HEIGHT, f32::INFINITY).x
+        measure_text(candidate, MESSAGE_FONT_SIZE, MESSAGE_LINE_HEIGHT, f32::INFINITY).x
     };
     if width(text) <= max_width {
         return text.to_string();
@@ -335,25 +376,45 @@ fn elide_to_width(text: &str, max_width: f32) -> String {
     chars[..low].iter().chain(std::iter::once(&'…')).collect()
 }
 
-/// The rect of the pinned strip in a frame's commands, when one was drawn: a
-/// transcript-background fill across the pane at the top of the transcript.
+/// The rect of the pinned strip in a frame's commands, when one was drawn: the
+/// user's grey band across the pane at the top of the transcript, with the rule
+/// the pin draws under it.
+///
+/// The fill alone is not the pin's signature: a user row draws the same fill at
+/// the same width, and a one-line message's band is exactly the strip's height.
+/// The rule inside the band's bottom edge is what tells the two apart — no
+/// transcript row draws a border.
 #[cfg(test)]
 pub(super) fn painted_strip(
     commands: &[crate::render::RenderCommand],
     app: &AppContext,
     width: f32,
 ) -> Option<crate::geometry::RectF> {
-    let bg = app.theme.color(ColorToken::Bg);
+    use crate::render::RenderCommand;
+
+    let band = app.theme.color(ColorToken::SurfaceRaised);
+    let rule = app.theme.color(ColorToken::Border);
     let height = StickyHeader::height(app);
-    commands.iter().find_map(|command| match command {
-        crate::render::RenderCommand::FillRect { rect, color, .. }
-            if *color == bg
-                && (rect.width() - width).abs() < 0.01
-                && (rect.height() - height).abs() < 0.01
-                && rect.min_y().abs() < 0.01 =>
+    let full_width = |rect: &crate::geometry::RectF| (rect.width() - width).abs() < 0.01;
+    commands.iter().enumerate().find_map(|(index, command)| {
+        let RenderCommand::FillRect { rect, color, .. } = command else {
+            return None;
+        };
+        if *color != band
+            || !full_width(rect)
+            || (rect.height() - height).abs() >= 0.01
+            || rect.min_y().abs() >= 0.01
         {
-            Some(*rect)
+            return None;
         }
-        _ => None,
+        let edge = commands[index + 1..].iter().any(|later| {
+            matches!(later,
+                RenderCommand::FillRect { rect: line, color, .. }
+                    if *color == rule
+                        && full_width(line)
+                        && (line.height() - DIVIDER_HEIGHT).abs() < 0.01
+                        && (line.min_y() - (rect.max_y() - DIVIDER_HEIGHT)).abs() < 0.01)
+        });
+        edge.then_some(*rect)
     })
 }

@@ -1460,7 +1460,7 @@ fn file_title(
                 .finish(),
         )
         .with_child(
-            Tooltip::new(name_text, path.to_string())
+            Tooltip::new(name_text, crate::state::display_path(path))
                 .with_position(TooltipPosition::Below)
                 .finish(),
         );
@@ -1478,7 +1478,8 @@ fn file_title(
 
 /// One file in a pane's chip row. The file the pane shows is filled in and
 /// inert; the others are outlined and switch the pane to that file when
-/// clicked. The full path stays on the chip's own hover.
+/// clicked. The path stays on the chip's own hover, its home directory read as
+/// `~` the way the composer's pill reads it.
 fn file_chip(
     app: &AppContext,
     actions: &UiActions,
@@ -1511,7 +1512,7 @@ fn file_chip(
                     )
                     .with_max_lines(1)
                     .finish(),
-                path.to_string(),
+                crate::state::display_path(path),
             )
             .with_position(TooltipPosition::Below)
             .finish(),
@@ -3682,5 +3683,110 @@ mod tests {
             "the close wrote the buffer"
         );
         assert!(state.borrow().space_index_of_pane(pane_id).is_none());
+    }
+
+    /// A file's chip names where it lives on its own hover, and that hover
+    /// reads from `~`: the pane's bar is where a whole home directory would eat
+    /// the row. The click still hands the pane the real absolute path, because
+    /// the file is read from it.
+    #[test]
+    fn a_file_chips_hover_reads_from_the_home_directory() {
+        use crate::media::MediaState;
+        use crate::state::UiState;
+        use goble_core::store::Store;
+        use goble_desktop_service::{DesktopState, ThreadStore};
+        use goble_ui::elements::{
+            EventContext, HoverChipLayer, LayoutContext, PaintContext, SizeConstraint,
+        };
+        use goble_ui::event::DispatchedEvent;
+        use goble_ui::geometry::vec2f;
+        use goble_ui::render::{RenderCommand, Renderer};
+        use std::sync::Arc as StdArc;
+
+        let Some(home) = crate::state::home_directory() else {
+            return;
+        };
+        let path = format!("{home}/Projects/goble/src/main.rs");
+        let app = AppContext::default();
+
+        let store_dir = tempfile::tempdir().expect("thread store dir");
+        let desktop = StdArc::new(DesktopState::new(
+            Store::open_in_memory().expect("store"),
+            ThreadStore::new(store_dir.path()).expect("thread store"),
+        ));
+        let state = Rc::new(RefCell::new(UiState::from_desktop(&desktop)));
+        let mut actions = crate::actions::make_actions(
+            state,
+            Some(StdArc::clone(&desktop)),
+            Rc::new(RefCell::new(MediaState::mock())),
+            goble_ui::platform::WindowControl::default(),
+            Rc::new(RefCell::new(1.0)),
+        );
+        let picked: Rc<RefCell<Option<(u64, String)>>> = Rc::new(RefCell::new(None));
+        let select: Rc<RefCell<dyn FnMut(u64, String)>> = {
+            let picked = Rc::clone(&picked);
+            Rc::new(RefCell::new(move |pane_id: u64, file: String| {
+                *picked.borrow_mut() = Some((pane_id, file));
+            }))
+        };
+        actions.on_file_chip_select = select;
+
+        let mut chip = file_chip(&app, &actions, 3, &path, true);
+        let size = chip.layout(
+            SizeConstraint::loose(vec2f(600.0, 32.0)),
+            &mut LayoutContext,
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        // Over the chip's own name: the hover belongs to the label, not to the
+        // icon beside it.
+        ctx.cursor_position = vec2f(40.0, 16.0);
+        chip.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        // A tooltip queues its box for the frame's chip layer rather than
+        // drawing it in its own pass, so the layer is what draws the hover.
+        let mut layer = HoverChipLayer::new();
+        let _ = layer.layout(SizeConstraint::loose(size), &mut LayoutContext, &app);
+        layer.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        let commands = ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.contains(&"~/Projects/goble/src/main.rs"),
+            "the hover reads from home: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&path.as_str()),
+            "the home directory is not spelled out on the hover: {texts:?}"
+        );
+
+        let mut event_ctx = EventContext;
+        let at = vec2f(40.0, 16.0);
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
+        ] {
+            chip.dispatch_event(&event, &mut event_ctx, &app);
+        }
+        assert_eq!(
+            *picked.borrow(),
+            Some((3, path.clone())),
+            "the click hands the pane the path on disk"
+        );
     }
 }

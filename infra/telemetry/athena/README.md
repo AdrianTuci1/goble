@@ -1,9 +1,15 @@
 # Athena over Octomus telemetry
 
 The tables read S3 in place; nothing is copied or crawled. `create_tables.sql`
-defines `octomus.events` and `octomus.crashes`, `views.sql` adds the daily
-rollups. `events` is partitioned by day (`dt`) and then by hour, and projection
-makes a new day or hour readable as soon as an object lands under it.
+defines `octomus.events` and `octomus.crashes`, and `views.sql` adds
+`events_dedup`, `crashes_v` and the daily rollups. `events` is partitioned by
+day (`dt`) and then by hour, and projection makes a new day or hour readable as
+soon as an object lands under it.
+
+The base tables keep `occurred_at`, `received_at` and `captured_at` as the RFC
+3339 strings the client wrote, because OpenX's `timestamp` type expects
+`yyyy-MM-dd HH:mm:ss` and would read every value as NULL. The views parse them
+with `from_iso8601_timestamp` into `event_ts` and `crash_ts`; query those.
 
 ## Set up
 

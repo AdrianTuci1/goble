@@ -151,6 +151,10 @@ pub struct TerminalSession {
     /// Claimed blocks whose tool result has arrived but whose caller has not
     /// been answered yet.
     tool_results: Vec<ToolResult>,
+    /// Bytes queued for a later write, with the moment each is due. A CLI agent
+    /// that needs its prompt and its Enter as separate stdin reads gets the
+    /// second half from the next frame, never from a blocked UI thread.
+    pub(super) pending_writes: Vec<(std::time::Instant, Vec<u8>)>,
 }
 
 /// How many shell-integration events a session holds before dropping the
@@ -200,6 +204,7 @@ impl TerminalSession {
             commands: Arc::new(Mutex::new(PaneCommands::default())),
             awaiting: HashMap::new(),
             tool_results: Vec::new(),
+            pending_writes: Vec::new(),
         }
     }
 
@@ -248,7 +253,13 @@ impl TerminalSession {
     ) -> Result<Self, String> {
         let control = Client::connect(socket)
             .map_err(|e| format!("connect to the PTY daemon at {}: {e}", socket.display()))?;
-        Self::spawn_with_control(control, socket.to_path_buf(), pane_id, cwd, daemon_session_id)
+        Self::spawn_with_control(
+            control,
+            socket.to_path_buf(),
+            pane_id,
+            cwd,
+            daemon_session_id,
+        )
     }
 
     #[cfg(not(unix))]
@@ -421,6 +432,7 @@ impl TerminalSession {
             commands: Arc::new(Mutex::new(PaneCommands::default())),
             awaiting: HashMap::new(),
             tool_results: Vec::new(),
+            pending_writes: Vec::new(),
         })
     }
 
@@ -429,9 +441,7 @@ impl TerminalSession {
     pub fn session_id(&self) -> Option<&str> {
         #[cfg(unix)]
         {
-            self.link
-                .as_ref()
-                .map(|link| link.session_id.as_str())
+            self.link.as_ref().map(|link| link.session_id.as_str())
         }
         #[cfg(not(unix))]
         {

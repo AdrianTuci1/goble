@@ -476,6 +476,94 @@ fn the_pane_header_tray_paints_over_the_transcript_and_fits_the_view() {
     );
 }
 
+/// The pane's work dock is chrome around the transcript: it takes the row
+/// directly under the header the column reserved and hands the rest to the
+/// conversation, so it never scrolls with the messages.
+#[test]
+fn the_work_dock_sits_under_the_header_and_above_the_transcript() {
+    use crate::elements::chat_content::{SubAgentPanel, SubAgentRow, SubAgentRowStatus};
+    use crate::elements::Empty;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+    use std::time::Duration;
+
+    let app = AppContext::default();
+    let header_height = 44.0;
+    let record = SubAgentRow {
+        child_id: "conv-child-1".to_string(),
+        subagent_type: "worker".to_string(),
+        description: "Write simple slugify function".to_string(),
+        status: SubAgentRowStatus::Running,
+        activity: String::new(),
+        elapsed: Duration::from_millis(8700),
+        turns: 1,
+        tool_calls: 2,
+        tokens: 300,
+        outcome: None,
+        background: false,
+    };
+    let panel = SubAgentPanel::new(vec![record], "deepseek", true).finish();
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("transcript marker")],
+    )];
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_header(
+            Empty::new()
+                .with_size(vec2f(0.0, header_height))
+                .finish(),
+        )
+        .with_work_dock(Some(panel))
+        .finish();
+    let commands = render_element(&mut view, vec2f(600.0, 480.0), &app);
+
+    let origin_of = |label: &str| {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. } if text == label => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the pane draws {label:?}"))
+    };
+    let strip = origin_of("Subagents");
+    let transcript = origin_of("transcript marker");
+    assert!(
+        strip.y >= header_height - 0.5,
+        "the strip starts under the reserved header, at {} of {header_height}",
+        strip.y
+    );
+    assert!(
+        transcript.y > strip.y,
+        "the transcript starts below the strip: strip {} transcript {}",
+        strip.y,
+        transcript.y
+    );
+    // The strip continues the bar rather than sitting under it as a separate
+    // band: its surface starts exactly where the bar's reserved height ends and
+    // spans the pane, so no seam shows between the two.
+    let band = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Surface) && rect.height() > 10.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the strip paints its own band");
+    assert!(
+        (band.min_y() - header_height).abs() < 0.5,
+        "the strip's band starts where the bar ends ({header_height}), got {band:?}"
+    );
+    assert!(
+        (band.width() - 600.0).abs() < 0.5,
+        "the strip's band spans the pane, got {band:?}"
+    );
+}
+
 #[test]
 fn chat_view_renders_the_queued_prompt_as_a_borderless_band() {
     use crate::test_util::{command_counts, render_element};
@@ -922,6 +1010,57 @@ fn the_agent_transcript_paints_no_pill() {
     }
 }
 
+/// The pending ask closes the transcript as grok-new's "Agent questions" band:
+/// a titled header with Skip all and Next, then the question and one numbered
+/// row per answer, ending in "Other…".
+#[test]
+fn the_pending_ask_closes_the_transcript_as_the_agent_questions_band() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Which host should I query?")],
+        )])
+        .with_pending_ask(Some(AskUserUi::new(
+            "Which environment?",
+            vec!["staging".to_string(), "production".to_string()],
+        )))
+        .without_composer()
+        .finish();
+    let drawn: Vec<String> = render_element(&mut view, vec2f(600.0, 500.0), &app)
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for expected in [
+        "Agent questions",
+        "Skip all",
+        "Next",
+        "Which environment?",
+        "1",
+        "staging",
+        "2",
+        "production",
+        "3",
+        "Other...",
+    ] {
+        assert!(
+            drawn.iter().any(|text| text == expected),
+            "the transcript closes with the ask panel drawing {expected:?}, got {drawn:?}"
+        );
+    }
+    assert!(
+        !drawn.iter().any(|text| text == "Agent asks" || text == "Send answer"),
+        "the old ask surface is gone: {drawn:?}"
+    );
+}
+
 /// While the approval card waits, the whole rich input is gone: the card is
 /// the pane's only typing surface until Run or Reject settles the decision.
 #[test]
@@ -969,6 +1108,65 @@ fn a_pending_command_hides_the_rich_input() {
             .iter()
             .any(|text| text == "OK if I run this command and read the output?"),
         "the approval card is the only input surface: {drawn:?}"
+    );
+}
+
+/// The question panel takes the same slot as the approval card: while it waits
+/// the rich input is gone, so a digit pressed at the pane picks an answer
+/// instead of being typed into a composer.
+#[test]
+fn a_pending_ask_hides_the_rich_input_and_takes_the_digits() {
+    use crate::elements::EventContext;
+    use crate::event::{DispatchedEvent, ModifiersState};
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let ask = AskUserUi::new(
+        "Which environment?",
+        vec!["staging".to_string(), "production".to_string()],
+    );
+    let probe = ask.clone();
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Ready when you are.")],
+        )])
+        // The composer held the keyboard before the question arrived.
+        .with_composer_focused(true)
+        .with_composer_value("a half-written prompt")
+        .with_pending_ask(Some(ask))
+        .finish();
+    let drawn: Vec<String> = render_element(&mut view, vec2f(600.0, 500.0), &app)
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    for hidden in ["Ask anything...", "a half-written prompt"] {
+        assert!(
+            !drawn.iter().any(|text| text == hidden),
+            "the rich input is not drawn while the question waits ({hidden:?}): {drawn:?}"
+        );
+    }
+    assert!(
+        drawn.iter().any(|text| text == "Agent questions"),
+        "the question panel is the only input surface: {drawn:?}"
+    );
+
+    let digit = DispatchedEvent::KeyDown {
+        key: "1".to_string(),
+        modifiers: ModifiersState::none(),
+    };
+    assert!(
+        view.dispatch_event(&digit, &mut EventContext::default(), &app),
+        "the panel takes the digit"
+    );
+    assert_eq!(
+        probe.selected_index(),
+        Some(0),
+        "the digit picks the first answer instead of typing into a composer"
     );
 }
 
@@ -1071,7 +1269,7 @@ fn the_transcript_draws_the_tool_rows_the_lock_covers() {
             _ => None,
         })
         .collect();
-    for expected in ["Read 1 file", "Edit "] {
+    for expected in ["◈ ", "Reading 1 file, Editing 1 file +1/-1"] {
         assert!(
             texts.iter().any(|text| text == expected),
             "the transcript draws {expected:?}, got {texts:?}"
@@ -2609,12 +2807,16 @@ mod drag_to_copy {
 }
 
 /// Grok Build's sticky turn: the latest user message pins to the transcript's
-/// top edge while its own bubble has scrolled above it, and is released as soon
-/// as the reply under it reaches that edge. Only the latest user message ever
-/// pins, and the pinned row is one line of the transcript's own background.
+/// top edge while its own bubble has scrolled above it, and stays for the whole
+/// turn that bubble opens — through every reply and tool row — until the next
+/// user prompt reaches that edge. Only the latest user message ever pins, and
+/// the pinned row is the user's own prompt band: the same grey fill, the same
+/// `❯` marker and the same 14 px line as the bubble it names.
 mod sticky_turn {
     use super::*;
+    use crate::color::ColorU;
     use crate::elements::text::measure_text;
+    use crate::elements::ChatMessageBubble;
     use crate::geometry::RectF;
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
@@ -2649,17 +2851,25 @@ mod sticky_turn {
         render_element(&mut view, size, app)
     }
 
+    /// The rect of the pinned strip, when this frame drew one.
+    fn strip(commands: &[RenderCommand], app: &AppContext, width: f32) -> Option<RectF> {
+        super::super::sticky::painted_strip(commands, app, width)
+    }
+
     /// The user messages' bands: the full-width raised fill the transcript
-    /// draws under each user row, in transcript order.
+    /// draws under each user row, in transcript order. The pin draws the same
+    /// fill, so it is left out: it is an overlay of the top edge, not a row.
     fn user_bands(commands: &[RenderCommand], app: &AppContext, width: f32) -> Vec<RectF> {
         let raised = app.theme.color(ColorToken::SurfaceRaised);
+        let pinned = strip(commands, app, width);
         commands
             .iter()
             .filter_map(|command| match command {
                 RenderCommand::FillRect { rect, color, .. }
                     if *color == raised
                         && (rect.width() - width).abs() < 0.01
-                        && rect.height() > 20.0 =>
+                        && rect.height() > 20.0
+                        && Some(*rect) != pinned =>
                 {
                     Some(*rect)
                 }
@@ -2668,19 +2878,96 @@ mod sticky_turn {
             .collect()
     }
 
+    /// One text run drawn inside the pinned band.
+    struct Run<'a> {
+        origin: Vector2F,
+        text: &'a str,
+        font_size: f32,
+        line_height: f32,
+    }
+
     /// The text the pinned row draws inside `strip`. The transcript paints
     /// first and the pin over it, so the last text in the strip is the pin's.
-    fn strip_line<'a>(commands: &'a [RenderCommand], strip: RectF) -> Option<(Vector2F, &'a str)> {
+    fn strip_line<'a>(commands: &'a [RenderCommand], strip: RectF) -> Option<Run<'a>> {
         commands.iter().rev().find_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. }
-                if origin.y >= strip.min_y() - 0.5
-                    && origin.y < strip.max_y() + 0.5
-                    && !text.is_empty() =>
+            RenderCommand::DrawText {
+                origin,
+                text,
+                font_size,
+                line_height,
+                ..
+            } if origin.y >= strip.min_y() - 0.5
+                && origin.y < strip.max_y() + 0.5
+                && !text.is_empty() =>
             {
-                Some((*origin, text.as_str()))
+                Some(Run {
+                    origin: *origin,
+                    text: text.as_str(),
+                    font_size: *font_size,
+                    line_height: *line_height,
+                })
             }
             _ => None,
         })
+    }
+
+    /// The prompt marker inside `strip`: its origin, its size and its colour.
+    fn strip_marker(commands: &[RenderCommand], strip: RectF) -> Option<(Vector2F, f32, ColorU)> {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawIcon {
+                name,
+                origin,
+                size,
+                color,
+            } if name == "prompt-arrow"
+                && origin.x >= strip.min_x() - 0.5
+                && origin.x <= strip.max_x() + 0.5
+                && origin.y >= strip.min_y() - 0.5
+                && origin.y <= strip.max_y() + 0.5 =>
+            {
+                Some((*origin, *size, *color))
+            }
+            _ => None,
+        })
+    }
+
+    /// The user's own row, painted on its own at the pane's width: the band it
+    /// draws, the marker on its first line and that line's run. It is what the
+    /// pin has to match, so the pin is compared against the bubble's own
+    /// render commands rather than against repeated numbers.
+    struct Row {
+        band: RectF,
+        marker: (Vector2F, f32, ColorU),
+        origin: Vector2F,
+        font_size: f32,
+        line_height: f32,
+    }
+
+    fn user_row(text: &str, width: f32, app: &AppContext) -> Row {
+        let mut bubble = ChatMessageBubble::new(ChatRole::User, vec![ChatFragment::text(text)])
+            .finish();
+        let commands = render_element(&mut bubble, vec2f(width, 200.0), app);
+        let band = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::SurfaceRaised) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the user's row paints its band");
+        let marker = strip_marker(&commands, band).expect("the user's row draws its marker");
+        let line = strip_line(&commands, band).expect("the user's row draws its line");
+        assert_eq!(line.text, text, "the row's first line is the message");
+        Row {
+            band,
+            marker,
+            origin: line.origin,
+            font_size: line.font_size,
+            line_height: line.line_height,
+        }
     }
 
     /// The transcript at its top, and the bands of the user messages it holds.
@@ -2714,7 +3001,7 @@ mod sticky_turn {
         let commands = frame(&messages, &scroll, size, &app);
         assert_eq!(scroll.borrow().offset(), 0.0);
         assert!(
-            super::super::sticky::painted_strip(&commands, &app, width).is_none(),
+            strip(&commands, &app, width).is_none(),
             "the bubble is at the top, so nothing pins above it"
         );
         let drawn = commands
@@ -2737,33 +3024,300 @@ mod sticky_turn {
         scroll.borrow_mut().scroll_by(reply / 2.0);
 
         let commands = frame(&messages, &scroll, size, &app);
-        let strip = super::super::sticky::painted_strip(&commands, &app, width)
+        let band = strip(&commands, &app, width)
             .expect("the user bubble is above the top edge, so its turn pins");
-        assert_eq!(strip.min_y(), 0.0, "the row sits at the viewport top");
-        assert_eq!(strip.width(), width, "it spans the pane");
-        assert!(
-            strip.height() <= 24.0,
-            "one line, not a band: {}",
-            strip.height()
+        assert_eq!(band.min_y(), 0.0, "the band sits at the viewport top");
+        assert_eq!(band.width(), width, "it spans the pane");
+        assert_eq!(
+            band.height(),
+            user_row("Fix the login bug", width, &app).band.height(),
+            "one line of the bubble's padded band, not a strip of its own"
         );
-        let (_, text) = strip_line(&commands, strip).expect("the pinned row draws its line");
-        assert_eq!(text, "Fix the login bug");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(line.text, "Fix the login bug");
     }
 
+    /// The pinned row is the user's own prompt band, not a header of its own:
+    /// the bubble's grey, square and edge to edge.
     #[test]
-    fn the_pin_releases_when_the_reply_reaches_the_top() {
+    fn the_pinned_row_is_the_users_grey_band() {
         let app = AppContext::default();
         let width = 600.0;
         let size = vec2f(width, 480.0);
         let messages = conversation("Fix the login bug", 40);
         let (scroll, bands) = at_top(&messages, size, &app);
+        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) / 2.0);
+
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width).expect("the turn pins");
+        let (color, corner_radius) = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *rect == band => Some((*color, *corner_radius)),
+                _ => None,
+            })
+            .expect("the pinned band is a fill of its strip");
+        assert_eq!(
+            color,
+            app.theme.color(ColorToken::SurfaceRaised),
+            "the pin is the grey of the user's own message"
+        );
+        assert_eq!(
+            corner_radius, 0.0,
+            "the user's band has square corners and the pin is its top edge"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::Bg) && *rect == band
+            )),
+            "the pin is not the transcript's own background"
+        );
+    }
+
+    /// The arrow and the text sit exactly where the bubble's own first line
+    /// puts them: same x, same y, same size, same colours.
+    #[test]
+    fn the_pin_draws_the_marker_and_the_line_where_the_bubble_does() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let messages = conversation("Fix the login bug", 40);
+        let (scroll, bands) = at_top(&messages, size, &app);
+        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) / 2.0);
+
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width).expect("the turn pins");
+        let row = user_row("Fix the login bug", width, &app);
+
+        let (origin, icon_size, color) =
+            strip_marker(&commands, band).expect("the pinned band draws the prompt marker");
+        assert_eq!(
+            icon_size, row.marker.1,
+            "the pin's marker is the bubble's marker size"
+        );
+        assert_eq!(
+            color,
+            app.theme.color(ColorToken::Accent),
+            "the marker is drawn at the user accent"
+        );
+        assert_eq!(
+            color, row.marker.2,
+            "the pin's marker is the colour the bubble draws"
+        );
+        assert!(
+            (origin.x - row.marker.0.x).abs() < 0.01 && (origin.y - row.marker.0.y).abs() < 0.01,
+            "the marker sits at {:?}, the bubble draws it at {:?}",
+            origin,
+            row.marker.0
+        );
+
+        let line = strip_line(&commands, band).expect("the pinned band draws its line");
+        assert!(
+            (line.origin.x - row.origin.x).abs() < 0.01,
+            "the pinned text starts at {}, the bubble's at {}",
+            line.origin.x,
+            row.origin.x
+        );
+        assert!(
+            (line.origin.y - row.origin.y).abs() < 0.01,
+            "the pinned line sits at {}, the bubble's at {}",
+            line.origin.y,
+            row.origin.y
+        );
+        assert_eq!(
+            line.font_size, row.font_size,
+            "the pinned line is the size of the message it pins"
+        );
+        assert_eq!(
+            line.line_height, row.line_height,
+            "and the same line box"
+        );
+        assert_eq!(line.font_size, 14.0, "the transcript's paragraph size");
+    }
+
+    /// The band is one line of the bubble's padded band, with the rule that
+    /// separates it from the scrolled content inside its bottom edge.
+    #[test]
+    fn the_pinned_band_is_one_padded_message_line() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let pad = app.theme.spacing_px(SpacingToken::Md);
+        let messages = conversation("Fix the login bug", 40);
+        let (scroll, bands) = at_top(&messages, size, &app);
+        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) / 2.0);
+
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width).expect("the turn pins");
+        assert_eq!(
+            band.height(),
+            user_row("Fix the login bug", width, &app).band.height(),
+            "the pin is one line of the bubble's padded band"
+        );
+        assert!(
+            (band.height() - (14.0 * 1.2 + 2.0 * pad)).abs() < 0.01,
+            "the band is a padded 14 px line, got {}",
+            band.height()
+        );
+
+        let rule = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::Border)
+                        && (rect.width() - width).abs() < 0.01
+                        && rect.height() <= 1.0
+                        && (rect.min_y() - (band.max_y() - rect.height())).abs() < 0.01 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the band closes on a rule");
+        assert!(
+            rule.max_y() <= band.max_y() + 0.01,
+            "the rule stays inside the band's height"
+        );
+    }
+
+    #[test]
+    fn the_pin_survives_the_reply_that_reaches_the_top() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let messages = conversation("Fix the login bug", 40);
+        let (scroll, bands) = at_top(&messages, size, &app);
+        // The first reply's own row is the one at the top edge: the pin names
+        // the turn, not the row, so the reply does not release it.
         let reply = reply_top(&app, bands[0]);
         scroll.borrow_mut().scroll_by(reply + 5.0);
 
         let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width)
+            .expect("the reply at the top edge leaves the turn pinned");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(
+            line.text, "Fix the login bug",
+            "the pin keeps naming the prompt the turn opened on"
+        );
+    }
+
+    /// A turn's first row can be a tool call, not a reply: the pin stays over
+    /// that row too. Before the release rule read the next prompt, this row was
+    /// the anchor, and the header vanished as soon as the agent reached for a
+    /// tool.
+    #[test]
+    fn the_pin_survives_the_tool_row_that_reaches_the_top() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let mut messages = vec![ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("Fix the login bug")],
+        )];
+        messages.push(ChatMessage::new(
+            ChatRole::Tool,
+            vec![ChatFragment::text("read src/lib.rs")],
+        ));
+        messages.extend((0..40).map(|i| {
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text(format!("reply line {i}"))],
+            )
+        }));
+        let (scroll, bands) = at_top(&messages, size, &app);
+        let tool = reply_top(&app, bands[0]);
+        scroll.borrow_mut().scroll_by(tool + 5.0);
+
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width)
+            .expect("the tool row at the top edge leaves the turn pinned");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(line.text, "Fix the login bug");
+    }
+
+    /// With no later prompt to release it on, the pin stays for the whole
+    /// scroll: it is the header of the turn being read, not of the gap between
+    /// two messages.
+    #[test]
+    fn the_pin_stays_for_the_whole_scroll_when_no_later_prompt_follows() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let messages = conversation("Fix the login bug", 40);
+        let (scroll, bands) = at_top(&messages, size, &app);
+        assert_eq!(bands.len(), 1, "one prompt in the conversation");
+        let max = scroll.borrow().max_offset();
+        assert!(max > 0.0, "the transcript scrolls");
+        scroll.borrow_mut().scroll_by(max);
+
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width)
+            .expect("the prompt's bubble is far above the edge, so the turn pins");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(line.text, "Fix the login bug");
+    }
+
+    /// The release anchor is the next prompt: nothing pins while that prompt's
+    /// own row is still below the top edge, and the moment it reaches the edge
+    /// the strip is that turn's.
+    #[test]
+    fn the_pin_moves_to_the_next_prompt_when_it_reaches_the_top() {
+        let app = AppContext::default();
+        let width = 600.0;
+        let size = vec2f(width, 480.0);
+        let mut messages = vec![ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("first question")],
+        )];
+        messages.extend((0..40).map(|i| {
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text(format!("first reply {i}"))],
+            )
+        }));
+        messages.push(ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("second question")],
+        ));
+        messages.extend((0..40).map(|i| {
+            ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text(format!("second reply {i}"))],
+            )
+        }));
+
+        let (scroll, bands) = at_top(&messages, size, &app);
+        assert_eq!(bands.len(), 2, "two prompts");
+
+        // The first turn's rows are at the top edge, and the next prompt is
+        // still below it: the pin has no turn to name yet, because the latest
+        // prompt is the one it names.
+        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) + 5.0);
+        let commands = frame(&messages, &scroll, size, &app);
         assert!(
-            super::super::sticky::painted_strip(&commands, &app, width).is_none(),
-            "the reply's top is above the viewport, so the pin scrolls away with it"
+            strip(&commands, &app, width).is_none(),
+            "the latest prompt is still on screen, so nothing pins above it"
+        );
+
+        // The next prompt's own row reaches the top edge: the strip is drawn
+        // again, and it is that prompt's.
+        let second = bands[1].min_y();
+        let offset = scroll.borrow().offset();
+        scroll.borrow_mut().scroll_by(second + 5.0 - offset);
+        let commands = frame(&messages, &scroll, size, &app);
+        let band = strip(&commands, &app, width)
+            .expect("the next prompt's row at the top edge pins its turn");
+        let line = strip_line(&commands, band).expect("the pinned row draws its line");
+        assert_eq!(
+            line.text, "second question",
+            "the pin gives way to the prompt whose row reached the edge"
         );
     }
 
@@ -2778,7 +3332,7 @@ mod sticky_turn {
         scroll.borrow_mut().scroll_by(target);
         let pinned = frame(&messages, &scroll, size, &app);
         assert!(
-            super::super::sticky::painted_strip(&pinned, &app, width).is_some(),
+            strip(&pinned, &app, width).is_some(),
             "the turn pins while its bubble is above the edge"
         );
 
@@ -2786,7 +3340,7 @@ mod sticky_turn {
         assert_eq!(scroll.borrow().offset(), 0.0);
         let cleared = frame(&messages, &scroll, size, &app);
         assert!(
-            super::super::sticky::painted_strip(&cleared, &app, width).is_none(),
+            strip(&cleared, &app, width).is_none(),
             "the bubble is visible again, so the pin is gone"
         );
     }
@@ -2823,7 +3377,7 @@ mod sticky_turn {
         scroll.borrow_mut().scroll_by(bands[0].height() / 2.0);
         let first_above = frame(&messages, &scroll, size, &app);
         assert!(
-            super::super::sticky::painted_strip(&first_above, &app, width).is_none(),
+            strip(&first_above, &app, width).is_none(),
             "an older user message never pins"
         );
 
@@ -2832,10 +3386,9 @@ mod sticky_turn {
         let offset = scroll.borrow().offset();
         scroll.borrow_mut().scroll_by(target - offset);
         let latest = frame(&messages, &scroll, size, &app);
-        let strip = super::super::sticky::painted_strip(&latest, &app, width)
-            .expect("the latest user message pins");
-        let (_, text) = strip_line(&latest, strip).expect("the pinned row draws its line");
-        assert_eq!(text, "second question");
+        let band = strip(&latest, &app, width).expect("the latest user message pins");
+        let line = strip_line(&latest, band).expect("the pinned row draws its line");
+        assert_eq!(line.text, "second question");
     }
 
     #[test]
@@ -2852,22 +3405,25 @@ mod sticky_turn {
             scroll.borrow_mut().scroll_by(reply / 2.0);
 
             let commands = frame(&messages, &scroll, size, &app);
-            let strip = super::super::sticky::painted_strip(&commands, &app, width)
+            let band = strip(&commands, &app, width)
                 .unwrap_or_else(|| panic!("the long user message pins in a {width} px pane"));
-            let (origin, text) = strip_line(&commands, strip)
+            let line = strip_line(&commands, band)
                 .unwrap_or_else(|| panic!("the pinned row draws its line in a {width} px pane"));
-            let ink = measure_text(text, 12.0, 1.2, f32::INFINITY);
-            let one_line = measure_text("x", 12.0, 1.2, f32::INFINITY).y;
+            let text = line.text;
+            assert_eq!(line.font_size, 14.0, "the pin draws the message's size");
+            let ink = measure_text(text, line.font_size, line.line_height, f32::INFINITY);
+            let one_line = measure_text("x", line.font_size, line.line_height, f32::INFINITY).y;
             assert!(!text.contains('\n'), "the row is one line: {text:?}");
             assert!(
                 ink.y <= one_line + 0.01,
                 "one line of text, got {} against {one_line} at {width}",
                 ink.y
             );
+            // The text keeps the band's right padding, past the marker's column.
             assert!(
-                origin.x + ink.x <= width + 0.01,
+                line.origin.x + ink.x <= width - app.theme.spacing_px(SpacingToken::Md) + 0.01,
                 "the pinned text ends at {} in a {width} px pane",
-                origin.x + ink.x
+                line.origin.x + ink.x
             );
             assert!(text.ends_with('…'), "the long message is elided: {text:?}");
             assert!(

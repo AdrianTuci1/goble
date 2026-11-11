@@ -1,5 +1,5 @@
 use super::blocks::block_status;
-use super::cards::build_card;
+use super::cards::{build_card, CardInfo};
 use crate::emulator::{AgentViewCard, VisibleBlock};
 use crate::terminal::{TerminalRegistry, TerminalSession};
 use goble_ui::elements::{
@@ -15,8 +15,8 @@ use crate::emulator::Emulator;
 use crate::state::UiState;
 use goble_core::harness::ToolCallStatus;
 use goble_ui::elements::{
-    terminal_block, ChatFragment, ChatMessageBubble, ChatRole, TerminalFilter, ToolCall,
-    CARD_RAIL_WIDTH,
+    terminal_block, ChatFragment, ChatMessageBubble, ChatRole, ConversationEntry,
+    ConversationStatus, TerminalFilter, ToolCall,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::platform::text_atlas::{mono_advance, FontWeight};
@@ -224,8 +224,8 @@ fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
     );
 
     // The same command the agent ran is not that block: the transcript
-    // draws the row that names it and then its output, with no block
-    // prompt line and no block header of its own.
+    // draws the row that names it and then its output, with the tool row's
+    // own `Run` verb rather than the block's header.
     let call = ToolCall {
         id: "call-1".to_string(),
         name: "run_command".to_string(),
@@ -253,8 +253,8 @@ fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
         "the output is drawn under the row, got {bubble_runs:?}"
     );
     assert!(
-        !bubble_runs.iter().any(|(text, _, _, _)| text == "❯ "),
-        "the agent's call carries no block prompt line, got {bubble_runs:?}"
+        bubble_runs.iter().any(|(text, _, _, _)| text == "Run "),
+        "the row names the command as a tool call, got {bubble_runs:?}"
     );
     assert!(
         bubble_runs.iter().all(|(_, _, _, size)| *size == 13.0),
@@ -407,6 +407,17 @@ fn the_executed_command_block_reports_when_its_command_started() {
 /// test drives. The pane's session is detached (no pty): the pane has a
 /// real grid/session to draw and route against without spawning a shell.
 fn shell_root() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
+    let (root, state, dir) = shell_fixture();
+    (Box::new(root) as Box<dyn Element>, state, dir)
+}
+
+/// The unboxed root, so a test can reach the app's own action closures as
+/// well as the element tree.
+fn shell_fixture() -> (
+    crate::root_view::RootView,
+    Rc<RefCell<UiState>>,
+    tempfile::TempDir,
+) {
     use crate::root_view::RootView;
     use crate::ui::{Pane, PaneKind, Space};
     use goble_core::store::Store;
@@ -448,7 +459,7 @@ fn shell_root() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
             .sessions
             .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
     }
-    (Box::new(root) as Box<dyn Element>, state, dir)
+    (root, state, dir)
 }
 
 /// A `RootView` on the default space (the chat pane), the surface the shell
@@ -711,25 +722,152 @@ fn the_rich_input_steps_aside_while_a_full_screen_agent_owns_the_pane() {
     );
 }
 
-/// A TUI agent launched from the bar flips the pane to native-first in the
-/// same submit, so the next frame drops the bar and hands the keys over.
+/// A line naming a CLI harness at a shell's submit line opens that harness's
+/// agent view. The harness never starts its TUI in the pane's shell, so Esc
+/// back to the terminal shows the shell with no agent process behind it.
 #[test]
-fn a_tui_agent_launched_from_the_rich_input_goes_native_first() {
+fn a_cli_harness_line_opens_its_agent_view_and_never_starts_a_tui() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (root, state, _dir) = shell_fixture();
+    let on_run_shell_command = Rc::clone(
+        &root
+            .actions
+            .as_ref()
+            .expect("the root built its actions")
+            .on_run_shell_command,
+    );
+    // A harness this machine has: a temp executable named for one, so the
+    // catalog recognises the line without depending on what is installed.
+    let bin = tempfile::tempdir().expect("temp bin");
+    let hermes = bin.path().join("hermes");
+    std::fs::write(&hermes, b"#!/bin/sh\n").expect("write the harness stub");
+    std::fs::set_permissions(&hermes, std::fs::Permissions::from_mode(0o755))
+        .expect("make the stub executable");
+
+    (on_run_shell_command.borrow_mut())(1, hermes.display().to_string());
+
+    let s = state.borrow();
+    assert!(
+        s.pane_controls(1).harness_mode,
+        "the harness's agent view opened"
+    );
+    assert!(
+        matches!(s.pane_view(1), BlockView::Agent { .. }),
+        "the pane draws the agent view the harness is worked through"
+    );
+    assert!(
+        s.pane_conversation_id(1).is_some(),
+        "the harness got a conversation of its own"
+    );
+    assert_eq!(
+        s.terminal.borrow().mode(1),
+        crate::terminal::TerminalMode::Shell,
+        "no CLI TUI was started in the pane's shell"
+    );
+    assert_eq!(
+        s.terminal.borrow().input(1),
+        "",
+        "the shell never received the line"
+    );
+}
+
+/// `agy` paints its TUI inline and never takes the alternate screen, so the
+/// command the shell reports is the whole signal that tells the pane the
+/// Antigravity CLI is running. A CLI started outside the app still gets the
+/// rich input below its screen as its prompt line, unfocused, so the CLI's
+/// option list keeps the keys.
+#[test]
+fn an_inline_cli_agent_keeps_the_rich_input_below_its_screen() {
+    use goble_terminal::hooks::{encode_hook, CommandFinishedValue, PreexecValue};
+    use goble_terminal::HookEvent;
+
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
+    let placeholder = ChatComposer::new().placeholder().to_string();
     let _ = pane_runs(&mut root, &app);
-    for ch in "hermes".chars() {
-        assert!(
-            press(&mut root, &app, &ch.to_string()),
-            "the bar takes {ch:?}"
-        );
-    }
-    assert!(press(&mut root, &app, "Enter"));
 
-    assert_eq!(
-        state.borrow().terminal.borrow().mode(1),
-        crate::terminal::TerminalMode::Agent(crate::terminal::TuiAgent::Hermes),
-        "the pane hands its input to the agent"
+    // The shell reports an `agy` the app did not launch. The CLI paints an
+    // inline frame with colour, cursor-addressed, and takes no alternate
+    // screen.
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some("agy".to_string()),
+    })));
+    emulator.feed(b"\x1b[2J\x1b[H\x1b[31mACCESSING\x1b[0m workspace");
+    state
+        .borrow_mut()
+        .terminal
+        .borrow_mut()
+        .sessions
+        .insert(1, TerminalSession::with_emulator(emulator));
+    // Focus sits with the CLI's screen, as it does after Esc left the agent
+    // view: the bar under it is the CLI's prompt line, not a typing surface.
+    state.borrow_mut().composer_focused = false;
+    assert!(
+        !state
+            .borrow()
+            .terminal
+            .borrow()
+            .sessions
+            .get(&1)
+            .expect("the pane has a session")
+            .is_alt_screen(),
+        "agy needs no alternate screen"
+    );
+
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        runs.iter()
+            .any(|(text, _)| text.contains("Message Antigravity")),
+        "the rich input stays under the CLI's screen, addressed to its harness: {runs:?}"
+    );
+    // The live screen is the body: its cells are painted one by one, with the
+    // colour the CLI asked for. A block would draw the whole line as one plain
+    // run over a command header instead.
+    assert!(
+        !pane_has(&runs, "ACCESSING"),
+        "the frame is not drawn as one block line: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, "A") && pane_has(&runs, "w"),
+        "the CLI's screen is painted cell by cell: {runs:?}"
+    );
+    let palette = app.theme.terminal_palette();
+    let red = ColorU::new(palette.ansi[1].0, palette.ansi[1].1, palette.ansi[1].2, 255);
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, color, .. } if text == "A" && *color == red
+        )),
+        "the cell keeps the ANSI colour: {commands:?}"
+    );
+    assert!(
+        press(&mut root, &app, "ArrowDown"),
+        "the CLI takes the arrow key"
+    );
+    assert!(press(&mut root, &app, "Enter"), "and Enter picks the option");
+
+    // The CLI exits and the shell prompt is back, so is the pane's own bar.
+    let mut emulator = Emulator::new(80, 24);
+    emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
+    emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
+        command: Some("agy".to_string()),
+    })));
+    emulator.feed(&encode_hook(&HookEvent::CommandFinished(
+        CommandFinishedValue::default(),
+    )));
+    state
+        .borrow_mut()
+        .terminal
+        .borrow_mut()
+        .sessions
+        .insert(1, TerminalSession::with_emulator(emulator));
+    assert!(
+        pane_has(&pane_runs(&mut root, &app), &placeholder),
+        "the rich input returns with the shell prompt"
     );
 }
 
@@ -1419,103 +1557,68 @@ fn a_reported_cwd_reaches_the_panes_directory_pill() {
     );
 }
 
-/// The shell's bar is the pane's submit line for *commands*: Enter runs the
-/// draft in this pane's own PTY and leaves the pane on the shell — it does
-/// not open the harness, because the agent view has a composer of its own
-/// that takes prompts. Cmd+Enter is what opens that view. The bar is the
-/// pane's only typing surface, so it holds the keys whenever the pane is
-/// active and no full-screen program owns the screen; Esc puts the shell
-/// back with the conversation's card left behind.
+/// The rich input belongs to the agent on every surface: the first character
+/// typed at a shell's bar opens that pane's harness, with the draft carried
+/// into the agent view's composer and Esc as the way back. The shell never
+/// receives the line, so no CLI TUI is started in the terminal Esc returns to.
 #[test]
-fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view() {
+fn typing_at_the_shells_bar_opens_the_agent_view_and_esc_returns_to_the_shell() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
 
-    // A model is configured here, because Cmd+Enter below opens a *new*
-    // conversation and nothing is created while nothing could answer it
-    // (that refusal is covered in `terminal/tests::a_prompt_with_no_model`).
-    let rt = tokio::runtime::Runtime::new().expect("build runtime");
-    let _guard = rt.enter();
-    {
-        let mut s = state.borrow_mut();
-        s.settings_llm_provider = "mock".to_string();
-        s.settings_llm_api_key = "test-key".to_string();
-    }
-
-    // No focus flag is set by hand: an active shell pane's own build gives
-    // the bar the keyboard, because typing happens only there.
+    // The shell's bar is the only typing surface, so it holds the keys.
     let _ = pane_runs(&mut root, &app);
     let typed = "ls -la";
-    for ch in typed.chars() {
+    type_line(&mut root, &app, typed);
+
+    let conversation_id = {
+        let s = state.borrow();
         assert!(
-            press(&mut root, &app, &ch.to_string()),
-            "the focused bar takes {ch:?}"
+            s.pane_controls(1).harness_mode,
+            "the first keystroke opened the pane's harness"
         );
-    }
-    assert_eq!(
-        state.borrow().pane_sessions.get(&1).unwrap().draft,
-        typed,
-        "typing edits this pane's own draft"
-    );
+        let conversation_id = s
+            .pane_conversation_id(1)
+            .expect("the agent view has a conversation of its own to draw");
+        assert_eq!(
+            s.pane_view(1),
+            BlockView::Agent {
+                conversation_id: conversation_id.clone()
+            },
+            "the pane draws the agent view"
+        );
+        assert_eq!(
+            s.pane_sessions.get(&1).unwrap().draft,
+            typed,
+            "the draft came with the pane into the agent composer"
+        );
+        assert_eq!(
+            s.terminal.borrow().input(1),
+            "",
+            "the terminal never receives typed characters"
+        );
+        assert_eq!(
+            s.terminal.borrow().mode(1),
+            crate::terminal::TerminalMode::Shell,
+            "no CLI TUI was started in the pane's shell"
+        );
+        conversation_id
+    };
 
-    // Enter is the command affordance: the draft is submitted to this
-    // pane's PTY and the pane stays on the shell. An agent turn here would
-    // have opened the harness and bound this pane a conversation.
-    assert!(press(&mut root, &app, "Enter"));
-    assert!(
-        !state.borrow().pane_controls(1).harness_mode,
-        "Enter runs a command instead of opening the harness"
-    );
-    assert_eq!(
-        state.borrow().pane_view(1),
-        BlockView::Terminal,
-        "the pane is still the shell after a command"
-    );
-    assert!(
-        state.borrow().pane_conversation_id(1).is_none(),
-        "a command does not bind this pane an agent conversation"
-    );
-    assert_eq!(
-        state.borrow().pane_sessions.get(&1).unwrap().draft,
-        "",
-        "the bar clears after the command"
-    );
-
-    // Cmd+Enter is the way to the agent view: a draft typed at the same bar
-    // opens the harness on this pane's conversation and goes to the agent.
-    for ch in "explain the last command".chars() {
-        assert!(press(&mut root, &app, &ch.to_string()));
-    }
-    let cmd_enter = key(
-        "Enter",
-        ModifiersState {
-            command: true,
-            ..ModifiersState::default()
-        },
-    );
-    let mut ctx = EventContext;
-    assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
-    assert!(
-        state.borrow().pane_controls(1).harness_mode,
-        "Cmd+Enter opens the harness"
-    );
-    let conversation_id = state
-        .borrow()
-        .pane_conversation_id(1)
-        .expect("the pane bound a conversation of its own");
-    assert_eq!(
-        state.borrow().pane_view(1),
-        BlockView::Agent {
-            conversation_id: conversation_id.clone()
-        },
-        "the harness draws the conversation's agent view"
-    );
-    // The open harness is the shared agent view, and the shared composer is
-    // still pinned at the bottom of it.
+    // The agent surface draws the shared composer with the draft, the
+    // harness's own pill over it, and its way back.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, ChatComposer::new().placeholder()),
-        "the agent view carries the shared composer: {runs:?}"
+        pane_has(&runs, typed),
+        "the agent view's composer carries the draft: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, "Local"),
+        "the rich input names the harness that answers: {runs:?}"
+    );
+    assert!(
+        pane_has(&runs, "for terminal"),
+        "the open harness names Esc as the way back: {runs:?}"
     );
 
     // Esc returns the pane to the shell; the card stays in its block list.
@@ -1536,21 +1639,34 @@ fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view
         vec![conversation_id.clone()],
         "the conversation's card stays in the terminal scrollback"
     );
+    assert_eq!(
+        state.borrow().terminal.borrow().mode(1),
+        crate::terminal::TerminalMode::Shell,
+        "the returned terminal still runs no CLI TUI"
+    );
 
-    // The bar takes the keys back: it is the pane's only typing surface, so
-    // the keystrokes that once reached the shell now edit the draft, and the
-    // shell's input mirror stays empty.
+    // The shell's bar is back, and typing there reopens the same view.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, ChatComposer::new().placeholder()),
+        pane_has(&runs, "new conversation"),
         "the shell's bar is back at the bottom: {runs:?}"
     );
     assert!(press(&mut root, &app, "l"));
-    assert!(press(&mut root, &app, "s"));
+    assert!(
+        state.borrow().pane_controls(1).harness_mode,
+        "typing reopens the harness"
+    );
+    assert_eq!(
+        state.borrow().pane_view(1),
+        BlockView::Agent {
+            conversation_id: conversation_id.clone()
+        },
+        "the pane reopens the conversation it was on"
+    );
     assert_eq!(
         state.borrow().pane_sessions.get(&1).unwrap().draft,
-        "ls",
-        "the bar takes the keys"
+        "ls -lal",
+        "the draft continues where the shell's bar left it"
     );
     assert_eq!(
         state.borrow().terminal.borrow().input(1),
@@ -1558,21 +1674,45 @@ fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view
         "the terminal never receives typed characters"
     );
 
-    // Clicking the card reopens that conversation's agent view. The card's
-    // accent rail is where the card landed.
+    // Back on the shell for the card's own click: the frame has to be built
+    // from the reopened state before it can route the key.
+    let _ = pane_runs(&mut root, &app);
+    assert!(press(&mut root, &app, "Escape"));
+
+    // The card reads the harness off the app's conversation list, so the mark
+    // it leads with is the conversation's own, not a fixed native one.
+    state.borrow_mut().conversations = vec![ConversationEntry::new(
+        conversation_id.clone(),
+        "Explain the last command",
+        "",
+        "just now",
+    )
+    .with_harness("claude")
+    .with_status(ConversationStatus::Waiting)];
+
+    // Clicking the card reopens that conversation's agent view. Its harness
+    // mark is where the card landed.
     let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-    let rail = commands
+    let (mark, mark_size) = commands
         .iter()
         .find_map(|c| match c {
-            RenderCommand::FillRect { rect, .. }
-                if rect.width() == CARD_RAIL_WIDTH && rect.min_x() >= crate::ui::SIDEBAR_WIDTH =>
-            {
-                Some(*rect)
+            RenderCommand::DrawIcon {
+                origin, name, size, ..
+            } if name == "harness-claude" && origin.x >= crate::ui::SIDEBAR_WIDTH => {
+                Some((*origin, *size))
             }
             _ => None,
         })
-        .expect("the terminal view draws the conversation card");
-    let position = Vector2F::new(rail.min_x() + 20.0, rail.min_y() + 8.0);
+        .expect("the card leads with the conversation's harness");
+    assert!(
+        !commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawImage { rect, source, .. }
+                if source == "harness-goble-octopus" && rect.min_x() >= crate::ui::SIDEBAR_WIDTH
+        )),
+        "a claude conversation does not draw the native mark"
+    );
+    let position = Vector2F::new(mark.x + mark_size / 2.0, mark.y + mark_size / 2.0);
     let mut ctx = EventContext;
     assert!(root.dispatch_event(
         &DispatchedEvent::MouseDown {
@@ -1596,15 +1736,12 @@ fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view
 /// (the shared-composer test above pins that side).
 const AGENT_SURFACE_RUNS: [&str; 4] = ["send", "send to cloud", "tasks", "for terminal"];
 
-/// S4: a shell pane in terminal mode builds no agent surface and dispatches
-/// no agent action. Nothing about the pane's kind has made it an agent
-/// session — its mode is off — so the pane draws the shell, and a
-/// prompt-shaped line submitted at its bar stays a shell command: no
-/// conversation is bound to the pane, the pane does not switch itself into
-/// agent mode, and no turn is attempted (a turn that could not run is what
-/// would raise the missing-model notice, and it is never reached).
+/// S4: a shell pane draws the shell until something is typed at its rich
+/// input. The pane's kind alone is not an agent session — its mode is off, so
+/// it draws the shell and no agent surface — and the first keystroke is what
+/// opens the harness, carrying the draft it was typed into.
 #[test]
-fn a_shell_pane_in_terminal_mode_builds_no_agent_surface_and_dispatches_no_agent_action() {
+fn a_shell_pane_draws_the_shell_until_the_first_keystroke_opens_the_harness() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
     let _ = pane_runs(&mut root, &app);
@@ -1625,41 +1762,32 @@ fn a_shell_pane_in_terminal_mode_builds_no_agent_surface_and_dispatches_no_agent
             "a shell pane draws no agent surface, so no {label:?}: {runs:?}"
         );
     }
+    assert!(
+        state.borrow().pane_conversation_id(1).is_none(),
+        "a shell pane owns no conversation"
+    );
 
-    // A line that reads like a prompt is a command like any other at this
-    // bar. (That the submitted line really ran in the pane's shell is pinned
-    // where the shell reports it — `a_bound_shell_pane_names_its_host...`
-    // above binds the pane from the line it types — and by
-    // `the_shells_bar_runs_its_draft_as_a_command...`.)
-    type_line(&mut root, &app, "explain the last command");
-    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    // The first keystroke opens the pane's harness; the character stays in
+    // the draft, and the shell never receives it.
+    assert!(press(&mut root, &app, "e"), "the bar takes the keystroke");
     let s = state.borrow();
     assert!(
-        !s.pane_controls(1).harness_mode,
-        "Enter runs the line instead of switching the pane into agent mode"
+        s.pane_controls(1).harness_mode,
+        "typing opened the pane's harness"
     );
     assert_eq!(
-        s.pane_view(1),
-        BlockView::Terminal,
-        "and the pane is still the shell"
+        s.pane_sessions.get(&1).unwrap().draft,
+        "e",
+        "the character stayed in the draft"
     );
     assert!(
-        s.pane_conversation_id(1).is_none(),
-        "a shell command binds this pane no conversation"
+        s.pane_conversation_id(1).is_some(),
+        "the agent view has a conversation of its own"
     );
-    assert!(
-        !s.show_llm_key_banner,
-        "no agent turn was dispatched (a refused one raises the notice band)"
-    );
-    assert!(
-        !s.pane_runtime.get(&1).map(|rt| rt.busy).unwrap_or(false),
-        "and no turn is running for the pane"
-    );
-    drop(s);
     assert_eq!(
-        state.borrow().terminal.borrow().input(1),
+        s.terminal.borrow().input(1),
         "",
-        "the line was submitted at the bar, not typed into the shell's grid"
+        "the terminal never receives typed characters"
     );
 }
 
@@ -1671,7 +1799,15 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
     /// What the fixture's `web` alias resolves to, as the chip reads it.
     const CHIP: &str = "deploy@web (web.example.com)";
     let app = AppContext::default();
-    let (mut root, state, _dir) = shell_root();
+    let (root, state, _dir) = shell_fixture();
+    let on_run_shell_command = Rc::clone(
+        &root
+            .actions
+            .as_ref()
+            .expect("the root built its actions")
+            .on_run_shell_command,
+    );
+    let mut root: Box<dyn Element> = Box::new(root);
     let home = tempfile::tempdir().expect("temp home");
     std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
     std::fs::write(
@@ -1683,8 +1819,7 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
     let _ = pane_runs(&mut root, &app);
 
     // The line binds the pane to the host it names ...
-    type_line(&mut root, &app, "ssh web");
-    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    (on_run_shell_command.borrow_mut())(1, "ssh web".to_string());
     assert_eq!(
         state
             .borrow()
@@ -1721,8 +1856,7 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
     // Another line — prompt-shaped, and nothing the shell can bind — leaves
     // the pane where it is: on the same session, out of agent mode, with no
     // conversation and no turn.
-    type_line(&mut root, &app, "explain the last command");
-    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
+    (on_run_shell_command.borrow_mut())(1, "explain the last command".to_string());
     let s = state.borrow();
     assert!(
         !s.pane_controls(1).harness_mode,
@@ -2050,6 +2184,64 @@ fn cmd_enter_on_a_pane_already_in_the_agent_view_pushes_nothing_again() {
     );
 }
 
+/// A custom harness owns its model and approval policy, so its agent surface
+/// draws the harness's own mark in the composer footer where the native
+/// surface draws the model selector and the approval mode. The bar leads with
+/// the same mark, so a pane on a custom harness draws it twice: once beside the
+/// title and once in the footer.
+#[test]
+fn a_custom_harness_agent_surface_draws_its_mark_in_the_footer() {
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let s = state.borrow();
+        s.terminal.borrow_mut().set_mode(
+            1,
+            crate::terminal::TerminalMode::Agent(crate::terminal::TuiAgent::Claude),
+        );
+    }
+    let model = state.borrow().pane_controls(1).model.clone();
+    {
+        let mut s = state.borrow_mut();
+        s.pane_controls_mut(1).harness_mode = true;
+        s.enter_agent_view(1, "c1", "A conversation");
+    }
+
+    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+    let marks: Vec<f32> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon { origin, name, .. }
+                if name == "harness-claude" && origin.x >= crate::ui::SIDEBAR_WIDTH =>
+            {
+                Some(origin.y)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        marks.len() >= 2,
+        "the bar and the composer footer both lead with the harness mark: {marks:?}"
+    );
+
+    let runs = pane_runs(&mut root, &app);
+    assert!(
+        !runs.iter().any(|(text, _)| *text == model),
+        "a custom harness draws no model control: {runs:?}"
+    );
+    assert!(
+        !pane_has(
+            &runs,
+            goble_ui::elements::chat_composer::MODEL_NOT_CONFIGURED
+        ),
+        "and no placeholder for one: {runs:?}"
+    );
+    assert!(
+        !pane_has(&runs, "manual"),
+        "a custom harness draws no approval control: {runs:?}"
+    );
+}
+
 /// S3: the busy guard, and the fact that it speaks. A pane whose own shell
 /// is running a command does not switch — the harness could not run in it,
 /// since its command could not be claimed — and the pane says why over the
@@ -2147,6 +2339,81 @@ fn session_with_a_command_running(command: &str) -> TerminalSession {
     TerminalSession::with_emulator(emulator)
 }
 
+/// The refusal is a band of the pane, so its surface runs the pane's whole
+/// width: the background has no side margin, and only the text keeps padding.
+#[test]
+fn the_refusal_band_runs_the_panes_whole_width() {
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
+    {
+        let s = state.borrow();
+        let mut registry = s.terminal.borrow_mut();
+        registry
+            .sessions
+            .insert(1, session_with_a_command_running("cargo build"));
+    }
+    let _ = pane_runs(&mut root, &app);
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    assert!(
+        root.dispatch_event(&cmd_enter, &mut EventContext, &app),
+        "Cmd+Enter is taken by the bar"
+    );
+
+    let window = vec2f(1024.0, 768.0);
+    let commands = render_element(&mut root, window, &app);
+    let reason = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == BUSY_REFUSAL => Some(*origin),
+            _ => None,
+        })
+        .expect("the refusal is drawn");
+    let band = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && reason.x >= rect.min_x()
+                    && reason.x < rect.max_x()
+                    && reason.y >= rect.min_y()
+                    && reason.y < rect.max_y() =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the refusal paints a raised band");
+    let bounds = state
+        .borrow()
+        .pane_bounds
+        .borrow()
+        .get(&1)
+        .copied()
+        .expect("the pane recorded its bounds");
+    assert_eq!(
+        band.min_x(),
+        bounds.min_x(),
+        "no side margin on the band: {band:?} in {bounds:?}"
+    );
+    assert_eq!(
+        band.max_x(),
+        bounds.max_x(),
+        "the band is the pane's width: {band:?} in {bounds:?}"
+    );
+    assert!(
+        reason.x > band.min_x(),
+        "the text keeps its own side padding: {reason:?} in {band:?}"
+    );
+}
+
 /// The focused pane's corner mark is drawn over the left end of the pane's
 /// own bar, so the bar starts past it. The harness's "esc for terminal" hint
 /// leads that bar, and without the room the mark leaves it would sit under
@@ -2199,36 +2466,279 @@ fn the_harness_hint_starts_past_the_focus_mark() {
     );
 }
 
-/// R6: the app's conversation card is A8's `ConversationCard` element, not
-/// a private bordered container. It paints its status rail and no border.
+/// R6: the app's conversation card is A8's `ConversationCard` element: the
+/// raised band it draws, led by its harness's mark and closed by the two
+/// glyphs that say the row opens.
 #[test]
-fn the_conversation_card_is_card_free() {
+fn the_conversation_card_is_the_shared_raised_band() {
     let app = AppContext::default();
-    let mut card = build_card(&AgentViewCard {
+    let card = AgentViewCard {
         conversation_id: "c1".to_string(),
         label: "Fix the build".to_string(),
-    });
-    let commands = render_element(&mut card, vec2f(420.0, 40.0), &app);
+    };
+    let mut element = build_card(&card, None);
+    let commands = render_element(&mut element, vec2f(420.0, 40.0), &app);
 
     let strokes = commands
         .iter()
         .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
         .count();
-    assert_eq!(strokes, 0, "the conversation card draws no border");
+    assert_eq!(strokes, 1, "the band keeps one hairline");
 
-    // The accent rail is the card element's own mark, not a bordered box.
-    let rail = commands.iter().find_map(|c| match c {
-        RenderCommand::FillRect {
-            rect,
-            corner_radius,
-            ..
-        } if rect.width() == CARD_RAIL_WIDTH => Some(*corner_radius),
-        _ => None,
-    });
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawImage { source, .. } if source == "harness-goble-octopus"
+        )),
+        "a card with no conversation info leads with the native mark"
+    );
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.contains(&"Fix the build"), "the title: {texts:?}");
+    let icons: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        icons.contains(&"maximize-01") && icons.contains(&"chevron-right"),
+        "the expand and open glyphs: {icons:?}"
+    );
+}
+
+/// The card takes its title, harness and last activity from the app's
+/// conversation list, which is where a card left by a pane reads what the
+/// conversation is called now and which agent ran it.
+#[test]
+fn the_conversation_card_takes_its_harness_from_the_conversation_list() {
+    let app = AppContext::default();
+    let entry = ConversationEntry::new("c1", "Fix the build", "", "2m")
+        .with_harness("claude")
+        .with_status(ConversationStatus::Waiting);
+    let info = CardInfo::from(&entry);
+
+    assert_eq!(info.title, "Fix the build");
+    assert!(info.has_agent_reply, "the entry has an agent's answer");
+    assert_eq!(info.harness, "claude");
+    assert_eq!(info.last_activity, "2m");
     assert_eq!(
-        rail,
-        Some(0.0),
-        "the card element paints its square status rail"
+        info.status,
+        goble_ui::elements::ConversationCardStatus::Running,
+        "the sidebar's one live state reads as a turn in flight"
+    );
+
+    // The block's stored label is whatever the pane entered the view with; the
+    // conversation's current subject is what the row draws.
+    let card = AgentViewCard {
+        conversation_id: "c1".to_string(),
+        label: "c1".to_string(),
+    };
+    let mut element = build_card(&card, Some(&info));
+    let commands = render_element(&mut element, vec2f(420.0, 40.0), &app);
+
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawIcon { name, .. } if name == "harness-claude"
+        )),
+        "the card leads with the conversation's own harness"
+    );
+    let drawn = texts(&commands);
+    assert!(
+        drawn.iter().any(|text| text == "Fix the build"),
+        "the conversation's subject titles the row: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|text| text == "c1"),
+        "the stored label never wins over the list's subject: {drawn:?}"
+    );
+}
+
+/// A conversation the user has not named yet has no subject to draw, and the
+/// raw conversation id is not one.
+#[test]
+fn a_card_with_no_subject_is_a_new_conversation() {
+    let app = AppContext::default();
+    for name in ["", "c1"] {
+        let entry = ConversationEntry::new("c1", name, "", "");
+        let info = CardInfo::from(&entry);
+        assert_eq!(info.title, "New conversation");
+
+        let card = AgentViewCard {
+            conversation_id: "c1".to_string(),
+            label: name.to_string(),
+        };
+        let mut element = build_card(&card, Some(&info));
+        let drawn = texts(&render_element(&mut element, vec2f(420.0, 40.0), &app));
+        assert!(
+            drawn.iter().any(|text| text == "New conversation"),
+            "a card with no subject reads as a new conversation: {drawn:?}"
+        );
+    }
+}
+
+/// The card is a surface of the pane, not a row inside it: the raised band runs
+/// the pane's whole width with no side margin, and the row's own padding is
+/// what keeps its text off the edges. A command's section keeps the pane's
+/// inset, so the shell's output stays where it was.
+#[test]
+fn the_conversation_card_runs_the_panes_whole_width() {
+    use goble_ui::theme::{ColorToken, SpacingToken};
+
+    let app = AppContext::default();
+    let mut session = session_that_ran("echo hi", "hi");
+    session.push_agent_view_block("c1", "Fix the build");
+    let (pane, _terminal) = view_over(
+        session,
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let entry = ConversationEntry::new("c1", "Fix the build", "", "2m");
+    let mut pane: Box<dyn Element> = Box::new(
+        pane.with_conversation_info(HashMap::from([(entry.id.clone(), CardInfo::from(&entry))])),
+    );
+    let window = vec2f(900.0, 500.0);
+    let commands = render_element(&mut pane, window, &app);
+
+    let band = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::SurfaceRaised) =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the card paints its raised band");
+    assert_eq!(band.min_x(), 0.0, "the band has no side margin");
+    assert_eq!(band.max_x(), window.x, "the band runs the pane's width");
+
+    let title = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == "Fix the build" => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+        .expect("the card draws its title");
+    assert!(
+        title.x > band.min_x(),
+        "the title keeps the card's own padding: {title:?} in {band:?}"
+    );
+
+    let lg = app.theme.spacing_px(SpacingToken::Lg);
+    let command = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text.contains("echo hi") => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+        .expect("the section draws its command line");
+    assert!(
+        command.x >= lg,
+        "a section keeps the pane's side inset: {command:?}"
+    );
+}
+
+/// A card stands for an exchange. Entering the agent view leaves the card in
+/// the block list, but the pane draws it only once the app's conversation list
+/// says the agent answered in it — and titles it with the conversation's
+/// subject, never the raw id the block was pushed with.
+#[test]
+fn a_conversation_card_draws_only_once_the_agent_has_answered() {
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let answered = "9b78c354-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
+    let unanswered = "cb48cc15-1a2b-4c3d-9e4f-5a6b7c8d9e0f";
+    let window = vec2f(900.0, 500.0);
+    let pane_over = |info: HashMap<String, CardInfo>| -> Box<dyn Element> {
+        let mut session = session_that_ran("echo hi", "hi");
+        session.push_agent_view_block(answered, answered);
+        session.push_agent_view_block(unanswered, unanswered);
+        let (pane, _terminal) = view_over(
+            session,
+            7,
+            TerminalBlockPlumbing::new(block_filters(), None, None),
+        );
+        Box::new(pane.with_conversation_info(info))
+    };
+
+    // The blocks were pushed on entering, but the app's list does not know
+    // these conversations: nothing was exchanged, so no card is drawn.
+    let mut pane = pane_over(HashMap::new());
+    let commands = render_element(&mut pane, window, &app);
+    let drawn = texts(&commands);
+    for id in [answered, unanswered] {
+        assert!(
+            !drawn.iter().any(|text| text.contains(id)),
+            "the raw conversation id is never drawn: {drawn:?}"
+        );
+    }
+    assert!(
+        !drawn.iter().any(|text| text == "New conversation"),
+        "no card stands in for an empty conversation: {drawn:?}"
+    );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. }
+                if *color == app.theme.color(ColorToken::SurfaceRaised)
+        )),
+        "no card, no raised band"
+    );
+
+    // An answered conversation draws, titled by its subject, while one with no
+    // reply stays hidden — its block is in the same list.
+    let answered_entry = ConversationEntry::new(answered, "Fix the build", "It builds.", "2m");
+    let unanswered_entry =
+        ConversationEntry::new(unanswered, "Draft chat", "", "1m").with_has_agent_reply(false);
+    assert!(!unanswered_entry.has_agent_reply);
+    let mut pane = pane_over(HashMap::from([
+        (answered_entry.id.clone(), CardInfo::from(&answered_entry)),
+        (
+            unanswered_entry.id.clone(),
+            CardInfo::from(&unanswered_entry),
+        ),
+    ]));
+    let commands = render_element(&mut pane, window, &app);
+    let drawn = texts(&commands);
+    assert!(
+        drawn.iter().any(|text| text == "Fix the build"),
+        "the answered conversation draws its subject: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|text| text.contains(answered)),
+        "the card is titled by the subject, not the id: {drawn:?}"
+    );
+    for hidden in [unanswered, "Draft chat"] {
+        assert!(
+            !drawn.iter().any(|text| text.contains(hidden)),
+            "a conversation with no reply draws no card: {drawn:?}"
+        );
+    }
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. }
+                    if *color == app.theme.color(ColorToken::SurfaceRaised)
+            ))
+            .count(),
+        1,
+        "one band for the one conversation that was exchanged in"
     );
 }
 
@@ -3342,5 +3852,115 @@ fn plain_output_is_still_drawn_in_the_theme_text_colour() {
     assert_eq!(
         plain.1, text,
         "an uncoloured line stays the theme's text colour"
+    );
+}
+
+/// A pane whose grid holds the keys, with the lines it submits recorded: the
+/// grid's own path, where no rich composer stands in front of the shell.
+fn view_over_grid(
+    session: TerminalSession,
+    pane_id: u64,
+) -> (
+    TerminalView,
+    Rc<RefCell<TerminalRegistry>>,
+    Rc<RefCell<Vec<String>>>,
+) {
+    let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+    terminal.borrow_mut().sessions.insert(pane_id, session);
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let submitted_cb = Rc::clone(&submitted);
+    let view = TerminalView::new(
+        Rc::clone(&terminal),
+        pane_id,
+        "/tmp".to_string(),
+        true,
+        BlockView::Terminal,
+        // The grid holds the keyboard; the bar in this tree is a label.
+        false,
+        Some(Text::new("bar").finish()),
+        Rc::new(RefCell::new(|_: u64| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: bool| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(move |_: u64, line: String| {
+            submitted_cb.borrow_mut().push(line)
+        })),
+        Rc::new(RefCell::new(|_: String| {})),
+    );
+    (view, terminal, submitted)
+}
+
+/// A harness line typed straight into the grid is handed to the app as a
+/// harness line and never starts its TUI in the shell: the pane stays a
+/// shell, so the terminal Esc returns to has no agent process behind it.
+#[test]
+fn a_harness_line_typed_into_the_grid_never_starts_its_tui() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let app = AppContext::default();
+    let bin = tempfile::tempdir().expect("temp bin");
+    let hermes = bin.path().join("hermes");
+    std::fs::write(&hermes, b"#!/bin/sh\n").expect("write the harness stub");
+    std::fs::set_permissions(&hermes, std::fs::Permissions::from_mode(0o755))
+        .expect("make the stub executable");
+    let line = hermes.display().to_string();
+
+    let (pane, terminal, submitted) =
+        view_over_grid(TerminalSession::with_emulator(Emulator::new(80, 24)), 7);
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let mut ctx = EventContext;
+    let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    for ch in line.chars() {
+        assert!(
+            pane.dispatch_event(&key(&ch.to_string(), ModifiersState::none()), &mut ctx, &app),
+            "the grid takes {ch:?}"
+        );
+    }
+    assert_eq!(terminal.borrow().input(7), line, "the mirror holds the line");
+    assert!(
+        pane.dispatch_event(&key("Enter", ModifiersState::none()), &mut ctx, &app),
+        "the grid takes Enter"
+    );
+    assert_eq!(
+        terminal.borrow().mode(7),
+        crate::terminal::TerminalMode::Shell,
+        "no CLI TUI was started in the pane's shell"
+    );
+    assert_eq!(
+        &*submitted.borrow(),
+        &vec![line],
+        "the line is submitted as a harness line"
+    );
+}
+
+/// A harness named inside another command is that command's argument: the
+/// line runs in the shell and opens no agent view.
+#[test]
+fn a_harness_named_inside_a_command_is_not_launched() {
+    let app = AppContext::default();
+    let (pane, terminal, submitted) =
+        view_over_grid(TerminalSession::with_emulator(Emulator::new(80, 24)), 7);
+    let mut pane: Box<dyn Element> = Box::new(pane);
+    let mut ctx = EventContext;
+    let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    for ch in "man claude".chars() {
+        assert!(
+            pane.dispatch_event(&key(&ch.to_string(), ModifiersState::none()), &mut ctx, &app),
+            "the grid takes {ch:?}"
+        );
+    }
+    assert!(
+        pane.dispatch_event(&key("Enter", ModifiersState::none()), &mut ctx, &app),
+        "the grid takes Enter"
+    );
+    assert_eq!(
+        terminal.borrow().mode(7),
+        crate::terminal::TerminalMode::Shell,
+        "the word `claude` is an argument, not a launch"
+    );
+    assert_eq!(
+        &*submitted.borrow(),
+        &vec!["man claude".to_string()],
+        "the line reaches the shell as typed"
     );
 }

@@ -822,6 +822,67 @@ fn the_model_control_reads_not_configured_when_nothing_is_configured() {
     );
 }
 
+/// A custom harness owns its model and approval policy, so its footer carries
+/// the harness's own mark where the native model and approval controls would
+/// be. A composer given both still draws only the mark: the two controls are
+/// the native agent's and say nothing about a CLI harness's turn.
+#[test]
+fn a_custom_harness_footer_draws_its_mark_in_place_of_model_and_approval() {
+    use crate::elements::ApprovalMode;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let mut custom = ChatComposer::new()
+        .with_value("hi")
+        .with_agent_harness("claude")
+        .with_model_label("gpt-4o")
+        .with_approval_mode(ApprovalMode::AutoReview);
+    let (_, commands) = paint_composer_in(&app, &mut custom, vec2f(600.0, 400.0));
+
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawIcon { name, .. } if name == "harness-claude"
+        )),
+        "the footer draws the harness's mark: {commands:?}"
+    );
+    let texts = drawn_texts(&commands);
+    assert!(
+        !texts.iter().any(|text| text == "gpt-4o"),
+        "a custom harness draws no model control: {commands:?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|text| text == ApprovalMode::AutoReview.label()),
+        "a custom harness draws no approval control: {commands:?}"
+    );
+
+    // The native surface is unchanged: both controls, and no harness mark.
+    let mut native = ChatComposer::new()
+        .with_value("hi")
+        .with_model_label("gpt-4o")
+        .with_approval_mode(ApprovalMode::AutoReview);
+    let (_, commands) = paint_composer_in(&app, &mut native, vec2f(600.0, 400.0));
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts.iter().any(|text| text == "gpt-4o"),
+        "the native footer keeps its model control: {commands:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == ApprovalMode::AutoReview.label()),
+        "the native footer keeps its approval control: {commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name.starts_with("harness-"))),
+        "the native footer draws no harness mark: {commands:?}"
+    );
+}
+
 /// The model control opens the models as the band the commands are drawn in: a
 /// full-width row list over the input, taken with Up/Down and Enter or Tab, put
 /// away with Escape — while the editor keeps the caret and the keys.
@@ -1966,17 +2027,18 @@ fn the_focused_editor_shows_the_focus_blue_caret() {
     );
 }
 
-/// The rich input's cursor does not move the letter it sits among: the editor
-/// draws its whole line as one run and the block is an overlay on top of it.
-/// The block covers exactly the letter after the insertion point, which it
-/// redraws in the cell's background colour.
+/// The rich input's cursor is a terminal's block, not a highlight: the editor
+/// draws its whole line as one run, the block is a fill painted behind it, and
+/// the letter the block covers is redrawn over the run in the background
+/// colour, at the pen the editor gives it. The cell covers exactly the letter
+/// after the insertion point, and no other letter moves.
 #[test]
 fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
     let focus = app.theme.color(ColorToken::Focus);
-    let ink = app.theme.color(ColorToken::Bg);
+    let bg = app.theme.color(ColorToken::Bg);
     let caret = Rc::new(RefCell::new(1));
     let mut composer = ChatComposer::new()
         .with_value("hi")
@@ -1984,21 +2046,30 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
         .with_caret(caret);
     let commands = paint_composer(&app, &mut composer);
 
-    // One intact run, at the editor's own origin.
-    let runs: Vec<(&str, crate::geometry::Vector2F)> = commands
+    // One intact run at the editor's own origin, and then the letter the block
+    // covers, redrawn in the background colour on the run's own pen.
+    let runs: Vec<(&str, crate::geometry::Vector2F, crate::color::ColorU)> = commands
         .iter()
         .filter_map(|command| match command {
             RenderCommand::DrawText {
-                origin,
-                text,
-                color,
-                ..
-            } if *color != ink => Some((text.as_str(), *origin)),
+                origin, text, color, ..
+            } => Some((text.as_str(), *origin, *color)),
             _ => None,
         })
         .collect();
-    assert_eq!(runs.len(), 1, "the editor draws its line as one run");
+    assert_eq!(
+        runs.len(),
+        2,
+        "the editor draws its line as one run and redraws only the letter the \
+         block covers: {runs:?}"
+    );
     assert_eq!(runs[0].0, "hi");
+    assert_eq!(runs[1].0, "i", "the cell covers the `i` after the beam");
+    assert_eq!(
+        runs[1].2, bg,
+        "the covered letter is drawn in the background colour, so the cell \
+         reads as inverted"
+    );
 
     let (cell_at, cell) = commands
         .iter()
@@ -2028,26 +2099,32 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
         (cell.width() - advance_i).abs() < 0.5,
         "the cell covers the `i` after it ({advance_i}): {cell:?}"
     );
-    let (covered_at, covered) = commands
-        .iter()
-        .enumerate()
-        .find_map(|(index, command)| match command {
-            RenderCommand::DrawText {
-                origin,
-                text,
-                color,
-                ..
-            } if *color == ink && text == "i" => Some((index, *origin)),
-            _ => None,
-        })
-        .expect("the covered letter is redrawn in the cell's background");
     assert!(
-        cell_at < covered_at,
-        "the block is painted before the letter it covers is redrawn"
+        (runs[1].1.x - cell.min_x()).abs() < 0.5 && (runs[1].1.y - runs[0].1.y).abs() < 0.5,
+        "the inverted glyph sits on the cell's own pen and line: {:?} against \
+         {cell:?} and {:?}",
+        runs[1].1,
+        runs[0].1
+    );
+    // The fill is behind the line and the inverted glyph over it: the run keeps
+    // its own pixel column, and the cell is what changes colour.
+    let run_at = commands
+        .iter()
+        .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "hi"))
+        .expect("the line is drawn");
+    let ink_at = commands
+        .iter()
+        .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "i"))
+        .expect("the covered letter is redrawn");
+    assert!(
+        cell_at < run_at,
+        "the block is a fill painted before the line, so the letter is not \
+         hidden by it"
     );
     assert!(
-        (covered.x - cell.min_x()).abs() < 1.0,
-        "the redrawn letter sits in its cell: {covered:?} against {cell:?}"
+        run_at < ink_at,
+        "the inverted letter is painted after the line, so it is the ink that \
+         changes colour and not a shade behind it"
     );
 }
 

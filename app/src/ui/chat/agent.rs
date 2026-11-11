@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
 use goble_ui::elements::{AppContext, Element, PopupMenuItem};
-use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView};
+use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView, WorkSection};
 
 use crate::emulator::VisibleBlock;
 use crate::state::PaneControls;
@@ -31,10 +31,14 @@ fn with_inline_terminal(
     // same terminal block the pane does, so a command the user ran is one block
     // wherever it appears. A command the agent ran is not this: its call is part
     // of the agent's reply and is drawn continuously under the row that names it.
+    //
+    // A conversation reads its own shell, never the pane's terminal: a `!` line
+    // typed in the agent view runs beside the terminal, so the terminal's own
+    // commands stay out of the transcript and this one stays out of the shell
+    // behind Esc.
     let block = {
         let reg = terminal.borrow();
-        reg.sessions
-            .get(&pane_id)
+        reg.agent_session(pane_id)
             .and_then(crate::ui::terminal::executed_command_block_at)
     };
     let Some((data, started)) = block else {
@@ -99,7 +103,12 @@ fn with_conversation_commands(
     let view = BlockView::Agent {
         conversation_id: conversation_id.to_string(),
     };
-    let blocks = state.terminal.borrow().visible_blocks(pane_id, &view);
+    // The conversation's commands live in its own shell; reading the pane's
+    // terminal here is what made a `!` command appear on both surfaces.
+    let blocks = state
+        .terminal
+        .borrow()
+        .agent_visible_blocks(pane_id, &view);
     merge_conversation_commands(messages, conversation_command_rows(&blocks))
 }
 
@@ -215,12 +224,33 @@ pub fn build_agent_chat(
         .get(&pane_id)
         .cloned()
         .unwrap_or_else(|| crate::state::NEW_AGENT_TAB_LABEL.to_string());
+    // The bar names the harness this surface works with: the CLI agent in the
+    // pane's pty when one runs (the chip asks the registry first), else the
+    // conversation's own harness, else the native one this view runs.
+    let surface_harness = state
+        .terminal
+        .borrow()
+        .pane_harness(pane_id)
+        .or_else(|| {
+            state
+                .conversations
+                .iter()
+                .find(|entry| entry.id == session.conversation_id)
+                .and_then(|entry| goble_core::harness::harness_for(&entry.harness))
+        })
+        .or_else(|| goble_core::harness::harness_for("goble"));
+    // A CLI harness owns its own model and approval policy. The app's model
+    // switcher and always-approve control are the native agent's, so a pane
+    // talking to a CLI harness draws neither; the harness chip names what
+    // answers instead.
+    let native_harness = surface_harness.is_none_or(|spec| spec.id == "goble");
     let header = build_agent_header(
         app,
         state,
         actions,
         pane_id,
         harness_open,
+        surface_harness,
         Some(PaneHeading::Agent(heading)),
     );
 
@@ -263,6 +293,60 @@ pub fn build_agent_chat(
         Rc::new(RefCell::new(move |child_id: String| {
             (open.borrow_mut())(pane_id, child_id)
         }))
+    };
+    // The Stop is drawn in this pane's transcript, so the pane id is baked in
+    // here too: the row names only the child it wants stopped.
+    let on_stop_sub_agent: Rc<RefCell<dyn FnMut(String)>> = {
+        let stop = actions.on_stop_sub_agent.clone();
+        Rc::new(RefCell::new(move |child_id: String| {
+            (stop.borrow_mut())(pane_id, child_id)
+        }))
+    };
+    // The dock under the header owns the pane's in-flight work: one collapsible
+    // group per kind, its rows carrying the controls that enter and stop them.
+    // A child view draws no dock of its own — the early return above keeps the
+    // child's surface free of the parent's.
+    let work_dock: Option<Box<dyn Element>> = {
+        let groups = session.work_dock.clone();
+        if groups.is_empty() {
+            None
+        } else {
+            let on_toggle = actions.on_toggle_work_section.clone();
+            let on_show_all = actions.on_show_all_work_section.clone();
+            let open_overlay = actions.on_open_task_workflow.clone();
+            let on_open: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
+                let open_sub_agent = on_open_sub_agent.clone();
+                let open_overlay = open_overlay.clone();
+                Rc::new(RefCell::new(move |section: WorkSection, id: String| {
+                    match section {
+                        WorkSection::Subagents => (open_sub_agent.borrow_mut())(id),
+                        WorkSection::Workflows | WorkSection::Watchers => {
+                            (open_overlay.borrow_mut())()
+                        }
+                        // A task is a tool call already drawn in the transcript;
+                        // there is no separate surface to open.
+                        WorkSection::Tasks => {}
+                    }
+                }))
+            };
+            let on_stop: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
+                let stop_sub_agent = on_stop_sub_agent.clone();
+                Rc::new(RefCell::new(move |section: WorkSection, id: String| {
+                    if section == WorkSection::Subagents {
+                        (stop_sub_agent.borrow_mut())(id);
+                    }
+                }))
+            };
+            Some(
+                goble_ui::WorkDock::new(groups)
+                    .with_phase(session.work_dock_phase)
+                    .with_on_toggle(move |section| (on_toggle.borrow_mut())(section))
+                    .with_on_show_all(move |section| (on_show_all.borrow_mut())(section))
+                    .with_on_open(on_open)
+                    .with_on_stop(on_stop)
+                    .finish(),
+            )
+        }
     };
     let on_select_harness = actions.on_select_harness.clone();
     let on_select_dir = actions.on_select_dir.clone();
@@ -338,6 +422,7 @@ pub fn build_agent_chat(
         .with_reasoning_expanded(state.reasoning_expanded.clone())
         // The app-owned tool-call fold map: a folded call survives the rebuild.
         .with_tool_fold(state.tool_fold.clone())
+        .with_tool_hover(state.tool_hover.clone())
         // This pane's own filter bar state (seeded per pane before the
         // snapshot), so opening it in one pane leaves the siblings alone.
         .with_global_terminal_filter(state.terminal_global_filters.get(&pane_id).cloned())
@@ -346,10 +431,12 @@ pub fn build_agent_chat(
         // their status, activity and elapsed time from these, not from the
         // spawn call's arguments.
         .with_sub_agents(session.sub_agents.clone())
-        // A link inside a paragraph dispatches `ChatAction::OpenUrl`; a
-        // sub-agent row dispatches `ChatAction::OpenSubAgent`. This is the slot
-        // that carries them out of the view into the app's handlers.
-        .with_on_action(chat_action_relay(on_open_url, on_open_sub_agent))
+        .with_sub_agent_model(controls.model.clone())
+        // The pane's work dock: drawn under the header, above the transcript.
+        .with_work_dock(work_dock)
+        // A link inside a paragraph dispatches `ChatAction::OpenUrl`; the
+        // sub-agent controls are the strip's own, wired above.
+        .with_on_action(chat_action_relay(on_open_url))
         .with_composer_value(session.composer_draft.clone())
         // Only the active pane's composer is focused, so a background chat pane
         // never swallows keys before the active pane (e.g. a terminal) sees them.
@@ -393,9 +480,6 @@ pub fn build_agent_chat(
             session.command_caret.clone(),
             session.command_editor_scroll.clone(),
         )
-        .with_composer_approval_mode(controls.approval_mode)
-        .with_composer_approval_menu_open(controls.approval_menu_open.clone())
-        .with_composer_approval_menu_highlight(controls.approval_menu_highlight.clone())
         .with_on_select_approval_mode(move |mode| {
             (on_select_approval_mode.borrow_mut())(pane_id, mode)
         })
@@ -422,8 +506,21 @@ pub fn build_agent_chat(
     // the pane draws no control whose selection the route would drop: the
     // environment it can honestly choose is its only submit-time control (A3,
     // model half).
-    if session.worker.is_none() {
+    if session.worker.is_none() && native_harness {
         chat = chat.with_composer_model_label(controls.model.clone());
+        // The approval policy is the native agent's too: a CLI harness decides
+        // its own approvals, so the always-approve control would write a
+        // setting nothing in the conversation reads.
+        chat = chat
+            .with_composer_approval_mode(controls.approval_mode)
+            .with_composer_approval_menu_open(controls.approval_menu_open.clone())
+            .with_composer_approval_menu_highlight(controls.approval_menu_highlight.clone());
+    } else if session.worker.is_none() {
+        // A custom harness owns the agent turn: its mark names what answers,
+        // where the native agent would draw its model and approval controls.
+        if let Some(spec) = surface_harness.filter(|spec| spec.id != "goble") {
+            chat = chat.with_composer_agent_harness(spec.id);
+        }
     }
 
     // Modal (vim) editing of the agent composer, when the user turned it on.
@@ -781,6 +878,7 @@ mod chat_geometry_tests {
 #[cfg(test)]
 mod link_action_tests {
     use super::*;
+    use goble_core::harness::ToolCallStatus;
     use goble_ui::elements::{EventContext, LayoutContext, PaintContext, SizeConstraint};
     use goble_ui::event::DispatchedEvent;
     use goble_ui::geometry::vec2f;
@@ -816,25 +914,20 @@ mod link_action_tests {
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
         label: &str,
     ) {
-        let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        click_transcript(message, Default::default(), on_open_url, ignored, &[label])
+        click_transcript(message, on_open_url, &[label])
     }
 
-    /// The same clicks through a transcript that holds `sub_agents` for the pane
-    /// and routes a sub-agent row's action to `on_open_sub_agent`.
-    #[allow(clippy::too_many_arguments)]
+    /// The same clicks through a transcript that dispatches its actions to
+    /// `on_open_url`.
     fn click_transcript(
         message: ChatMessage,
-        sub_agents: std::collections::HashMap<String, goble_ui::SubAgentRow>,
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
-        on_open_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
         labels: &[&str],
     ) {
         let app = AppContext::default();
         let mut view = ChatView::new()
             .with_messages(vec![message])
-            .with_sub_agents(sub_agents)
-            .with_on_action(chat_action_relay(on_open_url, on_open_sub_agent));
+            .with_on_action(chat_action_relay(on_open_url));
         for label in labels {
             view.layout(
                 SizeConstraint::loose(vec2f(600.0, 400.0)),
@@ -923,24 +1016,74 @@ mod link_action_tests {
         );
     }
 
-    /// S5: the sub-agent row's click terminates in the app's child opener,
-    /// carrying the child's conversation id. The transcript reads the row from
-    /// the pane's live records, so the label it clicks is the record's own line.
+    /// The live sub-agent row is a status line in the transcript: the controls
+    /// that enter and stop the child belong to the pane's strip above it, so
+    /// the reply draws neither. The row still names the child's description and
+    /// the model the pane runs on.
     #[test]
-    fn a_sub_agent_row_click_reaches_the_app_child_opener() {
-        let opened = Rc::new(RefCell::new(Vec::new()));
-        let recorder = opened.clone();
-        let call = ToolCall {
+    fn a_sub_agent_row_draws_no_controls_in_the_transcript() {
+        let app = AppContext::default();
+        let message = ChatMessage::new(ChatRole::Assistant, vec![])
+            .with_tool_calls(vec![spawn_call(ToolCallStatus::Running)]);
+        let mut view = ChatView::new()
+            .with_messages(vec![message])
+            .with_sub_agents(HashMap::from([(
+                "call_spawn".to_string(),
+                running_record(),
+            )]))
+            .with_sub_agent_model("deepseek");
+        view.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext,
+            &app,
+        );
+        let mut paint_ctx = PaintContext::new(Renderer::new());
+        view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+        let commands = paint_ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
+        let texts: Vec<String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("running: “audit the migration”")),
+            "the row names the delegation, got {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("· Responding (deepseek)")),
+            "the row names the pane's model, got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text == "Stop" || text == "open child"),
+            "the transcript row draws no controls, got {texts:?}"
+        );
+    }
+
+    /// The spawn call the row tests click.
+    fn spawn_call(status: ToolCallStatus) -> ToolCall {
+        ToolCall {
             id: "call_spawn".to_string(),
             name: "spawn_subagent".to_string(),
             arguments: r#"{"subagent_type":"reviewer","input":"audit the migration"}"#.to_string(),
-            status: goble_core::harness::ToolCallStatus::Running,
+            status,
             result: None,
             diff: None,
-        };
-        let message =
-            ChatMessage::new(ChatRole::Assistant, vec![]).with_tool_calls(vec![call.clone()]);
-        let record = SubAgentRow {
+        }
+    }
+
+    /// A live record for that spawn call's child.
+    fn running_record() -> SubAgentRow {
+        SubAgentRow {
             child_id: "conv-child-1".to_string(),
             subagent_type: "reviewer".to_string(),
             description: "audit the migration".to_string(),
@@ -952,24 +1095,7 @@ mod link_action_tests {
             tokens: 1234,
             outcome: None,
             background: true,
-        };
-        let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        let opener: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(move |child_id| {
-            recorder.borrow_mut().push(child_id)
-        }));
-
-        click_transcript(
-            message,
-            HashMap::from([("call_spawn".to_string(), record)]),
-            ignored,
-            opener,
-            &["Running 1 subagent", "open child"],
-        );
-        assert_eq!(
-            *opened.borrow(),
-            vec!["conv-child-1".to_string()],
-            "the row's click must reach the app carrying the child's conversation id"
-        );
+        }
     }
 }
 
@@ -1131,7 +1257,9 @@ mod agent_pill_tests {
             "src/sidebar.rs",
             "src/panes.rs",
             "\"fn build\" in src",
-            "Subagent ",
+            // The transcript names a spawned child by what it is: `Agent`,
+            // the word grok-build gives the row, not the tool's own name.
+            "Agent ",
         ];
         let rows: Vec<goble_ui::Vector2F> = row_labels
             .iter()

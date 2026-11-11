@@ -10,6 +10,7 @@ use goble_desktop_service::DesktopState;
 use goble_terminal::blocks::BlockView;
 use goble_ui::geometry::Vector2F;
 use goble_ui::platform::WindowControl;
+use goble_ui::theme::ThemePreset;
 use goble_ui::{ChatMessage, ChatRole, SettingsPage};
 
 use crate::media::MediaState;
@@ -29,8 +30,63 @@ use super::pane_ops::{
     close_space_at, ensure_pane_hover, open_diff_pane, open_file_pane, open_pane_harness,
     open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
 };
-use super::prompt::{run_terminal_command, send_agent_prompt};
+use super::prompt::{run_terminal_command, send_agent_prompt, send_sub_agent_prompt};
 use crate::ui::pickers::{change_directory_command, checkout_branch_command};
+
+/// Answer the question the pane's turn is suspended on, resuming it through the
+/// harness. The pane reports Working until the turn's next event lands, so the
+/// panel clears the moment the answer is on its way. Returns false when the pane
+/// has no question to answer.
+fn answer_pending_ask(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    pane_id: u64,
+    response: &str,
+    credential: Option<(String, String)>,
+) -> bool {
+    if !state
+        .pane_runtime
+        .get(&pane_id)
+        .is_some_and(|rt| rt.pending_ask.is_some())
+    {
+        return false;
+    }
+    let model = if state.selected_model.trim().is_empty() {
+        state.settings_llm_model.clone()
+    } else {
+        state.selected_model.clone()
+    };
+    let Some((desktop, chat_id)) =
+        desktop.and_then(|desktop| state.pane_conversation_id(pane_id).map(|id| (desktop, id)))
+    else {
+        // No runtime to resume: the question goes with the turn it belonged to.
+        if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
+            rt.pending_ask = None;
+        }
+        state.pending_ask = None;
+        return true;
+    };
+    match desktop.resume_chat_turn(
+        &chat_id,
+        response,
+        credential,
+        &state.settings_llm_provider,
+        &model,
+    ) {
+        Ok(_) => {
+            if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
+                rt.busy = true;
+                rt.pending_ask = None;
+                rt.agent_state = crate::state::PaneAgentState::Working;
+            }
+            state.agent_busy = true;
+            state.pending_ask = None;
+        }
+        Err(e) => log::warn!("resume_chat_turn failed: {e}"),
+    }
+    state.refresh_messages(desktop);
+    true
+}
 
 /// Submit the prompt a running turn has queued, right now.
 ///
@@ -66,6 +122,12 @@ fn flush_queued_prompt(
         return;
     };
     state.queued_prompt = None;
+
+    // A question the turn is suspended on is answered by the queued prompt: the
+    // user is responding to the panel, not starting a second turn over it.
+    if answer_pending_ask(state, Some(desktop), pane_id, &prompt, None) {
+        return;
+    }
 
     // A command the harness is suspended on has no running future to cancel:
     // reject it, which resumes the turn, and let the finish event submit the
@@ -178,12 +240,16 @@ pub fn make_actions(
     let on_select_conversation = Rc::clone(&state);
     let on_select_tab = Rc::clone(&state);
     let on_composer_change = Rc::clone(&state);
+    let desktop_composer = desktop.clone();
     let on_slash_move = Rc::clone(&state);
     let on_slash_close = Rc::clone(&state);
     let on_slash_dismiss = Rc::clone(&state);
     let on_composer_focus_change = Rc::clone(&state);
     let on_send_message = Rc::clone(&state);
+    let on_agent_prompt = Rc::clone(&state);
+    let desktop_title = desktop.clone();
     let on_run_shell_command = Rc::clone(&state);
+    let desktop_run_shell = desktop.clone();
     let on_cmd_enter = Rc::clone(&state);
     let on_send_to_cloud = Rc::clone(&state);
     let on_attach = Rc::clone(&state);
@@ -197,8 +263,16 @@ pub fn make_actions(
     let on_select_branch = Rc::clone(&state);
     let on_stop = Rc::clone(&state);
     let on_open_sub_agent = Rc::clone(&state);
+    let on_stop_sub_agent = Rc::clone(&state);
     let on_close_sub_agent = Rc::clone(&state);
+    let on_send_sub_agent_message = Rc::clone(&state);
+    let desktop_send_sub_agent_message = desktop.clone();
+    let media_send_sub_agent_message = Rc::clone(&media);
+    let on_toggle_work_section = Rc::clone(&state);
+    let on_show_all_work_section = Rc::clone(&state);
+    let on_open_task_workflow = Rc::clone(&state);
     let desktop_open_sub_agent = desktop.clone();
+    let desktop_stop_sub_agent = desktop.clone();
     let on_answer_ask = Rc::clone(&state);
     let on_skip_ask = Rc::clone(&state);
     let on_command_decision = Rc::clone(&state);
@@ -218,6 +292,9 @@ pub fn make_actions(
     let on_inbox_ack = Rc::clone(&state);
     let on_inbox_ack_all = Rc::clone(&state);
     let on_inbox_jump = Rc::clone(&state);
+    let on_inbox_jump_to = Rc::clone(&state);
+    let on_announcement_jump = Rc::clone(&state);
+    let on_announcement_dismiss = Rc::clone(&state);
     let on_agent_dashboard = Rc::clone(&state);
     let desktop_agent_dashboard = desktop.clone();
     let media_agent_dashboard = Rc::clone(&media);
@@ -293,6 +370,7 @@ pub fn make_actions(
     let on_ssh_reconnect = Rc::clone(&state);
     let on_ssh_reconnect_dismiss = Rc::clone(&state);
     let on_shell_line = Rc::clone(&state);
+    let desktop_shell_line = desktop.clone();
     let on_new_terminal = Rc::clone(&state);
     let on_close_pane = Rc::clone(&state);
     let on_close_unsaved_save = Rc::clone(&state);
@@ -300,6 +378,7 @@ pub fn make_actions(
     let on_close_unsaved_cancel = Rc::clone(&state);
     let on_terminal_cmd = Rc::clone(&state);
     let on_launch_tui_agent = Rc::clone(&state);
+    let desktop_launch_tui = desktop.clone();
     let on_select_space = Rc::clone(&state);
     let on_switch_space = Rc::clone(&state);
     let on_add_space = Rc::clone(&state);
@@ -331,6 +410,10 @@ pub fn make_actions(
     let on_set_theme_primary = Rc::clone(&state);
     let on_set_theme_secondary = Rc::clone(&state);
     let on_set_theme_accent = Rc::clone(&state);
+    let on_set_theme_bg = Rc::clone(&state);
+    let on_set_theme_surface = Rc::clone(&state);
+    let on_set_theme_preset = Rc::clone(&state);
+    let on_reset_theme_colors = Rc::clone(&state);
     let on_save_profile = Rc::clone(&state);
     let on_profile_name_change = Rc::clone(&state);
     let on_default_model_state = Rc::clone(&state);
@@ -384,6 +467,10 @@ pub fn make_actions(
     let desktop_theme_primary = desktop.clone();
     let desktop_theme_secondary = desktop.clone();
     let desktop_theme_accent = desktop.clone();
+    let desktop_theme_bg = desktop.clone();
+    let desktop_theme_surface = desktop.clone();
+    let desktop_theme_preset = desktop.clone();
+    let desktop_reset_theme = desktop.clone();
     let desktop_reload_model = desktop.clone();
     let desktop_reload_remote_agents = desktop.clone();
     let ui_zoom_font = ui_zoom.clone();
@@ -515,6 +602,66 @@ pub fn make_actions(
         Rc::new(RefCell::new(move |target: ColorTarget| {
             on_set_theme_target.borrow_mut().theme_color_target = target;
         }));
+    // A preset (or the Default row) is the whole palette, so picking one drops
+    // the five channel overrides as well: the page then shows the theme exactly
+    // as it is defined. The wheel still refines it afterwards.
+    let action_set_theme_preset: Rc<RefCell<dyn FnMut(Option<ThemePreset>)>> =
+        Rc::new(RefCell::new(move |preset: Option<ThemePreset>| {
+            let key = preset.map(|preset| preset.key().to_string());
+            {
+                let mut state = on_set_theme_preset.borrow_mut();
+                state.theme_preset = key.clone();
+                state.theme_primary = None;
+                state.theme_secondary = None;
+                state.theme_accent = None;
+                state.theme_bg = None;
+                state.theme_surface = None;
+            }
+            if let Some(desktop) = &desktop_theme_preset {
+                let mut config = desktop.config();
+                config.theme.preset = key;
+                config.theme.primary = None;
+                config.theme.secondary = None;
+                config.theme.accent = None;
+                config.theme.bg = None;
+                config.theme.surface = None;
+                if let Err(e) = desktop.save_config(&config) {
+                    log::warn!("save_config (theme) failed: {e}");
+                }
+            }
+        }));
+    // The Themes stepper walks Default and the presets in order, wrapping at
+    // both ends. Every step goes through the preset action, so it persists and
+    // drops the overrides exactly as picking a base does.
+    let action_step_theme: Rc<RefCell<dyn FnMut(i32)>> = {
+        let step_state = Rc::clone(&state);
+        let on_preset = action_set_theme_preset.clone();
+        Rc::new(RefCell::new(move |delta: i32| {
+            let next = step_state.borrow().theme_preset_stepped(delta);
+            (on_preset.borrow_mut())(next);
+        }))
+    };
+    let action_reset_theme_colors: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+        {
+            let mut state = on_reset_theme_colors.borrow_mut();
+            state.theme_primary = None;
+            state.theme_secondary = None;
+            state.theme_accent = None;
+            state.theme_bg = None;
+            state.theme_surface = None;
+        }
+        if let Some(desktop) = &desktop_reset_theme {
+            let mut config = desktop.config();
+            config.theme.primary = None;
+            config.theme.secondary = None;
+            config.theme.accent = None;
+            config.theme.bg = None;
+            config.theme.surface = None;
+            if let Err(e) = desktop.save_config(&config) {
+                log::warn!("save_config (theme) failed: {e}");
+            }
+        }
+    }));
     let action_toggle_invert_scroll: Rc<RefCell<dyn FnMut(bool)>> =
         Rc::new(RefCell::new(move |enabled: bool| {
             on_toggle_invert_scroll.borrow_mut().settings_invert_scroll = enabled;
@@ -764,6 +911,7 @@ pub fn make_actions(
         let on_speed = action_set_scroll_speed.clone();
         let on_font = action_set_font_size.clone();
         let on_mode = action_select_approval_mode.clone();
+        let on_theme = action_step_theme.clone();
         Rc::new(RefCell::new(move |delta: i32| {
             // Read the focused control into a local first: the arms below run
             // the actions that own the value, and those borrow the same state,
@@ -790,6 +938,7 @@ pub fn make_actions(
                     };
                     (on_mode.borrow_mut())(pane_id, next);
                 }
+                Some(SettingsControl::ThemeStepper) => (on_theme.borrow_mut())(delta),
                 _ => step_state.borrow_mut().settings_adjust_control(delta),
             }
         }))
@@ -894,18 +1043,34 @@ pub fn make_actions(
             // A conversation opened from the sidebar gets a tab of its own in
             // the top bar, rather than replacing the thread the focused pane
             // showed. One already on screen is brought forward.
-            state.open_conversation_tab(id, desktop_select.as_deref());
+            state.open_conversation_tab(id.clone(), desktop_select.as_deref());
         })),
         on_select_tab: Rc::new(RefCell::new(move |tab: AppTab| {
             on_select_tab.borrow_mut().current_tab = tab;
         })),
         on_composer_change: Rc::new(RefCell::new(move |value: String| {
             let mut state = on_composer_change.borrow_mut();
+            let pane_id = state.active_pane_id;
+            let typing = !value.trim().is_empty();
             state.set_active_pane_draft(value);
+            // The rich input belongs to the agent whichever surface the pane
+            // was on: the first character typed at a shell's bar opens that
+            // pane's harness, and the draft comes with it into the agent
+            // view's composer. Esc still returns the pane to its shell.
+            if typing
+                && state.pane_is_terminal(pane_id)
+                && !state.pane_controls(pane_id).harness_mode
+            {
+                open_pane_harness(&mut state, pane_id, desktop_composer.as_ref());
+                if state.pane_controls(pane_id).harness_mode {
+                    // The switch keeps the keys: the agent composer is the
+                    // surface that now owns the draft being typed.
+                    state.composer_focused = true;
+                }
+            }
             // The draft is the slash menu's query, so a new query starts the
             // menu's selection over at the first row — and typing brings the
             // menu back after Escape put it away.
-            let pane_id = state.active_pane_id;
             *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
             *state
                 .pane_controls_mut(pane_id)
@@ -939,6 +1104,42 @@ pub fn make_actions(
         on_composer_focus_change: Rc::new(RefCell::new(move |focused: bool| {
             on_composer_focus_change.borrow_mut().composer_focused = focused;
         })),
+        // The TUI pane's rich input: the line goes to the CLI agent's own
+        // stdin (with the per-agent delivery warp-new uses), so a harness keeps
+        // its native screen and its own conversation while goble supplies the
+        // composer under it.
+        on_agent_prompt: Rc::new(RefCell::new(move |pane_id: u64, text: String| {
+            let mut state = on_agent_prompt.borrow_mut();
+            state
+                .terminal
+                .borrow_mut()
+                .submit_agent_prompt(pane_id, &text);
+            if let Some(session) = state.pane_sessions.get_mut(&pane_id) {
+                session.draft.clear();
+            }
+            if state.active_pane_id == pane_id {
+                state.composer_draft.clear();
+                state.set_active_pane_draft(String::new());
+            }
+            // A CLI harness keeps its transcript in its own store, so the
+            // prompt it was just sent is all goble sees of the conversation: a
+            // card still named for its harness takes the subject the prompt
+            // names, exactly as a native conversation is named from what was
+            // said in it. A card already named keeps that name.
+            let harness = state.terminal.borrow().pane_harness(pane_id);
+            if let (Some(desktop), Some(conversation_id), Some(harness)) = (
+                desktop_title.as_deref(),
+                state.pane_conversation_id(pane_id),
+                harness,
+            ) {
+                state.retitle_unnamed_harness_conversation(
+                    &conversation_id,
+                    harness,
+                    crate::state::prompt_subject(&text),
+                    desktop,
+                );
+            }
+        })),
         on_send_message: Rc::new(RefCell::new(move |text: String| {
             let mut state = on_send_message.borrow_mut();
             // The active pane owns the composer, so route the turn to its own
@@ -968,17 +1169,54 @@ pub fn make_actions(
                     // view names it, and it is read the one way the app reads a
                     // pane's surface (`pane_view`), so the conversation the
                     // command is filed under is the one the pane is drawing.
+                    //
+                    // A chat pane's composer is its conversation's agent composer
+                    // whatever the pane's terminal filter says — `pane_view`
+                    // describes the terminal surface, and a chat pane has none —
+                    // so a line typed there is filed under the conversation the
+                    // pane shows. Reading it as the shell's would run the line in
+                    // a terminal behind the pane instead of the conversation.
                     let conversation = match state.pane_view(pane_id) {
                         BlockView::Agent { conversation_id } => Some(conversation_id),
+                        BlockView::Terminal if !state.pane_is_terminal(pane_id) => {
+                            state.pane_conversation_id(pane_id)
+                        }
                         BlockView::Terminal => None,
                     };
-                    run_terminal_command(&mut state, &cmd, pane_id, conversation.as_deref());
+                    // A harness the line names has to be able to take a
+                    // conversation of its own, so the desktop that owns the
+                    // sidebar goes with the command.
+                    run_terminal_command(
+                        &mut state,
+                        &cmd,
+                        pane_id,
+                        conversation.as_deref(),
+                        desktop_send.as_deref(),
+                    );
                     // The line ran, so the input it was typed in is spent; the
                     // app-owned draft is what the next frame rebuilds that
                     // editor from.
                     state.set_active_pane_draft(String::new());
                 }
                 Some(InputClass::AgentPrompt(prompt)) => {
+                    // The turn is waiting on a question, not working: what the
+                    // user types at the composer is the answer, so it resumes
+                    // the turn instead of queueing a second one over it.
+                    if state
+                        .pane_runtime
+                        .get(&pane_id)
+                        .is_some_and(|rt| rt.pending_ask.is_some())
+                    {
+                        answer_pending_ask(
+                            &mut state,
+                            desktop_send.as_ref(),
+                            pane_id,
+                            &prompt,
+                            None,
+                        );
+                        state.set_active_pane_draft(String::new());
+                        return;
+                    }
                     let pane_busy = state
                         .pane_runtime
                         .get(&pane_id)
@@ -1176,7 +1414,13 @@ pub fn make_actions(
             let mut state = on_select_dir.borrow_mut();
             let has_shell = state.terminal.borrow().sessions.contains_key(&pane_id);
             if has_shell {
-                run_terminal_command(&mut state, &change_directory_command(&path), pane_id, None);
+                run_terminal_command(
+                    &mut state,
+                    &change_directory_command(&path),
+                    pane_id,
+                    None,
+                    None,
+                );
             }
             state.set_pane_path(pane_id, path);
         })),
@@ -1189,7 +1433,13 @@ pub fn make_actions(
             if !has_shell {
                 return;
             }
-            run_terminal_command(&mut state, &checkout_branch_command(&branch), pane_id, None);
+            run_terminal_command(
+                &mut state,
+                &checkout_branch_command(&branch),
+                pane_id,
+                None,
+                None,
+            );
             {
                 let controls = state.pane_controls_mut(pane_id);
                 controls.branch = branch.clone();
@@ -1249,6 +1499,18 @@ pub fn make_actions(
                 desktop_open_sub_agent.as_deref(),
             );
         })),
+        // The Stop on a running child's row cancels that child's own turn, by
+        // the child's conversation id; the parent's turn is left running, and
+        // the child's row reads cancelled at once rather than waiting for the
+        // child's finish event.
+        on_stop_sub_agent: Rc::new(RefCell::new(move |pane_id: u64, child_id: String| {
+            if let Some(desktop) = desktop_stop_sub_agent.as_deref() {
+                let _ = desktop.cancel_chat_turn(&child_id);
+            }
+            on_stop_sub_agent
+                .borrow_mut()
+                .cancel_sub_agent(pane_id, &child_id);
+        })),
         // Esc from the child view puts the pane back on the conversation it came
         // from; the child's card stays in the block list.
         on_close_sub_agent: Rc::new(RefCell::new(move |pane_id: u64| {
@@ -1256,42 +1518,65 @@ pub fn make_actions(
                 .borrow_mut()
                 .close_sub_agent_view(pane_id);
         })),
+        // A message typed in a child view goes to that child's own
+        // conversation, not to the pane's parent conversation: see
+        // `send_sub_agent_prompt`.
+        on_send_sub_agent_message: Rc::new(RefCell::new(
+            move |pane_id: u64, text: String| {
+                let mut state = on_send_sub_agent_message.borrow_mut();
+                let Some(child_id) = state
+                    .sub_agent_views
+                    .get(&pane_id)
+                    .map(|view| view.child_id.clone())
+                else {
+                    return;
+                };
+                if send_sub_agent_prompt(
+                    &mut state,
+                    desktop_send_sub_agent_message.as_ref(),
+                    &media_send_sub_agent_message,
+                    pane_id,
+                    &child_id,
+                    &text,
+                ) {
+                    // The line ran, so the draft it was typed in is spent; the
+                    // app-owned cell is what the next frame rebuilds the
+                    // child's composer from.
+                    if let Some(view) = state.sub_agent_views.get(&pane_id) {
+                        *view.draft.borrow_mut() = String::new();
+                        *view.caret.borrow_mut() = 0;
+                    }
+                }
+            },
+        )),
+        on_toggle_work_section: Rc::new(RefCell::new(
+            move |section: goble_ui::WorkSection| {
+                on_toggle_work_section
+                    .borrow_mut()
+                    .toggle_work_section(section);
+            },
+        )),
+        on_show_all_work_section: Rc::new(RefCell::new(
+            move |section: goble_ui::WorkSection| {
+                on_show_all_work_section
+                    .borrow_mut()
+                    .show_all_work_section(section);
+            },
+        )),
+        on_open_task_workflow: Rc::new(RefCell::new(move || {
+            on_open_task_workflow.borrow_mut().task_workflow_open = true;
+        })),
         on_answer_ask: Rc::new(RefCell::new(
             move |response: String, credential: Option<(String, String)>| {
                 let mut state = on_answer_ask.borrow_mut();
-                let model = if state.selected_model.trim().is_empty() {
-                    state.settings_llm_model.clone()
-                } else {
-                    state.selected_model.clone()
-                };
                 let pane_id = state.active_pane_id;
-                if let (Some(desktop), Some(chat_id)) =
-                    (&desktop_answer, state.pane_conversation_id(pane_id))
-                {
-                    if let Err(e) = desktop.resume_chat_turn(
-                        &chat_id,
-                        &response,
-                        credential,
-                        &state.settings_llm_provider,
-                        &model,
-                    ) {
-                        log::warn!("resume_chat_turn failed: {e}");
-                    } else {
-                        if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                            rt.busy = true;
-                            rt.pending_ask = None;
-                            rt.agent_state = crate::state::PaneAgentState::Working;
-                        }
-                        state.agent_busy = true;
-                        state.pending_ask = None;
-                    }
-                    state.refresh_messages(desktop);
-                } else {
-                    if let Some(rt) = state.pane_runtime.get_mut(&pane_id) {
-                        rt.pending_ask = None;
-                    }
-                    state.pending_ask = None;
-                }
+                answer_pending_ask(
+                    &mut state,
+                    desktop_answer.as_ref(),
+                    pane_id,
+                    &response,
+                    credential,
+                );
             },
         )),
         on_skip_ask: Rc::new(RefCell::new(move || {
@@ -1457,6 +1742,19 @@ pub fn make_actions(
             if state.jump_to_inbox_item(index) {
                 state.inbox_open = false;
             }
+        })),
+        on_inbox_jump_to: Rc::new(RefCell::new(move |index: usize| {
+            let mut state = on_inbox_jump_to.borrow_mut();
+            state.inbox_index = index;
+            if state.jump_to_inbox_item(index) {
+                state.inbox_open = false;
+            }
+        })),
+        on_announcement_jump: Rc::new(RefCell::new(move || {
+            on_announcement_jump.borrow_mut().jump_to_announcement();
+        })),
+        on_announcement_dismiss: Rc::new(RefCell::new(move || {
+            on_announcement_dismiss.borrow_mut().dismiss_announcement();
         })),
         // The agent-management panel: a roster of conversations with the
         // peek/reply box and the dispatch box grok-build's dashboard has. The
@@ -1925,11 +2223,21 @@ pub fn make_actions(
             let mut state = on_select_sidebar_view.borrow_mut();
             state.sidebar_view = view;
             // Each view has its own list and its own offset, so switching views
-            // starts that list at the top.
+            // starts that list at the top. A field the view opens on takes the
+            // query it already holds with the caret at its end, never at an
+            // index the query the field last typed into left behind.
             match view {
-                SidebarView::Agents => state.sidebar_scroll.borrow_mut().reset(),
+                SidebarView::Agents => {
+                    state.sidebar_scroll.borrow_mut().reset();
+                    let end = state.search_query.chars().count();
+                    *state.sidebar_search_caret.borrow_mut() = end;
+                }
                 SidebarView::Explorer => state.explorer_scroll.borrow_mut().reset(),
-                SidebarView::Search => state.global_search_scroll.borrow_mut().reset(),
+                SidebarView::Search => {
+                    state.global_search_scroll.borrow_mut().reset();
+                    let end = state.global_search_query.chars().count();
+                    *state.global_search_caret.borrow_mut() = end;
+                }
             }
         })),
         on_toggle_section: Rc::new(RefCell::new(move |key: String| {
@@ -2147,9 +2455,9 @@ pub fn make_actions(
         })),
         on_settings_activate: Rc::new(RefCell::new({
             let activate_state = Rc::clone(&on_settings_activate);
-            let on_dark = action_toggle_dark_mode.clone();
             let on_invert = action_toggle_invert_scroll.clone();
             let on_theme = action_set_theme_target.clone();
+            let on_reset_theme = action_reset_theme_colors.clone();
             let on_auto = action_toggle_auto_approve.clone();
             let on_vim = action_toggle_vim_mode.clone();
             let on_auto_save = action_toggle_auto_save_on_close.clone();
@@ -2163,10 +2471,6 @@ pub fn make_actions(
                 match control {
                     // The controls whose behaviour is already an action run
                     // through it, so a click and the Enter key share one path.
-                    Some(SettingsControl::DarkMode) => {
-                        let next = !activate_state.borrow().settings_dark_mode;
-                        (on_dark.borrow_mut())(next);
-                    }
                     Some(SettingsControl::InvertScroll) => {
                         let next = !activate_state.borrow().settings_invert_scroll;
                         (on_invert.borrow_mut())(next);
@@ -2174,16 +2478,21 @@ pub fn make_actions(
                     Some(SettingsControl::ThemeChannel(target)) => {
                         (on_theme.borrow_mut())(target);
                     }
+                    Some(SettingsControl::ResetThemeColors) => (on_reset_theme.borrow_mut())(),
                     // A stepper advances: the same step the arrow keys take.
                     Some(SettingsControl::ScrollSpeed)
                     | Some(SettingsControl::FontSize)
+                    | Some(SettingsControl::ThemeStepper)
                     | Some(SettingsControl::ApprovalMode) => {
                         (on_step.borrow_mut())(1);
                     }
                     // The default model is a list, not a stepper: Enter opens
                     // the menu the field hangs, and a row picks the value.
                     Some(SettingsControl::DefaultModel) => {
-                        *activate_state.borrow().settings_model_menu_open.borrow_mut() = true;
+                        *activate_state
+                            .borrow()
+                            .settings_model_menu_open
+                            .borrow_mut() = true;
                     }
                     Some(SettingsControl::AutoApprove) => {
                         let (pane, next) = {
@@ -2715,9 +3024,24 @@ pub fn make_actions(
             on_ssh_reconnect_dismiss.borrow_mut().ssh_reconnect_prompt = None;
         })),
         // A line typed straight into the grid reaches the shell without the
-        // rich input bar, so the SSH binding is read here too.
+        // rich input bar, so the SSH binding is read here too. A line that names
+        // a TUI harness is a harness launch like any other: it takes its
+        // conversation and its agent view opens on it, rather than leaving the
+        // user looking at the CLI's own screen. A harness this machine does not
+        // have stays a shell line, so the shell's own `command not found`
+        // answers it instead of a surface for a program that is not there.
         on_shell_line: Rc::new(RefCell::new(move |pane_id: u64, line: String| {
-            on_shell_line.borrow_mut().note_shell_line(pane_id, &line);
+            let mut state = on_shell_line.borrow_mut();
+            state.note_shell_line(pane_id, &line);
+            if !crate::terminal::command_installed(&line) {
+                return;
+            }
+            if let Some(spec) =
+                crate::terminal::TuiAgent::launched_by(&line).and_then(|agent| agent.spec())
+            {
+                state.bind_pane_harness_chat(pane_id, spec, desktop_shell_line.as_deref());
+                state.open_harness_agent_view(pane_id);
+            }
         })),
         on_new_terminal: Rc::new(RefCell::new(move || {
             let (mut state, media) = (on_new_terminal.borrow_mut(), media_new_terminal.borrow());
@@ -2799,7 +3123,13 @@ pub fn make_actions(
             let mut state = on_run_shell_command.borrow_mut();
             // The shell's own bar: the command is the shell's, so it stays in
             // the shell's history (no conversation to own it).
-            run_terminal_command(&mut state, &text, pane_id, None);
+            run_terminal_command(
+                &mut state,
+                &text,
+                pane_id,
+                None,
+                desktop_run_shell.as_deref(),
+            );
             // The composer cleared its own editor on submit; the app-owned draft
             // is what the next frame rebuilds that editor from, so it clears
             // here too — for this pane, which the submit just activated.
@@ -2818,17 +3148,39 @@ pub fn make_actions(
             // The shell starts in this pane's own directory, the directory its
             // pill names: a shell started anywhere else reports where it landed,
             // and the pane follows its own shell.
-            let cwd = on_launch_tui_agent
-                .borrow()
-                .pane_sessions
-                .get(&pane_id)
-                .map(|session| session.path.clone())
-                .unwrap_or_default();
-            let terminal = on_launch_tui_agent.borrow().terminal.clone();
-            let mut reg = terminal.borrow_mut();
-            reg.ensure_session(pane_id, &cwd);
-            reg.launch_agent(pane_id, &command);
-            reg.set_input(pane_id, String::new());
+            let (cwd, terminal) = {
+                let state = on_launch_tui_agent.borrow();
+                (
+                    state
+                        .pane_sessions
+                        .get(&pane_id)
+                        .map(|session| session.path.clone())
+                        .unwrap_or_default(),
+                    state.terminal.clone(),
+                )
+            };
+            {
+                let mut reg = terminal.borrow_mut();
+                reg.ensure_session(pane_id, &cwd);
+                reg.launch_agent(pane_id, &command);
+                reg.set_input(pane_id, String::new());
+            }
+            // The launched harness is a conversation of its own: it takes a
+            // sidebar chat named for it, exactly as the same command typed into
+            // the shell's bar does — and its agent view opens with it, so the
+            // harness is worked through goble's agent surface rather than its
+            // TUI screen. A harness this machine does not have keeps the shell's
+            // own `command not found` as its answer, with no view for a program
+            // that is not there.
+            let spec = crate::terminal::command_installed(&command)
+                .then(|| crate::terminal::TuiAgent::detect(&command))
+                .flatten()
+                .and_then(|agent| agent.spec());
+            if let Some(spec) = spec {
+                let mut state = on_launch_tui_agent.borrow_mut();
+                state.bind_pane_harness_chat(pane_id, spec, desktop_launch_tui.as_deref());
+                state.open_harness_agent_view(pane_id);
+            }
         })),
         on_select_space: Rc::new(RefCell::new(move |index: usize| {
             let mut state = on_select_space.borrow_mut();
@@ -3159,12 +3511,37 @@ pub fn make_actions(
             on_set_theme_accent.borrow_mut().theme_accent = Some(hex.clone());
             if let Some(desktop) = &desktop_theme_accent {
                 let mut config = desktop.config();
-                config.theme.accent = hex;
+                config.theme.accent = Some(hex);
                 if let Err(e) = desktop.save_config(&config) {
                     log::warn!("save_config (theme) failed: {e}");
                 }
             }
         })),
+        on_set_theme_bg: Rc::new(RefCell::new(move |hex: String| {
+            on_set_theme_bg.borrow_mut().theme_bg = Some(hex.clone());
+            if let Some(desktop) = &desktop_theme_bg {
+                let mut config = desktop.config();
+                config.theme.bg = Some(hex);
+                if let Err(e) = desktop.save_config(&config) {
+                    log::warn!("save_config (theme) failed: {e}");
+                }
+            }
+        })),
+        on_set_theme_surface: Rc::new(RefCell::new(move |hex: String| {
+            on_set_theme_surface.borrow_mut().theme_surface = Some(hex.clone());
+            if let Some(desktop) = &desktop_theme_surface {
+                let mut config = desktop.config();
+                config.theme.surface = Some(hex);
+                if let Err(e) = desktop.save_config(&config) {
+                    log::warn!("save_config (theme) failed: {e}");
+                }
+            }
+        })),
+        // Picking a preset (or Default) clears the channel overrides, so the
+        // palette shown is exactly the one the row names.
+        on_set_theme_preset: action_set_theme_preset.clone(),
+        on_step_theme: action_step_theme.clone(),
+        on_reset_theme_colors: action_reset_theme_colors.clone(),
         on_save_profile: Rc::new(RefCell::new(move |name: String, email: String| {
             let mut state = on_save_profile.borrow_mut();
             state.settings_profile_name = name;

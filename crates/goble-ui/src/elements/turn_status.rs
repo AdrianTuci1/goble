@@ -528,13 +528,13 @@ mod tests {
             }),
             "Waiting on subagent…"
         );
-        // A tool no family claims falls back to its name.
+        // A tool no family claims falls back to its name, read as words.
         assert_eq!(
             label(TurnActivity::Tool {
                 name: "list_entities".to_string(),
                 arguments: r#"{"query":"x"}"#.to_string(),
             }),
-            "list_entities"
+            "List Entities"
         );
     }
 
@@ -575,8 +575,8 @@ mod tests {
         );
         assert_eq!(
             row_of("list_entities", r#"{"query":"open issues"}"#),
-            "list_entities",
-            "a tool no family claims reads as its name, not as its arguments"
+            "List Entities",
+            "a tool no family claims reads as its name in words, not its arguments"
         );
     }
 

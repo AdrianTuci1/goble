@@ -33,6 +33,9 @@ mod tests;
 
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
+    /// The pane's work dock, drawn directly under the header and above the
+    /// transcript: the one place the pane's in-flight work lives.
+    work_dock: Option<Box<dyn Element>>,
     /// An inline notice rendered at the top of the transcript (inside the chat
     /// area rather than as a floating dialog), e.g. the "no API key" error.
     notice: Option<Box<dyn Element>>,
@@ -59,10 +62,15 @@ pub struct ChatView {
     /// App-owned three-state fold for the tool calls, keyed by
     /// [`tool_fold_key`], shared down to each `ChatMessageBubble`.
     tool_fold: Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    /// The tool row under the pointer, reported by the row's own paint, so a
+    /// chain's header can draw its arrow and its white label.
+    tool_hover: Rc<RefCell<Option<String>>>,
     /// The live sub-agent records the tool-call rows read their status from,
     /// keyed by the id of the tool call that spawned each child; held by the
     /// app from S4's `chat:subagent_*` events and handed down every frame.
     sub_agents: HashMap<String, SubAgentRow>,
+    /// The model the pane's turns run on, named by a running child's row.
+    sub_agent_model: String,
     /// The whole-transcript filter, applied to every terminal block (filtered
     /// via a bar above the transcript). App-owned so it survives the rebuild.
     global_terminal_filter: Option<TerminalFilter>,
@@ -110,6 +118,10 @@ pub struct ChatView {
     /// The glyph beside the environment label: the computer for a local
     /// environment and the cloud for a worker.
     composer_harness_icon: Option<&'static str>,
+    /// The CLI harness the draft goes to, when this pane runs a custom harness:
+    /// its mark takes the footer slot of the native model and approval
+    /// controls.
+    composer_agent_harness: Option<&'static str>,
     composer_branch_label: Option<String>,
     on_composer_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_composer_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
@@ -223,6 +235,7 @@ impl ChatView {
     pub fn new() -> Self {
         Self {
             header: None,
+            work_dock: None,
             notice: None,
             turn_error: None,
             messages: Vec::new(),
@@ -234,7 +247,9 @@ impl ChatView {
             terminal_filters: Rc::new(RefCell::new(HashMap::new())),
             reasoning_expanded: Rc::new(RefCell::new(HashMap::new())),
             tool_fold: Rc::new(RefCell::new(HashMap::new())),
+            tool_hover: Rc::new(RefCell::new(None)),
             sub_agents: HashMap::new(),
+            sub_agent_model: String::new(),
             global_terminal_filter: None,
             on_copy_terminal: None,
             empty_title: None,
@@ -266,6 +281,7 @@ impl ChatView {
             on_select_model_item: None,
             composer_harness_label: None,
             composer_harness_icon: None,
+            composer_agent_harness: None,
             composer_branch_label: None,
             composer_harness_items: Vec::new(),
             composer_harness_menu_open: Rc::new(RefCell::new(false)),

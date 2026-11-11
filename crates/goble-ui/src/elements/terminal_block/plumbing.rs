@@ -2,10 +2,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::block::{terminal_block_with_selection, TerminalLineGeometry, TerminalTextSelection};
+use super::block::{
+    terminal_block_styled, terminal_block_with_cursor_styled, terminal_block_with_selection_styled,
+    TerminalBlockCursor, TerminalLineGeometry, TerminalTextSelection, TerminalTextStyle,
+};
 use super::data::TerminalData;
 use super::filter::{TerminalCopyHandler, TerminalFilter};
-use crate::elements::{terminal_block, Element};
+use crate::elements::Element;
 
 /// What a terminal block needs from the app wherever it is drawn: the app-owned
 /// per-block filter map, the surface's own whole-block filter and the copy
@@ -17,6 +20,7 @@ pub struct TerminalBlockPlumbing {
     filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
     global_filter: Option<TerminalFilter>,
     on_copy: Option<TerminalCopyHandler>,
+    text_style: TerminalTextStyle,
 }
 
 impl TerminalBlockPlumbing {
@@ -32,7 +36,16 @@ impl TerminalBlockPlumbing {
             filters,
             global_filter,
             on_copy,
+            text_style: TerminalTextStyle::default(),
         }
+    }
+
+    /// Draw the surface's blocks at `style`. A terminal pane passes its grid
+    /// font, so a captured row of `columns` cells fits the pane instead of
+    /// wrapping; other surfaces keep the body default.
+    pub fn with_text_style(mut self, style: TerminalTextStyle) -> Self {
+        self.text_style = style;
+        self
     }
 
     /// Draw `data` as the terminal block, resolving its app-owned filter state
@@ -44,11 +57,12 @@ impl TerminalBlockPlumbing {
             .entry(data.filter_key())
             .or_default()
             .clone();
-        terminal_block(
+        terminal_block_styled(
             data,
             filter,
             self.global_filter.clone(),
             self.on_copy.clone(),
+            self.text_style,
         )
     }
 
@@ -68,7 +82,7 @@ impl TerminalBlockPlumbing {
             .entry(data.filter_key())
             .or_default()
             .clone();
-        terminal_block_with_selection(
+        terminal_block_with_selection_styled(
             data,
             filter,
             self.global_filter.clone(),
@@ -76,6 +90,38 @@ impl TerminalBlockPlumbing {
             selection,
             line_base,
             geometry,
+            self.text_style,
+        )
+    }
+
+    /// The same block, also drawing the caret a command that is still running
+    /// left in its output. `cursor.line` is the block's own line index, the
+    /// command line included.
+    #[allow(clippy::too_many_arguments)]
+    pub fn element_with_selection_and_cursor(
+        &self,
+        data: &TerminalData,
+        selection: Option<TerminalTextSelection>,
+        cursor: Option<TerminalBlockCursor>,
+        line_base: usize,
+        geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,
+    ) -> Box<dyn Element> {
+        let filter = self
+            .filters
+            .borrow_mut()
+            .entry(data.filter_key())
+            .or_default()
+            .clone();
+        terminal_block_with_cursor_styled(
+            data,
+            filter,
+            self.global_filter.clone(),
+            self.on_copy.clone(),
+            selection,
+            cursor,
+            line_base,
+            geometry,
+            self.text_style,
         )
     }
 

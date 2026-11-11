@@ -1,6 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use goble_ui::elements::{
     AppContext, Container, CrossAxisAlignment, Divider,
     EdgeInsets, Element, Fill, Flex, MainAxisSize, Spacer, Text,
@@ -102,15 +99,15 @@ pub(crate) fn build_sub_agent_child_view(
         .finish();
 
     let on_close = actions.on_close_sub_agent.clone();
-    // A nested child's row stays enterable: the view opens on the view rather
-    // than dead-ending at the first generation.
-    let open_sub_agent: Rc<RefCell<dyn FnMut(String)>> = {
-        let open = actions.on_open_sub_agent.clone();
-        Rc::new(RefCell::new(move |child_id: String| {
-            (open.borrow_mut())(pane_id, child_id)
-        }))
-    };
-    ChatView::new()
+    // The child accepts a message of its own once it has ended: the text goes
+    // to the child's conversation, the way grok-build's takeover lets the user
+    // type in the child's own input. A child still working owns that
+    // conversation, so its view stays read-only until it settles.
+    let can_reply = child.row.as_ref().is_none_or(|row| !row.is_running());
+    let draft = child.draft.clone();
+    let on_change_draft = draft.clone();
+    let on_send_child = actions.on_send_sub_agent_message.clone();
+    let mut view = ChatView::new()
         .with_header(title)
         // The child's own rows, read from the store by its conversation id on
         // the app side — the same message shape the parent's transcript arrives
@@ -126,17 +123,24 @@ pub(crate) fn build_sub_agent_child_view(
         .with_terminal_filters(state.terminal_filters.clone())
         .with_reasoning_expanded(state.reasoning_expanded.clone())
         .with_tool_fold(state.tool_fold.clone())
+        .with_tool_hover(state.tool_hover.clone())
         .with_on_copy_terminal(Some(actions.on_copy_terminal.clone()))
         // A child can itself spawn a child: the pane's live sub-agent records
-        // feed this view's rows too, so a nested spawn call inside the child's
-        // transcript is enterable from here, exactly as it is in the parent's.
+        // feed this view's rows too, so a nested child is drawn here as the
+        // same status line the parent's transcript draws.
         .with_sub_agents(session.sub_agents.clone())
         .with_pane_active(active)
-        .with_on_action(chat_action_relay(
-            actions.on_open_url.clone(),
-            open_sub_agent,
-        ))
-        .without_composer()
-        .with_on_escape(move || (on_close.borrow_mut())(pane_id))
-        .finish()
+        .with_on_action(chat_action_relay(actions.on_open_url.clone()))
+        .with_on_escape(move || (on_close.borrow_mut())(pane_id));
+    if can_reply {
+        view = view
+            .with_composer_value(draft.borrow().clone())
+            .with_composer_caret(child.caret.clone())
+            .with_composer_focused(active)
+            .with_composer_on_change(move |text| *on_change_draft.borrow_mut() = text)
+            .with_on_send(move |text| (on_send_child.borrow_mut())(pane_id, text));
+    } else {
+        view = view.without_composer();
+    }
+    view.finish()
 }

@@ -2,11 +2,12 @@
 //! the sub-agent rows, one module per surface.
 //!
 //! [`drain`] covers the live-event path, [`sub_agent_events`] the parent's
-//! transcript row, [`topbar`] the live count cue, [`child_view`] entering a
-//! child's conversation, [`nested_child`] a child entered from inside a
-//! child view, [`return_to_shell`] the pane a conversation switch or an agent
-//! delete sends back to its shell (U1), and [`worker_pane`] the viewer pane a
-//! remote-routed conversation gets and its re-attach to the session it runs on.
+//! transcript row, [`sub_agent_panel`] the strip under the pane header,
+//! [`topbar`] the live count cue, [`child_view`] entering a child's
+//! conversation, [`nested_child`] a child entered from inside a child view,
+//! [`return_to_shell`] the pane a conversation switch or an agent delete sends
+//! back to its shell (U1), and [`worker_pane`] the viewer pane a remote-routed
+//! conversation gets and its re-attach to the session it runs on.
 //! The fixtures every case shares live here.
 
 use goble_ui::event::DispatchedEvent;
@@ -30,6 +31,7 @@ use goble_ui::EventContext;
         (view, bus, dir)
     }
 
+mod announcement;
 mod child_view;
 mod drain;
 mod environment;
@@ -38,6 +40,7 @@ mod hover_chip;
 mod nested_child;
 mod return_to_shell;
 mod sub_agent_events;
+mod sub_agent_panel;
 mod topbar;
 #[cfg(target_os = "macos")]
 mod transcript_copy;

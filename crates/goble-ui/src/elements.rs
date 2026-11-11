@@ -1,20 +1,25 @@
 pub use agent_card::AgentCard;
 pub use align::{Align, Alignment};
+pub use app_mark::AppMark;
 pub use approval_mode::ApprovalMode;
 pub use ask_user::{AskUserCard, AskUserUi};
 pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
-pub use caret::{caret, caret_beam, CaretShape, CARET_HEIGHT};
+pub use caret::{caret_beam, CaretShape, CARET_HEIGHT};
 pub use chat_composer::{ChatComposer, CommandProposalUi, DiffFileStat, DiffSummary};
 pub use chat_content::{
-    tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentRow,
-    SubAgentRowStatus, ToolCall, ToolDisplayMode,
+    tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentPanel,
+    SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode, WorkDock, WorkGroup, WorkRow,
+    WorkSection,
 };
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, RoutineItem, CHAT_SIDEBAR_WIDTH};
-pub use conversation_list_item::{AgentCardUi, ConversationListItem, ConversationStatus};
+pub use conversation_list_item::{
+    harness_accent, harness_bar_mark, harness_icon, harness_mark, AgentCardUi, ConversationListItem,
+    ConversationStatus,
+};
 pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
 };
@@ -60,6 +65,7 @@ pub use padding::Padding;
 pub use page::Page;
 pub use pointer_menu::PointerMenu;
 pub use popup_menu::{PanelScroll, PopupMenu, PopupMenuItem, PopupMenuPosition, MENU_MAX_VISIBLE_ROWS};
+pub use progress_bar::ProgressBar;
 pub use quick_action_button::QuickActionButton;
 pub use rect::Rect;
 pub use right_panel::RightPanel;
@@ -79,9 +85,11 @@ pub use stack::Stack;
 pub use switch::Switch;
 pub use tab_bar::{Tab, TabBar};
 pub use terminal_block::{
-    filter_option_labels, terminal_block, terminal_block_with_selection, TerminalBlock,
-    TerminalBlockPlumbing, TerminalCopyHandler, TerminalData, TerminalFilter, TerminalLine,
-    TerminalLineGeometry, TerminalLineKind, TerminalMeta, TerminalStatus, TerminalTextSelection,
+    filter_option_labels, terminal_block, terminal_block_styled, terminal_block_with_cursor_styled,
+    terminal_block_with_selection, terminal_block_with_selection_styled, TerminalBlock,
+    TerminalBlockCursor, TerminalBlockPlumbing, TerminalCopyHandler, TerminalCursorShape,
+    TerminalData, TerminalFilter, TerminalLine, TerminalLineGeometry, TerminalLineKind, TerminalMeta,
+    TerminalStatus, TerminalTextSelection, TerminalTextStyle,
 };
 pub use terminal_grid::{GridRange, TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
@@ -585,6 +593,7 @@ where
 
 pub mod agent_card;
 pub mod align;
+pub mod app_mark;
 pub mod approval_mode;
 pub mod ask_user;
 pub mod avatar;
@@ -638,6 +647,7 @@ pub mod padding;
 pub mod page;
 pub mod pointer_menu;
 pub mod popup_menu;
+pub mod progress_bar;
 pub mod quick_action_button;
 pub mod rect;
 pub mod right_panel;

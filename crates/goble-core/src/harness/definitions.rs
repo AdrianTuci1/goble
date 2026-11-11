@@ -1,12 +1,30 @@
 use crate::llm::ToolDefinition;
 
-pub(crate) const HARNESS_SYSTEM_PROMPT: &str = r#"You are an assistant that controls a local Goble agent environment.
+/// The rich-text contract every Goble client renders: the desktop transcript
+/// and the mobile/web transcript parse the same markers. The harness carries
+/// it in its system prompt, and a worker appends it to the prompt it builds,
+/// so a model can rely on the markers being understood wherever its reply is
+/// read.
+pub const RICH_TEXT_GUIDE: &str = "Replies render as Markdown in every Goble client. Use **bold** for emphasis. \
+A run can carry an explicit colour with {color:#rrggbb}text{/color}; the named colours red, orange, yellow, \
+green, blue, purple, cyan, gray, white and black are accepted too. A fenced block tagged `ansi`, or a plain \
+fence carrying SGR escape codes, renders as coloured prose without a code panel. Use colour for status and \
+labels, sparingly.";
+
+const HARNESS_BASE_PROMPT: &str = r#"You are an assistant that controls a local Goble agent environment.
 You can create/update agents, workflows and teams, run shell commands, read/write files, search the store, deploy agents/workflows to workers, schedule workflows, and check execution status.
 Use memory_write to record goals, decisions, constraints and progress into an agent's persistent memory; use memory_read to review what an agent already knows. Memory survives conversation summarization.
 Only call a tool when the user explicitly asks for an action you can perform with a tool.
 If no tool is needed, reply conversationally.
+When you ask the user to pick between options, call ask_user with the choices in quick_replies instead of writing a numbered list in prose: the client draws them as a numbered picker.
 There is a user guide for this product at ~/.goble/docs/user-guide. For questions about how to set up or use Goble (credentials, workspaces, principals, remote/self-as-worker access, reaching this machine from the mobile app via Tailscale), call the user_guide tool to look up the relevant topic before answering.
 When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path."#;
+
+/// The harness's system prompt: the environment's rules plus the rich-text
+/// contract its replies are rendered with.
+pub(crate) fn harness_system_prompt() -> String {
+    format!("{HARNESS_BASE_PROMPT}\n{RICH_TEXT_GUIDE}")
+}
 
 /// The tool that spawns a sub-agent. Named here because the child's tool set
 /// withholds it once the depth limit is reached (S1's `can_spawn_subagent`).

@@ -6,7 +6,7 @@ use crate::elements::{
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::{one_line, tool_kind_for, web_search_sources, ToolCallStatus, ToolKind};
-use super::read_excerpt::{read_excerpt, read_excerpt_column};
+use super::read_excerpt::{read_excerpt, read_excerpt_column, EXPANDED_LINE_CAP};
 use super::tool_call::{argument_str, tool_body_row, tool_body_span_row, TOOL_ROW_FONT_SIZE};
 
 /// First / last body lines a truncated read draws, and the fewer lines a
@@ -59,8 +59,12 @@ pub(super) fn result_rows(
 }
 
 /// A block of text as the fold draws it: nothing folded, the head and tail
-/// truncated, the whole thing as one row expanded. The sub-agent record's own
-/// outcome folds the same way a tool result does.
+/// truncated, the head as one row expanded. The sub-agent record's own outcome
+/// folds the same way a tool result does.
+///
+/// Expanded is bounded by [`EXPANDED_LINE_CAP`] like a read's excerpt: the row
+/// is a whole block of text, and laying out a file's worth of it again on each
+/// frame is what makes a large result cost the transcript.
 pub(super) fn folded_text_rows(
     text: &str,
     mode: ToolDisplayMode,
@@ -76,7 +80,21 @@ pub(super) fn folded_text_rows(
             .into_iter()
             .map(|line| tool_body_row(line, ColorToken::Muted, app))
             .collect(),
-        ToolDisplayMode::Expanded => vec![tool_body_row(text.to_string(), ColorToken::Muted, app)],
+        ToolDisplayMode::Expanded => {
+            let total = text.lines().count();
+            if total <= EXPANDED_LINE_CAP {
+                return vec![tool_body_row(text.to_string(), ColorToken::Muted, app)];
+            }
+            let head: Vec<&str> = text.lines().take(EXPANDED_LINE_CAP).collect();
+            vec![
+                tool_body_row(head.join("\n"), ColorToken::Muted, app),
+                tool_body_row(
+                    format!("… {} more lines", total - EXPANDED_LINE_CAP),
+                    ColorToken::Muted,
+                    app,
+                ),
+            ]
+        }
     }
 }
 
@@ -107,6 +125,7 @@ pub(super) fn build_tool_call_body(
         | ToolKind::List
         | ToolKind::MemorySearch
         | ToolKind::SearchTools
+        | ToolKind::Ask
         | ToolKind::Skill => result_rows(call, mode, READ_TRUNCATION, app),
         ToolKind::SubAgent => sub_agent_body(&arguments, call, mode, sub_agent, app),
         ToolKind::UseTool => generic_body(call, mode, app),
@@ -225,8 +244,10 @@ pub(super) fn command_status(status: ToolCallStatus) -> TerminalStatus {
 /// The excerpt is a right-aligned line-number gutter and the line's content
 /// through H1's highlighter ([`crate::syntax::highlight`]), each line on its
 /// own background band, the shape grok-build's `render_content_lines` builds.
-/// A read with no usable line information falls back to plain rows rather than
-/// drawing a number it cannot justify.
+/// Only the lines the fold draws are joined and tokenised, so the body's cost
+/// follows the pane rather than the file. A read with no usable line
+/// information falls back to plain rows rather than drawing a number it cannot
+/// justify.
 pub(super) fn read_body(
     arguments: &serde_json::Value,
     call: &ToolCall,
@@ -237,13 +258,7 @@ pub(super) fn read_body(
         return result_rows(call, mode, READ_TRUNCATION, app);
     };
     let path = argument_str(arguments, "path").unwrap_or("");
-    let highlighted = crate::syntax::highlight(&excerpt.text(), path);
-    vec![read_excerpt_column(
-        &excerpt,
-        mode,
-        highlighted.as_deref(),
-        app,
-    )]
+    vec![read_excerpt_column(&excerpt, mode, path, app)]
 }
 
 /// A file being written: the change the write recorded, drawn as diff rows
@@ -327,11 +342,22 @@ fn diff_rows(
 ) -> Vec<Box<dyn Element>> {
     let mut rows: Vec<Box<dyn Element>> = Vec::new();
     if !hunks.is_empty() {
+        // A diff is drawn whole in both open folds, so it is bounded the same
+        // way a read's excerpt is: a write that replaced a whole file would
+        // otherwise lay that file out, and colour it, on every frame.
+        let (hunks, elided) = capped_hunks(hunks, EXPANDED_LINE_CAP);
         let diff = match path {
             Some(path) => Diff::new(hunks).with_language(path),
             None => Diff::new(hunks),
         };
         rows.push(Box::new(diff) as Box<dyn Element>);
+        if elided > 0 {
+            rows.push(tool_body_row(
+                format!("… {elided} more lines"),
+                ColorToken::Muted,
+                app,
+            ));
+        }
     }
     // The result is what a mutation reports when it fails ("old_text not
     // found", "no such file"), so it is shown rather than hidden behind the
@@ -340,6 +366,40 @@ fn diff_rows(
         rows.extend(result_rows(call, mode, READ_TRUNCATION, app));
     }
     rows
+}
+
+/// The hunks a diff draws, and the lines it leaves out: at most `cap` body
+/// lines, with the hunk straddling the cap cut at it and its counts taken from
+/// the lines it still carries. A hunk's own header counts are the only thing
+/// the cut has to keep in step; the rows carry their file line numbers.
+fn capped_hunks(hunks: Vec<Hunk>, cap: usize) -> (Vec<Hunk>, usize) {
+    let mut kept: Vec<Hunk> = Vec::new();
+    let mut drawn = 0usize;
+    let mut elided = 0usize;
+    for mut hunk in hunks {
+        let room = cap.saturating_sub(drawn);
+        if room == 0 {
+            elided += hunk.lines.len();
+            continue;
+        }
+        if hunk.lines.len() > room {
+            elided += hunk.lines.len() - room;
+            hunk.lines.truncate(room);
+            hunk.old_count = hunk
+                .lines
+                .iter()
+                .filter(|line| line.kind != DiffLineKind::Added)
+                .count() as u32;
+            hunk.new_count = hunk
+                .lines
+                .iter()
+                .filter(|line| line.kind != DiffLineKind::Removed)
+                .count() as u32;
+        }
+        drawn += hunk.lines.len();
+        kept.push(hunk);
+    }
+    (kept, elided)
 }
 
 /// The edit as one unified-diff hunk: the replaced text removed, the

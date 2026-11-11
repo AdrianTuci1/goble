@@ -6,20 +6,26 @@ use goble_terminal::Block;
 use crate::color::ColorU;
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Flex,
-    LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, SizeConstraint, Spacer,
-    Text,
+    harness_bar_mark, AppContext, Border, Container, CrossAxisAlignment, EdgeInsets, Element,
+    EventContext, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
+    SizeConstraint, Spacer, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, Vector2F};
-use crate::theme::{ColorToken, FontFamily, SpacingToken};
+use crate::theme::{ColorToken, SpacingToken};
 
-/// Width of the accent rail down the card's left edge.
+/// Width of the accent rail the card painted before it became a raised band.
+/// Kept exported for callers that still refer to the card's old mark.
 pub const CARD_RAIL_WIDTH: f32 = 2.0;
 
-const FONT_SIZE: f32 = 12.0;
-const PADDING_Y: f32 = 6.0;
-const RAIL_GAP: f32 = 8.0;
+const FONT_SIZE: f32 = 13.0;
+const PADDING_X: f32 = 12.0;
+const PADDING_Y: f32 = 12.0;
+
+/// The harness mark the row leads with, and the trailing glyphs that say the
+/// row opens.
+const HARNESS_SIZE: f32 = 16.0;
+const TRAILING_ICON_SIZE: f32 = 14.0;
 
 /// What the conversation the card stands for is doing right now.
 ///
@@ -64,15 +70,18 @@ impl ConversationCardStatus {
 /// It reads its identity straight off the agent-view block A7 pushes into the
 /// pane's list ([`Block::conversation_id`] / [`Block::label`]), so the card and
 /// the agent view can never disagree about which conversation they stand for.
-/// The two things the block does not carry — what the conversation is doing and
-/// when it last did it — are set by the app that holds the conversation.
+/// What the block does not carry — the harness the conversation runs on, and
+/// what it is doing — the app that holds the conversation sets.
 ///
-/// It is drawn in the pager idiom: a plain inline row with an accent rail, no
-/// border and no rounded container, so it reads as part of the scrollback
-/// rather than a widget sitting on top of it.
+/// It is drawn as the pane's own row rather than as terminal output: a
+/// full-width raised band with one hairline, the harness's mark at its leading
+/// edge, the conversation's name, and the expand and open glyphs at its
+/// trailing edge.
 pub struct ConversationCard {
     conversation_id: String,
     title: String,
+    /// Which harness runs the conversation. Unknown keys draw the native mark.
+    harness: String,
     status: ConversationCardStatus,
     last_activity: String,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -100,6 +109,7 @@ impl ConversationCard {
         Self {
             conversation_id,
             title,
+            harness: "goble".to_string(),
             status: ConversationCardStatus::default(),
             last_activity: String::new(),
             on_click: None,
@@ -117,6 +127,12 @@ impl ConversationCard {
             block.conversation_id()?,
             block.label().unwrap_or_default(),
         ))
+    }
+
+    /// Which harness the row leads with. Unknown keys draw the native mark.
+    pub fn with_harness(mut self, harness: impl Into<String>) -> Self {
+        self.harness = harness.into();
+        self
     }
 
     pub fn with_status(mut self, status: ConversationCardStatus) -> Self {
@@ -145,8 +161,16 @@ impl ConversationCard {
         &self.title
     }
 
+    pub fn harness(&self) -> &str {
+        &self.harness
+    }
+
     pub fn status(&self) -> ConversationCardStatus {
         self.status
+    }
+
+    pub fn last_activity(&self) -> &str {
+        &self.last_activity
     }
 
     fn ensure_root(&mut self, app: &AppContext) {
@@ -155,20 +179,14 @@ impl ConversationCard {
         }
         let sm = app.theme.spacing_px(SpacingToken::Sm);
 
-        // The pager's "there is more here" marker, the conversation's name, then
-        // what it is doing and when it last did it, pushed to the right edge.
+        // The harness's mark, the conversation's name, then the two trailing
+        // glyphs: expand, and move into the conversation.
         let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::Start)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
-            .with_child(
-                Text::new("▸")
-                    .with_font_size(FONT_SIZE)
-                    .with_font_family(FontFamily::Mono)
-                    .with_theme_color(ColorToken::Accent, app)
-                    .finish(),
-            )
+            .with_child(harness_bar_mark(&self.harness, HARNESS_SIZE, app))
             .with_child(
                 Text::new(self.title.clone())
                     .with_font_size(FONT_SIZE)
@@ -178,31 +196,27 @@ impl ConversationCard {
             )
             .with_child(Spacer::new().finish())
             .with_child(
-                Text::new(self.status.label())
-                    .with_font_size(FONT_SIZE)
-                    .with_theme_color(self.status.color_token(), app)
-                    .with_max_lines(1)
+                Icon::new("maximize")
+                    .with_size(TRAILING_ICON_SIZE)
+                    .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
             .with_child(
-                Text::new(self.last_activity.clone())
-                    .with_font_size(FONT_SIZE)
+                Icon::new("chevron-right")
+                    .with_size(TRAILING_ICON_SIZE)
                     .with_theme_color(ColorToken::Muted, app)
-                    .with_max_lines(1)
                     .finish(),
             )
             .finish();
 
-        // The rail is painted in `paint`; the content is inset past it so the
-        // two never overlap. No border, no corner radius: a row, not a widget.
+        // The band carries the hairline and the inset; its surface is painted
+        // by `paint`, where the hover tint can replace it.
         self.root = Some(
             Container::new(row)
-                .with_padding(EdgeInsets::new(
-                    PADDING_Y,
-                    CARD_RAIL_WIDTH + RAIL_GAP,
-                    PADDING_Y,
-                    sm,
-                ))
+                .with_padding(EdgeInsets::new(PADDING_X, PADDING_Y, PADDING_X, PADDING_Y))
+                .with_border(
+                    Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)),
+                )
                 .finish(),
         );
     }
@@ -224,20 +238,19 @@ impl Element for ConversationCard {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let Some(size) = self.size else { return };
+        // The band: raised at rest, the hover tint under the pointer. The fill
+        // is painted here rather than by the container so the tint is not
+        // covered by the row's own surface.
+        let surface = if self.state.hover {
+            ColorToken::Hover
+        } else {
+            ColorToken::SurfaceRaised
+        };
         if let Some(renderer) = ctx.renderer.as_mut() {
-            if self.state.hover {
-                renderer.fill_rect(
-                    rectf(origin.x, origin.y, size.x, size.y),
-                    app.theme.color(ColorToken::Hover),
-                );
-            }
-            // The rail carries the status colour and reads as the row's mark.
-            if size.y > 0.0 {
-                renderer.fill_rect(
-                    rectf(origin.x, origin.y, CARD_RAIL_WIDTH, size.y),
-                    self.status.color(app),
-                );
-            }
+            renderer.fill_rect(
+                rectf(origin.x, origin.y, size.x, size.y),
+                app.theme.color(surface),
+            );
         }
         if let Some(root) = self.root.as_mut() {
             root.paint(origin, ctx, app);
@@ -277,6 +290,7 @@ impl Element for ConversationCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::elements::harness_accent;
     use crate::geometry::vec2f;
     use crate::render::RenderCommand;
     use crate::test_util::{command_counts, render_element};
@@ -318,41 +332,49 @@ mod tests {
     }
 
     #[test]
-    fn the_card_draws_a_rail_not_a_bordered_widget() {
+    fn the_card_is_a_raised_band_with_one_hairline() {
         let (list, id) = conversation_block("conv-1", "Fix the build");
-        let card = ConversationCard::from_block(list.get(id).unwrap())
-            .unwrap()
-            .with_status(ConversationCardStatus::Running)
-            .with_last_activity("2m ago");
+        let card = ConversationCard::from_block(list.get(id).unwrap()).unwrap();
         let mut element: Box<dyn Element> = card.finish();
 
         let app = AppContext::default();
         let commands = render_element(&mut element, vec2f(420.0, 40.0), &app);
         let counts = command_counts(&commands);
 
-        assert_eq!(counts.stroke_rect, 0, "a pager row draws no border");
-        let rail = commands.iter().find_map(|c| match c {
-            RenderCommand::FillRect {
-                rect,
-                corner_radius,
-                ..
-            } if rect.width() == CARD_RAIL_WIDTH => Some(*corner_radius),
-            _ => None,
-        });
-        assert_eq!(rail, Some(0.0), "the card paints a square status rail");
+        assert_eq!(counts.stroke_rect, 1, "the band draws one hairline");
+        let band = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::SurfaceRaised) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the row sits on a raised surface");
+        let (border, width) = commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::StrokeRect {
+                    rect, color, width, ..
+                } if *color == app.theme.color(ColorToken::Border) => Some((*rect, *width)),
+                _ => None,
+            })
+            .expect("the band keeps a hairline");
+        assert_eq!(width, 1.0, "the rule is one hairline");
+        assert_eq!(border, band, "the hairline is the band's own edge");
     }
 
     #[test]
-    fn the_card_shows_title_status_and_last_activity() {
+    fn the_card_leads_with_the_native_mark_and_opens_with_two_glyphs() {
         let (list, id) = conversation_block("conv-1", "Fix the build");
-        let card = ConversationCard::from_block(list.get(id).unwrap())
-            .unwrap()
-            .with_status(ConversationCardStatus::Waiting)
-            .with_last_activity("5m ago");
+        let card = ConversationCard::from_block(list.get(id).unwrap()).unwrap();
         let mut element: Box<dyn Element> = card.finish();
 
         let app = AppContext::default();
         let commands = render_element(&mut element, vec2f(420.0, 40.0), &app);
+
         let texts: Vec<&str> = commands
             .iter()
             .filter_map(|c| match c {
@@ -360,11 +382,68 @@ mod tests {
                 _ => None,
             })
             .collect();
-
-        assert!(texts.contains(&"▸"), "the pager marker: {texts:?}");
         assert!(texts.contains(&"Fix the build"), "the title: {texts:?}");
-        assert!(texts.contains(&"waiting"), "the status: {texts:?}");
-        assert!(texts.contains(&"5m ago"), "the last activity: {texts:?}");
+        assert!(
+            !texts.iter().any(|text| *text == "▸" || *text == "idle"),
+            "the row drops the pager marker and the status text: {texts:?}"
+        );
+
+        // The native harness leads with the octopus alone: the atlas glyph for
+        // it is a rounded square, the app's frame rather than the harness.
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                RenderCommand::DrawImage { source, .. } if source == "harness-goble-octopus"
+            )),
+            "the native mark is the frameless octopus"
+        );
+
+        let icons: Vec<&str> = commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            icons.contains(&"maximize-01"),
+            "the expand glyph: {icons:?}"
+        );
+        assert!(
+            icons.contains(&"chevron-right"),
+            "the open glyph: {icons:?}"
+        );
+    }
+
+    #[test]
+    fn another_harness_leads_with_its_catalog_glyph_in_its_accent() {
+        let (list, id) = conversation_block("conv-1", "Fix the build");
+        let card = ConversationCard::from_block(list.get(id).unwrap())
+            .unwrap()
+            .with_harness("claude");
+        let mut element: Box<dyn Element> = card.finish();
+
+        let app = AppContext::default();
+        let commands = render_element(&mut element, vec2f(420.0, 40.0), &app);
+
+        let mark = commands.iter().find_map(|c| match c {
+            RenderCommand::DrawIcon {
+                name, color, size, ..
+            } if name == "harness-claude" => Some((*color, *size)),
+            _ => None,
+        });
+        assert_eq!(
+            mark,
+            Some((harness_accent("claude", &app), HARNESS_SIZE)),
+            "the catalog glyph, in the harness family's accent"
+        );
+        assert!(
+            !commands.iter().any(|c| matches!(
+                c,
+                RenderCommand::DrawImage { source, .. } if source.starts_with("harness-goble")
+            )),
+            "a non-native harness draws no Goble artwork"
+        );
     }
 
     #[test]

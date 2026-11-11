@@ -30,15 +30,15 @@ pub(crate) use overlays::{
 pub(crate) use sub_agent::build_sub_agent_child_view;
 
 /// Relay a transcript fragment's action to the app: a link's `OpenUrl` is handed
-/// to `on_open_url`, the app's guarded external-URL opener, and a sub-agent row
-/// click is handed to `on_open_sub_agent`. Any other action is ignored here.
+/// to `on_open_url`, the app's guarded external-URL opener. The sub-agent
+/// controls live in the pane's strip, so the transcript dispatches nothing else
+/// and the remaining variants are ignored here.
 fn chat_action_relay(
     on_open_url: Rc<RefCell<dyn FnMut(String)>>,
-    on_open_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
 ) -> impl FnMut(ChatAction) + 'static {
     move |action| match action {
         ChatAction::OpenUrl(url) => (on_open_url.borrow_mut())(url),
-        ChatAction::OpenSubAgent(child_id) => (on_open_sub_agent.borrow_mut())(child_id),
+        ChatAction::OpenSubAgent(_) | ChatAction::StopSubAgent(_) => {}
         ChatAction::RunCommand(_) | ChatAction::Custom(_) => {}
     }
 }
@@ -70,6 +70,8 @@ pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneCha
             agent_busy: state.agent_busy,
             turn_status: goble_ui::TurnStatus::Idle,
             sub_agents: std::collections::HashMap::new(),
+            work_dock: Vec::new(),
+            work_dock_phase: 0.0,
             turn_error: None,
             sub_agent_view: None,
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),

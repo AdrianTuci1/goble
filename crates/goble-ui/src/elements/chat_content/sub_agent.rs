@@ -140,6 +140,21 @@ impl SubAgentRow {
         segments.join(" · ")
     }
 
+    /// What the strip's row states beside the child's description: the
+    /// activity while it runs, the wait for its first one, and its terminal
+    /// phrase once it ends. The elapsed time is the strip's own column, so it
+    /// is not repeated here.
+    pub fn panel_status(&self) -> String {
+        if !self.is_running() {
+            return self.status_phrase();
+        }
+        if self.activity.is_empty() {
+            "Waiting for response…".to_string()
+        } else {
+            self.activity.clone()
+        }
+    }
+
     /// The detail row the expanded body carries: what the record has counted,
     /// and how the child was spawned.
     pub fn counters_line(&self) -> String {
@@ -158,6 +173,13 @@ impl SubAgentRow {
 /// A sub-agent's elapsed time, in grok-build's `format_duration` shape: one
 /// decimal under ten seconds, whole seconds under a minute, then minutes/hours.
 pub(crate) fn format_subagent_elapsed(elapsed: Duration) -> String {
+    format_elapsed(elapsed)
+}
+
+/// The elapsed time a live row states, in the transcript's own units (`8.7s`,
+/// `43s`, `3m53s`, `1h05m`). Shared by the sub-agent rows and the work dock so
+/// every clock in the pane reads the same.
+pub fn format_elapsed(elapsed: Duration) -> String {
     let secs = elapsed.as_secs();
     if secs < 10 {
         return format!("{:.1}s", elapsed.as_secs_f64());

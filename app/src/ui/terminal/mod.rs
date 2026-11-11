@@ -20,6 +20,7 @@
 //! the pane's own view, its callbacks and the grid metrics — stays here.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use goble_terminal::blocks::BlockView;
@@ -30,7 +31,7 @@ use goble_ui::ScrollState;
 
 use crate::terminal::TerminalRegistry;
 
-use cards::CardRect;
+use cards::{CardInfo, CardRect};
 use grid::GridGeometry;
 
 mod blocks;
@@ -95,6 +96,9 @@ struct TerminalView {
     /// The conversation cards drawn in the terminal view this frame, with where
     /// each landed, so a click on a card reopens its conversation.
     cards: Rc<RefCell<Vec<CardRect>>>,
+    /// What the app's conversation list knows about the conversations those
+    /// cards stand for. The block the pane keeps carries only their identity.
+    conversation_info: HashMap<String, CardInfo>,
     /// Where each block line landed this frame, so a drag over the block view
     /// selects the text the user is actually pointing at.
     block_geometry: Rc<RefCell<Vec<TerminalLineGeometry>>>,

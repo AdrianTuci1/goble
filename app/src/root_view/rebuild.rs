@@ -35,6 +35,10 @@ impl RootView {
         // query the field holds now. The walk runs off this thread, so this is
         // where its answer reaches the rows the sidebar draws.
         self.state.borrow_mut().take_global_search_result();
+        // A finished turn's announcement is timed: the frame clock runs it out
+        // (see `Element::wants_animation`) and this is where the deadline is
+        // honoured, before the snapshot the banner is drawn from is taken.
+        self.state.borrow_mut().expire_announcement();
         // Follow what every pane's own shell reports as its working directory
         // before anything reads a path: the rich input's directory pill, the tab
         // label that derives from it and the explorer all draw from the pane's
@@ -194,6 +198,17 @@ impl RootView {
                                 })
                                 .map(|m| m.label.clone())
                                 .unwrap_or_else(|| "Local".to_string());
+                        }
+                        // A conversation that belongs to a CLI harness names
+                        // that harness in the rich input: the harness is the
+                        // agent the thread runs with, and its model is not the
+                        // app's to switch. The environment pill names the
+                        // machine; this one names the agent.
+                        if let Some(spec) = s.pane_conversation_harness(pid) {
+                            ctx.harness_label = spec.name.to_string();
+                            ctx.harness_icon = spec.icon;
+                            ctx.harness_ids.clear();
+                            ctx.harness_items.clear();
                         }
 
                         ctx.dir_menu_open = controls.dir_menu_open.clone();
@@ -398,6 +413,7 @@ impl RootView {
                 selected_id: s.selected_id.clone(),
                 search_query: s.search_query.clone(),
                 search_focused: s.search_focused,
+                sidebar_search_caret: s.sidebar_search_caret.clone(),
                 new_conversation_draft: s.new_conversation_draft.clone(),
                 create_focused: s.create_focused,
                 chat_messages: s.chat_messages.clone(),
@@ -430,12 +446,18 @@ impl RootView {
                 terminal_filters: s.terminal_filters.clone(),
                 reasoning_expanded: s.reasoning_expanded.clone(),
                 tool_fold: s.tool_fold.clone(),
+                tool_hover: s.tool_hover.clone(),
                 terminal_global_filters: s.terminal_global_filters.clone(),
                 pane_terminal_scroll: s.pane_terminal_scroll.clone(),
                 crons_open: s.crons_open,
                 task_workflow_open: s.task_workflow_open,
                 task_workflow_selected: s.task_workflow_selected.clone(),
                 task_workflow_phase: s.task_workflow_phase.clone(),
+                work_dock_phase: s
+                    .pane_runtime
+                    .get(&s.active_pane_id)
+                    .map(|runtime| runtime.work_dock_phase())
+                    .unwrap_or(0.0),
                 shortcuts_help_open: s.shortcuts_help_open,
                 shortcuts_help_filter: s.shortcuts_help_filter.clone(),
                 shortcuts_help_index: s.shortcuts_help_index,
@@ -494,6 +516,9 @@ impl RootView {
                 theme_primary: s.theme_primary.clone(),
                 theme_secondary: s.theme_secondary.clone(),
                 theme_accent: s.theme_accent.clone(),
+                theme_bg: s.theme_bg.clone(),
+                theme_surface: s.theme_surface.clone(),
+                theme_preset: s.theme_preset.clone(),
                 theme_color_target: s.theme_color_target,
                 theme_color_drag: s.theme_color_drag.clone(),
                 show_llm_key_banner: s.show_llm_key_banner,
@@ -553,11 +578,13 @@ impl RootView {
                 global_search_searched: s.global_search_searched,
                 global_search_error: s.global_search_error.clone(),
                 global_search_focused: s.global_search_focused,
+                global_search_caret: s.global_search_caret.clone(),
                 sidebar_scroll: s.sidebar_scroll.clone(),
                 explorer_scroll: s.explorer_scroll.clone(),
                 global_search_scroll: s.global_search_scroll.clone(),
                 settings_scroll: s.settings_scroll.clone(),
                 space_rename_editing: s.space_rename_editing,
+                command_held: s.command_held,
                 space_rename_draft: s.space_rename_draft.clone(),
                 space_rename_focused: s.space_rename_focused,
                 space_menu: s.space_menu.clone(),
@@ -572,6 +599,8 @@ impl RootView {
                 inbox_index: s.inbox_index,
                 inbox_error: s.inbox_error.clone(),
                 inbox_scroll: s.inbox_scroll.clone(),
+                inbox_anchor: s.inbox_anchor.clone(),
+                announcement: s.announcement_item().cloned(),
                 agent_dashboard: s.agent_dashboard.clone(),
                 show_onboarding_tip: s.show_onboarding_tip,
                 add_space_menu_open: s.add_space_menu_open.clone(),

@@ -143,6 +143,10 @@ pub struct UiActions {
     pub on_composer_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_composer_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
     pub on_send_message: Rc<RefCell<dyn FnMut(String)>>,
+    /// Send a line to the CLI agent running in a pane's pty: `(pane, text)`.
+    /// This is the rich input of a TUI harness — the prompt goes to the agent's
+    /// own stdin, not to a model turn.
+    pub on_agent_prompt: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Cmd/Ctrl+Enter in a chat composer: send the draft to the agent as a NEW
     /// agent conversation (warp-new behavior), binding the pane to a fresh
     /// conversation before the turn.
@@ -177,13 +181,26 @@ pub struct UiActions {
     pub on_clear_transcript: Rc<RefCell<dyn FnMut()>>,
     pub on_stop: Rc<RefCell<dyn FnMut()>>,
     /// Enter a sub-agent child's own conversation in `pane_id`, by the child's
-    /// conversation id — the row's click in the parent transcript (S5). The
-    /// child view (S6) puts the child's card in the pane's block list and shows
-    /// the child's transcript in its place.
+    /// conversation id — the open control on the pane's sub-agent strip (S5).
+    /// The child view (S6) puts the child's card in the pane's block list and
+    /// shows the child's transcript in its place.
     pub on_open_sub_agent: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Stop the sub-agent child `child_id` running under `pane_id`, by the
+    /// child's conversation id — the stop control the pane's sub-agent strip
+    /// draws while the child runs.
+    pub on_stop_sub_agent: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Leave the child view `pane_id` shows and put the pane back on the
     /// conversation it came from; the child's card stays in the block list.
     pub on_close_sub_agent: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Send the text typed in a child view to that child's own conversation:
+    /// `(pane_id, text)`. The child id is resolved from the pane's open view.
+    pub on_send_sub_agent_message: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Fold or open one group of the work dock under the agent pane's header.
+    pub on_toggle_work_section: Rc<RefCell<dyn FnMut(goble_ui::WorkSection)>>,
+    /// Reveal the rows one work-dock group holds behind `show N more`.
+    pub on_show_all_work_section: Rc<RefCell<dyn FnMut(goble_ui::WorkSection)>>,
+    /// Open the workflow-runs overlay from a work-dock row.
+    pub on_open_task_workflow: Rc<RefCell<dyn FnMut()>>,
     /// Submit the composed answer of the inline ask-user card. The optional
     /// `(name, value)` carries a credential entered in the card, threaded out
     /// separately from the answer so the secret never enters the transcript.
@@ -231,6 +248,12 @@ pub struct UiActions {
     pub on_inbox_ack_all: Rc<RefCell<dyn FnMut()>>,
     /// Jump to the pane the highlighted inbox item belongs to.
     pub on_inbox_jump: Rc<RefCell<dyn FnMut()>>,
+    /// Jump to the pane the row at this index belongs to (a click on the row).
+    pub on_inbox_jump_to: Rc<RefCell<dyn FnMut(usize)>>,
+    /// Jump to the pane the announced item belongs to.
+    pub on_announcement_jump: Rc<RefCell<dyn FnMut()>>,
+    /// Put the announcement away without jumping anywhere.
+    pub on_announcement_dismiss: Rc<RefCell<dyn FnMut()>>,
     /// One interaction in the agent-management panel: the topbar control opens
     /// it, and every row, field and action inside sends its own variant.
     pub on_agent_dashboard: Rc<RefCell<dyn FnMut(AgentDashboardAction)>>,
@@ -534,6 +557,16 @@ pub struct UiActions {
     pub on_set_theme_secondary: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: set the custom theme accent color (as `#rrggbb`).
     pub on_set_theme_accent: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: set the custom theme background color (as `#rrggbb`).
+    pub on_set_theme_bg: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: set the custom theme surface color (as `#rrggbb`).
+    pub on_set_theme_surface: Rc<RefCell<dyn FnMut(String)>>,
+    /// Settings: pick a preset palette, or `None` for the Default base.
+    pub on_set_theme_preset: Rc<RefCell<dyn FnMut(Option<goble_ui::theme::ThemePreset>)>>,
+    /// Settings: step the Themes stepper by `delta` bases.
+    pub on_step_theme: Rc<RefCell<dyn FnMut(i32)>>,
+    /// Settings: clear all five colour overrides, keeping the current base.
+    pub on_reset_theme_colors: Rc<RefCell<dyn FnMut()>>,
     /// Settings: save the profile (name, email).
     pub on_save_profile: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Settings: save the LLM config (provider, model, api_key, base_url, temperature).

@@ -38,6 +38,10 @@ pub struct SubAgentViewSnapshot {
     /// leaves the conversation itself on screen.
     pub row: Option<goble_ui::SubAgentRow>,
     pub messages: Vec<UiChatMessage>,
+    /// The message typed into the child view, and its caret: the app owns both
+    /// so the composer survives the per-frame rebuild.
+    pub draft: std::rc::Rc<std::cell::RefCell<String>>,
+    pub caret: std::rc::Rc<std::cell::RefCell<usize>>,
 }
 
 /// A viewer pane's session as its surface draws it: which worker the
@@ -127,11 +131,18 @@ pub struct PaneChatSnapshot {
     /// call that spawned each child; the parent transcript's rows read their
     /// status, activity and elapsed time from these.
     pub sub_agents: HashMap<String, goble_ui::SubAgentRow>,
+    /// The groups the pane's work dock lists: its in-flight workflows,
+    /// sub-agents, tasks and watchers, each with its fold state. Empty when
+    /// nothing is in flight, which draws no dock at all.
+    pub work_dock: Vec<goble_ui::WorkGroup>,
+    /// The dock's spinner phase, supplied by the pane's own work clock so every
+    /// live row turns together with the footer's indicator.
+    pub work_dock_phase: f32,
     /// The message the pane's last turn failed on, drawn inline at the end of
     /// the transcript so a failed turn is readable where it happened.
     pub turn_error: Option<String>,
     /// The sub-agent child view this pane shows (S6): the child's own
-    /// conversation, entered from the parent transcript's row. `None` when the
+    /// conversation, entered from the pane's sub-agent strip. `None` when the
     /// pane shows its own transcript.
     pub sub_agent_view: Option<SubAgentViewSnapshot>,
     /// This pane's transcript scroll offset (app-owned, so the scrollback
@@ -193,6 +204,9 @@ pub struct UiSnapshot {
     pub selected_id: Option<String>,
     pub search_query: String,
     pub search_focused: bool,
+    /// The search field's insertion point, shared with the element so the beam
+    /// survives the per-frame rebuild.
+    pub sidebar_search_caret: Rc<RefCell<usize>>,
     pub new_conversation_draft: String,
     pub create_focused: bool,
     pub chat_messages: Vec<UiChatMessage>,
@@ -257,6 +271,9 @@ pub struct UiSnapshot {
     /// keyed by the call's id; shared with app state so a fold survives the
     /// per-frame rebuild.
     pub tool_fold: Rc<RefCell<HashMap<String, goble_ui::ToolDisplayMode>>>,
+    /// The tool row under the pointer, set by the row's own paint; the next
+    /// frame draws that row's arrow and white label.
+    pub tool_hover: Rc<RefCell<Option<String>>>,
     /// Whole-transcript terminal filters (open flag + selected filter) keyed by
     /// pane id, so each pty/agent pane keeps its own filter bar.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,
@@ -298,10 +315,14 @@ pub struct UiSnapshot {
     /// Whether the workflow-runs overlay is up. It floats over the workspace, so
     /// the panes stay mounted underneath it.
     pub task_workflow_open: bool,
-    /// The run the overlay's list has selected, and the phase selected inside
-    /// that run's detail. Shared with app state so the choice outlives the
-    /// per-frame rebuild.
-    pub task_workflow_selected: Rc<RefCell<usize>>,
+    /// The run the overlay's list has selected — keyed by run (or workflow,
+    /// for one that has never run) so a new run does not move the selection to
+    /// another row — and the phase selected inside that run's detail. Shared
+    /// with app state so the choice outlives the per-frame rebuild.
+    pub task_workflow_selected: Rc<RefCell<Option<String>>>,
+    /// The active pane's work clock, so a live run's mark in the overlay turns
+    /// with the same spinner the dock and the footer show.
+    pub work_dock_phase: f32,
     pub task_workflow_phase: Rc<RefCell<usize>>,
     /// Whether the keyboard shortcuts panel is up (also an overlay over the
     /// workspace, opened with Ctrl+.).
@@ -387,6 +408,10 @@ pub struct UiSnapshot {
     pub theme_primary: Option<String>,
     pub theme_secondary: Option<String>,
     pub theme_accent: Option<String>,
+    pub theme_bg: Option<String>,
+    pub theme_surface: Option<String>,
+    /// The preset palette in force (`ThemePreset::key`), or `None` for Default.
+    pub theme_preset: Option<String>,
     /// Which theme channel the single color wheel in Settings→Appearance edits.
     pub theme_color_target: color_picker::ColorTarget,
     pub theme_color_drag: Rc<RefCell<Option<color_picker::ColorPickerDrag>>>,
@@ -452,6 +477,8 @@ pub struct UiSnapshot {
     pub global_search_searched: bool,
     pub global_search_error: Option<String>,
     pub global_search_focused: bool,
+    /// The global search field's insertion point, shared with the element.
+    pub global_search_caret: Rc<RefCell<usize>>,
     /// Scroll offset of the sidebar's conversation list.
     pub sidebar_scroll: Rc<RefCell<ScrollState>>,
     /// Scroll offsets of the project explorer's and the global search's lists.
@@ -461,6 +488,10 @@ pub struct UiSnapshot {
     pub settings_scroll: Rc<RefCell<ScrollState>>,
     /// Whether the topbar workspace frame is in inline-rename mode.
     pub space_rename_editing: bool,
+    /// Whether the platform's chord modifier (Command on macOS, Ctrl elsewhere)
+    /// is held: each workspace tab then draws its own shortcut number in its
+    /// trailing slot, in place of the close control.
+    pub command_held: bool,
     /// The in-progress space name while renaming.
     pub space_rename_draft: String,
     /// Whether the rename field holds focus.
@@ -556,6 +587,11 @@ pub struct UiSnapshot {
     pub inbox_error: Option<String>,
     /// Scroll offset of the inbox overlay's list.
     pub inbox_scroll: Rc<RefCell<ScrollState>>,
+    /// The rect the topbar's inbox control painted at: the popover hangs from
+    /// it, one frame behind the control's own paint.
+    pub inbox_anchor: Rc<RefCell<Option<goble_ui::RectF>>>,
+    /// The item announced at the top of the window, if one is out.
+    pub announcement: Option<InboxItem>,
     /// The agent-management panel's own state: its open flag, the roster's
     /// filter and grouping, its cursor, the drafts and the rename field.
     pub agent_dashboard: AgentDashboardState,

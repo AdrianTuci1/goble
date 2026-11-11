@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty,
-    Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, Spacer, Text, Tooltip,
-    TooltipPosition, TopbarButton,
+    harness_bar_mark, AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider,
+    EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, Spacer,
+    Text, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -17,11 +17,14 @@ use crate::state::PaneWorkItem;
 /// size); the header is padded out to `shell::TOPBAR_HEIGHT` around it.
 pub(crate) const HEADER_CONTROL_HEIGHT: f32 = 32.0;
 
+/// The harness mark the bar leads its title with.
+const HARNESS_MARK_SIZE: f32 = 14.0;
+
 /// What a pane prints in the middle of its own bar. A shell names the
 /// directory it runs in; an agent surface names the conversation it holds.
 pub(crate) enum PaneHeading {
     /// The pane's working directory, shortened the way the tab strip reads it
-    /// (`~`, `~/Projects/goble`), with the full path on hover.
+    /// (`~`, `~/Projects/goble`), with the same form on hover.
     Path(String),
     /// The agent conversation's subject, or its new-conversation placeholder.
     Agent(String),
@@ -30,7 +33,10 @@ pub(crate) enum PaneHeading {
 impl PaneHeading {
     fn element(self, app: &AppContext) -> Box<dyn Element> {
         let (text, tooltip) = match self {
-            PaneHeading::Path(path) => (crate::state::display_path(&path), Some(path)),
+            PaneHeading::Path(path) => {
+                let display = crate::state::display_path(&path);
+                (display.clone(), Some(display))
+            }
             PaneHeading::Agent(subject) => (subject, None),
         };
         let label = Text::new(text)
@@ -45,7 +51,7 @@ impl PaneHeading {
             None => label,
         };
         // A long path or subject stops short of the pane's own controls; the
-        // tooltip still carries the whole path.
+        // tooltip still carries the whole label.
         ConstrainedBox::new(label).with_max_width(340.0).finish()
     }
 }
@@ -74,8 +80,41 @@ pub(crate) fn build_agent_header(
     actions: &UiActions,
     pane_id: u64,
     harness_open: bool,
+    // The harness the pane's surface works with when no CLI agent is running in
+    // its pty: the conversation's own harness on the agent view, `None` on a
+    // plain shell.
+    surface_harness: Option<&'static goble_core::harness::HarnessSpec>,
     heading: Option<PaneHeading>,
 ) -> Box<dyn Element> {
+    // The bar's title carries its harness on the left: the mark sits in the
+    // title's own group, immediately before the words, so the pane reads as
+    // "🐙 New Agent" wherever the bar puts it. A pane with no heading keeps the
+    // mark at the leading edge, where it can still be seen.
+    let mark = harness_chip(app, state, pane_id, surface_harness);
+    let (leading, center) = match (mark, heading) {
+        (mark, Some(heading)) => {
+            let has_mark = mark.is_some();
+            let mut title = Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
+            if let Some(mark) = mark {
+                title = title.with_child(mark);
+            }
+            title = title.with_child(heading.element(app));
+            if has_mark {
+                // The mark hangs to the left of the words; matching room on
+                // the right keeps the words in the pane's own middle.
+                title = title.with_child(
+                    Empty::new()
+                        .with_size(vec2f(HARNESS_MARK_SIZE, 0.0))
+                        .finish(),
+                );
+            }
+            (None, Some(title.finish()))
+        }
+        (mark, None) => (mark, None),
+    };
     build_agent_header_with(
         app,
         state,
@@ -83,9 +122,36 @@ pub(crate) fn build_agent_header(
         pane_id,
         harness_open,
         HeaderSlots {
-            center: heading.map(|heading| heading.element(app)),
+            center,
+            leading,
             ..HeaderSlots::default()
         },
+    )
+}
+
+/// The harness this pane is working with, drawn at the bar's leading edge: the
+/// catalog mark and its name. The CLI agent running in the pty outranks the
+/// surface's own harness; a shell that has neither draws nothing, so its bar
+/// stays as empty as it was.
+fn harness_chip(
+    app: &AppContext,
+    state: &UiSnapshot,
+    pane_id: u64,
+    surface_harness: Option<&'static goble_core::harness::HarnessSpec>,
+) -> Option<Box<dyn Element>> {
+    let harness = state
+        .terminal
+        .borrow()
+        .pane_harness(pane_id)
+        .or(surface_harness)?;
+    // The mark alone, in the harness family's own accent: the bar names the
+    // agent it is working with without spending the room a name would take. The
+    // tooltip is where the name is written out.
+    let mark = harness_bar_mark(harness.id, HARNESS_MARK_SIZE, app);
+    Some(
+        Tooltip::new(mark, format!("Working with {}", harness.name))
+            .with_position(TooltipPosition::Below)
+            .finish(),
     )
 }
 

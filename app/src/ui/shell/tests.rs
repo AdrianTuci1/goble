@@ -10,13 +10,15 @@ use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, TabColor};
 
 use super::topbar::{
-    build_live_indicator, insertion_index, reorder_target_index, WorkspaceChip, WorkspaceChipParts,
-    TOPBAR_ICON_BUTTON_SIZE,
+    build_live_indicator, insertion_index, left_padding, reorder_target_index, tab_hint,
+    WorkspaceChip, WorkspaceChipParts, TOPBAR_FULLSCREEN_PADDING, TOPBAR_ICON_BUTTON_SIZE,
+    TOPBAR_RIGHT_PADDING, TOPBAR_TRAFFIC_INSET,
 };
 
 use super::*;
 use crate::root_view::RootView;
 use crate::state::{PaneSession, UiState, NEW_CONVERSATION_TITLE};
+use crate::ui::build::WINDOW_BORDER_WIDTH;
 use crate::ui::{LayoutKind, Pane, PaneKind, Space, SplitDir};
 use goble_ui::elements::running_indicator::SPINNER_FRAMES;
 use goble_ui::elements::{EventContext, LayoutContext, PaintContext, SizeConstraint};
@@ -136,6 +138,249 @@ fn the_topbar_height_is_unchanged() {
     assert_eq!(TOPBAR_HEIGHT, 40.0);
 }
 
+/// The `x` the bar's leading control — the sidebar toggle — is drawn at: its
+/// icon is centered in the button that opens the bar, and that button sits at
+/// the bar's leading padding.
+fn leading_control_x(commands: &[RenderCommand]) -> f32 {
+    let center = topbar_icon_center(commands, "menu-01").expect("the sidebar toggle");
+    center.x - TOPBAR_ICON_BUTTON_SIZE / 2.0
+}
+
+/// The left edge of the strip's first workspace tab: the active tab is the one
+/// raised surface that runs the full height of the bar.
+fn first_tab_left(commands: &[RenderCommand], app: &AppContext) -> f32 {
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == raised
+                    && rect.min_y() == 0.0
+                    && (rect.height() - TOPBAR_HEIGHT).abs() < 0.01 =>
+            {
+                Some(rect.min_x())
+            }
+            _ => None,
+        })
+        .expect("the active workspace tab is the filled tab of the strip")
+}
+
+/// The bar clears the traffic lights while the window is windowed: macOS draws
+/// them over the content, and the first control starts past their room.
+#[test]
+fn the_bar_starts_past_the_traffic_lights_while_the_window_is_windowed() {
+    let (mut root, _state, _desktop, _dir) = app_root();
+    let app = AppContext::default();
+    let commands = render_element(&mut root, window(), &app);
+
+    assert_eq!(
+        leading_control_x(&commands),
+        TOPBAR_TRAFFIC_INSET,
+        "the leading control sits at the traffic-light inset on macOS"
+    );
+}
+
+/// A full-screen window hides the traffic lights, so the bar gives their room
+/// to the tabs: the leading control moves to the small fullscreen padding and
+/// the whole strip shifts left by the difference. Nothing else moves — the bar
+/// keeps its height and Settings stays pinned to the right edge.
+#[test]
+fn a_fullscreen_window_moves_the_bar_into_the_traffic_lights_space() {
+    let (mut windowed_root, _state, _desktop, _dir) = app_root();
+    let (mut full_root, _state2, _desktop2, _dir2) = app_root();
+
+    let windowed_app = AppContext::default();
+    let windowed = render_element(&mut windowed_root, window(), &windowed_app);
+
+    // The window itself reports the fullscreen state, as the event loop
+    // records it every frame.
+    let fullscreen_app = AppContext::default();
+    fullscreen_app.window_control.note_window_fullscreen(true);
+    let full = render_element(&mut full_root, window(), &fullscreen_app);
+
+    assert_eq!(
+        leading_control_x(&full),
+        TOPBAR_FULLSCREEN_PADDING,
+        "the leading control sits at the small padding once the traffic lights \
+         are gone"
+    );
+    assert_eq!(
+        first_tab_left(&full, &fullscreen_app),
+        first_tab_left(&windowed, &windowed_app)
+            - (TOPBAR_TRAFFIC_INSET - TOPBAR_FULLSCREEN_PADDING),
+        "the strip takes the room the traffic lights left behind"
+    );
+    // The right-hand group is pinned to the window's right edge either way, so
+    // it does not move with the padding.
+    let settings = |commands: &[RenderCommand]| {
+        topbar_icon_center(commands, "settings").expect("the settings control")
+    };
+    assert_eq!(
+        settings(&full),
+        settings(&windowed),
+        "Settings stays pinned to the right edge"
+    );
+}
+
+/// The shift is the padding's, not the bar's: a full-screen bar still spans the
+/// window at the height the body reserves below it.
+#[test]
+fn the_fullscreen_padding_keeps_the_bar_height() {
+    let (mut root, _state, _desktop, _dir) = app_root();
+    let app = AppContext::default();
+    app.window_control.note_window_fullscreen(true);
+    let commands = render_element(&mut root, window(), &app);
+    let bar = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, .. }
+                if (rect.height() - TOPBAR_HEIGHT).abs() < 0.01 && rect.width() >= window().x =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the bar's background spans the window");
+    assert_eq!(bar.height(), TOPBAR_HEIGHT, "the bar keeps its height");
+}
+
+/// The app flag still answers when no window has reported a state — a tree
+/// rendered without a live window, where the platform's own state is missing.
+/// When the window *has* answered, its answer is the one that counts.
+#[test]
+fn the_windows_state_answers_before_the_app_flag() {
+    // Nothing has reported, and the app says full screen.
+    let (mut root, state, _desktop, _dir) = app_root();
+    state.borrow_mut().fullscreen = true;
+    let app = AppContext::default();
+    assert_eq!(
+        app.window_control.window_fullscreen(),
+        None,
+        "no window has reported a state in this test"
+    );
+    let commands = render_element(&mut root, window(), &app);
+    assert_eq!(
+        leading_control_x(&commands),
+        TOPBAR_FULLSCREEN_PADDING,
+        "the app's own flag is honoured while the platform has nothing to say"
+    );
+
+    // The window reports it is windowed: that wins over a stale app flag.
+    let (mut root, state, _desktop, _dir) = app_root();
+    state.borrow_mut().fullscreen = true;
+    let app = AppContext::default();
+    app.window_control.note_window_fullscreen(false);
+    let commands = render_element(&mut root, window(), &app);
+    assert_eq!(
+        leading_control_x(&commands),
+        TOPBAR_TRAFFIC_INSET,
+        "the window's own state wins once it has answered"
+    );
+
+    // And the other way round: the app flag is off, the window is full screen.
+    let (mut root, state, _desktop, _dir) = app_root();
+    state.borrow_mut().fullscreen = false;
+    let app = AppContext::default();
+    app.window_control.note_window_fullscreen(true);
+    let commands = render_element(&mut root, window(), &app);
+    assert_eq!(
+        leading_control_x(&commands),
+        TOPBAR_FULLSCREEN_PADDING,
+        "a fullscreen entered another way (the green button) still moves the bar"
+    );
+}
+
+/// The padding is the traffic lights' room on macOS and nothing elsewhere, in
+/// both window states.
+#[test]
+fn the_bar_padding_follows_the_platform() {
+    if cfg!(target_os = "macos") {
+        assert_eq!(left_padding(false), TOPBAR_TRAFFIC_INSET);
+        assert_eq!(left_padding(true), TOPBAR_FULLSCREEN_PADDING);
+        assert!(
+            TOPBAR_FULLSCREEN_PADDING < TOPBAR_TRAFFIC_INSET,
+            "the fullscreen padding gives room back"
+        );
+    } else {
+        assert_eq!(left_padding(false), 0.0, "no traffic lights to clear");
+        assert_eq!(left_padding(true), 0.0, "and none to give back either");
+    }
+}
+
+/// The x the Settings control's 22 pt button ends at: its icon is centred in
+/// the button, and that button is the bar's last control.
+fn settings_right_edge(commands: &[RenderCommand]) -> f32 {
+    let center = topbar_icon_center(commands, "settings").expect("the settings control");
+    center.x + TOPBAR_ICON_BUTTON_SIZE / 2.0
+}
+
+/// The right-hand group is inset from the window's edge by the bar's own
+/// content margin, in both window states: Settings ends `TOPBAR_RIGHT_PADDING`
+/// short of the edge instead of sitting on it, and far enough inside it to
+/// clear the window's own 1 px rule. The traffic lights only buy room on the
+/// leading side, so the group does not move when the window goes full screen.
+#[test]
+fn the_right_hand_group_keeps_the_bars_margin_from_the_windows_edge() {
+    let (mut windowed_root, _state, _desktop, _dir) = app_root();
+    let windowed_app = AppContext::default();
+    let windowed = render_element(&mut windowed_root, window(), &windowed_app);
+
+    let (mut full_root, _state2, _desktop2, _dir2) = app_root();
+    let full_app = AppContext::default();
+    full_app.window_control.note_window_fullscreen(true);
+    let full = render_element(&mut full_root, window(), &full_app);
+
+    for (commands, state) in [(&windowed, "windowed"), (&full, "full screen")] {
+        let right = settings_right_edge(commands);
+        assert_eq!(
+            right,
+            window().x - TOPBAR_RIGHT_PADDING,
+            "Settings ends one bar margin short of the window's edge while {state}: {right} in a \
+             {:?}-wide window",
+            window()
+        );
+        assert!(
+            window().x - right > WINDOW_BORDER_WIDTH,
+            "the last control clears the window's rule while {state}: {right} against {:?}",
+            window()
+        );
+    }
+}
+
+/// The bar's margin is the same on both sides: with the traffic lights gone
+/// (full screen) the first control starts exactly as far from the leading edge
+/// as Settings ends from the trailing one.
+#[test]
+fn the_bar_margin_is_the_same_on_both_sides_in_full_screen() {
+    let (mut root, _state, _desktop, _dir) = app_root();
+    let app = AppContext::default();
+    app.window_control.note_window_fullscreen(true);
+    let commands = render_element(&mut root, window(), &app);
+
+    assert_eq!(
+        leading_control_x(&commands),
+        window().x - settings_right_edge(&commands),
+        "the leading control's margin and the trailing one are the bar's own margin"
+    );
+    assert_eq!(
+        window().x - settings_right_edge(&commands),
+        TOPBAR_FULLSCREEN_PADDING,
+        "which is the padding the bar keeps when nothing precedes its content"
+    );
+}
+
+/// The trailing margin is the bar's own content margin on every platform, and
+/// it does not depend on the window's state.
+#[test]
+fn the_bar_right_padding_is_the_bars_own_content_margin() {
+    assert_eq!(TOPBAR_RIGHT_PADDING, TOPBAR_FULLSCREEN_PADDING);
+    if cfg!(target_os = "macos") {
+        assert_eq!(TOPBAR_RIGHT_PADDING, 10.0);
+    } else {
+        assert_eq!(TOPBAR_RIGHT_PADDING, 0.0, "the bar's content has no margin");
+    }
+}
+
 /// A tab with the given close control, the shape `build_workspace_chip`
 /// builds.
 fn tab(
@@ -155,15 +400,42 @@ fn tab_colored(
     on_click: Rc<RefCell<dyn FnMut(usize)>>,
     close: Box<dyn Element>,
 ) -> Box<dyn Element> {
+    tab_hinted(app, active, color, None, on_click, close)
+}
+
+/// The same tab, drawing `hint` in its trailing slot in place of the close "x"
+/// — the shape `build_workspace_chip` builds while the chord modifier is held.
+fn tab_hinted(
+    app: &AppContext,
+    active: bool,
+    color: Option<TabColor>,
+    hint: Option<Box<dyn Element>>,
+    on_click: Rc<RefCell<dyn FnMut(usize)>>,
+    close: Box<dyn Element>,
+) -> Box<dyn Element> {
+    let child = Text::new("Space 1")
+        .with_theme_color(ColorToken::Text, app)
+        .with_font_size(12.0)
+        .finish();
+    tab_labelled(app, active, color, child, hint, on_click, close)
+}
+
+/// The same tab, drawing `child` as its name.
+fn tab_labelled(
+    _app: &AppContext,
+    active: bool,
+    color: Option<TabColor>,
+    child: Box<dyn Element>,
+    hint: Option<Box<dyn Element>>,
+    on_click: Rc<RefCell<dyn FnMut(usize)>>,
+    close: Box<dyn Element>,
+) -> Box<dyn Element> {
     let noop_press: Rc<RefCell<dyn FnMut(usize, Vector2F)>> =
         Rc::new(RefCell::new(|_: usize, _: Vector2F| {}));
     let noop_at: Rc<RefCell<dyn FnMut(usize, Vector2F)>> =
         Rc::new(RefCell::new(|_: usize, _: Vector2F| {}));
     Box::new(WorkspaceChip::new(WorkspaceChipParts {
-        child: Text::new("Space 1")
-            .with_theme_color(ColorToken::Text, app)
-            .with_font_size(12.0)
-            .finish(),
+        child,
         index: 1,
         active,
         color,
@@ -171,6 +443,7 @@ fn tab_colored(
         on_press: noop_press,
         on_right_click: noop_at,
         close,
+        hint,
     }))
 }
 
@@ -301,6 +574,32 @@ fn render_with_pointer(
     cursor: Option<Vector2F>,
 ) -> Vec<RenderCommand> {
     let _ = element.layout(SizeConstraint::loose(size), &mut LayoutContext, app);
+    paint_with_pointer(element, app, cursor)
+}
+
+/// One frame of a chip laid out in a tab `width` wide — the tight slot the
+/// strip hands every tab — with the pointer at `cursor`.
+fn render_tab(
+    element: &mut Box<dyn Element>,
+    width: f32,
+    app: &AppContext,
+    cursor: Option<Vector2F>,
+) -> Vec<RenderCommand> {
+    let _ = element.layout(
+        SizeConstraint::new(vec2f(width, 0.0), vec2f(width, TOPBAR_HEIGHT)),
+        &mut LayoutContext,
+        app,
+    );
+    paint_with_pointer(element, app, cursor)
+}
+
+/// The commands of an element already laid out, painted with the pointer at
+/// `cursor`.
+fn paint_with_pointer(
+    element: &mut Box<dyn Element>,
+    app: &AppContext,
+    cursor: Option<Vector2F>,
+) -> Vec<RenderCommand> {
     let mut ctx = PaintContext::new(goble_ui::render::Renderer::new());
     if let Some(position) = cursor {
         ctx.cursor_inside = true;
@@ -311,6 +610,33 @@ fn render_with_pointer(
         .take()
         .map(|renderer| renderer.commands().to_vec())
         .unwrap_or_default()
+}
+
+/// The origin and width of the run that reads exactly `text`, measured at the
+/// size the frame drew it at.
+fn run_geometry(
+    commands: &[RenderCommand],
+    text: &str,
+    app: &AppContext,
+) -> Option<(Vector2F, f32)> {
+    let (origin, font_size) = commands.iter().find_map(|command| match command {
+        RenderCommand::DrawText {
+            text: drawn,
+            origin,
+            font_size,
+            ..
+        } if drawn == text => Some((*origin, *font_size)),
+        _ => None,
+    })?;
+    let width = Text::new(text)
+        .with_font_size(font_size)
+        .layout(
+            SizeConstraint::loose(vec2f(f32::INFINITY, TOPBAR_HEIGHT)),
+            &mut LayoutContext,
+            app,
+        )
+        .x;
+    Some((origin, width))
 }
 
 /// The centre of the close "x" a frame drew, when it drew one at all.
@@ -489,6 +815,181 @@ fn the_close_control_appears_on_hover_and_closes_its_space() {
     assert!(
         selected.borrow().is_empty(),
         "a click on the close control must not also select"
+    );
+}
+
+/// A tab with no hint is the tab it always was: the name and, while the pointer
+/// is over it, the close "x" — no shortcut anywhere.
+#[test]
+fn a_tab_shows_no_shortcut_hint_while_the_modifier_is_up() {
+    let app = AppContext::default();
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let mut element = tab(&app, true, noop.clone(), close_button(&app, noop));
+
+    let hovered = render_with_pointer(
+        &mut element,
+        vec2f(400.0, TOPBAR_HEIGHT),
+        &app,
+        Some(vec2f(20.0, TOPBAR_HEIGHT / 2.0)),
+    );
+    let drawn = drawn_texts(&hovered);
+    assert!(
+        !drawn.iter().any(|text| text == &tab_hint(1)),
+        "a tab advertises no shortcut with the modifier up: {drawn:?}"
+    );
+    assert!(
+        close_point(&hovered).is_some(),
+        "the hovered tab still draws its close control"
+    );
+}
+
+/// R7x: with the chord modifier held the tab's trailing slot carries the
+/// shortcut that selects it, and the close "x" — which shares that slot — is
+/// neither drawn nor hit, so the tab never carries two targets at one point.
+#[test]
+fn a_tab_shows_its_shortcut_hint_in_place_of_the_close_control() {
+    let app = AppContext::default();
+    let selected: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let closed: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let on_click: Rc<RefCell<dyn FnMut(usize)>> = {
+        let selected = selected.clone();
+        Rc::new(RefCell::new(move |i: usize| selected.borrow_mut().push(i)))
+    };
+    let on_close: Rc<RefCell<dyn FnMut(usize)>> = {
+        let closed = closed.clone();
+        Rc::new(RefCell::new(move |i: usize| closed.borrow_mut().push(i)))
+    };
+    let hint = Text::new(tab_hint(1))
+        .with_theme_color(ColorToken::Muted, &app)
+        .with_font_size(11.0)
+        .with_max_lines(1)
+        .finish();
+    let mut element = tab_hinted(
+        &app,
+        true,
+        None,
+        Some(hint),
+        on_click,
+        close_button(&app, on_close),
+    );
+
+    // The close "x" is drawn on hover; the hint holds the slot instead, so the
+    // "x" is gone even with the pointer over the tab.
+    let commands = render_tab(
+        &mut element,
+        200.0,
+        &app,
+        Some(vec2f(20.0, TOPBAR_HEIGHT / 2.0)),
+    );
+    let drawn = drawn_texts(&commands);
+    assert!(
+        drawn.iter().any(|text| text == &tab_hint(1)),
+        "the tab draws its own shortcut: {drawn:?}"
+    );
+    assert!(
+        close_point(&commands).is_none(),
+        "the hint takes the close control's slot"
+    );
+
+    // The hint stays inside the tab it belongs to: the tab's width accounts for
+    // it, so the run cannot hang past the tab's own edge.
+    let size = element.size().expect("the tab was laid out");
+    let hint_origin = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawText { origin, text, .. } if text == &tab_hint(1) => Some(*origin),
+            _ => None,
+        })
+        .expect("the hint's run");
+    let hint_width = Text::new(tab_hint(1))
+        .with_font_size(11.0)
+        .with_max_lines(1)
+        .layout(
+            SizeConstraint::loose(vec2f(f32::INFINITY, TOPBAR_HEIGHT)),
+            &mut LayoutContext,
+            &app,
+        )
+        .x;
+    assert!(
+        hint_origin.x >= 0.0 && hint_origin.x + hint_width <= size.x,
+        "the hint is drawn inside the tab: {hint_origin:?} + {hint_width} in {size:?}"
+    );
+
+    // The name stays where it was: it is centred in the room the "x" leaves,
+    // and the hint takes the slot without changing that room.
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let mut plain = tab(&app, true, noop.clone(), close_button(&app, noop));
+    let plain_commands = render_tab(&mut plain, 200.0, &app, None);
+    let hinted_name = run_geometry(&commands, "Space 1", &app).expect("the tab's name");
+    let plain_name = run_geometry(&plain_commands, "Space 1", &app).expect("the tab's name");
+    assert_eq!(
+        hinted_name.0.x, plain_name.0.x,
+        "the name does not move when the hint takes the close control's slot"
+    );
+
+    // And with the hint in the slot, the tab body is still the click target.
+    let mut ctx = EventContext;
+    for event in [
+        DispatchedEvent::MouseDown {
+            position: vec2f(20.0, TOPBAR_HEIGHT / 2.0),
+            button: 0,
+        },
+        DispatchedEvent::MouseUp {
+            position: vec2f(20.0, TOPBAR_HEIGHT / 2.0),
+            button: 0,
+        },
+    ] {
+        element.dispatch_event(&event, &mut ctx, &app);
+    }
+    assert_eq!(
+        *selected.borrow(),
+        vec![1],
+        "a press on the tab still selects its space"
+    );
+    assert!(
+        closed.borrow().is_empty(),
+        "the close control is not a target while the hint holds its slot"
+    );
+}
+
+/// A short name sits in the middle of the room its tab leaves it, the way
+/// warp-new centres a tab title in the content row (`app/src/tab.rs:1440-1457`):
+/// the gap to the inner area's left edge and the gap to its right edge are the
+/// same, so an equal-width tab does not carry the name on one side.
+#[test]
+fn a_short_named_tab_centres_its_name() {
+    const WIDTH: f32 = 200.0;
+    // `WorkspaceChip`'s own inset, the gap to the close "x", and the 16 pt
+    // button the "x" is drawn in; the room the name may use is between them.
+    const INSET: f32 = 7.0;
+    const GAP: f32 = 4.0;
+    const CLOSE: f32 = 16.0;
+
+    let app = AppContext::default();
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let mut element = tab(&app, true, noop.clone(), close_button(&app, noop));
+    // The pointer is over the tab so the "x" is drawn; neither it nor the hint
+    // moves the name.
+    let commands = render_tab(
+        &mut element,
+        WIDTH,
+        &app,
+        Some(vec2f(20.0, TOPBAR_HEIGHT / 2.0)),
+    );
+
+    let (origin, width) = run_geometry(&commands, "Space 1", &app).expect("the tab's name");
+    let inner_left = INSET;
+    let inner_right = WIDTH - INSET - GAP - CLOSE;
+    let left_gap = origin.x - inner_left;
+    let right_gap = inner_right - (origin.x + width);
+    assert!(
+        left_gap > 0.0,
+        "a short name does not sit on the tab's left inset: {origin:?} + {width}"
+    );
+    assert!(
+        (left_gap - right_gap).abs() < 1.0,
+        "the name is centred in the room the close control leaves: {left_gap} before it and \
+         {right_gap} after it, in {inner_left}..{inner_right}"
     );
 }
 

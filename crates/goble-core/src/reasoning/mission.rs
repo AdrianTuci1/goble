@@ -7,9 +7,9 @@ use chrono::Utc;
 use futures::{Stream, StreamExt};
 
 use crate::harness::{
-    arc_to_sender_ref, command_candidates, execute_tool_call, harness_tool_definitions,
-    ChatToolCall, HarnessEvent, ThinkingMode, ToolCallStatus, ToolTurnContext, WebSearchConfig,
-    COMMAND_TOOL, HARNESS_SYSTEM_PROMPT,
+    arc_to_sender_ref, command_candidates, execute_tool_call, harness_system_prompt,
+    harness_tool_definitions, ChatToolCall, HarnessEvent, ThinkingMode, ToolCallStatus,
+    ToolTurnContext, WebSearchConfig, COMMAND_TOOL,
 };
 use crate::llm::{
     CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role,
@@ -21,6 +21,7 @@ use crate::subagent_run::SubAgentHost;
 use crate::worker::WorkerId;
 
 use super::classify::{extract_ask_user, is_orchestration_goal};
+use super::compaction::{self, COMPACT_AT_PERCENT};
 use super::history::build_history;
 use super::persist::{
     load_or_create_mission, persist_mission, persist_reasoning_step, persist_tool_call_records,
@@ -87,6 +88,7 @@ pub(crate) fn run_mission_turn(
     reasoning_enabled: bool,
     auto_approve: bool,
     web_search: WebSearchConfig,
+    context_window: Option<u64>,
     subagents: SubAgentHost,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
@@ -121,6 +123,7 @@ pub(crate) fn run_mission_turn(
             reasoning_enabled,
             auto_approve,
             web_search,
+            context_window,
             subagents,
         );
         while let Some(event) = inner.next().await {
@@ -150,6 +153,7 @@ pub(crate) fn run_mission(
     reasoning_enabled: bool,
     auto_approve: bool,
     web_search: WebSearchConfig,
+    context_window: Option<u64>,
     subagents: SubAgentHost,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
@@ -172,6 +176,10 @@ pub(crate) fn run_mission(
         }
 
         let mut tools = harness_tool_definitions();
+        // A turn that never enters reasoning (a plain question, not a mission)
+        // would otherwise have no way to ask the user anything: the panel would
+        // never open and the model would write its options as prose.
+        tools.push(super::tools::ask_user_tool());
         if let Ok(mcp_tools) = mcp_manager.refresh_from_store(&store) {
             tools.extend(mcp_tools);
         }
@@ -179,6 +187,41 @@ pub(crate) fn run_mission(
 
         let reasoning_tools = build_reasoning_tools();
         let enable_reasoning = reasoning_enabled && (is_orchestration_goal(&mission.goal) || !mission.reasoning_steps.is_empty() || mission.pending_ask.is_some());
+
+        // The window is watched across the whole turn. A restored conversation
+        // can already be near it before its first call, so the stored rows are
+        // estimated up front; each provider-reported prompt then replaces the
+        // estimate. After a compaction the conversation must grow by a tenth of
+        // the window before it is compacted again, so a summary that is still
+        // large does not cause a second summarisation in the same breath.
+        let mut last_input_tokens = match context_window.filter(|window| *window > 0) {
+            Some(_) => store
+                .list_chat_messages(&chat_id)
+                .map(|rows| compaction::stored_rows_tokens(&rows))
+                .unwrap_or(0),
+            None => 0,
+        };
+        let mut compact_again_above = 0u64;
+        let mut compaction_failed = false;
+        if let Some(window) = context_window.filter(|window| *window > 0) {
+            if last_input_tokens.saturating_mul(100) / window >= COMPACT_AT_PERCENT {
+                let run = compaction::compact(
+                    &store, &chat_id, &*llm, &provider, &model, window, last_input_tokens,
+                )
+                .await;
+                let after = run.after_tokens;
+                for event in run.events {
+                    yield event;
+                }
+                match after {
+                    Some(after) => {
+                        last_input_tokens = after;
+                        compact_again_above = after.saturating_add(window / 10);
+                    }
+                    None => compaction_failed = true,
+                }
+            }
+        }
 
         let mut reasoning_step = 0usize;
         let mut pending_decision = ReasoningDecision::Execute;
@@ -192,7 +235,7 @@ pub(crate) fn run_mission(
 
                 let history = build_history(&store, &chat_id, &mission, &reasoning_tools, &tools, mode).await;
                 let request = CompletionRequest::new(provider.clone(), model.clone())
-                    .with_system(HARNESS_SYSTEM_PROMPT)
+                    .with_system(harness_system_prompt())
                     .with_system(build_reasoning_prompt(mode, &mission.goal, &mission.reasoning_steps))
                     .with_messages(history)
                     .with_tools(reasoning_tools.clone());
@@ -229,6 +272,7 @@ pub(crate) fn run_mission(
                             tool_calls = calls;
                         }
                         CompletionStreamEvent::Usage(usage) => {
+                            last_input_tokens = usage.input;
                             yield HarnessEvent::TokenUsage {
                                 chat_id: chat_id.clone(),
                                 input: usage.input,
@@ -270,46 +314,31 @@ pub(crate) fn run_mission(
                     break;
                 }
 
+                // A question is not an approval: `auto_approve` opens the
+                // command gate (below) and never answers for the user, so an
+                // `ask_user` always suspends the turn and reaches the user.
                 if decision == ReasoningDecision::AskUser {
                     if let Some(ask) = extract_ask_user(&tool_calls) {
-                        if auto_approve {
-                            // Auto-approve: skip suspending on the question and
-                            // record a synthetic answer so the next reasoning /
-                            // execution step sees the user already responded.
-                            let now = Utc::now().to_rfc3339();
-                            if let Err(e) = store.insert_chat_message(
-                                &uuid::Uuid::new_v4().to_string(),
-                                &chat_id,
-                                "user",
-                                &format!("(auto-approved; no answer to: {})", ask.question),
-                                None,
-                                &now,
-                            ) {
-                                yield HarnessEvent::Error(e.to_string());
-                                return;
-                            }
-                        } else {
-                            let now = Utc::now().to_rfc3339();
-                            if let Err(e) = store.insert_pending_ask(
-                                &ask.id,
-                                &chat_id,
-                                Some(&mission.id),
-                                &ask.question,
-                                &ask.quick_replies.join("\n"),
-                                "pending",
-                                &now,
-                                &now,
-                            ) {
-                                yield HarnessEvent::Error(e.to_string());
-                                return;
-                            }
-                            mission.pending_ask = Some(ask.clone());
-                            yield HarnessEvent::AskUser {
-                                question: ask.question,
-                                quick_replies: ask.quick_replies,
-                            };
+                        let now = Utc::now().to_rfc3339();
+                        if let Err(e) = store.insert_pending_ask(
+                            &ask.id,
+                            &chat_id,
+                            Some(&mission.id),
+                            &ask.question,
+                            &ask.quick_replies.join("\n"),
+                            "pending",
+                            &now,
+                            &now,
+                        ) {
+                            yield HarnessEvent::Error(e.to_string());
                             return;
                         }
+                        mission.pending_ask = Some(ask.clone());
+                        yield HarnessEvent::AskUser {
+                            question: ask.question,
+                            quick_replies: ask.quick_replies,
+                        };
+                        return;
                     }
                 }
 
@@ -337,7 +366,12 @@ pub(crate) fn run_mission(
             host: &subagents,
         };
         let mut execution_iteration = 0;
-        let mut prev_tool_calls: Vec<LlmToolCall> = Vec::new();
+        // Action stationarity: how many rounds in a row asked for the same
+        // batch, and that batch's signature. A model stuck on one call is
+        // nudged, then stopped, instead of spending the iteration budget on
+        // the same failing call (grok-build's own turn guard).
+        let mut identical_tool_rounds = 0u32;
+        let mut last_tool_batch: Option<Vec<(String, String)>> = None;
 
         loop {
             if cancel.load(Ordering::Relaxed) {
@@ -350,6 +384,27 @@ pub(crate) fn run_mission(
             }
             execution_iteration += 1;
 
+            if let Some(window) = context_window.filter(|window| *window > 0) {
+                let full = last_input_tokens.saturating_mul(100) / window >= COMPACT_AT_PERCENT;
+                if full && !compaction_failed && last_input_tokens > compact_again_above {
+                    let run = compaction::compact(
+                        &store, &chat_id, &*llm, &provider, &model, window, last_input_tokens,
+                    )
+                    .await;
+                    let after = run.after_tokens;
+                    for event in run.events {
+                        yield event;
+                    }
+                    match after {
+                        Some(after) => {
+                            last_input_tokens = after;
+                            compact_again_above = after.saturating_add(window / 10);
+                        }
+                        None => compaction_failed = true,
+                    }
+                }
+            }
+
             let mut history = build_history(&store, &chat_id, &mission, &reasoning_tools, &tools, mode).await;
             history.push(Message {
                 role: Role::System,
@@ -359,9 +414,19 @@ pub(crate) fn run_mission(
                 tool_status: None,
                 reasoning_content: None,
             });
+            if identical_tool_rounds >= NUDGE_AFTER_IDENTICAL_TOOL_ROUNDS {
+                history.push(Message {
+                    role: Role::System,
+                    content: STATIONARITY_NUDGE.to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_status: None,
+                    reasoning_content: None,
+                });
+            }
 
             let request = CompletionRequest::new(provider.clone(), model.clone())
-                .with_system(HARNESS_SYSTEM_PROMPT)
+                .with_system(harness_system_prompt())
                 .with_messages(history)
                 .with_tools(tools.clone());
 
@@ -425,6 +490,7 @@ pub(crate) fn run_mission(
                         tool_calls = calls;
                     }
                     CompletionStreamEvent::Usage(usage) => {
+                        last_input_tokens = usage.input;
                         yield HarnessEvent::TokenUsage {
                             chat_id: chat_id.clone(),
                             input: usage.input,
@@ -452,11 +518,28 @@ pub(crate) fn run_mission(
             if tool_calls.is_empty() {
                 break;
             }
-            if assistant_content.is_empty() {
-                if tool_calls == prev_tool_calls {
-                    break;
-                }
-                prev_tool_calls = tool_calls.clone();
+            let signature = tool_batch_signature(&tool_calls);
+            if last_tool_batch.as_ref() == Some(&signature) {
+                identical_tool_rounds += 1;
+            } else {
+                identical_tool_rounds = 1;
+                last_tool_batch = Some(signature);
+            }
+            // A silent repeat adds no information: the model asked the same
+            // question without saying anything new, so the turn ends here
+            // rather than asking it again.
+            if identical_tool_rounds > 1 && assistant_content.trim().is_empty() {
+                break;
+            }
+            if identical_tool_rounds >= MAX_IDENTICAL_TOOL_ROUNDS {
+                let names: Vec<&str> = tool_calls.iter().map(|call| call.name.as_str()).collect();
+                yield HarnessEvent::Error(format!(
+                    "the model repeated the same tool call{} ({}) {} times in a row; the turn was stopped",
+                    if tool_calls.len() == 1 { "" } else { "s" },
+                    names.join(", "),
+                    identical_tool_rounds
+                ));
+                return;
             }
 
             // Attach tool-call metadata to the streamed message, or create the
@@ -507,6 +590,44 @@ pub(crate) fn run_mission(
                     yield HarnessEvent::Error("cancelled".to_string());
                     break;
                 }
+                // `ask_user` in execution suspends the turn like the command
+                // gate does: the model hands the user numbered options, the
+                // panel collects the answer, and the same mission resumes with
+                // it. The call is not a real tool result, so it is dropped from
+                // the planned batch — the assistant message must not carry
+                // `tool_calls` the next request has no response for.
+                if call.name == "ask_user" {
+                    if let Some(ask) = extract_ask_user(std::slice::from_ref(call)) {
+                        call_records.truncate(index);
+                        if let Some(id) = &assistant_msg_id {
+                            if let Err(e) = persist_tool_call_records(&store, id, &call_records) {
+                                yield HarnessEvent::Error(e.to_string());
+                                return;
+                            }
+                        }
+                        let now = Utc::now().to_rfc3339();
+                        if let Err(e) = store.insert_pending_ask(
+                            &ask.id,
+                            &chat_id,
+                            Some(&mission.id),
+                            &ask.question,
+                            &ask.quick_replies.join("\n"),
+                            "pending",
+                            &now,
+                            &now,
+                        ) {
+                            yield HarnessEvent::Error(e.to_string());
+                            return;
+                        }
+                        mission.pending_ask = Some(ask.clone());
+                        yield HarnessEvent::AskUser {
+                            question: ask.question,
+                            quick_replies: ask.quick_replies,
+                        };
+                        return;
+                    }
+                }
+
                 call_records[index].status = ToolCallStatus::Running;
                 if let Some(id) = &assistant_msg_id {
                     if let Err(e) = persist_tool_call_records(&store, id, &call_records) {
@@ -638,4 +759,50 @@ pub(crate) fn run_mission(
         };
         yield HarnessEvent::Done;
     })
+}
+
+/// How many rounds in a row may ask for the same batch before the model is
+/// reminded, and after how many the turn ends instead of burning the iteration
+/// budget on one call. grok-build's turn guard uses the same shape: a nudge,
+/// then a hard stop.
+const NUDGE_AFTER_IDENTICAL_TOOL_ROUNDS: u32 = 2;
+const MAX_IDENTICAL_TOOL_ROUNDS: u32 = 4;
+
+/// The reminder a stuck turn reads before its next request: the model has to
+/// change the call or stop and say what is blocking it.
+const STATIONARITY_NUDGE: &str = "You have called the same tool with the same arguments several times in a row and appear to be stuck. Change the call or its arguments, or stop and tell the user what is blocking you. The turn ends automatically if the identical call keeps repeating.";
+
+/// One tool batch as the stationarity guard compares it: order-insensitive,
+/// and object keys sorted, so a reordered batch or a re-serialized argument
+/// object is still the same calls.
+fn tool_batch_signature(calls: &[LlmToolCall]) -> Vec<(String, String)> {
+    let mut signature: Vec<(String, String)> = calls
+        .iter()
+        .map(|call| (call.name.clone(), canonical_json(&call.arguments)))
+        .collect();
+    signature.sort();
+    signature
+}
+
+fn canonical_json(value: &serde_json::Value) -> String {
+    serde_json::to_string(&sorted_json(value)).unwrap_or_default()
+}
+
+fn sorted_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), sorted_json(value)))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sorted_json).collect())
+        }
+        other => other.clone(),
+    }
 }

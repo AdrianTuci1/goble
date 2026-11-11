@@ -6,6 +6,19 @@ use rusqlite::params;
 use super::Store;
 use crate::llm::TokenUsage;
 
+/// One conversation compaction: the last summarised message, the model's
+/// summary and the token counts on either side. See the `chat_compactions`
+/// table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCompaction {
+    pub boundary_message_id: String,
+    pub summary: String,
+    pub before_tokens: u64,
+    pub after_tokens: u64,
+    pub message_count: usize,
+    pub created_at: String,
+}
+
 impl Store {
     pub fn insert_chat(
         &self,
@@ -26,6 +39,7 @@ impl Store {
     pub fn delete_chat(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM chat_messages WHERE chat_id = ?1", params![id])?;
+        conn.execute("DELETE FROM chat_compactions WHERE chat_id = ?1", params![id])?;
         conn.execute("DELETE FROM chats WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -271,6 +285,33 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Persist the id a CLI harness keeps for the conversation's own session.
+    ///
+    /// `chats.agent_id` is otherwise unused for a conversation: the column is
+    /// where a goble agent's id lived before conversations were chats, and the
+    /// thread-migration path still reads it as a fallback name. For a chat bound
+    /// to a CLI harness it names the harness's session, so reopening the card
+    /// resumes that session rather than whichever one ran last in the directory.
+    pub fn set_chat_agent_id(&self, id: &str, agent_id: Option<&str>) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET agent_id = ?1 WHERE id = ?2",
+            params![agent_id, id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the CLI harness session id a conversation carries, if any.
+    pub fn get_chat_agent_id(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT agent_id FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get::<_, Option<String>>(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Persist the directory a conversation works in.
     pub fn set_chat_working_dir(&self, id: &str, dir: &str) -> Result<()> {
         self.conn.lock().execute(
@@ -361,6 +402,70 @@ impl Store {
             params![reasoning, message_id],
         )?;
         Ok(())
+    }
+
+    /// Replace a message's content. The compaction notice is written when the
+    /// compaction starts and rewritten in place when it ends, so one row tells
+    /// the story instead of two.
+    pub fn set_chat_message_content(&self, message_id: &str, content: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chat_messages SET content = ?1 WHERE id = ?2",
+            params![content, message_id],
+        )?;
+        Ok(())
+    }
+
+    /// Record a successful auto-compaction: the message that bounds the
+    /// summarised turns, the summary the model wrote, and the token counts on
+    /// either side of it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_chat_compaction(
+        &self,
+        id: &str,
+        chat_id: &str,
+        boundary_message_id: &str,
+        summary: &str,
+        before_tokens: u64,
+        after_tokens: u64,
+        message_count: usize,
+        created_at: &str,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO chat_compactions (id, chat_id, boundary_message_id, summary, before_tokens, after_tokens, message_count, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                chat_id,
+                boundary_message_id,
+                summary,
+                before_tokens as i64,
+                after_tokens as i64,
+                message_count as i64,
+                created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The most recent compaction of a conversation, if it has one. History
+    /// reads only this one: each compaction's boundary is after the previous
+    /// one's, so the newest summary already folds in everything older.
+    pub fn latest_chat_compaction(&self, chat_id: &str) -> Result<Option<ChatCompaction>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT boundary_message_id, summary, before_tokens, after_tokens, message_count, created_at FROM chat_compactions WHERE chat_id = ?1 ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![chat_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(ChatCompaction {
+            boundary_message_id: row.get(0)?,
+            summary: row.get(1)?,
+            before_tokens: row.get::<_, i64>(2)?.max(0) as u64,
+            after_tokens: row.get::<_, i64>(3)?.max(0) as u64,
+            message_count: row.get::<_, i64>(4)?.max(0) as usize,
+            created_at: row.get(5)?,
+        }))
     }
 
     /// The stored chain of thought of every assistant message in `chat_id`,

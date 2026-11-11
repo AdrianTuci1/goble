@@ -125,6 +125,30 @@ fn text_positions(cmds: &[RenderCommand], text: &str) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// The icon drawn on the same line as `label`, to its left: a menu row leads
+/// with its glyph, then the label. The label's own run is taken at its
+/// top-most paint, which is the open popup above the body's same-named text.
+fn icon_before_label(
+    cmds: &[RenderCommand],
+    icon: &str,
+    label: &str,
+) -> Option<(f32, f32)> {
+    let (label_x, label_y) = topmost_text_position(cmds, label)?;
+    cmds.iter().find_map(|command| match command {
+        RenderCommand::DrawIcon {
+            origin,
+            name,
+            size,
+            ..
+        } if name == icon => {
+            let centre_y = origin.y + size / 2.0;
+            (origin.x < label_x && (centre_y - label_y).abs() <= 6.0)
+                .then_some((origin.x + size / 2.0, centre_y))
+        }
+        _ => None,
+    })
+}
+
 /// The top-most place `text` was drawn (smallest y), so a label the pane's
 /// composer also carries (the working-directory pill) still resolves to the
 /// topbar surface above it.
@@ -211,6 +235,32 @@ fn topbar_environment_menu_opens() {
 
     let open = root.state_rc().borrow().env_selector_open.clone();
     assert!(*open.borrow(), "the environment trigger should open its menu");
+}
+
+/// Every environment-menu row leads with its own glyph. The rows carried icons
+/// when the menu was built, and a frame that drops them reads as a plain list
+/// of labels; the icon must sit on the row's line, left of that row's text.
+#[test]
+fn topbar_environment_menu_rows_draw_their_icons() {
+    let (mut root, _desktop, _dir) = build_root();
+    let app = AppContext::default();
+    let _ = render(&mut root, &app);
+    let cmds = render(&mut root, &app);
+    let pos = topmost_icon_center(&cmds, "chevron-down").expect("topbar environment menu trigger");
+    click(&mut root, &app, pos);
+
+    let cmds = render(&mut root, &app);
+    for (icon, label) in [
+        ("terminal", "New terminal"),
+        ("conversation-local", "Local"),
+        ("cloud", "Remote (worker)"),
+        ("plus", "New environment…"),
+    ] {
+        assert!(
+            icon_before_label(&cmds, icon, label).is_some(),
+            "the {label:?} row draws {icon:?} left of its label: {cmds:?}"
+        );
+    }
 }
 
 /// The environment menu's first entry launches a terminal: choosing it opens a

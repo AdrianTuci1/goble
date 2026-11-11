@@ -16,6 +16,9 @@ pub struct SearchInput {
     compact: bool,
     icon: bool,
     extra_height: f32,
+    /// The insertion point, shared with the host so it survives the per-frame
+    /// rebuild. Without one the field edits at the end of its value.
+    caret: Option<Rc<RefCell<usize>>>,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     size: Option<Vector2F>,
@@ -32,6 +35,7 @@ impl SearchInput {
             compact: false,
             icon: true,
             extra_height: 0.0,
+            caret: None,
             on_change: None,
             on_focus_change: None,
             size: None,
@@ -42,6 +46,14 @@ impl SearchInput {
 
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
+        self
+    }
+
+    /// Share the insertion point with the host, so the caret survives the
+    /// per-frame rebuild of the element tree. Without one the field edits at
+    /// the end of its value, which is what it did before it had a caret.
+    pub fn with_caret(mut self, caret: Rc<RefCell<usize>>) -> Self {
+        self.caret = Some(caret);
         self
     }
 
@@ -91,6 +103,49 @@ impl SearchInput {
         &self.value
     }
 
+    /// The insertion point, in characters, clamped to the value: a cell left
+    /// past the end by a value shortened elsewhere lands on the end.
+    fn caret_index(&self) -> usize {
+        let len = self.value.chars().count();
+        match self.caret.as_ref() {
+            Some(caret) => (*caret.borrow()).min(len),
+            None => len,
+        }
+    }
+
+    fn set_caret(&self, index: usize) {
+        if let Some(caret) = self.caret.as_ref() {
+            *caret.borrow_mut() = index.min(self.value.chars().count());
+        }
+    }
+
+    /// Insert `ch` at the character index `index`, which is where the caret
+    /// then lands past.
+    fn insert_char(&mut self, index: usize, ch: char) {
+        let at = self
+            .value
+            .char_indices()
+            .nth(index)
+            .map(|(at, _)| at)
+            .unwrap_or(self.value.len());
+        self.value.insert(at, ch);
+    }
+
+    /// Remove the character at `index`, reporting whether there was one.
+    fn remove_char(&mut self, index: usize) -> bool {
+        let Some((start, ch)) = self.value.char_indices().nth(index) else {
+            return false;
+        };
+        self.value.replace_range(start..start + ch.len_utf8(), "");
+        true
+    }
+
+    fn notify_change(&self) {
+        if let Some(cb) = self.on_change.as_ref() {
+            (cb.borrow_mut())(self.value.clone());
+        }
+    }
+
     fn rebuild(&mut self, app: &AppContext) {
         let token = if self.compact {
             SpacingToken::Xs
@@ -100,22 +155,8 @@ impl SearchInput {
         let padding = app.theme.spacing_px(token);
         let gap = app.theme.spacing_px(SpacingToken::Sm);
         let empty = self.value.is_empty();
-        let display = if empty && !self.placeholder.is_empty() {
-            self.placeholder.clone()
-        } else {
-            self.value.clone()
-        };
-        let color = if empty {
-            ColorToken::Muted
-        } else {
-            ColorToken::Text
-        };
         let icon = Icon::new("search")
             .with_theme_color(ColorToken::Muted, app)
-            .finish();
-        let text = Text::new(display)
-            .with_theme_color(color, app)
-            .with_max_lines(1)
             .finish();
         // The run and the beam that belongs to it, packed without the row's own
         // spacing: a beam asks the row for no room, so it is only on the
@@ -123,17 +164,29 @@ impl SearchInput {
         // takes the rest of the row, so the run is measured at the width the
         // field gives it whether or not the beam is in front of it. While the
         // field is empty the beam leads the placeholder — the guide stands
-        // where the user's own text starts — and once there is a value it
-        // trails it, at the pen the next character lands on.
+        // where the user's own text starts — and once there is a value it is
+        // drawn between the run before the caret and the run after it, so the
+        // beam is at the insertion point and the two runs stay adjacent.
         let mut run = crate::elements::Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center);
-        if self.focused && empty {
+        if empty {
+            if self.focused {
+                run = run.with_child(caret_beam(app));
+            }
+            run = run.with_child(text_run(self.placeholder.clone(), ColorToken::Muted, app));
+        } else if self.focused {
+            let chars: Vec<char> = self.value.chars().collect();
+            let (before, after) = chars.split_at(self.caret_index());
+            if !before.is_empty() {
+                run = run.with_child(text_run(before.iter().collect(), ColorToken::Text, app));
+            }
             run = run.with_child(caret_beam(app));
-        }
-        run = run.with_child(text);
-        if self.focused && !empty {
-            run = run.with_child(caret_beam(app));
+            if !after.is_empty() {
+                run = run.with_child(text_run(after.iter().collect(), ColorToken::Text, app));
+            }
+        } else {
+            run = run.with_child(text_run(self.value.clone(), ColorToken::Text, app));
         }
         // Fill the available width so the box has equal margins on both sides
         // when placed in a stretched column (e.g. the sidebar).
@@ -225,23 +278,65 @@ impl Element for SearchInput {
                 if !self.focused {
                     return false;
                 }
-                if key == "Backspace" {
-                    self.value.pop();
-                } else if key == "Enter" {
-                    return true;
-                } else if key.len() == 1 {
-                    self.value.push_str(key);
-                } else {
-                    return false;
+                let len = self.value.chars().count();
+                let caret = self.caret_index();
+                match key.as_str() {
+                    "ArrowLeft" => {
+                        self.set_caret(caret.saturating_sub(1));
+                        true
+                    }
+                    "ArrowRight" => {
+                        self.set_caret((caret + 1).min(len));
+                        true
+                    }
+                    "Home" => {
+                        self.set_caret(0);
+                        true
+                    }
+                    "End" => {
+                        self.set_caret(len);
+                        true
+                    }
+                    "Enter" => true,
+                    "Backspace" => {
+                        if caret == 0 || !self.remove_char(caret - 1) {
+                            return true;
+                        }
+                        self.set_caret(caret - 1);
+                        self.notify_change();
+                        true
+                    }
+                    "Delete" => {
+                        if !self.remove_char(caret) {
+                            return true;
+                        }
+                        self.notify_change();
+                        true
+                    }
+                    _ => {
+                        if key.len() != 1 {
+                            return false;
+                        }
+                        let ch = key.chars().next().expect("a one-byte key is a character");
+                        self.insert_char(caret, ch);
+                        self.set_caret(caret + 1);
+                        self.notify_change();
+                        true
+                    }
                 }
-                if let Some(cb) = self.on_change.as_ref() {
-                    (cb.borrow_mut())(self.value.clone());
-                }
-                true
             }
             _ => false,
         }
     }
+}
+
+/// One run of the field's text. The value is drawn in two of these with the
+/// caret's beam between them; the placeholder is drawn in one.
+fn text_run(text: String, color: ColorToken, app: &AppContext) -> Box<dyn Element> {
+    Text::new(text)
+        .with_theme_color(color, app)
+        .with_max_lines(1)
+        .finish()
 }
 
 #[cfg(test)]
@@ -337,6 +432,51 @@ mod tests {
                 .with_icon(false)
                 .with_extra_height(3.0)
                 .with_focused(focused),
+        )
+    }
+
+    /// A focused field holding `value` with its insertion point shared at
+    /// `caret`, laid out and painted once, the way a frame leaves it before a
+    /// key arrives.
+    fn field(value: &str, caret: usize) -> (SearchInput, Rc<RefCell<usize>>) {
+        let app = AppContext::default();
+        let cell = Rc::new(RefCell::new(caret));
+        let mut input = SearchInput::new()
+            .with_value(value)
+            .with_placeholder("Search")
+            .with_focused(true)
+            .with_caret(Rc::clone(&cell));
+        input.layout(
+            SizeConstraint::loose(vec2f(240.0, 60.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        input.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+        (input, cell)
+    }
+
+    /// The frame after `input` took keys: the app builds a fresh element over
+    /// the value and the caret the last one left, and so does this.
+    fn next_frame(input: &SearchInput, caret: &Rc<RefCell<usize>>) -> Vec<RenderCommand> {
+        let app = AppContext::default();
+        let mut element: Box<dyn Element> = Box::new(
+            SearchInput::new()
+                .with_value(input.value())
+                .with_placeholder("Search")
+                .with_focused(true)
+                .with_caret(Rc::clone(caret)),
+        );
+        render_element(&mut element, vec2f(240.0, 200.0), &app)
+    }
+
+    fn press(input: &mut SearchInput, key: &str) -> bool {
+        input.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: key.to_string(),
+                modifiers: Default::default(),
+            },
+            &mut EventContext::default(),
+            &AppContext::default(),
         )
     }
 
@@ -545,5 +685,191 @@ mod tests {
             )),
             "a blurred field draws no focus ring: {commands:?}"
         );
+    }
+
+    /// The index of the command that draws `text`, for the order the frame
+    /// painted the two runs and the beam in.
+    fn run_index(commands: &[RenderCommand], text: &str) -> usize {
+        commands
+            .iter()
+            .position(|command| {
+                matches!(command, RenderCommand::DrawText { text: drawn, .. } if drawn == text)
+            })
+            .unwrap_or_else(|| panic!("the run {text:?} is drawn: {commands:?}"))
+    }
+
+    /// Where the run `text` starts and how wide it is: the pen the next piece
+    /// of the frame is laid out at.
+    fn run_box(commands: &[RenderCommand], text: &str) -> (f32, f32) {
+        let run = drawn_run(commands, text);
+        let RenderCommand::DrawText { origin, .. } = run else {
+            unreachable!()
+        };
+        (origin.x, run_width(run))
+    }
+
+    /// The arrows move the insertion point one character and the beam with it:
+    /// left lands before the last character, right walks back past it.
+    #[test]
+    fn the_arrows_move_the_beam_and_the_caret() {
+        let (mut input, caret) = field("abc", 3);
+        assert!(press(&mut input, "ArrowLeft"));
+        assert_eq!(*caret.borrow(), 2, "the caret stepped back one character");
+
+        let app = AppContext::default();
+        let commands = next_frame(&input, &caret);
+        let beam = caret_rect(&commands, &app);
+        let (before_x, before_width) = run_box(&commands, "ab");
+        let (after_x, _) = run_box(&commands, "c");
+        assert!(
+            (beam.min_x() - (before_x + before_width)).abs() < 0.5,
+            "the beam stands after the run before the caret, got x={} against {}",
+            beam.min_x(),
+            before_x + before_width
+        );
+        assert!(
+            (after_x - beam.min_x()).abs() < 0.5,
+            "and the run after the caret starts under it, got x={after_x}",
+        );
+
+        assert!(press(&mut input, "ArrowRight"));
+        assert_eq!(*caret.borrow(), 3, "the caret walked back to the end");
+    }
+
+    /// `Home` and `End` jump the caret to the value's own ends, where the beam
+    /// leads the whole value or trails it at the pen.
+    #[test]
+    fn home_and_end_jump_to_the_ends_of_the_value() {
+        let app = AppContext::default();
+        let (mut input, caret) = field("abc", 1);
+
+        assert!(press(&mut input, "Home"));
+        assert_eq!(*caret.borrow(), 0);
+        let commands = next_frame(&input, &caret);
+        let beam = caret_rect(&commands, &app);
+        let (value_x, _) = run_box(&commands, "abc");
+        assert!(
+            (beam.min_x() - value_x).abs() < 0.5,
+            "home puts the beam before the value, got x={} against {value_x}",
+            beam.min_x()
+        );
+
+        assert!(press(&mut input, "End"));
+        assert_eq!(*caret.borrow(), 3);
+        let commands = next_frame(&input, &caret);
+        let beam = caret_rect(&commands, &app);
+        let (value_x, value_width) = run_box(&commands, "abc");
+        assert!(
+            (beam.min_x() - (value_x + value_width)).abs() < 0.5,
+            "end puts it back at the pen, got x={} against {}",
+            beam.min_x(),
+            value_x + value_width
+        );
+    }
+
+    /// The beam is painted between the two runs, with both adjacent to it: a
+    /// gap on either side would leave the bar off the character it marks.
+    #[test]
+    fn the_beam_is_painted_between_the_two_runs() {
+        let app = AppContext::default();
+        let (input, caret) = field("abcd", 2);
+        let commands = next_frame(&input, &caret);
+        let beam = caret_rect(&commands, &app);
+        let (before_x, before_width) = run_box(&commands, "ab");
+        let (after_x, _) = run_box(&commands, "cd");
+
+        assert!(
+            run_index(&commands, "ab") < run_index(&commands, "cd"),
+            "the run before the caret is painted first: {commands:?}"
+        );
+        assert!(
+            (beam.min_x() - (before_x + before_width)).abs() < 0.5,
+            "the beam touches the run before it, got x={} against {}",
+            beam.min_x(),
+            before_x + before_width
+        );
+        assert!(
+            (after_x - beam.min_x()).abs() < 0.5,
+            "and the run after it starts where the beam does, got x={after_x}",
+        );
+    }
+
+    /// A character typed with the caret in the middle lands there, not at the
+    /// end, and the field reports the value it now holds.
+    #[test]
+    fn a_character_typed_in_the_middle_is_inserted_there() {
+        let changed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&changed);
+        let cell = Rc::new(RefCell::new(1));
+        let mut input = SearchInput::new()
+            .with_value("ac")
+            .with_focused(true)
+            .with_caret(Rc::clone(&cell))
+            .with_on_change(move |value: String| sink.borrow_mut().push(value));
+
+        assert!(press(&mut input, "b"));
+        assert_eq!(input.value(), "abc");
+        assert_eq!(*cell.borrow(), 2, "the caret lands past what it typed");
+        assert_eq!(
+            *changed.borrow(),
+            vec!["abc".to_string()],
+            "the edit is reported once, with the new value"
+        );
+    }
+
+    /// `Backspace` takes the character before the caret and `Delete` the one
+    /// at it, each leaving the caret where the edit began.
+    #[test]
+    fn backspace_and_delete_remove_on_the_correct_side() {
+        let (mut input, caret) = field("abc", 1);
+
+        assert!(press(&mut input, "Backspace"));
+        assert_eq!(
+            input.value(),
+            "bc",
+            "backspace took the character before the caret"
+        );
+        assert_eq!(*caret.borrow(), 0);
+
+        assert!(press(&mut input, "Delete"));
+        assert_eq!(input.value(), "c", "delete took the character at the caret");
+        assert_eq!(*caret.borrow(), 0);
+    }
+
+    /// The arrows stop at the value's ends instead of running past them, and a
+    /// move is not an edit.
+    #[test]
+    fn the_arrows_are_no_ops_at_the_ends() {
+        let (mut input, caret) = field("ab", 0);
+
+        assert!(press(&mut input, "ArrowLeft"));
+        assert_eq!(*caret.borrow(), 0);
+
+        assert!(press(&mut input, "End"));
+        assert_eq!(*caret.borrow(), 2);
+
+        assert!(press(&mut input, "ArrowRight"));
+        assert_eq!(*caret.borrow(), 2);
+        assert_eq!(input.value(), "ab");
+    }
+
+    /// A caret index left past the end by a value shortened elsewhere clamps to
+    /// the end: the beam draws there and typing extends the value.
+    #[test]
+    fn a_caret_past_the_end_clamps_to_it() {
+        let app = AppContext::default();
+        let (mut input, caret) = field("ab", 5);
+        let commands = next_frame(&input, &caret);
+        let beam = caret_rect(&commands, &app);
+        let (value_x, value_width) = run_box(&commands, "ab");
+        assert!(
+            (beam.min_x() - (value_x + value_width)).abs() < 0.5,
+            "the beam lands at the end of the shortened value, got x={}",
+            beam.min_x()
+        );
+
+        assert!(press(&mut input, "c"));
+        assert_eq!(input.value(), "abc", "and typing extends it from there");
+        assert_eq!(*caret.borrow(), 3);
     }
 }

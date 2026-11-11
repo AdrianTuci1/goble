@@ -63,6 +63,14 @@ impl ChatView {
         self
     }
 
+    /// Draw the pane's work dock under the header, above the transcript. The
+    /// pane builds it (its groups, spinner phase and controls), so the view
+    /// only has to give it the slot.
+    pub fn with_work_dock(mut self, dock: Option<Box<dyn Element>>) -> Self {
+        self.work_dock = dock;
+        self
+    }
+
     /// Render `notice` at the top of the transcript, inside the chat area.
     pub fn with_notice(mut self, notice: Option<Box<dyn Element>>) -> Self {
         self.notice = notice;
@@ -147,11 +155,25 @@ impl ChatView {
         self
     }
 
+    /// Set the app-owned cell that names the tool row under the pointer, so a
+    /// chain's header can draw its arrow without a hover band behind it.
+    pub fn with_tool_hover(mut self, tool_hover: Rc<RefCell<Option<String>>>) -> Self {
+        self.tool_hover = tool_hover;
+        self
+    }
+
     /// Set the live sub-agent records for this pane's transcript, keyed by the
     /// id of the tool call that spawned each child. The map is rebuilt from the
     /// app's S4 events every frame, so a running child's row re-draws with it.
     pub fn with_sub_agents(mut self, sub_agents: HashMap<String, SubAgentRow>) -> Self {
         self.sub_agents = sub_agents;
+        self
+    }
+
+    /// Set the model a running child's transcript row names beside what the
+    /// child is doing. Empty draws `Responding` alone.
+    pub fn with_sub_agent_model(mut self, model: impl Into<String>) -> Self {
+        self.sub_agent_model = model.into();
         self
     }
 
@@ -278,6 +300,14 @@ impl ChatView {
     /// computer for a local environment and a cloud for a worker.
     pub fn with_composer_harness_icon(mut self, icon: &'static str) -> Self {
         self.composer_harness_icon = Some(icon);
+        self
+    }
+
+    /// The CLI harness this pane talks to. Its mark is drawn in the footer in
+    /// place of the native agent's model and approval controls, which a custom
+    /// harness does not use.
+    pub fn with_composer_agent_harness(mut self, harness: &'static str) -> Self {
+        self.composer_agent_harness = Some(harness);
         self
     }
 

@@ -58,26 +58,46 @@ impl UiState {
             })
     }
 
-    /// The pane's own shell for an agent turn, when the pane has a terminal.
+    /// The pane's own shell for an agent turn, when the pane has one.
     ///
-    /// A terminal pane's session is the harness's shell-tool route (P4): the
-    /// agent's commands run in the user's own shell, visibly, instead of the
-    /// sandbox. A pane that has never started a shell, or whose shell has not
-    /// bootstrapped its integration (so it can never report a `Preexec`), has
-    /// no session and `None` keeps the sandboxed runner.
+    /// A terminal pane's agent surface has its own shell — the one `!` lines
+    /// already run in — so an agent's commands are sessions apart from the
+    /// terminal's history: Escape returns to a shell that never ran them. An
+    /// SSH-bound pane is the exception, because the host's shell is the
+    /// environment the agent view exists to run in. Every other pane (a chat
+    /// pane, or a terminal whose agent shell has not bootstrapped its
+    /// integration) leaves `None`, which keeps the sandboxed runner.
     pub fn pane_session(
         &self,
         pane_id: u64,
         conversation_id: &str,
     ) -> Option<std::sync::Arc<dyn goble_core::harness::PaneSession>> {
+        if self.terminal.borrow().ssh_session(pane_id).is_some() {
+            return self
+                .terminal
+                .borrow()
+                .pane_session(pane_id, conversation_id);
+        }
+        let is_terminal = self
+            .spaces
+            .iter()
+            .any(|space| matches!(space.leaf_kind(pane_id), Some(PaneKind::Terminal)));
+        if !is_terminal {
+            return None;
+        }
+        let cwd = self
+            .pane_sessions
+            .get(&pane_id)
+            .map(|session| session.path.clone())
+            .unwrap_or_else(|| self.composer_path.clone());
         self.terminal
-            .borrow()
-            .pane_session(pane_id, conversation_id)
+            .borrow_mut()
+            .agent_pane_session(pane_id, &cwd, conversation_id)
     }
 
     /// The blocks a pane's terminal view draws, oldest first: the shell's own
-    /// history. A command the agent ran is a real block in this list too, since
-    /// it ran in the same shell.
+    /// history. The agent's own shell is a session apart, so its commands are
+    /// not in this list.
     pub fn pane_terminal_view(&self, pane_id: u64) -> Vec<VisibleBlock> {
         self.terminal
             .borrow()
@@ -85,10 +105,10 @@ impl UiState {
     }
 
     /// The blocks a conversation's agent view draws in `pane_id`, oldest first:
-    /// the commands the agent ran for that conversation. A command the user
-    /// typed has an owner that names no conversation, so it is not one of them.
+    /// the commands the agent ran for that conversation, read from the pane's
+    /// agent shell — the session the agent surface runs in.
     pub fn pane_agent_view(&self, pane_id: u64, conversation_id: &str) -> Vec<VisibleBlock> {
-        self.terminal.borrow().visible_blocks(
+        self.terminal.borrow().agent_visible_blocks(
             pane_id,
             &BlockView::Agent {
                 conversation_id: conversation_id.to_string(),
@@ -108,6 +128,15 @@ impl UiState {
     /// than the one the pane paints.
     pub fn pane_view(&self, pane_id: u64) -> BlockView {
         self.pane_controls(pane_id).surface()
+    }
+
+    /// Whether `pane_id` is a terminal leaf: the one pane kind whose drawn
+    /// surface [`PaneControls::surface`] decides. A chat pane draws its
+    /// conversation's agent view whatever its terminal filter says.
+    pub fn pane_is_terminal(&self, pane_id: u64) -> bool {
+        self.spaces
+            .iter()
+            .any(|space| matches!(space.leaf_kind(pane_id), Some(PaneKind::Terminal)))
     }
 
     /// Enter `conversation_id`'s agent view in `pane_id`: push the card that

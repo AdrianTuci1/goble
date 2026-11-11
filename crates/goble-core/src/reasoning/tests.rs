@@ -108,6 +108,82 @@ async fn test_ask_user_suspends_and_creates_pending_ask() {
     assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
 }
 
+/// A turn that never enters reasoning — a plain "give me a quiz" — still gets
+/// the question tool in its execution set. The call suspends the turn with the
+/// pending ask and the panel's event, and it never reaches the tool dispatcher,
+/// which has no `ask_user`.
+#[tokio::test]
+async fn an_execution_only_turn_can_ask_with_options() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let llm = llm_with_reasoning_tools(
+        "",
+        vec![LlmToolCall {
+            id: "tc_ask".to_string(),
+            name: "ask_user".to_string(),
+            arguments: serde_json::json!({
+                "question": "Care este capitala Australiei?",
+                "quick_replies": ["Canberra", "Sydney", "Melbourne", "Perth"]
+            }),
+        }],
+    );
+    let harness = Harness::new(store.clone()).with_llm(llm);
+    let events: Vec<_> = harness
+        .run_turn(
+            &chat_id,
+            "give me a quiz question with four options",
+            "mock",
+            "mock",
+        )
+        .collect()
+        .await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            HarnessEvent::AskUser { question, quick_replies }
+                if question == "Care este capitala Australiei?" && quick_replies.len() == 4
+        )),
+        "the execution turn suspends on the question: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            HarnessEvent::ToolCallError { message, .. } if message.contains("unknown tool")
+        )),
+        "the call is handled before dispatch: {events:?}"
+    );
+    let pending = store
+        .get_pending_ask(&chat_id)
+        .unwrap()
+        .expect("the question waits on the user");
+    assert_eq!(pending.3, "Care este capitala Australiei?");
+    assert!(pending.4.contains("Canberra"), "the options persist");
+
+    // The answer resumes the same mission and settles the question.
+    let llm2 = llm_with_reasoning_tools("Canberra este capitala Australiei.", vec![]);
+    let harness2 = Harness::new(store.clone()).with_llm(llm2);
+    let _: Vec<_> = harness2
+        .resume_turn(&chat_id, "Canberra", None, "mock", "mock")
+        .collect()
+        .await;
+    assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
+    // The answer came back as the call's result, so the transcript draws the
+    // agent's tool row instead of a message attributed to the user.
+    let rows = store.list_chat_messages(&chat_id).unwrap();
+    assert!(
+        !rows
+            .iter()
+            .any(|(_, role, content, _, _)| role == "user" && content.contains("Canberra")),
+        "the answer is not a user message: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|(_, role, content, _, _)| role == "tool" && content.contains("Canberra")),
+        "the answer is the ask_user result row: {rows:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_resume_stores_credential_by_name_not_value() {
     let store = Store::open_in_memory().unwrap();
@@ -155,21 +231,47 @@ async fn test_resume_stores_credential_by_name_not_value() {
         Some("ghs_secret".to_string())
     );
     let rows = store.list_chat_messages(&chat_id).unwrap();
-    let user_turn = rows
+    assert!(
+        !rows
+            .iter()
+            .any(|(_, role, content, _, _)| role == "user" && content.contains("Answer to")),
+        "the answer is not a message the user sent: {rows:?}"
+    );
+    let tool_turn = rows
         .iter()
-        .filter(|(_, role, _, _, _)| role == "user")
+        .filter(|(_, role, _, _, _)| role == "tool")
         .map(|(_, _, content, _, _)| content.clone())
-        .find(|c| c.contains("Answer to question"))
-        .unwrap_or_default();
-    assert!(user_turn.contains("Credential stored as github_token"));
-    assert!(user_turn.contains("{{credential:github_token}}"));
-    assert!(!user_turn.contains("ghs_secret"));
+        .find(|c| c.contains("Credential stored as github_token"))
+        .expect("the ask_user result row carries the stored credential's name");
+    assert!(tool_turn.contains("{{credential:github_token}}"));
+    assert!(!tool_turn.contains("ghs_secret"));
+    // The answer is the call's result, so the transcript draws the tool the
+    // agent ran rather than a user bubble.
+    let calls: Vec<ChatToolCall> = rows
+        .iter()
+        .filter(|(_, role, _, tool_calls, _)| role == "assistant" && tool_calls.is_some())
+        .flat_map(|(_, _, _, tool_calls, _)| {
+            serde_json::from_str::<Vec<ChatToolCall>>(tool_calls.as_deref().unwrap_or("[]"))
+                .unwrap_or_default()
+        })
+        .collect();
+    assert!(
+        calls.iter().any(|call| call.name == "ask_user"
+            && call.status == ToolCallStatus::Finished
+            && call.result.as_deref() == Some(tool_turn_body(&tool_turn))),
+        "the answered question is a finished ask_user call: {calls:?}"
+    );
+}
+
+/// What a `role="tool"` row holds past its call id: the result body.
+fn tool_turn_body(row: &str) -> &str {
+    row.split_once('\n').map(|(_, body)| body).unwrap_or(row)
 }
 
 #[tokio::test]
-async fn test_auto_approve_skips_ask_user() {
-    // With auto-approve on, the harness must not suspend on `ask_user`: it
-    // neither emits an AskUser event nor persists a pending ask.
+async fn test_auto_approve_still_suspends_on_ask_user() {
+    // Auto-approve opens the command gate; it never answers for the user. A
+    // question suspends the turn and is recorded as pending even with it on.
     let store = Store::open_in_memory().unwrap();
     let chat_id = chat(&store);
     let llm = llm_with_reasoning_tools(
@@ -191,14 +293,88 @@ async fn test_auto_approve_skips_ask_user() {
         .run_turn(&chat_id, "automate reports", "mock", "mock")
         .collect()
         .await;
-    assert!(!events.iter().any(|e| matches!(e, HarnessEvent::AskUser { .. })));
-    assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
-    // The harness records that the question was auto-approved so the next
-    // reasoning/execution step sees an answer in history.
+    assert!(events.iter().any(
+        |e| matches!(e, HarnessEvent::AskUser { question, .. } if question == "Which database should I query?")
+    ));
+    let pending = store
+        .get_pending_ask(&chat_id)
+        .unwrap()
+        .expect("the question is recorded as pending");
+    assert_eq!(pending.3, "Which database should I query?");
+    // Nothing stands in for the user's answer, and the turn does not finish.
     let messages = store.list_chat_messages(&chat_id).unwrap();
-    assert!(messages
+    assert!(
+        !messages
+            .iter()
+            .any(|(_, role, content, _, _)| role == "user" && content.contains("auto-approved")),
+        "no synthetic answer is recorded: {messages:?}"
+    );
+    assert!(!events.iter().any(|e| matches!(e, HarnessEvent::Done)));
+
+    // The user's answer resumes the same mission under the same setting.
+    let llm2 = llm_with_reasoning_tools(
+        "Got it, executing now.",
+        vec![LlmToolCall {
+            id: "tc6".to_string(),
+            name: "execute".to_string(),
+            arguments: serde_json::json!({}),
+        }],
+    );
+    let harness2 = Harness::new(store.clone())
+        .with_llm(llm2)
+        .with_auto_approve(true);
+    let events2: Vec<_> = harness2
+        .resume_turn(&chat_id, "postgres", None, "mock", "mock")
+        .collect()
+        .await;
+    assert!(events2
         .iter()
-        .any(|(_, role, content, _, _)| role == "user" && content.contains("auto-approved")));
+        .any(|e| matches!(e, HarnessEvent::ReasoningDone { .. })));
+    assert!(store.get_pending_ask(&chat_id).unwrap().is_none());
+}
+
+/// The reasoning phase offers only its own planning tools, and an agent asked
+/// to delegate work used to answer that it had no delegation tool at all. The
+/// prompt must name the harness tools it executes with, `spawn_subagent`
+/// included, and must not read as the whole of what the agent can do.
+#[test]
+fn reasoning_prompt_names_spawn_subagent_and_does_not_deny_delegation() {
+    let prompt =
+        super::prompts::build_reasoning_prompt(ThinkingMode::Planning, "split the task", &[]);
+    assert!(
+        prompt.contains("spawn_subagent"),
+        "the reasoning prompt names the delegation tool: {prompt}"
+    );
+    assert!(
+        prompt.contains("run_in_background"),
+        "it says how a sub-agent is spawned: {prompt}"
+    );
+    assert!(
+        prompt.contains("after execute"),
+        "it places the delegation after execute: {prompt}"
+    );
+    let lower = prompt.to_lowercase();
+    for denial in [
+        "no delegation",
+        "cannot delegate",
+        "only reasoning tools",
+        "do not have",
+    ] {
+        assert!(
+            !lower.contains(denial),
+            "the prompt denies a capability the agent has (`{denial}`): {prompt}"
+        );
+    }
+
+    let execution = super::prompts::build_execution_prompt("split the task", &[]);
+    assert!(
+        execution.contains("spawn_subagent"),
+        "the execution prompt names the delegation tool: {execution}"
+    );
+    assert!(
+        execution.contains("ask_user") && execution.contains("quick_replies"),
+        "the execution prompt says how to ask with options: {execution}"
+    );
 }
 
 /// Records each command line the harness runs, so the approval tests assert
@@ -908,4 +1084,145 @@ fn test_tool_call_row_from_older_build_still_parses() {    let old = r#"[{"id":"
     assert_eq!(records[0].name, "ls");
     assert_eq!(records[0].status, ToolCallStatus::Pending);
     assert_eq!(records[0].result, None);
+}
+
+/// A provider that asks for the same call every time and records the requests
+/// it was given, so a test can read what the stuck turn was told.
+#[derive(Clone)]
+struct RepeatingProvider {
+    name: String,
+    seen: Arc<std::sync::Mutex<Vec<Vec<crate::llm::Message>>>>,
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for RepeatingProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn complete(&self, _req: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+        Ok(CompletionResponse {
+            content: "trying again".to_string(),
+            tool_calls: vec![LlmToolCall {
+                id: "tc_same".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }],
+            usage: None,
+        })
+    }
+
+    async fn complete_stream(
+        &self,
+        req: CompletionRequest,
+    ) -> anyhow::Result<std::pin::Pin<Box<dyn futures::Stream<Item = CompletionStreamEvent> + Send>>>
+    {
+        self.seen.lock().unwrap().push(req.messages.clone());
+        let events = vec![
+            CompletionStreamEvent::AssistantDelta("trying again".to_string()),
+            CompletionStreamEvent::ToolCalls(vec![LlmToolCall {
+                id: "tc_same".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }]),
+            CompletionStreamEvent::Done,
+        ];
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
+}
+
+/// A model that keeps asking for the same unknown `bash` call is stopped after
+/// a few rounds with a reason the user can read, instead of running into the
+/// execution-iteration cap ("too many execution iterations") with no
+/// explanation.
+#[tokio::test]
+async fn a_model_stuck_on_one_tool_call_is_stopped_with_a_readable_error() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let llm = Arc::new(RepeatingProvider {
+        name: "repeating".to_string(),
+        seen: Arc::clone(&seen),
+    });
+    let harness = Harness::new(store.clone())
+        .with_llm(llm)
+        .with_reasoning(false);
+
+    let events: Vec<_> = harness.run_turn(&chat_id, "check the folder", "mock", "mock").collect().await;
+
+    let stopped = events.iter().find_map(|event| match event {
+        HarnessEvent::Error(message) if message.contains("repeated the same tool call") => {
+            Some(message.clone())
+        }
+        _ => None,
+    });
+    let stopped = stopped.expect("the turn ends with the stationarity error");
+    assert!(stopped.contains("bash"), "{stopped}");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, HarnessEvent::Error(message) if message.contains("too many execution iterations"))),
+        "the stationarity guard stops the turn before the iteration cap"
+    );
+
+    // The reminder reaches the model before the stop: one of the requests
+    // carries the nudge.
+    let nudged = seen.lock().unwrap().iter().any(|messages| {
+        messages
+            .iter()
+            .any(|message| message.content.contains("appear to be stuck"))
+    });
+    assert!(nudged, "a stuck turn is reminded before it is stopped");
+
+    // The stuck call ran a bounded number of times, not the whole budget.
+    let records = tool_call_records(&store, &chat_id);
+    assert!(
+        records.len() < 4,
+        "the same call is not replayed to the iteration cap, got {} records",
+        records.len()
+    );
+}
+
+/// A stored assistant row that carries neither text nor calls is not sent back
+/// to the provider: the request shape would be rejected outright ("content or
+/// tool_calls must be set"), which is what failed a real conversation.
+#[tokio::test]
+async fn an_empty_assistant_row_is_not_sent_back() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let now = Utc::now().to_rfc3339();
+    store
+        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "user", "hello", None, &now)
+        .unwrap();
+    store
+        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "assistant", "", None, &now)
+        .unwrap();
+    store
+        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "assistant", "hi", None, &now)
+        .unwrap();
+
+    let mission = MissionState {
+        id: "mission-1".to_string(),
+        chat_id: chat_id.clone(),
+        goal: "hello".to_string(),
+        status: "running".to_string(),
+        plan: None,
+        workflow_id: None,
+        reasoning_steps: Vec::new(),
+        pending_ask: None,
+    };
+    let history = build_history(&store, &chat_id, &mission, &[], &[], ThinkingMode::Direct).await;
+
+    assert!(
+        !history.iter().any(|message| {
+            (message.role == Role::Assistant)
+                && message.content.trim().is_empty()
+                && message.tool_calls.as_ref().is_none_or(Vec::is_empty)
+        }),
+        "an assistant row with no text and no calls never reaches the provider: {history:?}"
+    );
+    assert!(
+        history.iter().any(|message| message.content == "hi"),
+        "the reply that has text is kept"
+    );
 }

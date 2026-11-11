@@ -1,6 +1,27 @@
 use super::*;
 
 
+/// How long ago an RFC3339 timestamp was, when it parses. A row that cannot
+/// read its start states no elapsed time rather than guessing one.
+pub(crate) fn elapsed_since(started_at: &str) -> Option<std::time::Duration> {
+    let ts = DateTime::parse_from_rfc3339(started_at).ok()?;
+    let secs = Utc::now()
+        .signed_duration_since(ts.with_timezone(&Utc))
+        .num_seconds()
+        .max(0);
+    Some(std::time::Duration::from_secs(secs as u64))
+}
+
+/// How long a finished span took, from its two RFC3339 timestamps. A span
+/// whose stamps cannot be read, or that ends before it starts, states no
+/// duration rather than guessing one.
+pub(crate) fn elapsed_between(started_at: &str, finished_at: &str) -> Option<std::time::Duration> {
+    let start = DateTime::parse_from_rfc3339(started_at).ok()?;
+    let end = DateTime::parse_from_rfc3339(finished_at).ok()?;
+    let secs = end.signed_duration_since(start).num_seconds();
+    (secs >= 0).then(|| std::time::Duration::from_secs(secs as u64))
+}
+
 /// Format an RFC3339 timestamp as a short relative "time ago" label (e.g.
 /// "40 min ago"). Falls back to the raw string when it cannot be parsed.
 pub(crate) fn time_ago(updated_at: &str) -> String {
@@ -448,6 +469,19 @@ pub(crate) fn reasoning_row_key(chat_id: &str, step: usize) -> String {
 /// agent's own output, so it is drawn as the agent's prose surface and never as
 /// a terminal block: a block is what a command the user ran is drawn as.
 pub(crate) fn parse_chat_row(row: &goble_desktop_service::ChatMessage) -> ChatMessage {
+    // A note from the harness itself — a compaction, say — is drawn as a quiet
+    // line, never as prose either side wrote.
+    if row.role == "notice" {
+        let mut message = ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::notice(row.content.clone())],
+        )
+        .with_timestamp(row.created_at.clone());
+        if let Some(tc) = row.tool_calls.as_deref() {
+            message = message.with_tool_calls(ToolCall::from_llm_json(tc));
+        }
+        return message;
+    }
     let role = match row.role.as_str() {
         "user" => ChatRole::User,
         "tool" => ChatRole::Tool,
@@ -472,4 +506,47 @@ pub(crate) fn parse_chat_row(row: &goble_desktop_service::ChatMessage) -> ChatMe
         message = message.with_tool_calls(ToolCall::from_llm_json(tc));
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A harness notice reaches the transcript as one quiet note, never as
+    /// prose either side wrote and never as Markdown the user could mistake
+    /// for the agent's words.
+    #[test]
+    fn a_notice_row_becomes_a_notice_fragment() {
+        let row = goble_desktop_service::ChatMessage {
+            id: "n1".to_string(),
+            role: "notice".to_string(),
+            content: "Context 82% full. Compacting…".to_string(),
+            tool_calls: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let message = parse_chat_row(&row);
+        assert_eq!(message.role, ChatRole::Assistant);
+        assert_eq!(message.fragments.len(), 1);
+        assert_eq!(
+            message.fragments[0].kind,
+            goble_ui::elements::chat_content::ChatFragmentKind::Notice(
+                "Context 82% full. Compacting…".to_string()
+            )
+        );
+    }
+
+    /// A settled span measures start to finish, so a run's printed duration
+    /// stops when it stopped rather than growing with the wall clock.
+    #[test]
+    fn a_finished_span_keeps_the_duration_it_ran_for() {
+        assert_eq!(
+            elapsed_between("2026-01-01T00:00:00Z", "2026-01-01T00:03:20Z"),
+            Some(std::time::Duration::from_secs(200))
+        );
+        assert_eq!(
+            elapsed_between("2026-01-01T00:03:20Z", "2026-01-01T00:00:00Z"),
+            None,
+            "a span that ends before it starts states nothing"
+        );
+    }
 }

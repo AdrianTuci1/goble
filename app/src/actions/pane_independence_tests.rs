@@ -178,7 +178,11 @@ fn a_shell_line_that_launches_a_tui_harness_opens_its_agent_view() {
     let (state, actions, _media) = build(&desktop);
     let pane_id = state.borrow().active_pane_id;
 
-    (actions.on_shell_line.borrow_mut())(pane_id, "claude".to_string());
+    // The pane only opens a harness whose program it can run. The line names
+    // `claude` by a path that exists in this test, so the check does not depend
+    // on the machine having the real CLI — the catalog matches the base name.
+    let (_claude_dir, claude) = installed_claude();
+    (actions.on_shell_line.borrow_mut())(pane_id, claude.clone());
 
     let s = state.borrow();
     assert!(
@@ -207,6 +211,33 @@ fn a_shell_line_that_launches_a_tui_harness_opens_its_agent_view() {
         chat.provider.as_deref(),
         Some("claude"),
         "the conversation carries the harness it launched"
+    );
+}
+
+/// A shell line that names a harness this machine does not have stays a shell
+/// line: no conversation is bound and no agent view opens, so the shell's own
+/// `command not found` is the answer the user sees.
+#[test]
+fn a_shell_line_for_a_missing_harness_stays_a_shell_line() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let pane_id = state.borrow().active_pane_id;
+
+    // The base name names a harness; the path is not there, the way `pi` is not
+    // on a machine that never installed it.
+    (actions.on_shell_line.borrow_mut())(pane_id, "/definitely/not/here/pi".to_string());
+
+    let s = state.borrow();
+    assert!(
+        !s.pane_controls(pane_id).harness_mode,
+        "no harness view opens for a program that is not installed"
+    );
+    assert!(
+        matches!(
+            s.pane_view(pane_id),
+            goble_terminal::blocks::BlockView::Terminal
+        ),
+        "the pane stays on its terminal, where the shell reports the missing program"
     );
 }
 
@@ -1256,6 +1287,23 @@ fn the_diff_control_opens_one_review_pane_per_directory() {
     }
 }
 
+/// A path to an executable named `claude`, so a harness line in a test names a
+/// program that is really there whatever the machine has installed. The temp
+/// dir is handed back so the file outlives the line.
+fn installed_claude() -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("create a temp dir");
+    let program = dir.path().join("claude");
+    std::fs::write(&program, "#!/bin/sh\n").expect("write the program");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+    }
+    let path = program.to_str().expect("a path").to_string();
+    (dir, path)
+}
+
 /// A `!` line that names a harness in agent mode opens that harness's agent
 /// view; it never starts the harness's TUI in the conversation's shell, where
 /// the full-screen program would have no way out.
@@ -1266,7 +1314,11 @@ fn a_bang_harness_line_in_agent_mode_opens_the_harness_view() {
     let pane_id = state.borrow().active_pane_id;
 
     (actions.on_set_pane_harness_mode.borrow_mut())(pane_id, true);
-    (actions.on_send_message.borrow_mut())("!claude".to_string());
+    // The pane only opens a harness whose program it can run. The line names
+    // `claude` by a path that exists in this test, so the check does not depend
+    // on the machine having the real CLI — the catalog matches the base name.
+    let (_claude_dir, claude) = installed_claude();
+    (actions.on_send_message.borrow_mut())(format!("!{claude}"));
 
     let s = state.borrow();
     assert!(
@@ -1274,7 +1326,10 @@ fn a_bang_harness_line_in_agent_mode_opens_the_harness_view() {
         "the pane stays in agent mode"
     );
     assert!(
-        matches!(s.pane_view(pane_id), goble_terminal::blocks::BlockView::Agent { .. }),
+        matches!(
+            s.pane_view(pane_id),
+            goble_terminal::blocks::BlockView::Agent { .. }
+        ),
         "the harness view is what the pane draws"
     );
     let conversation_id = s
@@ -1299,5 +1354,143 @@ fn a_bang_harness_line_in_agent_mode_opens_the_harness_view() {
     assert!(
         !s.terminal.borrow().agent_sessions.contains_key(&pane_id),
         "the launch runs no command; the harness is the conversation's surface"
+    );
+}
+
+/// A `!` line naming a harness whose program is missing must not open the
+/// harness's surface: the line is the conversation's shell's own, so the shell
+/// prints its `command not found` where the user typed it.
+#[test]
+fn a_bang_harness_line_for_a_missing_program_stays_in_the_conversation_shell() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let pane_id = state.borrow().active_pane_id;
+
+    (actions.on_set_pane_harness_mode.borrow_mut())(pane_id, true);
+    let view_before = state.borrow().pane_view(pane_id);
+    let conversation_before = state
+        .borrow()
+        .pane_sessions
+        .get(&pane_id)
+        .map(|session| session.conversation_id.clone());
+    let chats_before = desktop.list_chats().len();
+
+    // The catalog names `claude` from the base name, but no file lives here.
+    (actions.on_send_message.borrow_mut())("!/definitely/not/a/real/claude".to_string());
+
+    let s = state.borrow();
+    assert_eq!(
+        s.pane_view(pane_id),
+        view_before,
+        "the pane keeps the conversation it was drawing"
+    );
+    assert_eq!(
+        s.pane_sessions
+            .get(&pane_id)
+            .map(|session| session.conversation_id.clone()),
+        conversation_before,
+        "no conversation is bound to the harness that is not installed"
+    );
+    assert_eq!(
+        desktop.list_chats().len(),
+        chats_before,
+        "a missing harness opens no conversation of its own"
+    );
+}
+
+/// A harness whose turn produces nothing and never finishes on its own: only
+/// the daemon's cancel ends it, so a test can observe the cancellation itself.
+#[derive(Default)]
+struct HangingHarness {
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+impl HangingHarness {
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl goble_harness_runtime::HarnessRuntime for HangingHarness {
+    fn id(&self) -> goble_harness_types::HarnessId {
+        goble_harness_types::HarnessId::new("hang")
+    }
+
+    fn capabilities(&self) -> goble_harness_types::HarnessCapabilities {
+        goble_harness_types::HarnessCapabilities::internal()
+    }
+
+    fn run(
+        &self,
+        _turn: goble_harness_types::HarnessTurn,
+        _cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> goble_harness_runtime::HarnessRun {
+        goble_harness_runtime::HarnessRun {
+            events: Box::pin(futures::stream::pending()),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The Stop the parent transcript's row draws cancels the child's own running
+/// turn — by the child's conversation id, which is what the row carries — and
+/// marks that child's row cancelled at once. The parent's turn is not the one
+/// being stopped and is left alone.
+#[test]
+fn stopping_a_sub_agent_cancels_its_turn_and_marks_its_row() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let pane_id = state.borrow().active_pane_id;
+    let child_id = desktop
+        .create_chat("Child", None, None)
+        .expect("create the child's conversation");
+
+    // The child's turn runs on a harness that never ends by itself, so only the
+    // Stop can end it.
+    let harness = Arc::new(HangingHarness::default());
+    desktop.register_harness(harness.clone());
+    let runtime = tokio::runtime::Runtime::new().expect("build runtime");
+    let _guard = runtime.enter();
+    let _turn = desktop
+        .run_chat_turn(
+            &child_id,
+            "audit the migration",
+            "mock",
+            "",
+            "local",
+            "default",
+            &child_id,
+            None,
+            Some("hang"),
+        )
+        .expect("run the child's turn");
+
+    // The pane that spawned the child holds its live row, keyed by the spawn
+    // call the transcript looks it up by.
+    state
+        .borrow_mut()
+        .apply_subagent_spawned(&goble_desktop_service::SubAgentSpawnedEvent {
+            // An empty chat id resolves to the active pane, which is the pane
+            // this test spawned the child on.
+            chat_id: String::new(),
+            subagent_id: child_id.clone(),
+            subagent_type: "reviewer".to_string(),
+            description: "audit the migration".to_string(),
+            parent_call_id: "call_spawn".to_string(),
+            run_in_background: false,
+        });
+
+    (actions.on_stop_sub_agent.borrow_mut())(pane_id, child_id.clone());
+
+    assert!(harness.cancelled(), "the Stop cancels the child's own turn");
+    let rows = state.borrow().sub_agent_rows(pane_id);
+    assert_eq!(
+        rows.get("call_spawn").map(|row| row.status),
+        Some(goble_ui::SubAgentRowStatus::Cancelled),
+        "the child's row reads cancelled as soon as the Stop is pressed"
     );
 }

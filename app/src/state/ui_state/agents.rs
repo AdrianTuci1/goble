@@ -454,6 +454,24 @@ impl UiState {
             .collect()
     }
 
+    /// Mark `pane_id`'s child `child_id` cancelled, from the Stop its row draws.
+    /// The app cancels the child's own turn on the service; the row reads the
+    /// cancellation at once rather than waiting for the child's finish event,
+    /// and the pane's own turn — the one waiting on this child — is left
+    /// running. The row reaches the transcript through the per-frame snapshot,
+    /// so no store re-read is needed.
+    pub fn cancel_sub_agent(&mut self, pane_id: u64, child_id: &str) {
+        let Some(record) = self
+            .pane_runtime
+            .get_mut(&pane_id)
+            .and_then(|rt| rt.sub_agents.get_mut(child_id))
+        else {
+            return;
+        };
+        record.row.status = SubAgentRowStatus::Cancelled;
+        record.row.activity.clear();
+    }
+
     /// How many of `pane_id`'s spawned sub-agent children are still running. A
     /// child that completed, failed or was cancelled has ended and is not
     /// counted, so the pane's still-running line names only live work.

@@ -18,6 +18,10 @@ pub enum ChatAction {
     /// conversation id. S5 drew the row's hit target; S6 delivers the view it
     /// enters — the child's own conversation, shown in the pane, Esc back.
     OpenSubAgent(String),
+    /// Stop a running sub-agent child. The payload is the child's conversation
+    /// id, which the app cancels the child's turn by; the parent's own turn is
+    /// left running.
+    StopSubAgent(String),
     Custom(String),
 }
 

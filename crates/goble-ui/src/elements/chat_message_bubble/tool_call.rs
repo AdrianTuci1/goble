@@ -27,8 +27,8 @@ const VERB_GROUP_KEY_PREFIX: &str = "verb-group:";
 /// The row's own text size. An action hanging off a row is a size down while
 /// the row is collapsed and the row's own size once it is open: grok-build
 /// keeps its action hints off the row entirely, in the shortcuts bar, and
-/// goble draws the one action a row owns — opening a sub-agent's own view — at
-/// 10 px while the row is retracted.
+/// goble draws the actions a row owns — opening a sub-agent's own view and
+/// stopping a running child — at 10 px while the row is retracted.
 pub(super) const TOOL_ROW_FONT_SIZE: f32 = 13.0;
 
 pub(super) const TOOL_ACTION_FONT_SIZE: f32 = 10.0;
@@ -168,8 +168,11 @@ fn label_color(mode: ToolDisplayMode, app: &crate::elements::AppContext) -> Colo
 }
 
 /// The buckets grok-build folds into an aggregated run header. The label-only
-/// kinds (`Command`, `EditFile`, `McpCall`, `OtherTool`) are deliberately
-/// absent: those calls render their own rows and end a run.
+/// kinds (`Command`, `EditFile`, `McpCall`, `OtherTool`) and a sub-agent spawn
+/// are deliberately absent: those calls render their own rows and end a run. A
+/// spawn draws the child it started — its quoted description and its status
+/// line — so folding it under a run header would hide the one row the user acts
+/// on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VerbGroupKind {
     File,
@@ -180,7 +183,6 @@ enum VerbGroupKind {
     WebSearch,
     MemorySearch,
     IntegrationSearch,
-    Subagent,
 }
 
 impl VerbGroupKind {
@@ -195,7 +197,6 @@ impl VerbGroupKind {
             | Self::IntegrationSearch => ("Searched", "Searching"),
             Self::Dir => ("Listed", "Listing"),
             Self::WebFetch => ("Fetched", "Fetching"),
-            Self::Subagent => ("Ran", "Running"),
         };
         if running { present } else { past }
     }
@@ -210,7 +211,6 @@ impl VerbGroupKind {
             Self::WebFetch | Self::WebSearch => ("website", "websites"),
             Self::MemorySearch => ("memory", "memories"),
             Self::IntegrationSearch => ("MCP tool", "MCP tools"),
-            Self::Subagent => ("subagent", "subagents"),
         };
         if count == 1 { one } else { many }
     }
@@ -244,7 +244,7 @@ fn run_step(call: &ToolCall, mode: ToolDisplayMode) -> RunStep {
 
 /// The bucket a call joins, read from the row's parsed family. `None` for the
 /// action kinds a run must not fold across: a command, an edit, a tool
-/// dispatch, or a call no family claims.
+/// dispatch, a spawn (which draws its own row) or a call no family claims.
 fn verb_group_kind(call: &ToolCall) -> Option<VerbGroupKind> {
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
@@ -258,32 +258,25 @@ fn verb_group_kind(call: &ToolCall) -> Option<VerbGroupKind> {
         ToolKind::WebSearch => Some(VerbGroupKind::WebSearch),
         ToolKind::MemorySearch => Some(VerbGroupKind::MemorySearch),
         ToolKind::SearchTools => Some(VerbGroupKind::IntegrationSearch),
-        ToolKind::SubAgent => Some(VerbGroupKind::Subagent),
-        ToolKind::Execute
+        ToolKind::SubAgent
+        | ToolKind::Execute
         | ToolKind::Create
         | ToolKind::Delete
         | ToolKind::Edit
         | ToolKind::UseTool
+        | ToolKind::Ask
         | ToolKind::Other => None,
     }
 }
 
-/// Whether a member is still running, with a sub-agent's live record taking
-/// precedence over the spawn call's own status.
-fn member_running(call: &ToolCall, record: Option<&SubAgentRow>) -> bool {
-    match record {
-        Some(record) => record.status == SubAgentRowStatus::Running,
-        None => matches!(call.status, ToolCallStatus::Pending | ToolCallStatus::Running),
-    }
+/// Whether a member is still running.
+fn member_running(call: &ToolCall) -> bool {
+    matches!(call.status, ToolCallStatus::Pending | ToolCallStatus::Running)
 }
 
-/// Whether a member failed. A cancelled child is deliberate, not a failure, so
-/// only a failed record feeds the header's red count.
-fn member_failed(call: &ToolCall, record: Option<&SubAgentRow>) -> bool {
-    match record {
-        Some(record) => record.status == SubAgentRowStatus::Failed,
-        None => call.status == ToolCallStatus::Error,
-    }
+/// Whether a member failed.
+fn member_failed(call: &ToolCall) -> bool {
+    call.status == ToolCallStatus::Error
 }
 
 /// The aggregated label a folded run draws: buckets in first-appearance order,
@@ -293,7 +286,6 @@ fn verb_group_label(
     calls: &[ToolCall],
     start: usize,
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
-    sub_agents: &HashMap<String, SubAgentRow>,
 ) -> (String, bool, usize) {
     let mut buckets: Vec<(VerbGroupKind, usize)> = Vec::new();
     let mut running = false;
@@ -309,9 +301,8 @@ fn verb_group_label(
         let RunStep::Member(kind) = run_step(call, mode) else {
             continue;
         };
-        let record = sub_agents.get(&call.id);
-        running |= member_running(call, record);
-        if member_failed(call, record) {
+        running |= member_running(call);
+        if member_failed(call) {
             failed += 1;
         }
         match buckets.iter_mut().find(|(bucket, _)| *bucket == kind) {
@@ -488,8 +479,8 @@ fn verb_group_header(
         .finish()
 }
 
-/// One call drawn on its own: its header (with the sub-agent open target) and
-/// the body its own fold calls for.
+/// One call drawn on its own: its header (with the sub-agent actions: open the
+/// child, and stop it while it runs) and the body its own fold calls for.
 fn single_call_column(
     call: &ToolCall,
     index: usize,
@@ -506,19 +497,28 @@ fn single_call_column(
     // sub-agent-shaped call, so one lookup serves the row and its target.
     let record = sub_agents.get(&call.id);
     let header = tool_call_header(call, &key, fallback, mode, fold, record, app);
-    // A sub-agent's row carries a second hit target beside the fold toggle:
-    // the one that opens the child's own view.
-    let header = match sub_agent_open_target(record, on_action, mode, app) {
-        Some(open) => Flex::row()
+    // A sub-agent's row carries its own hit targets beside the fold toggle: the
+    // one that opens the child's own view and, while the child runs, the one
+    // that stops it.
+    let targets: Vec<Box<dyn Element>> = [
+        sub_agent_open_target(record, on_action, mode, app),
+        sub_agent_stop_target(record, on_action, mode, app),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let header = if targets.is_empty() {
+        header
+    } else {
+        Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(2.0)
-            // The header takes the space the open action leaves, so a long
-            // subject wraps inside the pane instead of pushing the action out.
+            // The header takes the space the actions leave, so a long subject
+            // wraps inside the pane instead of pushing them out.
             .with_child(Expanded::new(header).with_flex(1.0).finish())
-            .with_child(open)
-            .finish(),
-        None => header,
+            .with_children(targets)
+            .finish()
     };
     // Stretch, so the header and the body are measured at the transcript's
     // width: a long command or path wraps inside the pane instead of running
@@ -619,8 +619,7 @@ pub(super) fn build_tool_call_rows(
 
         let group_key = verb_group_key(tool_calls, start);
         let open = verb_group_open(fold, &group_key);
-        let (label, running, failed) =
-            verb_group_label(&tool_calls[start..end], start, fold, sub_agents);
+        let (label, running, failed) = verb_group_label(&tool_calls[start..end], start, fold);
         let mut group = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0)
@@ -788,6 +787,40 @@ pub(super) fn sub_agent_open_target(
         )
         .with_on_click(move || {
             (on_action.borrow_mut())(ChatAction::OpenSubAgent(child_id.clone()));
+        })
+        .finish(),
+    )
+}
+
+/// The sub-agent row's stop target: a click fires [`ChatAction::StopSubAgent`]
+/// carrying the child's own conversation id, which cancels the child's turn on
+/// the app side. Drawn only while the child runs — a child that already ended
+/// has nothing left to stop, and a dead affordance is not drawn.
+pub(super) fn sub_agent_stop_target(
+    sub_agent: Option<&SubAgentRow>,
+    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    mode: ToolDisplayMode,
+    app: &crate::elements::AppContext,
+) -> Option<Box<dyn Element>> {
+    let record = sub_agent.filter(|record| {
+        record.status == SubAgentRowStatus::Running && !record.child_id.is_empty()
+    })?;
+    let on_action = on_action.clone()?;
+    let child_id = record.child_id.clone();
+    let size = match mode {
+        ToolDisplayMode::Collapsed => TOOL_ACTION_FONT_SIZE,
+        _ => TOOL_ROW_FONT_SIZE,
+    };
+    Some(
+        Chip::new(
+            Text::new("Stop")
+                .with_theme_color(ColorToken::Error, app)
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(size)
+                .finish(),
+        )
+        .with_on_click(move || {
+            (on_action.borrow_mut())(ChatAction::StopSubAgent(child_id.clone()));
         })
         .finish(),
     )

@@ -88,10 +88,13 @@ fn each_sub_agent_status_draws_its_own_line() {
     for (status, activity, elapsed, outcome, token, line) in cases {
         let call = spawn_call(ToolCallStatus::Finished);
         let record = record("conv-child-1", status, activity, elapsed, outcome);
-        // The run is folded by default; opening it draws the member row whose
-        // own line this test pins.
-        let (commands, _) =
-            paint_sub_agent_run_open(vec![call.clone()], HashMap::from([(call.id, record)]));
+        // A spawn call draws its own row, collapsed by default: no run has to be
+        // opened to reach the child this transcript exists to name.
+        let (commands, _) = paint_sub_agent(
+            vec![call.clone()],
+            HashMap::from([(call.id, record)]),
+            None,
+        );
         let rows = drawn_row_texts(&commands);
         let row = rows
             .iter()
@@ -118,7 +121,7 @@ fn each_sub_agent_status_draws_its_own_line() {
         assert_eq!(
             rows.iter().filter(|row| row.starts_with("◆ ")).count(),
             1,
-            "the folded call draws one marked row, got {rows:?}"
+            "the collapsed call draws one marked row, got {rows:?}"
         );
     }
 }
@@ -154,9 +157,10 @@ fn a_running_sub_agent_row_carries_its_activity_and_elapsed_time() {
             Duration::from_millis(elapsed),
             None,
         );
-        let (commands, _) = paint_sub_agent_run_open(
+        let (commands, _) = paint_sub_agent(
             vec![call.clone()],
             HashMap::from([(call.id.clone(), record)]),
+            None,
         );
         drawn_row_texts(&commands)
     };
@@ -194,9 +198,10 @@ fn a_running_sub_agent_row_carries_its_activity_and_elapsed_time() {
         Duration::from_secs(30),
         Some("done"),
     );
-    let (commands, _) = paint_sub_agent_run_open(
+    let (commands, _) = paint_sub_agent(
         vec![call.clone()],
         HashMap::from([("call_spawn_subagent".to_string(), record)]),
+        None,
     );
     let rows = drawn_row_texts(&commands);
     assert!(
@@ -227,57 +232,33 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
     );
     let fold = Rc::new(RefCell::new(HashMap::new()));
     let calls = vec![call.clone()];
-    let group = run_key(&calls, 0);
     let (mut bubble, _) = sub_agent_bubble(
         calls,
         HashMap::from([(call.id.clone(), record)]),
         fold.clone(),
     );
 
-    // A transcript is as wide as its pane. The record's line and the open
-    // action share the row, so the test gives it a pane wide enough for the
+    // A transcript is as wide as its pane. The record's line and the row's
+    // actions share the row, so the test gives it a pane wide enough for the
     // whole line and checks the folding, not the wrapping.
     let paint = |bubble: &mut ChatMessageBubble| paint_bubble_at(bubble, &app, 800.0);
-    let open_run = |bubble: &mut ChatMessageBubble| {
-        let commands = paint(bubble);
-        let origin = run_origin(&commands, "Ran 1 subagent");
-        click_at(bubble, &app, origin + vec2f(2.0, 4.0));
-    };
     let header_click = |bubble: &mut ChatMessageBubble| {
         let commands = paint(bubble);
         let origin = run_origin(&commands, "Subagent ");
         click_at(bubble, &app, origin + vec2f(2.0, 4.0));
     };
 
-    // Folded, the sub-agent is part of its run's aggregated header: the member
-    // row, its child line and the open target are all one expansion away.
+    // A spawn call is its own row, so it is on screen without opening anything:
+    // the child in quotes and the record's line are the whole folded shape.
     let folded = drawn_row_texts(&paint(&mut bubble));
-    assert!(
-        folded.iter().any(|row| row.contains("Ran 1 subagent")),
-        "a folded sub-agent joins its run header, got {folded:?}"
-    );
-    assert!(
-        !folded.iter().any(|row| row.contains("Subagent")),
-        "the member row is hidden while the run is folded, got {folded:?}"
+    assert_eq!(
+        folded.iter().filter(|row| row.contains("Subagent")).count(),
+        1,
+        "a collapsed spawn call draws its own header line, got {folded:?}"
     );
     assert!(
         !folded.iter().any(|row| row.contains("tool calls")),
-        "a folded run draws none of the record's counters, got {folded:?}"
-    );
-
-    // Opening the run draws the member row. Its own fold then cycles like every
-    // other shape's.
-    open_run(&mut bubble);
-    assert_eq!(
-        fold.borrow().get(&group),
-        Some(&ToolDisplayMode::Expanded),
-        "the run's header opens the run"
-    );
-    let opened = drawn_row_texts(&paint(&mut bubble));
-    assert_eq!(
-        opened.iter().filter(|row| row.contains("Subagent")).count(),
-        1,
-        "the opened run draws its member's one header line, got {opened:?}"
+        "a folded spawn draws none of the record's counters, got {folded:?}"
     );
 
     header_click(&mut bubble);
@@ -348,6 +329,51 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
     );
 }
 
+/// A running child draws its Stop beside the row that names it; a child that
+/// ended draws none. The chip is the transcript's own control, so it is on the
+/// collapsed row rather than behind an opened run.
+#[test]
+fn a_running_child_draws_a_stop_and_an_ended_one_does_not() {
+    let call = spawn_call(ToolCallStatus::Running);
+    let stop_texts = |status: SubAgentRowStatus| {
+        let record = record(
+            "conv-child-1",
+            status,
+            "reading",
+            Duration::from_secs(4),
+            None,
+        );
+        let (commands, _) = paint_sub_agent(
+            vec![call.clone()],
+            HashMap::from([(call.id.clone(), record)]),
+            None,
+        );
+        drawn_texts(&commands)
+    };
+
+    let running = stop_texts(SubAgentRowStatus::Running);
+    assert!(
+        running.iter().any(|text| text == "Stop"),
+        "a running child draws its Stop, got {running:?}"
+    );
+    assert!(
+        running.iter().any(|text| text == "Subagent "),
+        "the Stop sits beside the row that names the child, got {running:?}"
+    );
+
+    for ended in [
+        SubAgentRowStatus::Completed,
+        SubAgentRowStatus::Failed,
+        SubAgentRowStatus::Cancelled,
+    ] {
+        let texts = stop_texts(ended);
+        assert!(
+            !texts.iter().any(|text| text == "Stop"),
+            "an ended child ({ended:?}) draws no Stop, got {texts:?}"
+        );
+    }
+}
+
 /// A click on the row's open target fires the action that opens the child's
 /// own view, carrying the child's conversation id, and leaves the fold alone.
 /// With no record held there is no child to open, so no target is drawn.
@@ -364,10 +390,7 @@ fn clicking_a_sub_agent_row_fires_the_open_action() {
         None,
     );
     let calls = vec![call.clone()];
-    let fold = Rc::new(RefCell::new(HashMap::from([(
-        run_key(&calls, 0),
-        ToolDisplayMode::Expanded,
-    )])));
+    let fold = Rc::new(RefCell::new(HashMap::new()));
     let (mut bubble, actions) = sub_agent_bubble(
         calls,
         HashMap::from([(call.id.clone(), record.clone())]),
@@ -393,6 +416,43 @@ fn clicking_a_sub_agent_row_fires_the_open_action() {
     assert!(
         !texts.iter().any(|text| text == "open child"),
         "a row with no record draws no open target, got {texts:?}"
+    );
+}
+
+/// A click on the row's Stop fires the action that cancels the child's turn,
+/// carrying the child's conversation id, and leaves the fold alone — stopping a
+/// child is not closing the row that names it.
+#[test]
+fn clicking_a_running_childs_stop_fires_the_stop_action() {
+    let app = AppContext::default();
+    let call = spawn_call(ToolCallStatus::Running);
+    let key = tool_fold_key(&call, 0);
+    let record = record(
+        "conv-child-7",
+        SubAgentRowStatus::Running,
+        "reading",
+        Duration::from_secs(4),
+        None,
+    );
+    let calls = vec![call.clone()];
+    let fold = Rc::new(RefCell::new(HashMap::new()));
+    let (mut bubble, actions) = sub_agent_bubble(
+        calls,
+        HashMap::from([(call.id.clone(), record)]),
+        fold.clone(),
+    );
+    let commands = paint_bubble(&mut bubble, &app);
+    let position = run_origin(&commands, "Stop") + vec2f(2.0, 4.0);
+    click_at(&mut bubble, &app, position);
+    assert_eq!(
+        *actions.borrow(),
+        vec![ChatAction::StopSubAgent("conv-child-7".to_string())],
+        "the Stop fires the stop action with the child's id"
+    );
+    assert_eq!(
+        fold.borrow().get(&key),
+        None,
+        "the Stop is not the fold toggle"
     );
 }
 

@@ -2,6 +2,8 @@
 // TUI agent detection + terminal surface mode
 // ---------------------------------------------------------------------------
 
+use std::path::Path;
+
 use goble_core::harness::{detect_harness, harness_by_id, HarnessSpec};
 
 /// A real command-line agent that runs inside the pane's PTY (codex, claude,
@@ -121,6 +123,76 @@ impl TuiAgent {
         TuiAgent::Hermes,
         TuiAgent::Antigravity,
     ];
+}
+
+/// Whether the program `command` runs is installed on this machine.
+///
+/// A pane only switches to a harness's surface when its program is really
+/// there: a program that is missing is the shell's own error (`zsh: command not
+/// found: pi`), and opening the harness surface for it would tell the user the
+/// harness was installed and running.
+///
+/// Wrappers, flags and `VAR=value` assignments are skipped the way
+/// [`detect_harness`] skips them. A package runner (`npx`, `bunx`, `uvx`,
+/// `pnpm`, `yarn`) is the program itself: it fetches the package the line
+/// names, so `npx -y codex` is installed exactly when `npx` is.
+pub fn command_installed(command: &str) -> bool {
+    let Some(program) = program_to_check(command) else {
+        return false;
+    };
+    // A path is checked as given, so a relative one resolves against goble's
+    // own working directory; a bare name is looked up on `PATH`.
+    if program.contains(['/', '\\']) {
+        return is_executable_file(Path::new(program));
+    }
+    on_path(program)
+}
+
+/// The program a line runs: the first token left once its wrappers, flags and
+/// assignments are skipped.
+pub(super) fn program_to_check(command: &str) -> Option<&str> {
+    command
+        .split_whitespace()
+        .take(8)
+        .find(|token| !token.starts_with('-') && !is_assignment(token) && !is_wrapper(token))
+}
+
+/// Whether `token` is a wrapper that runs the program after it.
+fn is_wrapper(token: &str) -> bool {
+    matches!(token, "sudo" | "command" | "exec" | "env")
+}
+
+/// Whether `token` is a shell variable assignment (`FOO=1`).
+fn is_assignment(token: &str) -> bool {
+    token.split_once('=').is_some_and(|(key, _)| {
+        !key.is_empty()
+            && key
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    })
+}
+
+/// Whether the bare name `program` is in one of the directories on `PATH`.
+fn on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| is_executable_file(&dir.join(program)))
+}
+
+/// Whether `path` is a file this machine can execute. Unix asks for any execute
+/// bit, the same test the shell makes when it looks a command up.
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// The surface mode of a terminal pane.

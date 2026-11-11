@@ -8,7 +8,7 @@
 //! row and Enter sends it, like the command approval card. The last row
 //! ("Other…") opens the free-text field.
 //!
-//! The selected row, the free-text answer and the credential fields live in the
+//! The selected row, the free-text answer and its insertion point live in the
 //! [`AskUserUi`] the card is built from, so a click or a key survives the
 //! per-frame rebuild of the element tree.
 
@@ -25,19 +25,15 @@ use crate::geometry::{vec2f, Vector2F};
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, SpacingToken};
 
-/// The answer the user is composing: the picked row, the free text "Other…"
-/// opened, and the optional credential the harness stores by name.
+/// The answer the user is composing: the picked row and the free text
+/// "Other…" opened.
 ///
 /// Shared between every clone of the [`AskUserUi`] the panel is built from, so
 /// the app's per-frame snapshot keeps the selection the user made last frame.
-/// Which of the panel's fields holds the keyboard. The credential fields share
-/// the panel with the free-text answer, so a single flag cannot say which one
-/// is focused (one field's blur arrives before the other's focus).
+/// The field that holds the keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AskFocus {
     FreeText,
-    CredentialName,
-    CredentialValue,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -47,8 +43,10 @@ pub(crate) struct AskUserState {
     /// Whether the free-text row is the picked one.
     other: bool,
     free_text: String,
-    credential_name: String,
-    credential: String,
+    /// The free-text field's insertion point. It is shared with the field
+    /// because the card is rebuilt every frame and a fresh field would put the
+    /// beam back at the start, typing each new character in front of the last.
+    free_text_caret: Rc<RefCell<usize>>,
     /// Which field holds the keyboard, if any.
     focused: Option<AskFocus>,
 }
@@ -102,10 +100,9 @@ impl Eq for AskUserUi {}
 /// conversation stream (grok-new's `Agent questions` band). It is not pinned to
 /// the bottom: it sits among the chat messages and scrolls with them.
 ///
-/// Offers numbered quick replies, an "Other…" row that opens a free-text answer
-/// and, under it, an optional masked credential. `Next` (or Enter) calls
-/// `on_answer` with the composed response; `Skip all` (or Ctrl-C / Escape) calls
-/// `on_skip`.
+/// Offers numbered quick replies and an "Other…" row that opens a free-text
+/// answer. `Next` (or Enter) calls `on_answer` with the composed response;
+/// `Skip all` (or Ctrl-C / Escape) calls `on_skip` and leaves no row picked.
 pub struct AskUserCard {
     question: String,
     quick_replies: Vec<String>,
@@ -178,15 +175,14 @@ impl AskUserCard {
 
         let state = self.state.clone();
         let replies = self.quick_replies.clone();
-        let (selected, other, focused, free_text_value, credential_name_value, credential_value) = {
+        let (selected, other, focused, free_text_value, free_text_caret) = {
             let state = state.borrow();
             (
                 state.selected,
                 state.other,
                 state.focused,
                 state.free_text.clone(),
-                state.credential_name.clone(),
-                state.credential.clone(),
+                state.free_text_caret.clone(),
             )
         };
 
@@ -198,16 +194,30 @@ impl AskUserCard {
                 let Some(cb) = handler.as_ref() else {
                     return;
                 };
-                let (answer, credential) = compose(&state.borrow(), &replies);
-                if answer.is_empty() && credential.is_none() {
+                let answer = compose(&state.borrow(), &replies);
+                if answer.is_empty() {
                     return;
                 }
-                (cb.borrow_mut())(answer, credential);
+                // The panel carries no credential field: a secret belongs in
+                // its own surface, so nothing is threaded out of the answer.
+                (cb.borrow_mut())(answer, None);
             }))
         };
         let skip: Rc<RefCell<dyn FnMut()>> = {
             let handler = self.on_skip.clone();
+            let state = state.clone();
             Rc::new(RefCell::new(move || {
+                // Skipping is not an answer: the picked row, the free text and
+                // the beam go with the card, so nothing stays selected behind a
+                // skipped question.
+                {
+                    let mut state = state.borrow_mut();
+                    state.selected = None;
+                    state.other = false;
+                    state.free_text.clear();
+                    state.focused = None;
+                    *state.free_text_caret.borrow_mut() = 0;
+                }
                 if let Some(cb) = handler.as_ref() {
                     (cb.borrow_mut())();
                 }
@@ -352,12 +362,7 @@ impl AskUserCard {
             other,
             {
                 let state = state.clone();
-                move || {
-                    let mut state = state.borrow_mut();
-                    state.selected = None;
-                    state.other = true;
-                    state.focused = Some(AskFocus::FreeText);
-                }
+                move || open_free_text(&state)
             },
             app,
         ));
@@ -372,6 +377,9 @@ impl AskUserCard {
                     .with_placeholder("Type your answer…")
                     .with_min_height(38.0)
                     .with_full_width(true)
+                    // The card is rebuilt every frame; the beam is shared so a
+                    // keystroke lands after the text typed before it.
+                    .with_caret(free_text_caret)
                     .with_focused(focused == Some(AskFocus::FreeText))
                     .with_on_focus_change({
                         let state = state.clone();
@@ -396,72 +404,6 @@ impl AskUserCard {
                             state.focused = Some(AskFocus::FreeText);
                         }
                     })
-                    .finish(),
-            );
-
-            // The credential stays behind "Other…": a name and a masked value,
-            // returned separately so the secret never enters the transcript.
-            let credential_name = state.clone();
-            let credential_name_focus = state.clone();
-            let credential = state.clone();
-            let credential_focus = state.clone();
-            rows = rows.with_child(
-                Flex::column()
-                    .with_spacing(4.0)
-                    .with_child(
-                        TextArea::new()
-                            .with_value(credential_name_value)
-                            .with_placeholder("Credential name (e.g. github_token)…")
-                            .with_min_height(32.0)
-                            .with_full_width(true)
-                            .with_on_focus_change({
-                                let state = credential_name_focus;
-                                move |focused| {
-                                    set_field_focus(&state, AskFocus::CredentialName, focused);
-                                }
-                            })
-                            .with_on_change(move |text| {
-                                credential_name.borrow_mut().credential_name = text;
-                            })
-                            .finish(),
-                    )
-                    .with_child(
-                        Flex::row()
-                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                            .with_spacing(sm)
-                            .with_child(
-                                Icon::new("key")
-                                    .with_size(14.0)
-                                    .with_theme_color(ColorToken::Muted, app)
-                                    .finish(),
-                            )
-                            .with_child(
-                                Expanded::new(
-                                    TextArea::new()
-                                        .with_value(credential_value)
-                                        .with_placeholder("Credential (optional)…")
-                                        .with_min_height(34.0)
-                                        .with_full_width(true)
-                                        .with_masked(true)
-                                        .with_on_focus_change({
-                                            let state = credential_focus;
-                                            move |focused| {
-                                                set_field_focus(
-                                                    &state,
-                                                    AskFocus::CredentialValue,
-                                                    focused,
-                                                );
-                                            }
-                                        })
-                                        .with_on_change(move |text| {
-                                            credential.borrow_mut().credential = text;
-                                        })
-                                        .finish(),
-                                )
-                                .finish(),
-                            )
-                            .finish(),
-                    )
                     .finish(),
             );
         }
@@ -527,6 +469,7 @@ impl AskUserCard {
                         state.selected = Some(next as usize);
                         state.other = false;
                         state.free_text.clear();
+                        *state.free_text_caret.borrow_mut() = 0;
                         state.focused = None;
                     }
                     true
@@ -539,7 +482,7 @@ impl AskUserCard {
                         state.other && state.focused.is_none()
                     };
                     if opens_free_text {
-                        key_state.borrow_mut().focused = Some(AskFocus::FreeText);
+                        open_free_text(&key_state);
                         return true;
                     }
                     (key_submit.borrow_mut())();
@@ -560,13 +503,11 @@ impl AskUserCard {
                         state.selected = Some(index - 1);
                         state.other = false;
                         state.free_text.clear();
+                        *state.free_text_caret.borrow_mut() = 0;
                         state.focused = None;
                         true
                     } else if index == key_replies.len() + 1 {
-                        let mut state = key_state.borrow_mut();
-                        state.selected = None;
-                        state.other = true;
-                        state.focused = Some(AskFocus::FreeText);
+                        open_free_text(&key_state);
                         true
                     } else {
                         false
@@ -589,14 +530,12 @@ impl Default for AskUserCard {
     }
 }
 
-/// Compose the answer delivered to the harness. The credential, when present,
-/// is returned separately as `(name, value)` so the secret never enters the
-/// answer string (and thus never the transcript); the harness stores it by
-/// name and references it by name.
-pub(crate) fn compose(
-    state: &AskUserState,
-    quick_replies: &[String],
-) -> (String, Option<(String, String)>) {
+/// Compose the answer delivered to the harness: the picked quick reply, or the
+/// free text "Other…" holds.
+///
+/// The panel carries no credential field — a secret belongs in its own surface,
+/// so it never travels through this answer.
+pub(crate) fn compose(state: &AskUserState, quick_replies: &[String]) -> String {
     let mut parts = Vec::new();
     if let Some(idx) = state.selected {
         if let Some(label) = quick_replies.get(idx) {
@@ -607,24 +546,18 @@ pub(crate) fn compose(
     if !free_text.is_empty() {
         parts.push(free_text.to_string());
     }
-    let answer = parts.join("\n");
-    let credential = state.credential.trim();
-    if credential.is_empty() {
-        return (answer, None);
-    }
-    let name = state.credential_name.trim();
-    (answer, Some((name.to_string(), credential.to_string())))
+    parts.join("\n")
 }
 
-/// Record that `field` gained or lost the keyboard, keeping the field that is
-/// still focused when a neighbour's blur arrives after this field's focus.
-fn set_field_focus(state: &Rc<RefCell<AskUserState>>, field: AskFocus, focused: bool) {
+/// Open the free-text row with the keyboard. The beam sits after the text the
+/// user already typed, so reopening the field continues where it left off.
+fn open_free_text(state: &Rc<RefCell<AskUserState>>) {
     let mut state = state.borrow_mut();
-    if focused {
-        state.focused = Some(field);
-    } else if state.focused == Some(field) {
-        state.focused = None;
-    }
+    state.selected = None;
+    state.other = true;
+    state.focused = Some(AskFocus::FreeText);
+    let end = state.free_text.chars().count();
+    *state.free_text_caret.borrow_mut() = end;
 }
 
 /// The question as the panel reads it. A model that lists the answers inside
@@ -1184,27 +1117,82 @@ mod tests {
         assert_eq!(state.borrow().selected, None);
     }
 
-    /// The composed answer keeps the credential apart from the answer text.
+    /// The panel carries no credential or key field: a secret belongs in its
+    /// own surface, so the answer card asks for an answer only.
     #[test]
-    fn ask_user_card_threads_credential_out_of_answer() {
+    fn the_panel_offers_no_credential_field() {
         let app = AppContext::default();
-        let mut card = AskUserCard::new("What's the token?".to_string(), vec![]);
-        card.layout(
-            SizeConstraint::loose(vec2f(520.0, 800.0)),
-            &mut LayoutContext::default(),
-            &app,
+        let mut element = card().finish();
+        let commands = render_element(&mut element, vec2f(520.0, 800.0), &app);
+        click_text(&mut element, &commands, "Other...", &app);
+        let commands = render_element(&mut element, vec2f(520.0, 800.0), &app);
+        let texts = drawn(&commands);
+        assert!(
+            texts.iter().any(|text| text == "Type your answer…"),
+            "the free-text field is drawn: {texts:?}"
         );
-        {
-            let mut state = card.state.borrow_mut();
-            state.credential_name = "github_token".to_string();
-            state.credential = "ghs_secret".to_string();
-        }
-        let (answer, credential) = compose(&card.state.borrow(), &card.quick_replies);
-        // The secret is not embedded in the answer text.
-        assert!(!answer.contains("ghs_secret"));
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text.to_lowercase().contains("credential")),
+            "no credential field is drawn: {texts:?}"
+        );
+    }
+
+    /// Skipping leaves no row picked: the card and its answer go together, so
+    /// nothing behind it reads as a chosen variant.
+    #[test]
+    fn skipping_a_question_leaves_no_row_picked() {
+        let app = AppContext::default();
+        let (skipped, skip) = skips();
+        let card = card();
+        let state = card.state.clone();
+        let mut element = card.with_on_skip(skip).finish();
+        render_element(&mut element, vec2f(520.0, 800.0), &app);
+
+        assert!(press(&mut element, "1", &app), "the first row is picked");
+        assert_eq!(state.borrow().selected, Some(0));
+        assert!(press(&mut element, "Escape", &app), "Escape skips");
+
+        assert_eq!(*skipped.borrow(), 1, "the skip reaches the host once");
+        let state = state.borrow();
+        assert_eq!(state.selected, None, "no row stays picked");
+        assert!(!state.other, "Other… is not left open");
+        assert!(state.free_text.is_empty(), "the answer text is dropped");
+        assert_eq!(state.focused, None, "no field keeps the keyboard");
+    }
+
+    /// Typing survives the per-frame rebuild: the field's beam is shared with
+    /// the answer state, so the second character lands after the first instead
+    /// of in front of it (which reads as reversed text).
+    #[test]
+    fn typing_after_a_rebuild_lands_after_the_text_already_typed() {
+        let app = AppContext::default();
+        let ui = AskUserUi::new(
+            "Pick one".to_string(),
+            vec!["A".to_string(), "B".to_string()],
+        );
+        let mut first = AskUserCard::from_ui(&ui).finish();
+        let commands = render_element(&mut first, vec2f(520.0, 800.0), &app);
+        click_text(&mut first, &commands, "Other...", &app);
+        // The next frame draws the field, which takes the first character.
+        render_element(&mut first, vec2f(520.0, 800.0), &app);
+        assert!(
+            press(&mut first, "a", &app),
+            "the field takes the character"
+        );
+
+        // The next frame's card is a fresh element over the same UI state.
+        let mut second = AskUserCard::from_ui(&ui).finish();
+        render_element(&mut second, vec2f(520.0, 800.0), &app);
+        assert!(
+            press(&mut second, "b", &app),
+            "the rebuilt field takes the next character"
+        );
         assert_eq!(
-            credential,
-            Some(("github_token".to_string(), "ghs_secret".to_string()))
+            ui.state.borrow().free_text,
+            "ab",
+            "the characters keep the order they were typed in"
         );
     }
 

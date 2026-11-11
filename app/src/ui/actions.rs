@@ -185,6 +185,10 @@ pub struct UiActions {
     /// child view (S6) puts the child's card in the pane's block list and shows
     /// the child's transcript in its place.
     pub on_open_sub_agent: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Stop the sub-agent child `child_id` running under `pane_id`, by the
+    /// child's conversation id — the Stop the parent transcript's row draws
+    /// while the child runs.
+    pub on_stop_sub_agent: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Leave the child view `pane_id` shows and put the pane back on the
     /// conversation it came from; the child's card stays in the block list.
     pub on_close_sub_agent: Rc<RefCell<dyn FnMut(u64)>>,

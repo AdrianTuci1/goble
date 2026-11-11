@@ -134,8 +134,8 @@ fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
 
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "list_entities"),
-        "the tool name is drawn, got {texts:?}"
+        texts.iter().any(|t| t == "List Entities"),
+        "the tool name is drawn as words, got {texts:?}"
     );
     assert!(
         texts.iter().any(|t| t == "2 entities"),
@@ -143,7 +143,7 @@ fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
     );
     assert_eq!(
         drawn_row_texts(&commands),
-        vec!["◆ list_entities agent".to_string(), "2 entities".to_string()],
+        vec!["◆ List Entities agent".to_string(), "2 entities".to_string()],
         "the row and its result are the whole body, got {texts:?}"
     );
     assert!(
@@ -1281,9 +1281,10 @@ fn the_row_is_twelve_px_and_a_retracted_action_is_ten() {
         std::time::Duration::from_secs(4),
         None,
     );
-    let (folded, _) = paint_sub_agent_run_open(
+    let (folded, _) = paint_sub_agent(
         vec![call.clone()],
         HashMap::from([(call.id.clone(), record.clone())]),
+        None,
     );
     let sizes: HashMap<String, f32> = text_runs(&folded)
         .into_iter()
@@ -1588,5 +1589,45 @@ fn two_collapsed_tool_rows_touch_and_an_open_one_keeps_its_gap() {
         "the gap is the whole of what opening a body-less neighbour adds: {} against {}",
         open_height - two_height,
         sm
+    );
+}
+
+/// A question reads as `Ask User <question>`, the way a read reads
+/// `Read <path>`: the tool's name never reaches the row with its underscore,
+/// and no row draws a rule under itself.
+#[test]
+fn an_asked_question_draws_as_an_ask_user_row() {
+    let (commands, _) = paint_tool_calls_with_fold(
+        vec![call(
+            "ask_user",
+            r#"{"question":"Which environment?","quick_replies":["staging","production"]}"#,
+            ToolCallStatus::Finished,
+            Some("Answer to question 'Which environment?': staging"),
+        )],
+        Some(ToolDisplayMode::Expanded),
+    );
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts.iter().any(|text| text == "Ask User "),
+        "the row leads with the tool's name read as words: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "Which environment?"),
+        "the question is the row's operand: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("staging")),
+        "the answer is the row's body: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text.contains('_')),
+        "no tool name is drawn with an underscore under it: {texts:?}"
+    );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { rect, .. } if rect.height() <= 1.5
+        )),
+        "the row draws no underline rule"
     );
 }

@@ -110,6 +110,14 @@ pub(crate) fn build_sub_agent_child_view(
             (open.borrow_mut())(pane_id, child_id)
         }))
     };
+    // A nested child's row draws the same Stop, and the child it stops is the
+    // nested one's own conversation.
+    let stop_sub_agent: Rc<RefCell<dyn FnMut(String)>> = {
+        let stop = actions.on_stop_sub_agent.clone();
+        Rc::new(RefCell::new(move |child_id: String| {
+            (stop.borrow_mut())(pane_id, child_id)
+        }))
+    };
     ChatView::new()
         .with_header(title)
         // The child's own rows, read from the store by its conversation id on
@@ -135,6 +143,7 @@ pub(crate) fn build_sub_agent_child_view(
         .with_on_action(chat_action_relay(
             actions.on_open_url.clone(),
             open_sub_agent,
+            stop_sub_agent,
         ))
         .without_composer()
         .with_on_escape(move || (on_close.borrow_mut())(pane_id))

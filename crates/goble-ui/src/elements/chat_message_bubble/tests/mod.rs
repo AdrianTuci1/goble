@@ -826,17 +826,6 @@ fn paint_sub_agent(
     paint_sub_agent_with_fold(calls, records, fold)
 }
 
-/// Paint a bubble with its first verb-group run opened, so the sub-agent member
-/// row — and the action target beside it — is on screen while the member itself
-/// stays folded.
-fn paint_sub_agent_run_open(
-    calls: Vec<ToolCall>,
-    records: HashMap<String, SubAgentRow>,
-) -> (Vec<RenderCommand>, Rc<RefCell<Vec<ChatAction>>>) {
-    let fold = HashMap::from([(run_key(&calls, 0), ToolDisplayMode::Expanded)]);
-    paint_sub_agent_with_fold(calls, records, fold)
-}
-
 fn paint_sub_agent_with_fold(
     calls: Vec<ToolCall>,
     records: HashMap<String, SubAgentRow>,

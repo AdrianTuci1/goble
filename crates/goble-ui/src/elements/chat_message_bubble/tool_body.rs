@@ -125,6 +125,7 @@ pub(super) fn build_tool_call_body(
         | ToolKind::List
         | ToolKind::MemorySearch
         | ToolKind::SearchTools
+        | ToolKind::Ask
         | ToolKind::Skill => result_rows(call, mode, READ_TRUNCATION, app),
         ToolKind::SubAgent => sub_agent_body(&arguments, call, mode, sub_agent, app),
         ToolKind::UseTool => generic_body(call, mode, app),

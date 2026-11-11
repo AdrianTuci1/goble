@@ -30,15 +30,18 @@ pub(crate) use overlays::{
 pub(crate) use sub_agent::build_sub_agent_child_view;
 
 /// Relay a transcript fragment's action to the app: a link's `OpenUrl` is handed
-/// to `on_open_url`, the app's guarded external-URL opener, and a sub-agent row
-/// click is handed to `on_open_sub_agent`. Any other action is ignored here.
+/// to `on_open_url`, the app's guarded external-URL opener, a sub-agent row
+/// click to `on_open_sub_agent`, and the row's Stop to `on_stop_sub_agent`. Any
+/// other action is ignored here.
 fn chat_action_relay(
     on_open_url: Rc<RefCell<dyn FnMut(String)>>,
     on_open_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
+    on_stop_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
 ) -> impl FnMut(ChatAction) + 'static {
     move |action| match action {
         ChatAction::OpenUrl(url) => (on_open_url.borrow_mut())(url),
         ChatAction::OpenSubAgent(child_id) => (on_open_sub_agent.borrow_mut())(child_id),
+        ChatAction::StopSubAgent(child_id) => (on_stop_sub_agent.borrow_mut())(child_id),
         ChatAction::RunCommand(_) | ChatAction::Custom(_) => {}
     }
 }

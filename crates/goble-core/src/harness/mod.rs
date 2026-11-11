@@ -50,7 +50,8 @@ mod tests;
 pub use catalog::{detect_harness, harness_by_id, harness_for, HarnessSpec, HARNESSES};
 pub use presentation::{
     edit_change_counts, edit_diffstat, is_hidden_tool, one_line, skill_name, string_argument,
-    subagent_subject, tool_kind_for, tool_row, web_search_sources, ToolKind, ToolRow,
+    subagent_subject, tool_display_name, tool_kind_for, tool_row, web_search_sources, ToolKind,
+    ToolRow,
 };
 pub use runner::{
     harness_sandbox, harness_sandbox_profile, CommandRunner, MockCommandRunner, PaneSession,

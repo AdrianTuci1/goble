@@ -184,9 +184,8 @@ use super::*;
                 .any(|t| t.contains("CHILD CONVERSATION MARKER")),
             "the child's conversation is not on screen yet: {texts:?}"
         );
-        // The spawn call starts folded into its run; opening the run is what
-        // draws the row that carries the target.
-        click_run(&mut root, "Running 1 subagent");
+        // The spawn call draws its own row, so the target that enters the child
+        // is on screen without opening anything.
         let texts = pane_texts(&mut root);
         assert!(
             texts.iter().any(|t| t == "open child"),

@@ -18,7 +18,7 @@ mod registry;
 mod session;
 mod shell;
 
-pub use agents::{TerminalMode, TerminalSnapshot, TuiAgent};
+pub use agents::{command_installed, TerminalMode, TerminalSnapshot, TuiAgent};
 pub use claim::{ClaimError, ClaimOutcome, PendingCommandClaim, CLAIM_TIMEOUT, PANE_TOOL_TIMEOUT};
 pub use copy::{
     classify_copy_key, classify_find_key, is_copy_mode_chord, line_selection, selection_text,

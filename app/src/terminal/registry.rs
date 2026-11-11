@@ -14,7 +14,7 @@ use goble_terminal::BlockId;
 
 use crate::emulator::VisibleBlock;
 
-use super::agents::{TerminalMode, TuiAgent};
+use super::agents::{self, TerminalMode, TuiAgent};
 use super::claim::PaneCommandRunner;
 use super::session::TerminalSession;
 
@@ -111,6 +111,10 @@ pub struct TerminalRegistry {
     /// the block before it would lose the conversation it belongs to; it waits
     /// here for the session to become ready.
     pending_agent_commands: HashMap<u64, Vec<PendingAgentCommand>>,
+    /// The program check the mode switch gates on. `None` asks the machine
+    /// ([`agents::command_installed`]); a test pins it so its pane does not
+    /// depend on what happens to be installed.
+    command_installed: Option<fn(&str) -> bool>,
     /// Per-pane copy mode, selection and find-bar state. Owned here for the
     /// same reason the sessions are: the pane's element tree is rebuilt every
     /// frame, and the state has to outlive it.
@@ -686,12 +690,34 @@ impl TerminalRegistry {
         )))
     }
 
-    /// If the pane's current input line names a known TUI agent, switch the pane
-    /// to agent mode (native-first) and return the detected agent. Called right
-    /// before the submitted enter is forwarded to the shell.
+    /// Pin the program check for this registry, so a test's pane switches (or
+    /// refuses to switch) without depending on what the machine has.
+    #[cfg(test)]
+    pub(super) fn assume_installed(&mut self, check: fn(&str) -> bool) {
+        self.command_installed = Some(check);
+    }
+
+    /// Whether the program `command` runs is installed on this machine.
+    fn command_exists(&self, command: &str) -> bool {
+        self.command_installed.unwrap_or(agents::command_installed)(command)
+    }
+
+    /// The TUI agent a line launches: the one it names, when this machine has
+    /// the program. A line whose program is missing is not an agent line — the
+    /// shell runs it and prints its own `command not found`.
+    fn detected_agent(&self, command: &str) -> Option<TuiAgent> {
+        TuiAgent::detect(command)
+            .filter(|agent| agent.owns_screen())
+            .filter(|_| self.command_exists(command))
+    }
+
+    /// If the pane's current input line names a known TUI agent that is
+    /// installed here, switch the pane to agent mode (native-first) and return
+    /// the detected agent. Called right before the submitted enter is forwarded
+    /// to the shell, which is what reports a program that is not there.
     pub fn update_mode_from_input(&mut self, pane_id: u64) -> Option<TuiAgent> {
         let input = self.input(pane_id);
-        let agent = TuiAgent::detect(&input).filter(|agent| agent.owns_screen())?;
+        let agent = self.detected_agent(&input)?;
         self.modes.insert(pane_id, TerminalMode::Agent(agent));
         Some(agent)
     }
@@ -701,7 +727,7 @@ impl TerminalRegistry {
     /// `codex` typed there must flip the pane exactly as `codex` typed at the
     /// prompt does.
     pub fn note_command(&mut self, pane_id: u64, command: &str) -> Option<TuiAgent> {
-        let agent = TuiAgent::detect(command).filter(|agent| agent.owns_screen())?;
+        let agent = self.detected_agent(command)?;
         self.modes.insert(pane_id, TerminalMode::Agent(agent));
         Some(agent)
     }

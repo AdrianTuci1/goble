@@ -261,8 +261,10 @@ pub fn make_actions(
     let on_select_branch = Rc::clone(&state);
     let on_stop = Rc::clone(&state);
     let on_open_sub_agent = Rc::clone(&state);
+    let on_stop_sub_agent = Rc::clone(&state);
     let on_close_sub_agent = Rc::clone(&state);
     let desktop_open_sub_agent = desktop.clone();
+    let desktop_stop_sub_agent = desktop.clone();
     let on_answer_ask = Rc::clone(&state);
     let on_skip_ask = Rc::clone(&state);
     let on_command_decision = Rc::clone(&state);
@@ -1392,6 +1394,18 @@ pub fn make_actions(
                 &child_id,
                 desktop_open_sub_agent.as_deref(),
             );
+        })),
+        // The Stop on a running child's row cancels that child's own turn, by
+        // the child's conversation id; the parent's turn is left running, and
+        // the child's row reads cancelled at once rather than waiting for the
+        // child's finish event.
+        on_stop_sub_agent: Rc::new(RefCell::new(move |pane_id: u64, child_id: String| {
+            if let Some(desktop) = desktop_stop_sub_agent.as_deref() {
+                let _ = desktop.cancel_chat_turn(&child_id);
+            }
+            on_stop_sub_agent
+                .borrow_mut()
+                .cancel_sub_agent(pane_id, &child_id);
         })),
         // Esc from the child view puts the pane back on the conversation it came
         // from; the child's card stays in the block list.
@@ -2853,10 +2867,15 @@ pub fn make_actions(
         // rich input bar, so the SSH binding is read here too. A line that names
         // a TUI harness is a harness launch like any other: it takes its
         // conversation and its agent view opens on it, rather than leaving the
-        // user looking at the CLI's own screen.
+        // user looking at the CLI's own screen. A harness this machine does not
+        // have stays a shell line, so the shell's own `command not found`
+        // answers it instead of a surface for a program that is not there.
         on_shell_line: Rc::new(RefCell::new(move |pane_id: u64, line: String| {
             let mut state = on_shell_line.borrow_mut();
             state.note_shell_line(pane_id, &line);
+            if !crate::terminal::command_installed(&line) {
+                return;
+            }
             if let Some(spec) =
                 crate::terminal::TuiAgent::detect(&line).and_then(|agent| agent.spec())
             {
@@ -2990,8 +3009,14 @@ pub fn make_actions(
             // sidebar chat named for it, exactly as the same command typed into
             // the shell's bar does — and its agent view opens with it, so the
             // harness is worked through goble's agent surface rather than its
-            // TUI screen.
-            if let Some(spec) = crate::terminal::TuiAgent::detect(&command).and_then(|a| a.spec()) {
+            // TUI screen. A harness this machine does not have keeps the shell's
+            // own `command not found` as its answer, with no view for a program
+            // that is not there.
+            let spec = crate::terminal::command_installed(&command)
+                .then(|| crate::terminal::TuiAgent::detect(&command))
+                .flatten()
+                .and_then(|agent| agent.spec());
+            if let Some(spec) = spec {
                 let mut state = on_launch_tui_agent.borrow_mut();
                 state.bind_pane_harness_chat(pane_id, spec, desktop_launch_tui.as_deref());
                 state.open_harness_agent_view(pane_id);

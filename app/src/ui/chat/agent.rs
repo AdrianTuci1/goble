@@ -294,6 +294,14 @@ pub fn build_agent_chat(
             (open.borrow_mut())(pane_id, child_id)
         }))
     };
+    // The Stop is drawn in this pane's transcript, so the pane id is baked in
+    // here too: the row names only the child it wants stopped.
+    let on_stop_sub_agent: Rc<RefCell<dyn FnMut(String)>> = {
+        let stop = actions.on_stop_sub_agent.clone();
+        Rc::new(RefCell::new(move |child_id: String| {
+            (stop.borrow_mut())(pane_id, child_id)
+        }))
+    };
     let on_select_harness = actions.on_select_harness.clone();
     let on_select_dir = actions.on_select_dir.clone();
     let on_select_branch = actions.on_select_branch.clone();
@@ -377,9 +385,14 @@ pub fn build_agent_chat(
         // spawn call's arguments.
         .with_sub_agents(session.sub_agents.clone())
         // A link inside a paragraph dispatches `ChatAction::OpenUrl`; a
-        // sub-agent row dispatches `ChatAction::OpenSubAgent`. This is the slot
-        // that carries them out of the view into the app's handlers.
-        .with_on_action(chat_action_relay(on_open_url, on_open_sub_agent))
+        // sub-agent row dispatches `ChatAction::OpenSubAgent` and, while the
+        // child runs, `ChatAction::StopSubAgent`. This is the slot that carries
+        // them out of the view into the app's handlers.
+        .with_on_action(chat_action_relay(
+            on_open_url,
+            on_open_sub_agent,
+            on_stop_sub_agent,
+        ))
         .with_composer_value(session.composer_draft.clone())
         // Only the active pane's composer is focused, so a background chat pane
         // never swallows keys before the active pane (e.g. a terminal) sees them.
@@ -821,6 +834,7 @@ mod chat_geometry_tests {
 #[cfg(test)]
 mod link_action_tests {
     use super::*;
+    use goble_core::harness::ToolCallStatus;
     use goble_ui::elements::{EventContext, LayoutContext, PaintContext, SizeConstraint};
     use goble_ui::event::DispatchedEvent;
     use goble_ui::geometry::vec2f;
@@ -857,24 +871,37 @@ mod link_action_tests {
         label: &str,
     ) {
         let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        click_transcript(message, Default::default(), on_open_url, ignored, &[label])
+        click_transcript(
+            message,
+            Default::default(),
+            on_open_url,
+            ignored.clone(),
+            ignored,
+            &[label],
+        )
     }
 
     /// The same clicks through a transcript that holds `sub_agents` for the pane
-    /// and routes a sub-agent row's action to `on_open_sub_agent`.
+    /// and routes a sub-agent row's actions to `on_open_sub_agent` and
+    /// `on_stop_sub_agent`.
     #[allow(clippy::too_many_arguments)]
     fn click_transcript(
         message: ChatMessage,
         sub_agents: std::collections::HashMap<String, goble_ui::SubAgentRow>,
         on_open_url: Rc<RefCell<dyn FnMut(String)>>,
         on_open_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
+        on_stop_sub_agent: Rc<RefCell<dyn FnMut(String)>>,
         labels: &[&str],
     ) {
         let app = AppContext::default();
         let mut view = ChatView::new()
             .with_messages(vec![message])
             .with_sub_agents(sub_agents)
-            .with_on_action(chat_action_relay(on_open_url, on_open_sub_agent));
+            .with_on_action(chat_action_relay(
+                on_open_url,
+                on_open_sub_agent,
+                on_stop_sub_agent,
+            ));
         for label in labels {
             view.layout(
                 SizeConstraint::loose(vec2f(600.0, 400.0)),
@@ -970,17 +997,72 @@ mod link_action_tests {
     fn a_sub_agent_row_click_reaches_the_app_child_opener() {
         let opened = Rc::new(RefCell::new(Vec::new()));
         let recorder = opened.clone();
-        let call = ToolCall {
+        let message = ChatMessage::new(ChatRole::Assistant, vec![])
+            .with_tool_calls(vec![spawn_call(ToolCallStatus::Running)]);
+        let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
+        let opener: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(move |child_id| {
+            recorder.borrow_mut().push(child_id)
+        }));
+
+        click_transcript(
+            message,
+            HashMap::from([("call_spawn".to_string(), running_record())]),
+            ignored.clone(),
+            opener,
+            ignored,
+            &["open child"],
+        );
+        assert_eq!(
+            *opened.borrow(),
+            vec!["conv-child-1".to_string()],
+            "the row's click must reach the app carrying the child's conversation id"
+        );
+    }
+
+    /// The running child's row also draws a Stop, and its click terminates in
+    /// the app's stop handler carrying the child's conversation id — the child
+    /// the app cancels the turn of.
+    #[test]
+    fn a_sub_agent_row_stop_reaches_the_app_stop_handler() {
+        let stopped = Rc::new(RefCell::new(Vec::new()));
+        let recorder = stopped.clone();
+        let message = ChatMessage::new(ChatRole::Assistant, vec![])
+            .with_tool_calls(vec![spawn_call(ToolCallStatus::Running)]);
+        let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
+        let stop: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(move |child_id| {
+            recorder.borrow_mut().push(child_id)
+        }));
+
+        click_transcript(
+            message,
+            HashMap::from([("call_spawn".to_string(), running_record())]),
+            ignored.clone(),
+            ignored,
+            stop,
+            &["Stop"],
+        );
+        assert_eq!(
+            *stopped.borrow(),
+            vec!["conv-child-1".to_string()],
+            "the Stop must reach the app carrying the child's conversation id"
+        );
+    }
+
+    /// The spawn call the row tests click.
+    fn spawn_call(status: ToolCallStatus) -> ToolCall {
+        ToolCall {
             id: "call_spawn".to_string(),
             name: "spawn_subagent".to_string(),
             arguments: r#"{"subagent_type":"reviewer","input":"audit the migration"}"#.to_string(),
-            status: goble_core::harness::ToolCallStatus::Running,
+            status,
             result: None,
             diff: None,
-        };
-        let message =
-            ChatMessage::new(ChatRole::Assistant, vec![]).with_tool_calls(vec![call.clone()]);
-        let record = SubAgentRow {
+        }
+    }
+
+    /// A live record for that spawn call's child.
+    fn running_record() -> SubAgentRow {
+        SubAgentRow {
             child_id: "conv-child-1".to_string(),
             subagent_type: "reviewer".to_string(),
             description: "audit the migration".to_string(),
@@ -992,24 +1074,7 @@ mod link_action_tests {
             tokens: 1234,
             outcome: None,
             background: true,
-        };
-        let ignored: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(|_| {}));
-        let opener: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new(move |child_id| {
-            recorder.borrow_mut().push(child_id)
-        }));
-
-        click_transcript(
-            message,
-            HashMap::from([("call_spawn".to_string(), record)]),
-            ignored,
-            opener,
-            &["Running 1 subagent", "open child"],
-        );
-        assert_eq!(
-            *opened.borrow(),
-            vec!["conv-child-1".to_string()],
-            "the row's click must reach the app carrying the child's conversation id"
-        );
+        }
     }
 }
 

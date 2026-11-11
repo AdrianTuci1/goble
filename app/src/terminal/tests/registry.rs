@@ -18,6 +18,8 @@ fn registry_mode_defaults_to_shell() {
 #[test]
 fn update_mode_from_input_detects_and_settles() {
     let mut reg = TerminalRegistry::default();
+    // The machine's own PATH is not the subject here.
+    reg.assume_installed(|_| true);
     reg.set_input(1, "claude".to_string());
     let agent = reg.update_mode_from_input(1);
     assert_eq!(agent, Some(TuiAgent::Claude));
@@ -121,6 +123,8 @@ fn a_running_agent_owns_the_screen_even_before_the_mode_catches_up() {
 #[test]
 fn a_command_submitted_from_the_rich_input_flips_the_pane() {
     let mut reg = TerminalRegistry::default();
+    // The machine's own PATH is not the subject here.
+    reg.assume_installed(|_| true);
     assert_eq!(
         reg.note_command(1, "grok"),
         Some(TuiAgent::Grok),
@@ -132,6 +136,24 @@ fn a_command_submitted_from_the_rich_input_flips_the_pane() {
         None,
         "a plain command leaves the mode alone"
     );
+}
+
+/// A harness that is not installed is the shell's own error: the line must be
+/// forwarded, and the pane must stay a shell instead of opening a surface for a
+/// program that is not there.
+#[test]
+fn a_detected_harness_that_is_not_installed_leaves_the_pane_a_shell() {
+    let mut reg = TerminalRegistry::default();
+    reg.assume_installed(|command| !command.trim_start().starts_with("pi"));
+    reg.set_input(1, "pi".to_string());
+    assert_eq!(
+        reg.update_mode_from_input(1),
+        None,
+        "the line is not a harness the pane can switch to"
+    );
+    assert_eq!(reg.mode(1), TerminalMode::Shell);
+    assert_eq!(reg.note_command(1, "pi --session abc"), None);
+    assert_eq!(reg.mode(1), TerminalMode::Shell);
 }
 
 #[test]

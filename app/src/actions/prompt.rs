@@ -185,27 +185,33 @@ pub(crate) fn run_terminal_command(
     // harness's agent view instead of starting its TUI in the conversation's
     // shell. The TUI would be a full-screen program inside the transcript with
     // no way to leave it, and the agent view is the surface goble runs a
-    // harness in.
-    if conversation.is_some() {
-        if let Some(spec) = crate::terminal::TuiAgent::detect(text)
-            .filter(|agent| agent.owns_screen())
-            .and_then(|agent| agent.spec())
-        {
-            let already = conversation
-                .and_then(|conversation_id| {
-                    state
-                        .conversations
-                        .iter()
-                        .find(|entry| entry.id == conversation_id)
-                })
-                .and_then(|entry| goble_core::harness::harness_for(&entry.harness))
-                .is_some_and(|current| current.id == spec.id);
-            if !already {
-                state.bind_pane_harness_chat(pane_id, spec, desktop);
-            }
-            state.open_harness_agent_view(pane_id);
-            return;
+    // harness in. A harness whose program is not installed runs in the
+    // conversation's shell like any other line, so the shell's own
+    // `command not found` reaches the user instead of a surface for a program
+    // that is not there.
+    let harness_spec = match conversation {
+        Some(_) if crate::terminal::command_installed(text) => {
+            crate::terminal::TuiAgent::detect(text)
+                .filter(|agent| agent.owns_screen())
+                .and_then(|agent| agent.spec())
         }
+        _ => None,
+    };
+    if let Some(spec) = harness_spec {
+        let already = conversation
+            .and_then(|conversation_id| {
+                state
+                    .conversations
+                    .iter()
+                    .find(|entry| entry.id == conversation_id)
+            })
+            .and_then(|entry| goble_core::harness::harness_for(&entry.harness))
+            .is_some_and(|current| current.id == spec.id);
+        if !already {
+            state.bind_pane_harness_chat(pane_id, spec, desktop);
+        }
+        state.open_harness_agent_view(pane_id);
+        return;
     }
     // Where this line leaves the pane's shell: an interactive `ssh` command
     // binds the pane to the host it names, `exit` returns it to the local

@@ -68,3 +68,79 @@ fn detection_rejects_shell_commands() {
     assert_eq!(TuiAgent::detect("cd /tmp"), None);
     assert_eq!(TuiAgent::detect(""), None);
 }
+
+#[test]
+fn the_program_to_check_skips_wrappers_flags_and_assignments() {
+    use crate::terminal::agents::program_to_check;
+
+    assert_eq!(program_to_check("codex"), Some("codex"));
+    assert_eq!(program_to_check("codex --full-auto"), Some("codex"));
+    assert_eq!(program_to_check("sudo -E codex"), Some("codex"));
+    assert_eq!(program_to_check("env FOO=1 BAR=2 claude"), Some("claude"));
+    assert_eq!(program_to_check("command exec aider"), Some("aider"));
+    assert_eq!(
+        program_to_check("/usr/local/bin/claude --resume x"),
+        Some("/usr/local/bin/claude")
+    );
+    assert_eq!(program_to_check(""), None);
+    assert_eq!(program_to_check("sudo -E"), None);
+}
+
+/// A package runner fetches the package it names, so it is the program the
+/// check looks for: `npx -y codex` is installed when `npx` is.
+#[test]
+fn a_package_runner_is_the_program_to_check() {
+    use crate::terminal::agents::program_to_check;
+
+    assert_eq!(program_to_check("npx -y codex"), Some("npx"));
+    assert_eq!(program_to_check("bunx gemini"), Some("bunx"));
+    assert_eq!(program_to_check("uvx aider"), Some("uvx"));
+    assert_eq!(program_to_check("pnpm dlx pi"), Some("pnpm"));
+    assert_eq!(program_to_check("yarn codex"), Some("yarn"));
+}
+
+#[test]
+fn a_program_is_installed_when_its_file_is_executable() {
+    assert!(
+        command_installed("/bin/sh"),
+        "an absolute path to a real executable is installed"
+    );
+    assert!(
+        !command_installed("/definitely/not/a/real/binary-xyz"),
+        "a path nothing lives at is not installed"
+    );
+    assert!(
+        !command_installed("definitely-not-a-real-binary-xyz"),
+        "a bare name nobody on PATH provides is not installed"
+    );
+    assert!(
+        command_installed("env FOO=1 /bin/sh"),
+        "the wrapper is skipped and the path is checked"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_is_installed_only_when_it_is_an_executable_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("create a temp dir");
+    let program = dir.path().join("a-harness");
+    std::fs::write(&program, "#!/bin/sh\n").expect("write the program");
+    let name = program.to_str().expect("a path");
+
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("make it executable");
+    assert!(command_installed(name), "an executable file is installed");
+
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o644))
+        .expect("drop the execute bits");
+    assert!(
+        !command_installed(name),
+        "a file with no execute bit cannot be run"
+    );
+    assert!(
+        !command_installed(dir.path().to_str().expect("a path")),
+        "a directory is not a program"
+    );
+}

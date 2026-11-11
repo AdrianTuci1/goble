@@ -588,19 +588,30 @@ impl ChatView {
             .with_main_axis_size(MainAxisSize::Max)
             .with_spacing(spacing);
 
+        // The pane's chrome — the height the floating bar takes and the
+        // sub-agent strip under it — is one band. The strip continues the bar's
+        // surface, so the column's spacing opens between the band and the
+        // conversation and never inside the band.
+        let mut chrome = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        let mut has_chrome = false;
         if header_height > 0.0 && self.header.is_some() {
-            column = column.with_child(
+            chrome = chrome.with_child(
                 Empty::new()
                     .with_size(Vector2F::new(0.0, header_height))
                     .finish(),
             );
+            has_chrome = true;
         }
 
         // The pane's sub-agent strip sits directly under the bar and above the
         // conversation: it is chrome around the transcript, so it takes the
         // slot the header reserved rather than scrolling with the messages.
         if let Some(panel) = self.sub_agent_panel.take() {
-            column = column.with_child(panel);
+            chrome = chrome.with_child(panel);
+            has_chrome = true;
+        }
+        if has_chrome {
+            column = column.with_child(chrome.finish());
         }
 
         let message_area: Box<dyn Element> = if self.messages.is_empty()

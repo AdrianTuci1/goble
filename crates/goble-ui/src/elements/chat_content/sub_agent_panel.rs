@@ -13,7 +13,7 @@ use std::rc::Rc;
 use crate::color::ColorU;
 use crate::elements::{
     AppContext, Chip, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill,
-    Flex, Icon, InlineText, LayoutContext, MainAxisSize, PaintContext, Padding, Point,
+    Flex, HoverRow, Icon, InlineText, LayoutContext, MainAxisSize, Padding, PaintContext, Point,
     SizeConstraint, Text, TextSpan,
 };
 use crate::event::DispatchedEvent;
@@ -47,6 +47,8 @@ const TITLE: &str = "Subagents";
 /// transcript row draws, the child's description, what it is doing, and — at
 /// the row's far edge — the pane's model, the child's elapsed time, the control
 /// that enters its conversation and, while it runs, the one that stops it.
+/// A click anywhere else on the row enters the child too, the way grok's own
+/// sub-agent list opens one.
 ///
 /// An empty list draws nothing at all: a strip with no children is not a band
 /// the pane has to pay for.
@@ -236,11 +238,28 @@ impl SubAgentPanel {
                 ));
             }
         }
-        Padding::new(
+        let row = Padding::new(
             row.finish(),
             EdgeInsets::new(0.0, ROW_PADDING_Y, 0.0, ROW_PADDING_Y),
         )
-        .finish()
+        .finish();
+        // The whole line enters the child, the way grok's sub-agent list does:
+        // a plain (or double) click anywhere on the row is the same gesture the
+        // arrow at its end makes. The controls stay their own targets — the
+        // hover row dispatches to its content first, so a press on the stop or
+        // the arrow never also enters the child underneath it.
+        let Some(open) = self
+            .on_open
+            .as_ref()
+            .filter(|_| !record.child_id.is_empty())
+            .cloned()
+        else {
+            return row;
+        };
+        let child_id = record.child_id.clone();
+        HoverRow::new(row)
+            .with_on_click(move || (open.borrow_mut())(child_id.clone()))
+            .finish()
     }
 }
 
@@ -622,6 +641,70 @@ mod tests {
             *stopped.borrow(),
             vec!["child-2".to_string()],
             "the stop stops the child it belongs to"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_row_enters_the_child_it_names() {
+        let rows = vec![
+            row(
+                "child-1",
+                SubAgentRowStatus::Running,
+                "reading",
+                Duration::from_secs(4),
+            ),
+            row(
+                "child-2",
+                SubAgentRowStatus::Completed,
+                "",
+                Duration::from_secs(9),
+            ),
+        ];
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let sink = opened.clone();
+        let mut panel = SubAgentPanel::new(rows, "deepseek", true).with_on_open(Rc::new(
+            RefCell::new(move |child_id: String| sink.borrow_mut().push(child_id)),
+        ));
+
+        // The second row's words: a click on the line enters the child the row
+        // names, without pressing its arrow first.
+        let commands = paint(&mut panel, 900.0);
+        let second_row = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. }
+                    if text.contains("completed in 9.0s") =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the strip draws its second row");
+        click(&mut panel, second_row + vec2f(2.0, 2.0));
+        assert_eq!(
+            *opened.borrow(),
+            vec!["child-2".to_string()],
+            "a click on the row enters the child it names"
+        );
+
+        // A second click on the same row is the same gesture grok's list
+        // answers, so a double click enters the child as well.
+        click(&mut panel, second_row + vec2f(2.0, 2.0));
+        assert_eq!(
+            *opened.borrow(),
+            vec!["child-2".to_string(), "child-2".to_string()],
+            "a double click enters the child the row names"
+        );
+
+        // The stop keeps its own press: stopping a child does not also enter
+        // it, whatever the row underneath would do.
+        let commands = paint(&mut panel, 900.0);
+        let stop = icon_centre(&commands, "x-close", 0).expect("the running row's stop");
+        click(&mut panel, stop);
+        assert_eq!(
+            *opened.borrow(),
+            vec!["child-2".to_string(), "child-2".to_string()],
+            "a press on the stop does not also enter the child"
         );
     }
 

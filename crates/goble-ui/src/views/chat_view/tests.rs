@@ -540,6 +540,28 @@ fn the_sub_agent_panel_sits_under_the_header_and_above_the_transcript() {
         strip.y,
         transcript.y
     );
+    // The strip continues the bar rather than sitting under it as a separate
+    // band: its surface starts exactly where the bar's reserved height ends and
+    // spans the pane, so no seam shows between the two.
+    let band = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Surface) && rect.height() > 10.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the strip paints its own band");
+    assert!(
+        (band.min_y() - header_height).abs() < 0.5,
+        "the strip's band starts where the bar ends ({header_height}), got {band:?}"
+    );
+    assert!(
+        (band.width() - 600.0).abs() < 0.5,
+        "the strip's band spans the pane, got {band:?}"
+    );
 }
 
 #[test]

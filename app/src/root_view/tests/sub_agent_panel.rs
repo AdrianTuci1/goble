@@ -308,14 +308,56 @@ use super::*;
             texts.iter().any(|text| text.contains("cancelled in 4.5s")),
             "the row reads its cancellation, got {texts:?}"
         );
+        // The strip's own band is below its header word, so a stop anywhere
+        // under that word would be the cancelled child's; the pane bar's close
+        // control sits above it.
         let strip_y = run_origin(&commands, "Subagents").y;
         assert!(
             !commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::DrawIcon { origin, name, .. }
-                    if name == "x-close" && (origin.y - strip_y).abs() < 40.0
+                    if name == "x-close" && origin.y > strip_y
             )),
             "a cancelled child draws no stop"
+        );
+    }
+
+    /// The row itself enters the child: a click on its description is the same
+    /// gesture as the arrow at its end, so a plain (or double) click on the
+    /// strip opens the child's view, the way grok's list does.
+    #[test]
+    fn a_click_on_the_panels_row_enters_the_child_view() {
+        let Fixture { root, .. } = fixture();
+        let state = root.state_rc();
+        let app = AppContext::default();
+        let mut root: Box<dyn Element> = Box::new(root);
+        let commands = pane_commands(&mut root, &app);
+        let row = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. }
+                    if text.contains("audit the migration") =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the strip names the child's description");
+        click(&mut root, &app, row + vec2f(4.0, 4.0));
+
+        assert_eq!(
+            state.borrow().pane_view(1),
+            BlockView::Agent {
+                conversation_id: "conv-child-1".to_string()
+            },
+            "a click on the strip's row enters the child's conversation"
+        );
+        let texts = pane_texts(&mut root, &app);
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("CHILD CONVERSATION MARKER")),
+            "the child's own transcript is drawn, got {texts:?}"
         );
     }
 

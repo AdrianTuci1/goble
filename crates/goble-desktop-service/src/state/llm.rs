@@ -254,6 +254,15 @@ impl DesktopState {
     /// The provider for a model the config declares: the entry's own `base_url`
     /// picks the backend and its inline `api_key` is the credential. `None` when
     /// the config does not declare the model, or declares it without a key.
+    /// The context window the configuration states for `model`, when it states
+    /// one. Turns use it to compact their history before a call would overflow;
+    /// a model with no declared window keeps its whole transcript.
+    pub fn model_context_window(&self, model: &str) -> Option<u64> {
+        self.config()
+            .model_for(model)
+            .and_then(|(_, entry)| entry.context_window)
+    }
+
     fn config_model_provider(
         &self,
         provider_name: &str,

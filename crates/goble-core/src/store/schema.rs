@@ -285,6 +285,23 @@ impl Store {
             ) STRICT;
             CREATE INDEX IF NOT EXISTS idx_cluster_invites_code ON cluster_invites(code);
             CREATE INDEX IF NOT EXISTS idx_cluster_invites_cluster ON cluster_invites(cluster_name);
+
+            -- One successful auto-compaction of a conversation's history. The
+            -- harness summarises the turns before `boundary_message_id` and,
+            -- from then on, reads that summary plus the rows after it instead
+            -- of the whole transcript. The conversation itself keeps every row,
+            -- so the user's transcript is untouched.
+            CREATE TABLE IF NOT EXISTS chat_compactions (
+                id TEXT PRIMARY KEY,
+                chat_id TEXT NOT NULL,
+                boundary_message_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                before_tokens INTEGER NOT NULL DEFAULT 0,
+                after_tokens INTEGER NOT NULL DEFAULT 0,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS idx_chat_compactions_chat ON chat_compactions(chat_id, created_at);
             "#,
         )
         .context("failed to run migrations")?;

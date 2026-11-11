@@ -21,6 +21,7 @@ use crate::subagent_run::SubAgentHost;
 use crate::worker::WorkerId;
 
 use super::classify::{extract_ask_user, is_orchestration_goal};
+use super::compaction::{self, COMPACT_AT_PERCENT};
 use super::history::build_history;
 use super::persist::{
     load_or_create_mission, persist_mission, persist_reasoning_step, persist_tool_call_records,
@@ -87,6 +88,7 @@ pub(crate) fn run_mission_turn(
     reasoning_enabled: bool,
     auto_approve: bool,
     web_search: WebSearchConfig,
+    context_window: Option<u64>,
     subagents: SubAgentHost,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
@@ -121,6 +123,7 @@ pub(crate) fn run_mission_turn(
             reasoning_enabled,
             auto_approve,
             web_search,
+            context_window,
             subagents,
         );
         while let Some(event) = inner.next().await {
@@ -150,6 +153,7 @@ pub(crate) fn run_mission(
     reasoning_enabled: bool,
     auto_approve: bool,
     web_search: WebSearchConfig,
+    context_window: Option<u64>,
     subagents: SubAgentHost,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
@@ -183,6 +187,41 @@ pub(crate) fn run_mission(
 
         let reasoning_tools = build_reasoning_tools();
         let enable_reasoning = reasoning_enabled && (is_orchestration_goal(&mission.goal) || !mission.reasoning_steps.is_empty() || mission.pending_ask.is_some());
+
+        // The window is watched across the whole turn. A restored conversation
+        // can already be near it before its first call, so the stored rows are
+        // estimated up front; each provider-reported prompt then replaces the
+        // estimate. After a compaction the conversation must grow by a tenth of
+        // the window before it is compacted again, so a summary that is still
+        // large does not cause a second summarisation in the same breath.
+        let mut last_input_tokens = match context_window.filter(|window| *window > 0) {
+            Some(_) => store
+                .list_chat_messages(&chat_id)
+                .map(|rows| compaction::stored_rows_tokens(&rows))
+                .unwrap_or(0),
+            None => 0,
+        };
+        let mut compact_again_above = 0u64;
+        let mut compaction_failed = false;
+        if let Some(window) = context_window.filter(|window| *window > 0) {
+            if last_input_tokens.saturating_mul(100) / window >= COMPACT_AT_PERCENT {
+                let run = compaction::compact(
+                    &store, &chat_id, &*llm, &provider, &model, window, last_input_tokens,
+                )
+                .await;
+                let after = run.after_tokens;
+                for event in run.events {
+                    yield event;
+                }
+                match after {
+                    Some(after) => {
+                        last_input_tokens = after;
+                        compact_again_above = after.saturating_add(window / 10);
+                    }
+                    None => compaction_failed = true,
+                }
+            }
+        }
 
         let mut reasoning_step = 0usize;
         let mut pending_decision = ReasoningDecision::Execute;
@@ -233,6 +272,7 @@ pub(crate) fn run_mission(
                             tool_calls = calls;
                         }
                         CompletionStreamEvent::Usage(usage) => {
+                            last_input_tokens = usage.input;
                             yield HarnessEvent::TokenUsage {
                                 chat_id: chat_id.clone(),
                                 input: usage.input,
@@ -344,6 +384,27 @@ pub(crate) fn run_mission(
             }
             execution_iteration += 1;
 
+            if let Some(window) = context_window.filter(|window| *window > 0) {
+                let full = last_input_tokens.saturating_mul(100) / window >= COMPACT_AT_PERCENT;
+                if full && !compaction_failed && last_input_tokens > compact_again_above {
+                    let run = compaction::compact(
+                        &store, &chat_id, &*llm, &provider, &model, window, last_input_tokens,
+                    )
+                    .await;
+                    let after = run.after_tokens;
+                    for event in run.events {
+                        yield event;
+                    }
+                    match after {
+                        Some(after) => {
+                            last_input_tokens = after;
+                            compact_again_above = after.saturating_add(window / 10);
+                        }
+                        None => compaction_failed = true,
+                    }
+                }
+            }
+
             let mut history = build_history(&store, &chat_id, &mission, &reasoning_tools, &tools, mode).await;
             history.push(Message {
                 role: Role::System,
@@ -429,6 +490,7 @@ pub(crate) fn run_mission(
                         tool_calls = calls;
                     }
                     CompletionStreamEvent::Usage(usage) => {
+                        last_input_tokens = usage.input;
                         yield HarnessEvent::TokenUsage {
                             chat_id: chat_id.clone(),
                             input: usage.input,

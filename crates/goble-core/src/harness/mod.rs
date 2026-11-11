@@ -82,6 +82,10 @@ pub struct Harness {
     reasoning_enabled: bool,
     auto_approve: bool,
     web_search: WebSearchConfig,
+    /// The model's context window, when the configuration states one. A turn
+    /// that would fill it compacts its history first; `None` leaves the
+    /// transcript alone.
+    context_window: Option<u64>,
     /// The sub-agent children this harness has spawned (S3). Shared with every
     /// turn and every child, so the records outlive the turn that spawned them.
     subagents: SubAgentRegistry,
@@ -106,6 +110,7 @@ impl Harness {
             reasoning_enabled: false,
             auto_approve: false,
             web_search: WebSearchConfig::default(),
+            context_window: None,
             subagents: SubAgentRegistry::default(),
         }
     }
@@ -172,6 +177,14 @@ impl Harness {
     /// hosted backend is used; otherwise `web_search` falls back to DuckDuckGo.
     pub fn with_web_search(mut self, config: WebSearchConfig) -> Self {
         self.web_search = config;
+        self
+    }
+
+    /// The model's context window, from the resolved model configuration. A
+    /// turn whose history would fill it summarises the earlier turns before
+    /// the call; the transcript itself is left intact.
+    pub fn with_context_window(mut self, window: Option<u64>) -> Self {
+        self.context_window = window;
         self
     }
 
@@ -264,6 +277,7 @@ impl Harness {
                 self.reasoning_enabled,
                 self.auto_approve,
                 self.web_search.clone(),
+                self.context_window,
                 self.subagent_host(),
             ),
         );
@@ -323,6 +337,7 @@ impl Harness {
                 model.to_string(),
                 self.auto_approve,
                 self.web_search.clone(),
+                self.context_window,
                 self.subagent_host(),
             ),
         );
@@ -359,6 +374,7 @@ impl Harness {
                 self.reasoning_enabled,
                 self.auto_approve,
                 self.web_search.clone(),
+                self.context_window,
                 self.subagent_host(),
             ),
         );

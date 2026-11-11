@@ -189,6 +189,17 @@ pub enum DaemonEvent {
         cached: Option<u64>,
         output: u64,
     },
+    /// Auto-compaction of a conversation's history: `phase` is `started` or
+    /// `completed`, `percentage` is how full the context window was, and the
+    /// token counts bracket the compaction.
+    ContextCompaction {
+        session_id: SessionId,
+        chat_id: String,
+        phase: String,
+        percentage: u8,
+        before: u64,
+        after: u64,
+    },
     /// The model began a reasoning (thinking) step, identified by `step`, in the
     /// current thinking `mode`. The GUI renders the thinking as its own rows.
     ReasoningStarted {

@@ -15,6 +15,7 @@
 //! persisted state rather than from memory.
 
 mod classify;
+mod compaction;
 mod history;
 mod mission;
 mod persist;

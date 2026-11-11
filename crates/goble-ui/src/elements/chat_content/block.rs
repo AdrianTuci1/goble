@@ -56,6 +56,9 @@ pub enum ChatBlock {
         text: String,
         done: bool,
     },
+    /// A session event, not something either side said: the harness's own note
+    /// about the conversation, drawn quiet and on its own line.
+    Notice { text: String },
 }
 
 impl InlineSpan {
@@ -168,6 +171,9 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
                 });
             }
             ChatFragmentKind::Rule => blocks.push(ChatBlock::Rule),
+            ChatFragmentKind::Notice(text) => blocks.push(ChatBlock::Notice {
+                text: text.clone(),
+            }),
             ChatFragmentKind::Image { alt, url } => {
                 blocks.push(ChatBlock::Image {
                     alt: alt.clone(),

@@ -24,6 +24,7 @@ fn daemon_session_id(event: &goble_daemon_protocol::DaemonEvent) -> goble_harnes
         | DE::SubAgentFinished { session_id, .. }
         | DE::MissionUpdated { session_id, .. }
         | DE::TokenUsage { session_id, .. }
+        | DE::ContextCompaction { session_id, .. }
         | DE::ReasoningStarted { session_id, .. }
         | DE::ReasoningDelta { session_id, .. }
         | DE::ReasoningDone { session_id, .. }

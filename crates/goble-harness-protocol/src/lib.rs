@@ -139,6 +139,17 @@ pub enum HarnessServerEvent {
         cached: Option<u64>,
         output: u64,
     },
+    /// Auto-compaction of the conversation's history: `phase` is `started` or
+    /// `completed`, `percentage` is how full the window was, and the token
+    /// counts bracket the compaction.
+    ContextCompaction {
+        session_id: SessionId,
+        chat_id: String,
+        phase: String,
+        percentage: u8,
+        before: u64,
+        after: u64,
+    },
     /// The model began a reasoning (thinking) step, identified by `step`, in the
     /// current thinking `mode`. Carried so a host can render thinking live.
     ReasoningStarted {

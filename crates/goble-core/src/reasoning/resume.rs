@@ -37,6 +37,7 @@ pub(crate) fn resume_mission_turn(
     model: String,
     auto_approve: bool,
     web_search: WebSearchConfig,
+    context_window: Option<u64>,
     subagents: SubAgentHost,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
@@ -140,6 +141,7 @@ pub(crate) fn resume_mission_turn(
             true,
             auto_approve,
             web_search,
+            context_window,
             subagents,
         );
         while let Some(event) = inner.next().await {
@@ -176,6 +178,7 @@ pub(crate) fn resume_command_turn(
     reasoning_enabled: bool,
     auto_approve: bool,
     web_search: WebSearchConfig,
+    context_window: Option<u64>,
     subagents: SubAgentHost,
 ) -> Pin<Box<dyn Stream<Item = HarnessEvent> + Send>> {
     Box::pin(async_stream::stream! {
@@ -252,6 +255,7 @@ pub(crate) fn resume_command_turn(
             reasoning_enabled,
             auto_approve,
             web_search,
+            context_window,
             subagents,
         );
         while let Some(event) = continued.next().await {

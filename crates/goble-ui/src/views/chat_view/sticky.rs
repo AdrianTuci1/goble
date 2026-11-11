@@ -338,6 +338,7 @@ fn first_line(message: &ChatMessage) -> Option<String> {
             | ChatFragmentKind::Image { .. }
             | ChatFragmentKind::Action { .. }
             | ChatFragmentKind::Terminal(_)
+            | ChatFragmentKind::Notice(_)
             | ChatFragmentKind::Reasoning { .. } => break,
         };
         if let Some((first, _)) = text.split_once('\n') {

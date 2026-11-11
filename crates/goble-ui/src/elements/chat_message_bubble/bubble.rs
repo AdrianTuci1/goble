@@ -373,6 +373,13 @@ impl ChatMessageBubble {
             .finish(),
             ChatBlock::Table { header, rows } => self.render_table(header, rows, app),
             ChatBlock::Rule => Divider::horizontal().finish(),
+            ChatBlock::Notice { text } => self
+                .recorded_text(
+                    Text::new(text.clone())
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_font_size(12.0),
+                )
+                .finish(),
             ChatBlock::Image { alt, url } => {
                 let on_action = self.on_action.clone();
                 let url = url.clone();

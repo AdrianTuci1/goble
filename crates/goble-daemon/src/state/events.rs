@@ -143,6 +143,21 @@ pub(super) fn map_event(ev: HarnessServerEvent) -> Option<DaemonEvent> {
             cached,
             output,
         }),
+        HarnessServerEvent::ContextCompaction {
+            session_id,
+            chat_id,
+            phase,
+            percentage,
+            before,
+            after,
+        } => Some(DaemonEvent::ContextCompaction {
+            session_id,
+            chat_id,
+            phase,
+            percentage,
+            before,
+            after,
+        }),
         HarnessServerEvent::ReasoningStarted {
             session_id,
             step,

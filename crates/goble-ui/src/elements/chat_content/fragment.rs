@@ -145,6 +145,11 @@ impl ChatFragment {
             done,
         })
     }
+
+    /// A harness note about the conversation, drawn quiet on its own line.
+    pub fn notice(text: impl Into<String>) -> Self {
+        Self::of(ChatFragmentKind::Notice(text.into()))
+    }
 }
 
 /// The concrete content kind for a [`ChatFragment`].
@@ -190,4 +195,7 @@ pub enum ChatFragmentKind {
         text: String,
         done: bool,
     },
+    /// A harness note about the conversation itself — a compaction, say — drawn
+    /// as a quiet line rather than as something either side said.
+    Notice(String),
 }

@@ -115,6 +115,13 @@ impl InternalHarness {
         self
     }
 
+    /// The model's context window, forwarded to the inner harness: a turn that
+    /// would fill it compacts its history first.
+    pub fn with_context_window(mut self, window: Option<u64>) -> Self {
+        self.harness = self.harness.with_context_window(window);
+        self
+    }
+
     /// Set the agent's workspace directory, forwarded to the inner
     /// [`goble_core::harness::Harness`].
     pub fn with_workspace_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
@@ -363,6 +370,20 @@ fn map_event(session_id: &SessionId, event: HarnessEvent) -> Vec<HarnessServerEv
             input,
             cached,
             output,
+        }],
+        HarnessEvent::ContextCompaction {
+            chat_id,
+            phase,
+            percentage,
+            before,
+            after,
+        } => vec![HarnessServerEvent::ContextCompaction {
+            session_id: session_id.clone(),
+            chat_id,
+            phase,
+            percentage,
+            before,
+            after,
         }],
         HarnessEvent::Done => vec![HarnessServerEvent::Done {
             session_id: session_id.clone(),

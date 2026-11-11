@@ -152,6 +152,25 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
     );
 }
 
+/// A harness notice — a context compaction, say — is a session event, not a
+/// reply: it draws quiet, one size below the message, and reads as the
+/// conversation's own footnote.
+#[test]
+fn a_notice_draws_quiet_at_note_size() {
+    let app = AppContext::default();
+    let mut bubble = ChatMessageBubble::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::notice("Context 82% full. Compacting…")],
+    );
+    let commands = paint_bubble(&mut bubble, &app);
+    let run = text_runs(&commands)
+        .into_iter()
+        .find(|(text, ..)| text.starts_with("Context 82%"))
+        .unwrap_or_else(|| panic!("the notice is drawn, got {commands:?}"));
+    assert_eq!(run.1, app.theme.color(ColorToken::Muted), "the notice is quiet");
+    assert_eq!(run.3, 12.0, "the notice sits below the message's size");
+}
+
 #[test]
 fn a_streaming_reasoning_row_is_open_until_it_finishes() {
     let expanded = Rc::new(RefCell::new(HashMap::new()));

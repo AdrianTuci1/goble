@@ -23,14 +23,18 @@ use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
 use super::{format_subagent_elapsed, SubAgentRow};
 
-/// The strip's own text size: a step under the transcript's, so the rows read
-/// as chrome around the conversation rather than as more of it.
-const FONT_SIZE: f32 = 11.0;
+/// The strip's text size: the transcript's message text is 14 px, so the strip
+/// reads at the conversation's size instead of as a caption under it.
+const FONT_SIZE: f32 = 14.0;
+
+/// The model and the elapsed time are the row's detail, a step under the line
+/// they follow.
+const META_FONT_SIZE: f32 = 12.0;
 const LINE_HEIGHT: f32 = 1.2;
 
-/// The vertical room a strip row keeps above and below its line. The strip is
-/// deliberately tighter than a transcript row: it is chrome, not content.
-const ROW_PADDING_Y: f32 = 3.0;
+/// The vertical room a strip row keeps above and below its line, so the text is
+/// not pressed against the bar above it or the row below it.
+const ROW_PADDING_Y: f32 = 6.0;
 
 /// The chevron and the row's two controls.
 const MARK_SIZE: f32 = 12.0;
@@ -206,7 +210,7 @@ impl SubAgentPanel {
             row = row.with_child(
                 Text::new(model)
                     .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(FONT_SIZE)
+                    .with_font_size(META_FONT_SIZE)
                     .with_max_lines(1)
                     .finish(),
             );
@@ -214,7 +218,7 @@ impl SubAgentPanel {
         row = row.with_child(
             Text::new(format_subagent_elapsed(record.elapsed))
                 .with_theme_color(ColorToken::Muted, app)
-                .with_font_size(FONT_SIZE)
+                .with_font_size(META_FONT_SIZE)
                 .with_max_lines(1)
                 .finish(),
         );
@@ -641,6 +645,46 @@ mod tests {
             *stopped.borrow(),
             vec!["child-2".to_string()],
             "the stop stops the child it belongs to"
+        );
+    }
+
+    /// The strip reads at the transcript's own size — a chat message is 14 px
+    /// — and keeps room above and below the line instead of caption padding.
+    #[test]
+    fn the_rows_are_chat_sized_with_room_around_them() {
+        let rows = vec![row(
+            "child-1",
+            SubAgentRowStatus::Running,
+            "reading",
+            Duration::from_secs(4),
+        )];
+        let mut panel = SubAgentPanel::new(rows, "deepseek", true);
+        let commands = paint(&mut panel, 900.0);
+
+        let sizes: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { font_size, .. } => Some(*font_size),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sizes.iter().all(|size| *size >= 12.0),
+            "the strip's text is chat-sized, got {sizes:?}"
+        );
+        assert!(
+            sizes.contains(&14.0),
+            "the row is 14 px like a chat message, got {sizes:?}"
+        );
+
+        // A 14 px line at 1.2 is 16.8 tall; the band pads six points above and
+        // below both the heading and the row, so the strip is taller than the
+        // two lines alone would make it.
+        let size = layout(&mut panel, 900.0);
+        assert!(
+            size.y > 2.0 * (14.0 * 1.2 + 2.0 * 6.0),
+            "the strip keeps room above and below its text, got {}",
+            size.y
         );
     }
 

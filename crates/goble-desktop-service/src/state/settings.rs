@@ -37,6 +37,29 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Whether the turn on `chat_id` runs the harness's thinking loop: the
+    /// composer's thinking level, held per conversation. Unset means on — the
+    /// harness plans a turn in explicit steps unless the user turned it off.
+    pub fn get_chat_reasoning(&self, chat_id: &str) -> bool {
+        self.store
+            .lock()
+            .get_setting(&format!("chat.{chat_id}.reasoning"))
+            .ok()
+            .flatten()
+            .map(|value| value != "off")
+            .unwrap_or(true)
+    }
+
+    /// Persist the thinking level the composer picked for `chat_id`, so the next
+    /// turn on that conversation runs the way the tray says.
+    pub fn set_chat_reasoning(&self, chat_id: &str, enabled: bool) -> anyhow::Result<()> {
+        self.store.lock().set_setting(
+            &format!("chat.{chat_id}.reasoning"),
+            if enabled { "on" } else { "off" },
+        )?;
+        Ok(())
+    }
+
     /// How a proposed command reaches the shell, app-wide. The stored value is
     /// the approval mode's label; an unset key means no choice has been made
     /// yet, so the caller can fall back to its own default.

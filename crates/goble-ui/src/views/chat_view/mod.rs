@@ -31,6 +31,17 @@ mod transcript;
 #[cfg(test)]
 mod tests;
 
+/// The model tray a composer's model control opens: the models a pane can run,
+/// grouped under the harness that owns each one, and the thinking levels of the
+/// highlighted model.
+///
+/// The state is shared between the band [`ChatView`] draws above the input and
+/// the composer that routes its keys, so what the arrows move and what is drawn
+/// can never disagree. The open flag is the pane's own, like every other menu's.
+/// The type lives with the tray element, so the composer can hold it without
+/// reaching into a view; this module re-exports it beside the pane that uses it.
+pub use crate::elements::ComposerModelTray;
+
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
     /// The pane's work dock, drawn directly under the header and above the
@@ -140,6 +151,11 @@ pub struct ChatView {
     composer_model_menu_open: Rc<RefCell<bool>>,
     composer_model_index: Rc<RefCell<usize>>,
     on_select_model_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The model tray the model control opens when the host migrated to it:
+    /// the same slot over the input, in two lists (models grouped by harness,
+    /// and their thinking levels) instead of one flat list. `None` keeps the
+    /// flat band.
+    composer_model_tray: Option<ComposerModelTray>,
     composer_harness_items: Vec<PopupMenuItem>,
     composer_harness_menu_open: Rc<RefCell<bool>>,
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
@@ -283,6 +299,7 @@ impl ChatView {
             composer_model_menu_open: Rc::new(RefCell::new(false)),
             composer_model_index: Rc::new(RefCell::new(0)),
             on_select_model_item: None,
+            composer_model_tray: None,
             composer_harness_label: None,
             composer_harness_icon: None,
             composer_agent_harness: None,

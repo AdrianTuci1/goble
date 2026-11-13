@@ -26,7 +26,7 @@ use goble_core::store::Store;
 use goble_harness_protocol::HarnessServerEvent;
 use goble_harness_runtime::{HarnessRun, HarnessRuntime};
 use goble_harness_types::{
-    CommandDecision, HarnessCapabilities, HarnessId, HarnessTurn, SessionId,
+    CommandDecision, HarnessCapabilities, HarnessCatalog, HarnessId, HarnessTurn, SessionId,
 };
 
 /// The seam adaptor: an internal [`Harness`] behind the [`HarnessRuntime`] trait.
@@ -35,6 +35,10 @@ pub struct InternalHarness {
     provider: String,
     model: String,
     harness: Harness,
+    /// What this harness advertises to a composer: the app's commands and the
+    /// models the configuration declares. The composition root sets it from the
+    /// same data the turns run on, so the picker and the turn never disagree.
+    catalog: HarnessCatalog,
 }
 
 impl InternalHarness {
@@ -49,6 +53,7 @@ impl InternalHarness {
             provider: "mock".to_string(),
             model: "mock".to_string(),
             harness: Harness::new(store),
+            catalog: HarnessCatalog::empty(),
         }
     }
 
@@ -65,7 +70,15 @@ impl InternalHarness {
             provider: provider.into(),
             model: model.into(),
             harness,
+            catalog: HarnessCatalog::empty(),
         }
+    }
+
+    /// Advertise `catalog` to a composer: the commands this harness answers and
+    /// the models it runs, with their thinking levels.
+    pub fn with_catalog(mut self, catalog: HarnessCatalog) -> Self {
+        self.catalog = catalog;
+        self
     }
 
     pub fn cancel(&self) {
@@ -192,6 +205,10 @@ impl HarnessRuntime for InternalHarness {
 
     fn capabilities(&self) -> HarnessCapabilities {
         HarnessCapabilities::internal()
+    }
+
+    fn catalog(&self) -> HarnessCatalog {
+        self.catalog.clone()
     }
 
     fn run(&self, turn: HarnessTurn, _cancel: Arc<AtomicBool>) -> HarnessRun {

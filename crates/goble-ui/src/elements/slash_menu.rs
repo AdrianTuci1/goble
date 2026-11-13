@@ -53,19 +53,73 @@ const NAME_FONT_SIZE: f32 = 12.0;
 const DESCRIPTION_FONT_SIZE: f32 = 12.0;
 const LINE_HEIGHT: f32 = 1.2;
 
-/// Whether a draft opens the menu: it is a command (it starts with `/`) and
+/// What a draft's first character asks the input to list: the harness's
+/// commands, the skills it can load, or the workspace's paths.
+///
+/// The reference client reads all three from the session it is attached to, and
+/// opens the same band over the prompt for each. Here the prefix is the whole
+/// protocol: what the host serves for it is the harness's own list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftTrigger {
+    Command,
+    Skill,
+    Mention,
+}
+
+impl DraftTrigger {
+    /// The character that opens this band.
+    pub fn prefix(self) -> char {
+        match self {
+            DraftTrigger::Command => '/',
+            DraftTrigger::Skill => '$',
+            DraftTrigger::Mention => '@',
+        }
+    }
+
+    /// The band a draft asks for, when it starts with one of the prefixes.
+    pub fn from_draft(draft: &str) -> Option<Self> {
+        let trimmed = draft.trim_start();
+        let mut chars = trimmed.chars();
+        let first = chars.next()?;
+        // What follows the prefix. A skill and a path are one word each, so a
+        // space after the token means it is complete and the band belongs to
+        // the prompt again — which is what keeps an inserted `$skill ` from
+        // reopening its own list.
+        let rest = chars.as_str();
+        let one_word = rest.is_empty() || !rest.contains(char::is_whitespace);
+        match first {
+            // A command keeps its band open while its arguments are typed.
+            '/' => Some(DraftTrigger::Command),
+            '$' if one_word => Some(DraftTrigger::Skill),
+            '@' if one_word => Some(DraftTrigger::Mention),
+            _ => None,
+        }
+    }
+
+    /// What was typed after the prefix, up to the first word: the band's query.
+    pub fn query(self, draft: &str) -> String {
+        let trimmed = draft.trim_start();
+        let rest = trimmed.strip_prefix(self.prefix()).unwrap_or(trimmed);
+        rest.split_whitespace().next().unwrap_or("").to_string()
+    }
+}
+
+/// Whether a draft opens a band: it starts with one of the trigger prefixes and
 /// Escape has not put this draft's list away. The host and the editor both read
 /// it, so what the editor routes and what is drawn can never disagree.
 pub fn slash_menu_open(draft: &str, dismissed: bool) -> bool {
-    !dismissed && draft.trim_start().starts_with('/')
+    !dismissed && DraftTrigger::from_draft(draft).is_some()
 }
 
-/// One command the menu offers: the name as it is typed after the `/`, and what
-/// running it does.
+/// One command the menu offers: the name as it is typed after the prefix, and
+/// what running it does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SlashMenuItem {
     pub name: String,
     pub description: String,
+    /// The character the row is typed with: `/` for a command, `$` for a
+    /// skill, `@` for a path.
+    pub prefix: char,
 }
 
 impl SlashMenuItem {
@@ -73,13 +127,21 @@ impl SlashMenuItem {
         Self {
             name: name.into(),
             description: description.into(),
+            prefix: '/',
         }
+    }
+
+    /// Draw this row under another prefix: the same list element serves the
+    /// skills and the paths.
+    pub fn with_prefix(mut self, prefix: char) -> Self {
+        self.prefix = prefix;
+        self
     }
 
     /// The command as the row draws it: the name with the prefix it is typed
     /// with.
     pub fn typed(&self) -> String {
-        format!("/{}", self.name)
+        format!("{}{}", self.prefix, self.name)
     }
 }
 
@@ -439,6 +501,17 @@ impl SlashMenu {
         self
     }
 
+    /// What the band says when the query matches nothing. The three lists empty
+    /// out for different reasons — a command list has no name match, a skill
+    /// list may have nothing installed — so the row says which it is.
+    fn empty_label(&self) -> &'static str {
+        match self.items.first().map(|item| item.prefix) {
+            Some('$') => "No skills installed",
+            Some('@') => "No matching paths",
+            _ => "No matching commands",
+        }
+    }
+
     /// The band this menu draws: the commands as they are typed, and not one of
     /// them in force — a draft is not one of the commands until it is run.
     fn band(&self) -> MenuBand {
@@ -451,7 +524,7 @@ impl SlashMenu {
                     current: false,
                 })
                 .collect(),
-            "No matching commands",
+            self.empty_label(),
             self.index.clone(),
         )
         .with_on_move(self.on_move.clone())
@@ -658,6 +731,38 @@ mod tests {
         assert!(slash_menu_open("   /", false));
         assert!(!slash_menu_open("/new", true));
         assert!(!slash_menu_open("hello", false));
+    }
+
+    /// The same band opens for the harness's skills and the workspace's paths,
+    /// each under its own prefix, and each carries its own query.
+    #[test]
+    fn a_skill_and_a_path_open_the_same_band_under_their_own_prefix() {
+        assert_eq!(
+            DraftTrigger::from_draft("$penpot"),
+            Some(DraftTrigger::Skill)
+        );
+        assert_eq!(
+            DraftTrigger::from_draft("  @src/ui"),
+            Some(DraftTrigger::Mention)
+        );
+        assert_eq!(
+            DraftTrigger::from_draft("/new"),
+            Some(DraftTrigger::Command)
+        );
+        assert_eq!(DraftTrigger::from_draft("hello"), None);
+        assert_eq!(DraftTrigger::Skill.query("$penpot"), "penpot");
+        assert_eq!(DraftTrigger::Mention.query("@src/ui"), "src/ui");
+        assert!(slash_menu_open("$penpot", false));
+        assert!(slash_menu_open("@src", false));
+        assert!(!slash_menu_open("@src", true));
+        assert!(
+            !slash_menu_open("$penpot explain the sinks", false),
+            "a completed token leaves the band to the prompt"
+        );
+        assert_eq!(
+            SlashMenuItem::new("penpot", "Design files").with_prefix('$').typed(),
+            "$penpot"
+        );
     }
 
     /// The band spans the whole width it is given: it is the top of the input,

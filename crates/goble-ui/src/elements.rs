@@ -62,6 +62,10 @@ pub use key_handler::KeyHandler;
 pub use label::{Label, LabelSize};
 pub use markdown::parse_markdown;
 pub use modal::Modal;
+pub use model_tray::{
+    handle_tray_key, level_label, ComposerModelTray, ModelTray, ModelTrayColumn, ModelTrayHarness,
+    ModelTrayKey, ModelTrayModel, ModelTrayState, MODEL_TRAY_ROWS,
+};
 pub use padding::Padding;
 pub use page::Page;
 pub use pointer_menu::PointerMenu;
@@ -77,7 +81,9 @@ pub use select::{Select, SelectOption};
 pub use sheet::{Sheet, SHEET_DEFAULT_WIDTH};
 pub use shell::{ActiveView, SettingsTab, ShellState, ShellView, SidebarMode};
 pub use shortcut_hints::{key_has_icon, ShortcutHint, ShortcutHints};
-pub use slash_menu::{slash_menu_open, ModelMenu, SlashMenu, SlashMenuItem, SLASH_MENU_ROWS};
+pub use slash_menu::{
+    slash_menu_open, DraftTrigger, ModelMenu, SlashMenu, SlashMenuItem, SLASH_MENU_ROWS,
+};
 pub use sidebar::Sidebar;
 pub use sidebar_item::SidebarItem;
 pub use spacer::Spacer;
@@ -644,6 +650,7 @@ pub mod interactive;
 pub mod key_handler;
 pub mod label;
 pub mod modal;
+pub mod model_tray;
 pub mod padding;
 pub mod page;
 pub mod pointer_menu;

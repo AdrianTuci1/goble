@@ -3,10 +3,10 @@ use std::rc::Rc;
 
 use super::proposal::CommandProposalUi;
 use crate::elements::{
-    harness_bar_mark, AppContext, ApprovalMode, Chip, Clipped, ComposerButton, ConstrainedBox,
-    Container, ContextPill,
+    harness_bar_mark, AppContext, ApprovalMode, Chip, Clipped, ComposerButton, ComposerModelTray,
+    ConstrainedBox, Container, ContextPill,
     CrossAxisAlignment, DiffSummary, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize,
-    Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
+    ModelTrayKey, Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
     PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea,
     Tooltip, TooltipPosition, Wrap, COMPOSER_CONTROL_RADIUS, CONTEXT_PILL_HEIGHT,
     MENU_MAX_VISIBLE_ROWS,
@@ -191,6 +191,11 @@ pub struct ChatComposer {
     model_menu_items: Vec<PopupMenuItem>,
     model_menu_open: Rc<RefCell<bool>>,
     on_select_model_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The column tray the model control opens, when the host wired one: the
+    /// harnesses a pane can run on, the models inside each and their thinking
+    /// levels. The band itself is the host's, drawn in the slot over the input;
+    /// the control toggles its open flag and the composer routes its keys.
+    model_tray: Option<ComposerModelTray>,
     /// The row the model band has chosen, host-owned like the open flag: the
     /// composer is rebuilt every frame, so an index kept inside it would reset
     /// on every one of them. Shared with the model menu when the host wires
@@ -251,6 +256,7 @@ impl ChatComposer {
             model_menu_items: Vec::new(),
             model_menu_open: Rc::new(RefCell::new(false)),
             on_select_model_item: None,
+            model_tray: None,
             model_index: Rc::new(RefCell::new(0)),
             vim: None,
             clipboard: None,
@@ -544,6 +550,47 @@ impl ChatComposer {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// The keys the tray takes while it is up: Left/Right move between the
+    /// model list and the thinking levels, Up/Down move inside the list, Enter
+    /// or Tab takes the row and Escape puts the tray away. The tray never holds
+    /// the keyboard — the editor keeps the caret — so the key routing is here,
+    /// next to the control that opens it.
+    ///
+    /// The command list wins the slot while the draft is a command, exactly as
+    /// it does over the flat model list.
+    fn handle_model_tray_key(&mut self, event: &DispatchedEvent) -> bool {
+        let Some(tray) = self.model_tray.clone() else {
+            return false;
+        };
+        if !*tray.open.borrow() || self.slash_band_open() {
+            return false;
+        }
+        match crate::elements::handle_tray_key(event, tray.harnesses.as_slice(), &tray.state) {
+            ModelTrayKey::Ignored => false,
+            ModelTrayKey::Moved => true,
+            ModelTrayKey::AcceptModel(row) => {
+                *tray.open.borrow_mut() = false;
+                if let Some(cb) = tray.on_select_model.clone() {
+                    (cb.borrow_mut())(row);
+                }
+                true
+            }
+            ModelTrayKey::AcceptLevel(level) => {
+                *tray.open.borrow_mut() = false;
+                if !level.is_empty() {
+                    if let Some(cb) = tray.on_select_level.clone() {
+                        (cb.borrow_mut())(level);
+                    }
+                }
+                true
+            }
+            ModelTrayKey::Close => {
+                *tray.open.borrow_mut() = false;
+                true
+            }
         }
     }
 
@@ -841,6 +888,14 @@ impl ChatComposer {
     /// row the pointer is on but cannot hold the keyboard's own move.
     pub fn with_model_menu_index(mut self, index: Rc<RefCell<usize>>) -> Self {
         self.model_index = index;
+        self
+    }
+
+    /// Attach the column tray the model control opens. Setting one replaces the
+    /// flat model list as what the control opens: the same press toggles the
+    /// tray, and the keys the arrows send go to its columns.
+    pub fn with_model_tray(mut self, tray: ComposerModelTray) -> Self {
+        self.model_tray = Some(tray);
         self
     }
 
@@ -1155,41 +1210,62 @@ impl ChatComposer {
         )
         .with_height(CONTEXT_PILL_HEIGHT)
         .with_h_pad(CONTROL_H_PAD);
-        let button = match self.on_select_model_item.clone() {
-            // The list is the host's, drawn over the whole input block; the
-            // control opens and closes it, so a second press on the control
-            // puts it away the way Escape does.
-            Some(_) => {
-                let open = self.model_menu_open.clone();
-                let index = self.model_index.clone();
-                let dismissed = self.slash_dismissed.clone();
-                let selected = self
-                    .model_menu_items
-                    .iter()
-                    .position(|item| item.selected)
-                    .unwrap_or(0);
-                button
-                    .with_on_click(move || {
-                        let mut open = open.borrow_mut();
-                        if !*open {
-                            // The band opens on the model in force, so Enter
-                            // takes the model the pane already runs.
-                            *index.borrow_mut() = selected;
-                            // One band at a time: opening the models puts the
-                            // draft's command list away the way Escape does, so
-                            // the keys that follow belong to this band alone.
-                            *dismissed.borrow_mut() = true;
-                        }
-                        *open = !*open;
-                    })
-                    .finish()
+        let button = if let Some(tray) = self.model_tray.clone() {
+            // The tray is the host's band over the input: the control toggles
+            // it, and a second press puts it away the way Escape does.
+            let dismissed = self.slash_dismissed.clone();
+            button
+                .with_on_click(move || {
+                    let mut open = tray.open.borrow_mut();
+                    if !*open {
+                        // The tray opens on the pane's own model and level, so
+                        // the first row it marks is the one in force.
+                        tray.state.borrow_mut().seeded = false;
+                        // One band at a time: opening the tray puts the draft's
+                        // command list away, so the keys that follow belong to
+                        // this band alone.
+                        *dismissed.borrow_mut() = true;
+                    }
+                    *open = !*open;
+                })
+                .finish()
+        } else {
+            match self.on_select_model_item.clone() {
+                // The list is the host's, drawn over the whole input block; the
+                // control opens and closes it, so a second press on the control
+                // puts it away the way Escape does.
+                Some(_) => {
+                    let open = self.model_menu_open.clone();
+                    let index = self.model_index.clone();
+                    let dismissed = self.slash_dismissed.clone();
+                    let selected = self
+                        .model_menu_items
+                        .iter()
+                        .position(|item| item.selected)
+                        .unwrap_or(0);
+                    button
+                        .with_on_click(move || {
+                            let mut open = open.borrow_mut();
+                            if !*open {
+                                // The band opens on the model in force, so Enter
+                                // takes the model the pane already runs.
+                                *index.borrow_mut() = selected;
+                                // One band at a time: opening the models puts the
+                                // draft's command list away the way Escape does, so
+                                // the keys that follow belong to this band alone.
+                                *dismissed.borrow_mut() = true;
+                            }
+                            *open = !*open;
+                        })
+                        .finish()
+                }
+                // A host that wired only the plain callback keeps a control that
+                // hands the press on, with no list to draw.
+                None => match self.on_select_model.clone() {
+                    Some(cb) => button.with_on_click(move || (cb.borrow_mut())()).finish(),
+                    None => button.finish(),
+                },
             }
-            // A host that wired only the plain callback keeps a control that
-            // hands the press on, with no list to draw.
-            None => match self.on_select_model.clone() {
-                Some(cb) => button.with_on_click(move || (cb.borrow_mut())()).finish(),
-                None => button.finish(),
-            },
         };
         Tooltip::new(button, "Select model")
             .with_position(TooltipPosition::Above)
@@ -1660,6 +1736,9 @@ impl Element for ChatComposer {
         }
         // The model band is over the input and holds the keys that take a row
         // from it while it is up.
+        if self.handle_model_tray_key(event) {
+            return true;
+        }
         if self.handle_model_key(event) {
             return true;
         }

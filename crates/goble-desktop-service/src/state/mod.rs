@@ -35,6 +35,7 @@ use crate::worker_manager::WorkerClient;
 mod agents;
 mod attach;
 mod bootstrap;
+mod catalog;
 mod chats;
 mod cluster;
 mod environment;
@@ -57,6 +58,7 @@ mod workers;
 mod tests;
 
 pub use attach::{AttachedSession, SessionAttach};
+pub use catalog::ModelGroup;
 pub use remote::{
     deploy, sandbox_request, RemoteDeploy, GATEWAY_URL_ENV, PROJECT_ID_ENV, REPO_BRANCH_ENV,
     REPO_URL_ENV, WORKER_ID_ENV, WORKER_TOKEN_ENV, WORKSPACE_PATH_ENV,

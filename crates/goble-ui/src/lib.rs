@@ -49,8 +49,13 @@ pub use elements::{
     CHAT_RIGHT_SIDEBAR_WIDTH, CONVERSATION_SIDEBAR_WIDTH, DIALOG_DEFAULT_WIDTH, SHEET_DEFAULT_WIDTH,
 };
 pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};
+/// The model tray's data and its shared selection, next to the composer that
+/// opens it: a host builds the rows and hands the composer the same state the
+/// band above the input draws from.
+pub use elements::{ModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState};
 pub use syntax::highlight;
 pub use views::chat_view::ChatView;
+pub use views::chat_view::ComposerModelTray;
 pub use views::settings_view::{SettingsPage, SettingsView};
 pub use views::thread_list_view::{ThreadKind, ThreadListEntry, ThreadListView};
 pub use views::thread_view::ThreadView;

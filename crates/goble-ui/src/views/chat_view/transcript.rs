@@ -7,9 +7,9 @@ use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
     Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
-    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
-    Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
-    TurnStatusFooter,
+    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
+    QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip,
+    TooltipPosition, TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -241,6 +241,22 @@ impl ChatView {
             *index.borrow_mut() = row.min(len.saturating_sub(1));
         });
         Some(menu.finish())
+    }
+
+    /// The tray the composer's model control opens: the models the pane can run,
+    /// grouped under the harness that owns each one, and the thinking levels of
+    /// the highlighted model.
+    ///
+    /// It is a band in the same slot as the command list (see [`Self::slash_menu`]
+    /// and the slot rule in `rebuild`), so the two never stack. The tray holds
+    /// none of its own state: what it lists, which rows the arrows are on and
+    /// whether it is up all come from the host handle the control toggled.
+    fn model_tray(&self) -> Option<Box<dyn Element>> {
+        if self.composer_proposal.is_some() {
+            return None;
+        }
+        let tray = self.composer_model_tray.as_ref()?;
+        Some(Box::new(tray.band()?))
     }
 
     /// What a pane with nothing in its transcript shows: the title and the
@@ -1002,6 +1018,11 @@ impl ChatView {
                 )
                 .with_branch_menu_highlight(self.composer_branch_menu_highlight.clone());
         }
+        // The column tray the model control opens: the composer toggles it from
+        // its footer and routes its keys, the band above the input draws it.
+        if let Some(tray) = self.composer_model_tray.clone() {
+            composer = composer.with_model_tray(tray);
+        }
         // The slash-command menu: the draft is its query, so the host hands the
         // view the commands it matches and the view keeps the editor focused.
         composer = composer.with_slash_menu(
@@ -1037,7 +1058,7 @@ impl ChatView {
         // The pane's instructions are the strip over the separator, the last row
         // of the content: they name the gestures the input under them answers,
         // and warp-new keeps them off the input's own rows. The build draws both
-        // bands — the draft's commands and the models the model control opened —
+        // bands — the draft's commands, the model tray and the flat model list —
         // over the whole input block, above the strip: one slot, which the
         // draft's own command list holds while the draft is a command, the way
         // grok-build puts them over the prompt and not over the pane.
@@ -1049,7 +1070,11 @@ impl ChatView {
             // Stop) stays, because the turn is still in flight.
             let waiting = self.composer_proposal.is_some() || self.pending_ask.is_some();
             if !waiting {
-                if let Some(menu) = self.slash_menu().or_else(|| self.model_menu()) {
+                if let Some(menu) = self
+                    .slash_menu()
+                    .or_else(|| self.model_tray())
+                    .or_else(|| self.model_menu())
+                {
                     column = column.with_child(menu);
                 }
             }

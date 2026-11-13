@@ -453,8 +453,12 @@ pub(crate) fn map_daemon_event(event: DaemonEvent) -> Option<WorkerMessage> {
         | DE::SubAgentProgress { .. }
         | DE::SubAgentFinished { .. }
         // The worker's channel has no usage frame; the daemon's own accounting
-        // still carries the call, this side just does not forward it.
-        | DE::TokenUsage { .. } => None,
+        // still carries the call, this side just does not forward it. A context
+        // compaction is reported the same way the other harness-only notes are:
+        // the desktop subscribes to the daemon's own stream, so nothing here
+        // needs to repeat it.
+        | DE::TokenUsage { .. }
+        | DE::ContextCompaction { .. } => None,
     }
 }
 

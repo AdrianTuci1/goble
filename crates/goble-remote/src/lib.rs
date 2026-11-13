@@ -11,11 +11,14 @@
 //!   bridge script, because Modal has no public REST API.
 //! - [`DaytonaProvider`] talks to Daytona's REST API.
 //! - [`BoxProvider`] talks to Box's REST API.
+//! - [`CloudRunProvider`] runs one-shot Cloud Run jobs, authenticated with a
+//!   bearer token or the machine's `gcloud` session.
 //! - [`DockerProvider`] runs the local Docker CLI.
 //! - [`SshProvider`] installs and starts the worker on an existing host through
 //!   the local `ssh` and `scp` executables.
 
 pub mod r#box;
+pub mod cloud_run;
 pub mod command;
 pub mod daytona;
 pub mod docker;
@@ -26,6 +29,7 @@ pub mod modal;
 mod provider;
 pub mod ssh;
 
+pub use cloud_run::CloudRunProvider;
 pub use command::{CommandOutput, CommandRunner, ProcessCommandRunner};
 pub use daytona::DaytonaProvider;
 pub use docker::DockerProvider;

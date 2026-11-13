@@ -46,9 +46,11 @@ export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const openDrawer = useOpenDrawer();
-  const { defaultModel, models } = useModelChoices();
+  const { defaultModel, models, preferences } = useModelChoices();
   const [model, setModel] = useState(defaultModel);
-  const [thinking, setThinking] = useState<ThinkingLevel>("standard");
+  const [thinking, setThinking] = useState<ThinkingLevel>(
+    preferences.defaultThinking,
+  );
   const [mode, setMode] = useState<SessionMode>("agent");
   const [prompt, setPrompt] = useState("");
   const [attachment, setAttachment] = useState<string | null>(null);
@@ -64,6 +66,10 @@ export default function HomeScreen() {
   useEffect(() => {
     setModel(defaultModel);
   }, [defaultModel.id]);
+
+  useEffect(() => {
+    setThinking(preferences.defaultThinking);
+  }, [preferences.defaultThinking]);
 
   function send(text = prompt) {
     const value = text.trim();

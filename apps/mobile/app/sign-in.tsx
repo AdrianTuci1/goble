@@ -1,8 +1,5 @@
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -15,8 +12,16 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useEffect, useState } from "react";
 
+import { BrandMark } from "../components/brand-mark";
 import { ServerSheet } from "../components/server-sheet";
+import { SettingsButton } from "../components/settings/settings-button";
+import { SettingsRow } from "../components/settings/settings-row";
+import {
+  SettingsSection,
+  SettingsSectionLabel,
+} from "../components/settings/settings-section";
 import {
   LOCAL_GATEWAY,
   loadKnownServers,
@@ -30,7 +35,7 @@ import {
 } from "../lib/api";
 import { hostLabel } from "../lib/format";
 import { successFeedback, tapFeedback } from "../lib/haptics";
-import { palette, space, typography } from "../lib/theme";
+import { palette, radius, space } from "../lib/theme";
 
 const LOCAL_SERVER: KnownServer = {
   url: LOCAL_GATEWAY,
@@ -121,115 +126,87 @@ export default function SignInScreen() {
                 Platform.OS === "ios" ? "interactive" : "on-drag"
               }
               keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
             >
-              <Text accessibilityRole="header" style={styles.title}>
-                Sign in to Goble
-              </Text>
-
-              <Pressable
-                accessibilityLabel={`Server ${serverName}`}
-                accessibilityRole="button"
-                onPress={() => {
-                  tapFeedback();
-                  setPicker(true);
-                }}
-                style={({ pressed }) => [
-                  styles.select,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Ionicons
-                  name="server-outline"
-                  size={17}
-                  color={palette.muted}
-                />
-                <View style={styles.selectText}>
-                  <Text numberOfLines={1} style={styles.selectLabel}>
-                    {serverName}
-                  </Text>
-                  <Text numberOfLines={1} style={styles.selectHost}>
-                    {hostLabel(url)}
-                  </Text>
-                </View>
-                <Ionicons
-                  name="chevron-down"
-                  size={15}
-                  color={palette.subtle}
-                />
-              </Pressable>
-
-              <TextInput
-                accessibilityLabel="Email or username"
-                autoCapitalize="none"
-                autoComplete="username"
-                autoCorrect={false}
-                keyboardType="email-address"
-                onChangeText={(value) => {
-                  setIdentity(value);
-                  setError(null);
-                }}
-                onSubmitEditing={() => void submit()}
-                placeholder="Email or username"
-                placeholderTextColor={palette.subtle}
-                returnKeyType="next"
-                selectionColor={palette.accent}
-                style={styles.input}
-                textContentType="username"
-                value={identity}
-              />
-
-              <TextInput
-                accessibilityLabel="Password"
-                autoComplete="current-password"
-                onChangeText={(value) => {
-                  setPassword(value);
-                  setError(null);
-                }}
-                onSubmitEditing={() => void submit()}
-                placeholder="Password"
-                placeholderTextColor={palette.subtle}
-                returnKeyType="go"
-                secureTextEntry
-                selectionColor={palette.accent}
-                style={styles.input}
-                textContentType="password"
-                value={password}
-              />
-
-              {error ? (
-                <Text accessibilityRole="alert" style={styles.error}>
-                  {error}
+              <View style={styles.brand}>
+                <BrandMark size={36} />
+                <Text accessibilityRole="header" style={styles.title}>
+                  Sign in to Goble
                 </Text>
-              ) : null}
+                <Text style={styles.subtitle}>
+                  Connect this phone to the gateway that runs your agents.
+                </Text>
+              </View>
 
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ disabled: inactive }}
-                disabled={inactive}
-                onPress={() => void submit()}
-                style={({ pressed }) => [
-                  styles.primary,
-                  inactive && styles.primaryInactive,
-                  pressed && styles.pressed,
-                ]}
-              >
-                {pending ? (
-                  <ActivityIndicator color={palette.black} size="small" />
-                ) : (
-                  <Text style={styles.primaryLabel}>
-                    {pending ? "Working…" : "Sign in"}
+              <SettingsSection title="Gateway">
+                <SettingsRow
+                  description={hostLabel(url)}
+                  icon="server-outline"
+                  label={serverName}
+                  onPress={() => {
+                    tapFeedback();
+                    setPicker(true);
+                  }}
+                />
+              </SettingsSection>
+
+              <View style={styles.form}>
+                <SettingsSectionLabel>Account</SettingsSectionLabel>
+                <TextInput
+                  accessibilityLabel="Email or username"
+                  autoCapitalize="none"
+                  autoComplete="username"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  onChangeText={(value) => {
+                    setIdentity(value);
+                    setError(null);
+                  }}
+                  onSubmitEditing={() => void submit()}
+                  placeholder="Email or username"
+                  placeholderTextColor={palette.subtle}
+                  returnKeyType="next"
+                  selectionColor={palette.accent}
+                  style={styles.input}
+                  textContentType="username"
+                  value={identity}
+                />
+                <TextInput
+                  accessibilityLabel="Password"
+                  autoComplete="current-password"
+                  onChangeText={(value) => {
+                    setPassword(value);
+                    setError(null);
+                  }}
+                  onSubmitEditing={() => void submit()}
+                  placeholder="Password"
+                  placeholderTextColor={palette.subtle}
+                  returnKeyType="go"
+                  secureTextEntry
+                  selectionColor={palette.accent}
+                  style={styles.input}
+                  textContentType="password"
+                  value={password}
+                />
+                {error ? (
+                  <Text accessibilityRole="alert" style={styles.error}>
+                    {error}
                   </Text>
-                )}
-              </Pressable>
+                ) : null}
+              </View>
+
+              <SettingsButton
+                disabled={inactive}
+                label="Sign in"
+                loading={pending}
+                onPress={() => void submit()}
+              />
 
               <Pressable
                 accessibilityRole="button"
                 hitSlop={8}
                 onPress={() => void useDemo()}
-                style={({ pressed }) => [
-                  styles.quiet,
-                  pressed && styles.pressed,
-                ]}
+                style={({ pressed }) => [styles.quiet, pressed && styles.pressed]}
               >
                 <Text style={styles.quietLabel}>
                   Continue with the demo workspace
@@ -270,79 +247,61 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flexGrow: 1,
+    gap: space.xl,
     justifyContent: "center",
-    paddingHorizontal: space.xl,
-    paddingVertical: space.xl,
+    paddingBottom: space.xxl,
+    paddingHorizontal: 20,
+    paddingTop: space.xxl,
+  },
+  brand: {
+    alignItems: "center",
+    gap: space.sm,
+    marginBottom: space.xs,
   },
   title: {
     color: palette.text,
-    fontSize: 32,
-    fontWeight: "500",
-    lineHeight: 38,
+    fontSize: 28,
+    fontWeight: "600",
+    letterSpacing: -0.6,
+    lineHeight: 34,
+    marginTop: space.xs,
     textAlign: "center",
   },
-  select: {
-    alignItems: "center",
-    backgroundColor: palette.surface,
-    borderRadius: 13,
-    flexDirection: "row",
+  subtitle: {
+    color: palette.muted,
+    fontSize: 14,
+    lineHeight: 19,
+    maxWidth: 300,
+    textAlign: "center",
+  },
+  form: {
     gap: space.sm,
-    marginTop: 28,
-    padding: 16,
-  },
-  selectText: {
-    flex: 1,
-    gap: 2,
-  },
-  selectLabel: {
-    color: palette.text,
-    fontSize: 16,
-  },
-  selectHost: {
-    ...typography.mono,
-    color: palette.subtle,
-    fontSize: 11,
   },
   input: {
     backgroundColor: palette.surface,
-    borderRadius: 13,
+    borderRadius: radius.md + 2,
     color: palette.text,
     fontSize: 16,
-    marginTop: 12,
+    minHeight: 54,
     outlineColor: "transparent",
     outlineStyle: "solid",
-    padding: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
   },
   error: {
     color: palette.error,
-    marginTop: 12,
-  },
-  primary: {
-    alignItems: "center",
-    backgroundColor: palette.primary,
-    borderRadius: 12,
-    justifyContent: "center",
-    marginTop: 16,
-    minHeight: 48,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  primaryInactive: {
-    opacity: 0.45,
-  },
-  primaryLabel: {
-    color: palette.black,
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: 13,
+    lineHeight: 18,
+    paddingHorizontal: space.sm,
   },
   quiet: {
     alignSelf: "center",
-    marginTop: 16,
-    paddingVertical: 8,
+    paddingVertical: space.sm,
   },
   quietLabel: {
     color: palette.muted,
-    fontSize: 15,
+    fontSize: 14,
+    lineHeight: 19,
   },
   pressed: {
     opacity: 0.7,

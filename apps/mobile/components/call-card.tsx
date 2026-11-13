@@ -146,7 +146,8 @@ export function CallCard({
           label="Voice settings"
           onPress={() => {
             tapFeedback();
-            if (!pathname.endsWith("/voice")) router.push("/voice");
+            if (!pathname.endsWith("/settings/voice"))
+              router.push("/settings/voice");
           }}
         />
         <RoundButton

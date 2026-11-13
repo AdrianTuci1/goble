@@ -1,25 +1,20 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
 import { useState } from "react";
-import {
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { Screen } from "../../components/screen";
+import { SettingsButton } from "../../components/settings/settings-button";
+import { SettingsPage } from "../../components/settings/settings-page";
+import { SettingsRow } from "../../components/settings/settings-row";
+import { SettingsSection } from "../../components/settings/settings-section";
 import { Sheet } from "../../components/sheet";
 import { tapFeedback } from "../../lib/haptics";
 import { demoAgents, demoModels } from "../../lib/mock";
-import { palette, radius, space, typography } from "../../lib/theme";
+import { palette, radius, space } from "../../lib/theme";
 import type { Agent } from "../../lib/types";
 
 const tools = ["read/write", "read-only", "sandbox"] as const;
 
 export default function AgentsScreen() {
-  const router = useRouter();
   const models = demoModels();
   const [agents, setAgents] = useState<Agent[]>(() => demoAgents());
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -94,80 +89,53 @@ export default function AgentsScreen() {
   }
 
   return (
-    <Screen>
-      <View style={styles.header}>
-        <View style={styles.side}>
-          <Pressable
-            accessibilityLabel="Back"
-            accessibilityRole="button"
-            hitSlop={8}
-            onPress={() => {
-              tapFeedback();
-              if (router.canGoBack()) router.back();
-              else router.replace("/");
-            }}
-            style={({ pressed }) => [
-              styles.circle,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Ionicons color={palette.text} name="chevron-back" size={20} />
-          </Pressable>
-        </View>
-        <Text style={styles.title}>Agents</Text>
-        <View style={[styles.side, styles.sideEnd]}>
+    <>
+      <SettingsPage
+        right={
           <Pressable
             accessibilityLabel="New agent"
             accessibilityRole="button"
             hitSlop={8}
             onPress={openNew}
-            style={({ pressed }) => [
-              styles.circle,
-              pressed && styles.pressed,
-            ]}
+            style={({ pressed }) => [styles.circle, pressed && styles.pressed]}
           >
-            <Ionicons color={palette.text} name="pencil-outline" size={19} />
+            <Ionicons color={palette.text} name="add" size={22} />
           </Pressable>
-        </View>
-      </View>
-
-      <View style={styles.cards}>
-        {agents.map((agent) => (
-          <Pressable
-            accessibilityLabel={`Edit ${agent.name}`}
-            accessibilityRole="button"
-            key={agent.id}
-            onPress={() => openEdit(agent)}
-            style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-          >
-            <Ionicons
-              color={palette.text}
-              name={
+        }
+        title="Agents"
+      >
+        <SettingsSection
+          footer="Each agent runs on the gateway with its own model and tool access."
+          title="On this workspace"
+        >
+          {agents.map((agent) => (
+            <SettingsRow
+              description={`${agent.model} · ${agent.tools}${
+                agent.status === "paused" ? " · Paused" : ""
+              }`}
+              icon={
                 agent.tools === "sandbox"
                   ? "code-slash-outline"
                   : "reader-outline"
               }
-              size={22}
+              key={agent.id}
+              label={agent.name}
+              onPress={() => openEdit(agent)}
             />
-            <View style={styles.cardText}>
-              <Text numberOfLines={1} style={styles.name}>
-                {agent.name}
-              </Text>
-              <Text numberOfLines={1} style={styles.meta}>
-                {agent.model} · {agent.tools}
-                {agent.status === "paused" ? " · Paused" : ""}
-              </Text>
-            </View>
-          </Pressable>
-        ))}
-      </View>
+          ))}
+        </SettingsSection>
+
+        <View style={styles.action}>
+          <SettingsButton label="New agent" onPress={openNew} />
+        </View>
+      </SettingsPage>
 
       <Sheet onClose={close} visible={sheetOpen}>
         <Text style={styles.sheetTitle}>
           {editing ? "Edit agent" : "New agent"}
         </Text>
 
-        <Text style={styles.fieldLabel}>NAME</Text>
+        <Text style={styles.fieldLabel}>Name</Text>
         <TextInput
           accessibilityLabel="Agent name"
           onChangeText={(name) =>
@@ -180,7 +148,7 @@ export default function AgentsScreen() {
           value={draft.name}
         />
 
-        <Text style={styles.fieldLabel}>SUMMARY</Text>
+        <Text style={styles.fieldLabel}>Summary</Text>
         <TextInput
           accessibilityLabel="Agent summary"
           multiline
@@ -195,7 +163,7 @@ export default function AgentsScreen() {
           value={draft.summary}
         />
 
-        <Text style={styles.fieldLabel}>MODEL</Text>
+        <Text style={styles.fieldLabel}>Model</Text>
         <View style={styles.chips}>
           {models.map((model) => {
             const active = draft.model === model.name;
@@ -228,7 +196,7 @@ export default function AgentsScreen() {
           })}
         </View>
 
-        <Text style={styles.fieldLabel}>TOOLS</Text>
+        <Text style={styles.fieldLabel}>Tools</Text>
         <View style={styles.chips}>
           {tools.map((tool) => {
             const active = draft.tools === tool;
@@ -258,120 +226,57 @@ export default function AgentsScreen() {
           })}
         </View>
 
-        <Pressable
-          accessibilityLabel={editing ? "Save agent" : "Add agent"}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !draft.name.trim() }}
-          disabled={!draft.name.trim()}
-          onPress={save}
-          style={({ pressed }) => [
-            styles.primary,
-            !draft.name.trim() && styles.disabled,
-            pressed && styles.pressed,
-          ]}
-        >
-          <Text style={styles.primaryLabel}>
-            {editing ? "Save agent" : "Add agent"}
-          </Text>
-        </Pressable>
+        <View style={styles.sheetAction}>
+          <SettingsButton
+            disabled={!draft.name.trim()}
+            label={editing ? "Save agent" : "Add agent"}
+            onPress={save}
+          />
+        </View>
       </Sheet>
-    </Screen>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    alignItems: "center",
-    flexDirection: "row",
-    paddingBottom: space.lg,
-    paddingTop: space.sm,
-  },
-  side: {
-    flex: 1,
-    flexDirection: "row",
-  },
-  sideEnd: {
-    justifyContent: "flex-end",
-  },
-  title: {
-    ...typography.title,
-    color: palette.text,
-    fontSize: 20,
-    textAlign: "center",
-  },
   circle: {
     alignItems: "center",
     backgroundColor: palette.surface,
-    borderColor: palette.border,
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
     height: 38,
     justifyContent: "center",
     width: 38,
   },
-  cards: {
-    gap: 14,
-  },
-  card: {
-    alignItems: "center",
-    backgroundColor: palette.raised,
-    borderColor: palette.border,
-    borderRadius: 22,
-    borderWidth: StyleSheet.hairlineWidth,
-    flexDirection: "row",
-    gap: space.lg,
-    minHeight: 78,
-    paddingHorizontal: space.lg,
-    paddingVertical: space.md,
-  },
-  cardPressed: {
-    backgroundColor: palette.raised,
-  },
-  cardText: {
-    flex: 1,
-    gap: 4,
-    minWidth: 0,
-  },
-  name: {
-    ...typography.callout,
-    color: palette.text,
-    fontSize: 16,
-    fontWeight: "400",
-  },
-  meta: {
-    ...typography.caption,
-    color: palette.muted,
-    fontSize: 13,
-    lineHeight: 18,
+  action: {
+    marginTop: -space.sm,
   },
   sheetTitle: {
-    ...typography.title,
     color: palette.text,
     fontSize: 22,
+    fontWeight: "600",
+    lineHeight: 28,
     marginBottom: space.lg,
   },
   fieldLabel: {
-    ...typography.eyebrow,
     color: palette.muted,
-    fontSize: 9,
+    fontSize: 13,
+    fontWeight: "500",
+    lineHeight: 18,
     marginBottom: space.xs,
     marginTop: space.md,
   },
   input: {
-    ...typography.body,
-    backgroundColor: palette.raised,
-    borderColor: palette.border,
+    backgroundColor: palette.bg,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
     color: palette.text,
-    fontSize: 14,
+    fontSize: 15,
     outlineColor: "transparent",
     outlineStyle: "solid",
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
   },
   summaryInput: {
-    minHeight: 68,
+    minHeight: 76,
   },
   chips: {
     flexDirection: "row",
@@ -379,40 +284,26 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   chip: {
-    borderColor: palette.border,
+    backgroundColor: palette.bg,
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
   chipActive: {
     backgroundColor: palette.accentSoft,
-    borderColor: palette.borderStrong,
   },
   chipLabel: {
-    ...typography.caption,
     color: palette.muted,
-    fontSize: 12,
+    fontSize: 13,
+    lineHeight: 17,
   },
   chipLabelActive: {
-    color: palette.text,
-  },
-  primary: {
-    alignItems: "center",
-    backgroundColor: palette.primary,
-    borderRadius: radius.pill,
-    marginBottom: space.sm,
-    marginTop: space.xl,
-    paddingVertical: 12,
-  },
-  primaryLabel: {
-    ...typography.callout,
-    color: palette.black,
-    fontSize: 14,
+    color: palette.accent,
     fontWeight: "600",
   },
-  disabled: {
-    opacity: 0.4,
+  sheetAction: {
+    marginBottom: space.sm,
+    marginTop: space.xl,
   },
   pressed: {
     opacity: 0.7,

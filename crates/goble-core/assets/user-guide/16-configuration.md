@@ -64,6 +64,33 @@ primary = "#e5e7eb"     # optional
 secondary = "#9ca3af"   # optional
 ```
 
+## Remote and the Hub
+
+Two more sections hold Remote settings:
+
+```toml
+[remote]
+mode = "gateway"          # or "platform"
+gateway_url = "wss://gateway.example/ws/worker"
+worker_token = "…"        # the token goble-gateway was started with
+
+[remote_agents.builder]
+provider = "e2b"
+api_key = "…"
+image = "ghcr.io/example/goble-worker:latest"
+```
+
+`[remote_agents.<name>]` is one sandbox table per agent; Settings → Agent &
+Approval lists each one with its status and the credential keys it is missing.
+The hub's settings live in their own file, `~/.goble/hub.toml` (`database`,
+`relay_url`, `token`, `workflows`). Its readers today are `goble-cli setup
+status` and the app's setup status; the hub binary is not shipped yet.
+Both files can be written for you: see [Remote
+Access](06-remote-access.md), or run `goble-cli setup status` / `setup remote`
+/ `setup gateway` / `setup hub` directly. Every `setup` write keeps this file's
+header and the sections it does not touch, so it is safe to run on a config
+that already holds your models and theme.
+
 ## Sections Goble Does Not Model
 
 A section this schema does not know (grok's `[cli]`, `[ui]`, `[marketplace]`, `[privacy]`, …) is kept exactly as it was read and written back on the next save, so pointing Goble at a shared file does not lose another tool's settings.

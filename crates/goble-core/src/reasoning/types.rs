@@ -4,7 +4,12 @@ use crate::harness::ThinkingMode;
 use crate::llm::LlmToolCall;
 
 pub(super) const MAX_REASONING_STEPS: usize = 6;
-pub(super) const MAX_EXECUTION_STEPS: usize = 8;
+/// How many tool rounds one turn may take. A turn ends when the model stops
+/// asking for tools, so this is the runaway guard, not a normal-work limit:
+/// it matches the step budget a sub-agent gets by default, and compaction
+/// keeps the request inside the window well before it is reached. The old
+/// eight rounds cut ordinary multi-file work off mid-turn.
+pub(super) const MAX_EXECUTION_STEPS: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReasoningStep {

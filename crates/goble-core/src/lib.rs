@@ -3,6 +3,7 @@ pub mod agent_memory;
 pub mod app_home;
 pub mod agent_runtime;
 pub mod audit;
+pub mod binaries;
 pub mod cluster_key;
 pub mod config;
 pub mod crypto;

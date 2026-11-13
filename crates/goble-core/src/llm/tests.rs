@@ -184,6 +184,44 @@ fn a_successful_tool_message_is_sent_as_its_body() {
     assert_eq!(wire[0].content.as_deref(), Some("ok"));
 }
 
+/// DeepSeek's request deserializer answers a null `content` with 422
+/// "content should be a string or a list". A tool that printed nothing, or an
+/// assistant turn that carried only calls, must send the empty string.
+#[test]
+fn an_empty_message_is_sent_as_an_empty_string_not_null() {
+    let silent_tool = Message {
+        role: Role::Tool,
+        content: String::new(),
+        tool_calls: None,
+        tool_call_id: Some("call_1".to_string()),
+        tool_status: Some(ToolCallStatus::Finished),
+        reasoning_content: None,
+    };
+    let calls_only = Message {
+        role: Role::Assistant,
+        content: String::new(),
+        tool_calls: Some(vec![LlmToolCall {
+            id: "call_2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "src/lib.rs"}),
+        }]),
+        tool_call_id: None,
+        tool_status: None,
+        reasoning_content: None,
+    };
+
+    let wire = into_openai_messages(vec![silent_tool, calls_only], false);
+    assert_eq!(wire[0].content.as_deref(), Some(""));
+    assert_eq!(wire[1].content.as_deref(), Some(""));
+
+    let body = serde_json::to_value(&wire).expect("the messages serialize");
+    assert_eq!(
+        body[0]["content"],
+        serde_json::json!(""),
+        "a null content is the 422 the endpoint answers"
+    );
+}
+
 /// DeepSeek's thinking mode checks the field on every replayed assistant
 /// message: a tool-call turn carries the empty string, and a reply that ended
 /// the turn carries the chain of thought it streamed. Without it the next

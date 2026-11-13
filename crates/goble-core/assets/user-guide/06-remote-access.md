@@ -37,6 +37,37 @@ When this machine is exposed as a worker, it materializes the **workspace payloa
 
 ---
 
+## Setting Remote Up With the Agent
+
+Remote settings are a few tables in `~/.goble/config.toml`, and the agent can
+collect and write them for you. Settings → Agent & Approval has **Set up Remote
+with the agent** and **Set up the hub with the agent**; either opens a
+conversation named `Remote setup` or `Hub setup` whose first message is a brief
+built from what the config already has.
+
+The agent asks one question at a time: whether you want a gateway server or a
+sandbox platform, then only the values that choice needs — the provider, its
+key or Google Cloud project and region, and the worker image. It writes through
+`goble-cli setup remote …`, `goble-cli setup gateway …` or `goble-cli setup hub
+…`, never by hand, and reads `goble-cli setup status` back to you after each
+write. When you do not know a value, it names the page or command that shows it
+instead of guessing.
+
+You can run the same commands yourself:
+
+```bash
+goble-cli setup status                 # what is set, what is missing
+goble-cli setup remote --name builder --provider e2b \
+  --api-key "$E2B_API_KEY" --image ghcr.io/example/goble-worker:latest
+goble-cli setup gateway --url wss://gateway.example/ws/worker --token …
+```
+
+The hub's settings go to `~/.goble/hub.toml` (database, relay URL, API token,
+workflow directory). Goble does not ship the hub binary yet; `setup hub`
+records what it will start with.
+
+---
+
 ## Security
 
 - Tailscale is encrypted mesh networking; still, only grant reach into the workspace to principals you trust (see [Principals and Access](05-principals-and-access.md)).

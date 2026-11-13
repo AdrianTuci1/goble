@@ -121,6 +121,14 @@ pub enum Command {
         #[command(subcommand)]
         action: ClusterAction,
     },
+    /// Set up Remote (a sandbox provider or a gateway) and the hub.
+    Setup {
+        /// The config file to read and write; defaults to ~/.goble/config.toml.
+        #[arg(long, global = true, value_name = "PATH")]
+        config: Option<PathBuf>,
+        #[command(subcommand)]
+        action: SetupAction,
+    },
     /// Control a running Goble window over its Unix control socket.
     #[cfg(unix)]
     Ctl {
@@ -447,4 +455,130 @@ pub enum IdentityAction {
         #[arg(short, long, default_value = "365")]
         days: u64,
     },
+}
+
+/// The `goble setup` verbs: the agent-led setup conversation's write surface.
+///
+/// Every verb reads the same file the app reads, writes through
+/// [`goble_core::config::GobleConfig`], keeps the file's header and sections it
+/// does not touch, and reports what is still missing rather than inventing it.
+#[derive(Subcommand, Debug)]
+pub enum SetupAction {
+    /// Report what Remote and the hub have, and what is missing.
+    Status {
+        /// Print the report as JSON, for a caller that reads it.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a `[remote_agents.<name>]` table.
+    Remote {
+        /// The table's name: what the user will call this agent.
+        #[arg(long)]
+        name: String,
+        /// The sandbox provider behind the table.
+        #[arg(long, value_enum)]
+        provider: SetupProviderArg,
+        /// The provider's API key (e2b, daytona, box, or a Cloud Run bearer
+        /// token).
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Modal's token id.
+        #[arg(long)]
+        token_id: Option<String>,
+        /// Modal's token secret.
+        #[arg(long)]
+        token_secret: Option<String>,
+        /// A provider endpoint override.
+        #[arg(long)]
+        api_url: Option<String>,
+        /// The image that carries goblin-worker.
+        #[arg(long)]
+        image: Option<String>,
+        /// The provider region (Cloud Run: the location).
+        #[arg(long)]
+        region: Option<String>,
+        /// The sandbox environment (Cloud Run: the GCP project id).
+        #[arg(long)]
+        environment: Option<String>,
+        /// Write `enabled = false`, so the table is kept but not offered.
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Point `[remote]` at a gateway, or back at the sandbox platforms.
+    Gateway {
+        /// The gateway's public URL.
+        #[arg(long)]
+        url: Option<String>,
+        /// The worker token the gateway was started with.
+        #[arg(long)]
+        token: Option<String>,
+        /// Go back to `mode = "platform"`, keeping the URL and token.
+        #[arg(long, conflicts_with_all = ["url", "token"])]
+        platform: bool,
+    },
+    /// Write the hub's settings to ~/.goble/hub.toml.
+    Hub {
+        /// The SQLite file the run ledger and audit chain live in.
+        #[arg(long)]
+        database: Option<String>,
+        /// The relay the hub dials to reach workers.
+        #[arg(long)]
+        relay_url: Option<String>,
+        /// The bearer token the hub's API accepts.
+        #[arg(long)]
+        token: Option<String>,
+        /// The directory holding `.goble/workflows/*.toml`.
+        #[arg(long)]
+        workflows: Option<String>,
+    },
+    /// Print the brief a setup conversation starts from.
+    Brief {
+        /// Whether the brief covers Remote or the hub.
+        #[arg(long, value_enum, default_value_t = SetupTargetArg::Remote)]
+        target: SetupTargetArg,
+    },
+}
+
+/// The providers `setup remote` can write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum SetupProviderArg {
+    Modal,
+    E2b,
+    Daytona,
+    Box,
+    #[value(name = "cloud_run")]
+    CloudRun,
+    Docker,
+    Ssh,
+}
+
+impl From<SetupProviderArg> for goble_core::config::RemoteAgentProvider {
+    fn from(provider: SetupProviderArg) -> Self {
+        use goble_core::config::RemoteAgentProvider;
+        match provider {
+            SetupProviderArg::Modal => RemoteAgentProvider::Modal,
+            SetupProviderArg::E2b => RemoteAgentProvider::E2b,
+            SetupProviderArg::Daytona => RemoteAgentProvider::Daytona,
+            SetupProviderArg::Box => RemoteAgentProvider::Box,
+            SetupProviderArg::CloudRun => RemoteAgentProvider::CloudRun,
+            SetupProviderArg::Docker => RemoteAgentProvider::Docker,
+            SetupProviderArg::Ssh => RemoteAgentProvider::Ssh,
+        }
+    }
+}
+
+/// Which setup `setup brief` writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum SetupTargetArg {
+    Remote,
+    Hub,
+}
+
+impl From<SetupTargetArg> for goble_core::config::SetupTarget {
+    fn from(target: SetupTargetArg) -> Self {
+        match target {
+            SetupTargetArg::Remote => goble_core::config::SetupTarget::Remote,
+            SetupTargetArg::Hub => goble_core::config::SetupTarget::Hub,
+        }
+    }
 }

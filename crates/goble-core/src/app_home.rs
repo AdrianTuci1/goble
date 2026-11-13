@@ -91,6 +91,12 @@ impl GobleHome {
         self.root.join(crate::hosts::HOSTS_FILE_NAME)
     }
 
+    /// The hub's own settings: the SQLite file, the relay it dials, the token
+    /// its API accepts and the workflow directory.
+    pub fn hub_config_path(&self) -> PathBuf {
+        self.root.join("hub.toml")
+    }
+
     pub fn threads_dir(&self) -> PathBuf {
         self.root.join("threads")
     }

@@ -263,17 +263,26 @@ impl AtlasStore {
     }
 }
 
-/// Place a frame's keys into `store`, clearing it once if it fills.
+/// Place a frame's keys into `store`, clearing it when it fills.
 ///
-/// Returns whether the atlas was cleared, and the runs to upload. After a
-/// clear, placement continues with the keys that had not been placed yet
-/// instead of starting over: the runs placed before the clear lost their
-/// pixels with it, while the ones later in the frame — the window's chrome,
-/// drawn over the panes — are the runs a frame cannot afford to lose. Those
-/// first runs draw nothing until the next clear makes room for them again.
+/// Returns whether the atlas was cleared, and the runs to upload.
+///
+/// The first time a frame fills the atlas, the frame's own keys are the live
+/// set: what filled it was the text of earlier frames that is no longer drawn
+/// — a streaming block mints a new run every frame it changes — so the clear
+/// is followed by a pass over this frame from its first key. Every run the
+/// frame draws therefore keeps its pixels, and a reset that only drops stale
+/// content costs the frame nothing.
+///
+/// If the frame itself does not fit, even on the empty atlas, the runs drawn
+/// last — the window's chrome, drawn over the panes — are the ones a frame
+/// cannot afford to lose, so the pass resumes at the run that did not fit and
+/// the earliest runs are dropped. They draw nothing until the next clear makes
+/// room for them again.
 pub(super) fn pack(store: &mut AtlasStore, keys: &[TextKey]) -> (bool, Vec<(Region, Vec<u8>)>) {
     let mut placed = Vec::new();
     let mut restarted = false;
+    let mut resets = 0;
     let mut index = 0;
     while index < keys.len() {
         let key = &keys[index];
@@ -287,12 +296,21 @@ pub(super) fn pack(store: &mut AtlasStore, keys: &[TextKey]) -> (bool, Vec<(Regi
                 index += 1;
             }
             Placement::Empty | Placement::TooLarge => index += 1,
-            Placement::Full if !restarted => {
+            // The regions above were wiped with the reset: the pass on the
+            // empty atlas is the one whose runs get uploaded.
+            Placement::Full if resets == 0 => {
                 store.reset();
                 restarted = true;
-                // The regions above were wiped with the reset: the pass on the
-                // empty atlas is the one whose runs get uploaded.
+                resets = 1;
                 placed.clear();
+                index = 0;
+            }
+            Placement::Full if resets == 1 => {
+                store.reset();
+                resets = 2;
+                placed.clear();
+                // This run was placable on an empty atlas, so it is retried
+                // there; the runs before it stay dropped.
             }
             // A key that still does not fit on an empty atlas is one that
             // cannot ever fit (`TooLarge` covers that, so this is the

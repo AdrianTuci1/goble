@@ -67,6 +67,30 @@ fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A name made safe to be one directory: lowercase alphanumerics, every run of
+/// anything else folded to a single `-`. A workflow is named by a human
+/// ("Daily report"), a chat by an id; both have to become a path component.
+fn workspace_slug(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    let mut separator = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if separator && !slug.is_empty() {
+                slug.push('-');
+            }
+            separator = false;
+            slug.push(ch.to_ascii_lowercase());
+        } else {
+            separator = true;
+        }
+    }
+    if slug.is_empty() {
+        "workspace".to_string()
+    } else {
+        slug
+    }
+}
+
 impl DesktopState {
     pub fn open_default() -> anyhow::Result<Arc<Self>> {
         let home = goble_core::app_home::GobleHome::locate()?;
@@ -84,8 +108,12 @@ impl DesktopState {
         let state = Self::new(store, thread_store);
         state.set_environment_path(home.environment_path());
         state.set_config_path(home.config_path());
+        state.set_worktrees_root(home.worktrees_dir());
         let _ = state.reload_config(&home.config_path());
         let _ = state.load_from_store();
+        // A run the previous process left as running is not this process's:
+        // settle it as interrupted so the dock never spins on a dead run.
+        state.settle_interrupted_runs();
         // Make the reversibility ledger durable: persist settled checkpoints to
         // SQLite and seed the daemon's ledgers from anything persisted before, so
         // rewind/fork/replay survive a restart. The daemon keeps the store alive
@@ -188,6 +216,33 @@ impl DesktopState {
         *self.config_path.lock() = Some(path.into());
     }
 
+    /// Point agent-run workspaces at `root` instead of `~/.goble/worktrees`.
+    pub fn set_worktrees_root(&self, root: impl Into<PathBuf>) {
+        *self.worktrees_root.lock() = Some(root.into());
+    }
+
+    /// The managed agent-run workspace root, or `None` when this state has no
+    /// home of its own (a test).
+    pub fn worktrees_root(&self) -> Option<PathBuf> {
+        self.worktrees_root.lock().clone()
+    }
+
+    /// The directory one agent run works in: `<worktrees>/<kind>/<name>`,
+    /// created on demand. Workflow turns ask for `workflows`, a chat with no
+    /// pane directory of its own for `chats`. Keeping these under the app home
+    /// is what stops an agent's relative writes from landing in the checkout the
+    /// app was launched from — the same place grok-build keeps its worktrees.
+    /// `None` when the state has no home, which leaves the harness on its own
+    /// workspace.
+    pub fn agent_workspace(&self, kind: &str, name: &str) -> Option<PathBuf> {
+        let dir = self.worktrees_root()?.join(kind).join(workspace_slug(name));
+        if let Err(error) = fs::create_dir_all(&dir) {
+            log::warn!("agent workspace {} unavailable: {error}", dir.display());
+            return None;
+        }
+        Some(dir)
+    }
+
     pub fn new(store: Store, thread_store: ThreadStore) -> Arc<Self> {
         let (tx, _) = tokio::sync::broadcast::channel(256);
         let sink: Arc<dyn goble_daemon::DaemonEventSink> =
@@ -220,6 +275,7 @@ impl DesktopState {
             thread_store: Arc::new(thread_store),
             config: parking_lot::Mutex::new(goble_core::config::GobleConfig::default()),
             config_path: Mutex::new(None),
+            worktrees_root: Mutex::new(None),
             environment: Mutex::new(super::environment::EnvironmentCache::default()),
             daemon_state,
             daemon,

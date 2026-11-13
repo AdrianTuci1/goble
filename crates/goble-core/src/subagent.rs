@@ -34,11 +34,13 @@ impl SubAgentId {
         Self(uuid::Uuid::new_v4().to_string())
     }
 
-    /// The per-child CWD rule: `workspace_root/subagents/<id>`. Derived from
-    /// the id alone, so two children never share one directory. Pure path
-    /// algebra — creating the directory on disk is the spawner's job (S2).
-    pub fn child_cwd(&self, workspace_root: &Path) -> PathBuf {
-        workspace_root.join(SUBAGENTS_DIR).join(&self.0)
+    /// The per-child CWD rule: `agent_runs_root/subagents/<id>`. Derived from
+    /// the id alone, so two children never share one directory. The spawn tool
+    /// passes the app home's worktrees root, so a child's files stay out of the
+    /// project the parent works in. Pure path algebra — creating the directory
+    /// on disk is the spawner's job (S2).
+    pub fn child_cwd(&self, agent_runs_root: &Path) -> PathBuf {
+        agent_runs_root.join(SUBAGENTS_DIR).join(&self.0)
     }
 }
 

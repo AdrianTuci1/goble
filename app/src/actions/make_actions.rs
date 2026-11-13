@@ -240,7 +240,6 @@ pub fn make_actions(
     let on_select_conversation = Rc::clone(&state);
     let on_select_tab = Rc::clone(&state);
     let on_composer_change = Rc::clone(&state);
-    let desktop_composer = desktop.clone();
     let on_slash_move = Rc::clone(&state);
     let on_slash_close = Rc::clone(&state);
     let on_slash_dismiss = Rc::clone(&state);
@@ -270,7 +269,9 @@ pub fn make_actions(
     let media_send_sub_agent_message = Rc::clone(&media);
     let on_toggle_work_section = Rc::clone(&state);
     let on_show_all_work_section = Rc::clone(&state);
-    let on_open_task_workflow = Rc::clone(&state);
+    let on_open_workflow_run = Rc::clone(&state);
+    let on_select_workflow_run = Rc::clone(&state);
+    let on_close_workflow_view = Rc::clone(&state);
     let desktop_open_sub_agent = desktop.clone();
     let desktop_stop_sub_agent = desktop.clone();
     let on_answer_ask = Rc::clone(&state);
@@ -336,8 +337,7 @@ pub fn make_actions(
     let on_mcps = Rc::clone(&state);
     let on_open_crons = Rc::clone(&state);
     let on_close_crons = Rc::clone(&state);
-    let on_toggle_task_workflow = Rc::clone(&state);
-    let on_close_task_workflow = Rc::clone(&state);
+    let on_toggle_workflow_view = Rc::clone(&state);
     let on_toggle_shortcuts_help = Rc::clone(&state);
     let on_close_shortcuts_help = Rc::clone(&state);
     let on_shortcuts_help_type = Rc::clone(&state);
@@ -1050,27 +1050,11 @@ pub fn make_actions(
         })),
         on_composer_change: Rc::new(RefCell::new(move |value: String| {
             let mut state = on_composer_change.borrow_mut();
-            let pane_id = state.active_pane_id;
-            let typing = !value.trim().is_empty();
             state.set_active_pane_draft(value);
-            // The rich input belongs to the agent whichever surface the pane
-            // was on: the first character typed at a shell's bar opens that
-            // pane's harness, and the draft comes with it into the agent
-            // view's composer. Esc still returns the pane to its shell.
-            if typing
-                && state.pane_is_terminal(pane_id)
-                && !state.pane_controls(pane_id).harness_mode
-            {
-                open_pane_harness(&mut state, pane_id, desktop_composer.as_ref());
-                if state.pane_controls(pane_id).harness_mode {
-                    // The switch keeps the keys: the agent composer is the
-                    // surface that now owns the draft being typed.
-                    state.composer_focused = true;
-                }
-            }
             // The draft is the slash menu's query, so a new query starts the
             // menu's selection over at the first row — and typing brings the
             // menu back after Escape put it away.
+            let pane_id = state.active_pane_id;
             *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
             *state
                 .pane_controls_mut(pane_id)
@@ -1563,8 +1547,22 @@ pub fn make_actions(
                     .show_all_work_section(section);
             },
         )),
-        on_open_task_workflow: Rc::new(RefCell::new(move || {
-            on_open_task_workflow.borrow_mut().task_workflow_open = true;
+        on_open_workflow_run: Rc::new(RefCell::new(move |pane_id: u64, run_id: String| {
+            on_open_workflow_run
+                .borrow_mut()
+                .open_workflow_view(pane_id, Some(run_id));
+        })),
+        on_select_workflow_run: Rc::new(RefCell::new(
+            move |pane_id: u64, run_id: Option<String>| {
+                on_select_workflow_run
+                    .borrow_mut()
+                    .select_workflow_run(pane_id, run_id);
+            },
+        )),
+        on_close_workflow_view: Rc::new(RefCell::new(move |pane_id: u64| {
+            on_close_workflow_view
+                .borrow_mut()
+                .close_workflow_view(pane_id);
         })),
         on_answer_ask: Rc::new(RefCell::new(
             move |response: String, credential: Option<(String, String)>| {
@@ -2663,12 +2661,14 @@ pub fn make_actions(
         on_close_crons: Rc::new(RefCell::new(move || {
             on_close_crons.borrow_mut().crons_open = false;
         })),
-        on_toggle_task_workflow: Rc::new(RefCell::new(move || {
-            let mut state = on_toggle_task_workflow.borrow_mut();
-            state.task_workflow_open = !state.task_workflow_open;
-        })),
-        on_close_task_workflow: Rc::new(RefCell::new(move || {
-            on_close_task_workflow.borrow_mut().task_workflow_open = false;
+        on_toggle_workflow_view: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_workflow_view.borrow_mut();
+            // With no pane tree there is no surface to put the view on.
+            if state.spaces.is_empty() {
+                return;
+            }
+            let pane_id = state.active_pane_id;
+            state.toggle_workflow_view(pane_id);
         })),
         on_toggle_shortcuts_help: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_shortcuts_help.borrow_mut();
@@ -3037,7 +3037,7 @@ pub fn make_actions(
                 return;
             }
             if let Some(spec) =
-                crate::terminal::TuiAgent::launched_by(&line).and_then(|agent| agent.spec())
+                crate::terminal::TuiAgent::detect(&line).and_then(|agent| agent.spec())
             {
                 state.bind_pane_harness_chat(pane_id, spec, desktop_shell_line.as_deref());
                 state.open_harness_agent_view(pane_id);

@@ -48,8 +48,14 @@ impl DesktopState {
                 role: role.to_string(),
                 content: content.to_string(),
                 tool_calls: tool_calls.clone(),
-                created_at,
+                created_at: created_at.clone(),
             });
+        // A conversation's recency is the last message said in it, so the
+        // in-memory row follows the store's update: the sidebar orders by this
+        // stamp and its age label reads it.
+        if let Some(chat) = self.chats.lock().iter_mut().find(|c| c.id == chat_id) {
+            chat.updated_at = created_at;
+        }
         self.emit("chat:updated", serde_json::json!({ "chat_id": chat_id }));
         Ok(())
     }
@@ -204,27 +210,49 @@ impl DesktopState {
 
     /// The conversations the sidebar lists, newest first.
     ///
-    /// The store decides which conversations still exist: a chat deleted out of
-    /// band (a database cleanup, or another process) must not linger in the
-    /// list until the app restarts. The in-memory cache carries the fields each
-    /// row's card draws, and the order the app created them in.
+    /// The store decides which conversations still exist and when each was
+    /// last said in: a chat deleted out of band (a database cleanup, or another
+    /// process) must not linger in the list until the app restarts, and the
+    /// harness writes its turns straight to the store, so the cache's own
+    /// stamp can be behind. The in-memory cache carries the other fields each
+    /// row's card draws.
     pub fn list_chats(&self) -> Vec<Chat> {
         // `Store::list_chats` returns top-level conversations only, so a
         // sub-agent's own row never reaches the sidebar through this cache.
-        let live: std::collections::HashSet<String> = match self.store.lock().list_chats() {
-            Ok(rows) => rows.into_iter().map(|row| row.0).collect(),
+        let rows = match self.store.lock().list_chats() {
+            Ok(rows) => rows,
             // A store that cannot be read leaves the cache as the app's own
             // record of what exists, rather than emptying the sidebar.
             Err(e) => {
                 log::warn!("list_chats: {e}");
-                return self.chats.lock().clone();
+                let mut chats = self.chats.lock().clone();
+                chats.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                return chats;
             }
         };
-        self.chats
+        let fresh: std::collections::HashMap<String, (String, String)> = rows
+            .into_iter()
+            .map(|(id, title, _provider, _model, _created_at, updated_at)| {
+                (id, (title, updated_at))
+            })
+            .collect();
+        let mut chats: Vec<Chat> = self
+            .chats
             .lock()
             .iter()
-            .filter(|chat| live.contains(&chat.id))
+            .filter(|chat| fresh.contains_key(&chat.id))
             .cloned()
-            .collect()
+            .collect();
+        for chat in &mut chats {
+            if let Some((title, updated_at)) = fresh.get(&chat.id) {
+                chat.title = title.clone();
+                chat.updated_at = updated_at.clone();
+            }
+        }
+        // RFC 3339 stamps with the same UTC offset compare in time order, and
+        // the sort is stable, so chats that share a stamp keep their creation
+        // order.
+        chats.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        chats
     }
 }

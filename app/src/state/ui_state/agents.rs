@@ -224,12 +224,18 @@ impl UiState {
     /// it, so the chrome can show elapsed time. The app observes this itself
     /// (it starts the turn); no wire event carries a turn start.
     pub fn begin_turn(&mut self, pane_id: u64) {
+        let conversation_id = self.pane_conversation_id(pane_id).unwrap_or_default();
         let rt = self.pane_runtime.entry(pane_id).or_default();
         rt.busy = true;
         rt.turn_started_at = Some(std::time::Instant::now());
         rt.agent_state = PaneAgentState::Working;
         // The previous turn's failure belongs to that turn, not to this one.
         rt.turn_error = None;
+        // Its thinking belongs to it too: the transcript block is live state,
+        // and carried into this turn it would sit under the message the user
+        // just sent. A child's rows stay — they are another conversation's.
+        rt.reasoning
+            .retain(|row| row.chat_id != conversation_id);
     }
 
     /// Settle a finished turn on `pane_id`: the pane stops showing busy, its
@@ -357,10 +363,11 @@ impl UiState {
         let Some(pane_id) = self.pane_for_chat_event(&event.chat_id) else {
             return;
         };
+        let conversation_id = self.pane_conversation_id(pane_id).unwrap_or_default();
         {
             let rt = self.pane_runtime.entry(pane_id).or_default();
             rt.apply_reasoning(event);
-            overlay_reasoning(&mut rt.messages, &rt.reasoning);
+            overlay_reasoning(&mut rt.messages, &conversation_id, &rt.reasoning);
         }
         if pane_id == self.active_pane_id {
             self.sync_active_view();
@@ -466,11 +473,12 @@ impl UiState {
     /// The rows the pane's sub-agent strip lists, sorted by the child they
     /// belong to so the strip's order is stable frame to frame.
     ///
-    /// A running child is always listed, including a background one that
-    /// outlives the turn that spawned it. A child that already ended stays
-    /// only while the pane's turn is busy: the strip reports the delegation of
-    /// the turn being read, and clears when that turn ends instead of keeping
-    /// a record per child the pane ever spawned.
+    /// Only a child that is still running is listed, including a background one
+    /// that outlives the turn that spawned it. A child that ended leaves the
+    /// strip at once: its answer is the spawn call's row in the parent
+    /// transcript and its own entry in the block list, so keeping it above the
+    /// transcript would report finished work as in flight — and would bring it
+    /// back on every later turn, which never spawned it.
     pub fn pane_sub_agents(&self, pane_id: u64) -> Vec<SubAgentRow> {
         let Some(rt) = self.pane_runtime.get(&pane_id) else {
             return Vec::new();
@@ -478,7 +486,7 @@ impl UiState {
         let mut rows: Vec<SubAgentRow> = rt
             .sub_agents
             .values()
-            .filter(|record| record.row.is_running() || rt.busy)
+            .filter(|record| record.row.is_running())
             .map(|record| record.row.clone())
             .collect();
         rows.sort_by(|a, b| a.child_id.cmp(&b.child_id));

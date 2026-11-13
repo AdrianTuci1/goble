@@ -157,8 +157,8 @@ pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashComma
         SlashCommand::new("scheduled", "Open the scheduled tasks", {
             run(&actions.on_open_crons)
         }),
-        SlashCommand::new("tasks", "Open tasks and workflows", {
-            run(&actions.on_toggle_task_workflow)
+        SlashCommand::new("tasks", "Open the workflow runs in this pane", {
+            run(&actions.on_toggle_workflow_view)
         }),
         SlashCommand::new("workflows", "Open the workflow catalog", {
             run(&actions.on_workflows)

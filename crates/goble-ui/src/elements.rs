@@ -55,6 +55,7 @@ pub use hover_button::HoverButton;
 pub use hover_chip::{HoverChipLayer, HoverChipRegistry};
 pub use hover_row::HoverRow;
 pub use icon::{Icon, IconName};
+pub(crate) use icon::icon_atlas_name;
 pub use icon_button::IconButton;
 pub use inline_text::{resolve_span as resolve_inline_span, InlineText, TextSpan};
 pub use key_handler::KeyHandler;

@@ -38,6 +38,13 @@ impl Element for ChatView {
         self.origin
     }
 
+    /// A running child's spinner is the pane's only animation when no dock is
+    /// mounted — the sub-agent takeover draws none — so the transcript asks for
+    /// frames itself while a child is still working.
+    fn wants_animation(&self) -> bool {
+        self.sub_agents.values().any(|row| row.is_running())
+    }
+
     fn dispatch_event(
         &mut self,
         event: &DispatchedEvent,

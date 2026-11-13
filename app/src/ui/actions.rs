@@ -199,8 +199,14 @@ pub struct UiActions {
     pub on_toggle_work_section: Rc<RefCell<dyn FnMut(goble_ui::WorkSection)>>,
     /// Reveal the rows one work-dock group holds behind `show N more`.
     pub on_show_all_work_section: Rc<RefCell<dyn FnMut(goble_ui::WorkSection)>>,
-    /// Open the workflow-runs overlay from a work-dock row.
-    pub on_open_task_workflow: Rc<RefCell<dyn FnMut()>>,
+    /// Open the workflow-runs view in `pane_id` on the run a work-dock row
+    /// stands for, by the run's ledger id.
+    pub on_open_workflow_run: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Select a run in the pane's workflow-runs view: `run_id`'s detail, or the
+    /// list when `None`. A pane with no view open ignores it.
+    pub on_select_workflow_run: Rc<RefCell<dyn FnMut(u64, Option<String>)>>,
+    /// Leave the workflow-runs view open in `pane_id`, back to its own surface.
+    pub on_close_workflow_view: Rc<RefCell<dyn FnMut(u64)>>,
     /// Submit the composed answer of the inline ask-user card. The optional
     /// `(name, value)` carries a credential entered in the card, threaded out
     /// separately from the answer so the secret never enters the transcript.
@@ -396,10 +402,9 @@ pub struct UiActions {
     pub on_plugins: Rc<RefCell<dyn FnMut()>>,
     pub on_open_crons: Rc<RefCell<dyn FnMut()>>,
     pub on_close_crons: Rc<RefCell<dyn FnMut()>>,
-    /// Toggle the workflow-runs overlay (a panel floating over the workspace).
-    pub on_toggle_task_workflow: Rc<RefCell<dyn FnMut()>>,
-    /// Close the workflow-runs overlay (its ✕, its backdrop).
-    pub on_close_task_workflow: Rc<RefCell<dyn FnMut()>>,
+    /// Toggle the workflow-runs view in the active pane (a pane surface, not an
+    /// overlay): open the run list, or close the view already there.
+    pub on_toggle_workflow_view: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the keyboard shortcuts panel (Ctrl+.).
     pub on_toggle_shortcuts_help: Rc<RefCell<dyn FnMut()>>,
     /// Close the keyboard shortcuts panel (its ✕, its backdrop, Escape).

@@ -1,10 +1,8 @@
-
 use goble_ui::elements::{
     AppContext, Button, ButtonVariant, ChatSidebar, Container, CrossAxisAlignment, Divider,
     EdgeInsets, Element, Fill, Flex, Icon, MainAxisSize, RoutineItem, Spacer, Text, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
-
 
 use super::super::{UiActions, UiSnapshot, WorkspaceRouting};
 
@@ -64,7 +62,11 @@ pub(crate) fn build_chat_panel_overlay(
     let body = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(Container::new(header).with_padding(EdgeInsets::new(0.0, md, 0.0, md)).finish())
+        .with_child(
+            Container::new(header)
+                .with_padding(EdgeInsets::new(0.0, md, 0.0, md))
+                .finish(),
+        )
         .with_child(Divider::horizontal().finish())
         .with_child(sidebar)
         .finish();

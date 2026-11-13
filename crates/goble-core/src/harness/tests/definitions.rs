@@ -38,6 +38,7 @@ fn spawn_subagent_is_declared_with_its_schema() {
         "prompt",
         "subagent_type",
         "run_in_background",
+        "max_steps",
         "cwd",
     ] {
         assert!(properties.contains_key(field), "{field} is declared");
@@ -99,6 +100,7 @@ async fn every_advertised_tool_reaches_a_handler() {
         deploy_sender: None,
         mcp_manager: McpManager::new(),
         docs_dir: workspace.path().to_path_buf(),
+        worktrees_dir: workspace.path().to_path_buf(),
         registry: Default::default(),
         parent_cancel: Arc::new(AtomicBool::new(false)),
         foreground_wait: Duration::from_secs(5),

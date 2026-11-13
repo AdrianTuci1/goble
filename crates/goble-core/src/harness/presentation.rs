@@ -105,13 +105,30 @@ pub struct ToolRow {
 /// only for the counts a collapsed row states (`(N entries)`, `(N sites)`).
 pub fn tool_row(name: &str, arguments: &Value, result: Option<&str>) -> ToolRow {
     let kind = tool_kind_for(name);
-    // A sub-agent's row is the child's own: the caller fills its subject and
-    // detail from the live record, which the arguments cannot carry.
+    // A sub-agent's row names the child: the description the parent gave it,
+    // or the agent the call creates or runs. The live record adds activity and
+    // elapsed beside this row's words.
     if kind == ToolKind::SubAgent {
+        let lower = name.to_lowercase();
+        let (verb, subject) = match lower.as_str() {
+            "create_agent" => (
+                "Create agent ",
+                string_argument(arguments, "name")
+                    .or_else(|| string_argument(arguments, "description")),
+            ),
+            "run_agent" => (
+                "Run agent ",
+                string_argument(arguments, "agent_id")
+                    .or_else(|| string_argument(arguments, "description")),
+            ),
+            _ => ("Agent ", string_argument(arguments, "description")),
+        };
         return ToolRow {
             kind,
-            verb: "Subagent ",
-            subject: String::new(),
+            verb,
+            subject: subject
+                .map(|subject| subagent_subject(&subject))
+                .unwrap_or_default(),
             detail: String::new(),
         };
     }
@@ -259,11 +276,13 @@ fn named_row(name: &str, arguments: &Value) -> ToolRow {
 /// reads `MCP Postgres Query`. A name already spelled in words, or known by its
 /// short capitalisation, is left as it came.
 pub fn tool_display_name(name: &str) -> String {
-    if !name.contains('_') {
+    // A name already spelled as words is left as it came: `credentials` is a
+    // label, not a title.
+    if !name.contains('_') && !name.chars().any(char::is_uppercase) {
         return name.to_string();
     }
-    name.split('_')
-        .filter(|word| !word.is_empty())
+    tool_words(name)
+        .into_iter()
         .map(|word| match word.to_ascii_lowercase().as_str() {
             "mcp" => "MCP".to_string(),
             "api" => "API".to_string(),
@@ -281,6 +300,41 @@ pub fn tool_display_name(name: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Split a tool name into the words it reads as. An underscore separates
+/// words, and so does a capital that starts one: `read_file` and `readFile`
+/// both read `read File`, and `HTTPGet` reads `HTTP Get`.
+fn tool_words(name: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    for part in name.split('_').filter(|part| !part.is_empty()) {
+        let chars: Vec<(usize, char)> = part.char_indices().collect();
+        let mut start = 0;
+        for (index, (offset, ch)) in chars.iter().enumerate() {
+            if index == 0 || !ch.is_uppercase() {
+                continue;
+            }
+            let previous = chars[index - 1].1;
+            let next_is_lower = chars
+                .get(index + 1)
+                .is_some_and(|(_, next)| next.is_lowercase());
+            let starts_word = previous.is_lowercase()
+                || previous.is_ascii_digit()
+                || (previous.is_uppercase() && next_is_lower);
+            if starts_word {
+                let word = &part[start..*offset];
+                if !word.is_empty() {
+                    words.push(word);
+                }
+                start = *offset;
+            }
+        }
+        let word = &part[start..];
+        if !word.is_empty() {
+            words.push(word);
+        }
+    }
+    words
 }
 
 /// The argument a family's row is named by.
@@ -570,6 +624,10 @@ mod tests {
         assert_eq!(tool_display_name("ask_user"), "Ask User");
         assert_eq!(tool_display_name("mcp__postgres__query"), "MCP Postgres Query");
         assert_eq!(tool_display_name("credentials"), "credentials");
+        // A camel-case name is words too, never the identifier itself.
+        assert_eq!(tool_display_name("readFile"), "Read File");
+        assert_eq!(tool_display_name("mcpTool"), "MCP Tool");
+        assert_eq!(tool_display_name("HTTPGet"), "HTTP Get");
     }
 
     /// The question the agent asked draws as its own family: `Ask User` leads
@@ -587,12 +645,22 @@ mod tests {
     }
 
     #[test]
-    fn a_subagent_row_is_the_childrens_own() {
+    fn a_subagent_row_names_the_child() {
         let row = row("spawn_subagent", r#"{"description":"check the tests"}"#);
         assert_eq!(row.kind, ToolKind::SubAgent);
-        assert_eq!(row.verb, "Subagent ");
-        assert_eq!(row.subject, "");
-        assert_eq!(subagent_subject("check the tests"), "\u{201C}check the tests\u{201D}");
+        assert_eq!(row.verb, "Agent ");
+        assert_eq!(row.subject, "\u{201C}check the tests\u{201D}");
+
+        // The product's own agent calls are rows in words, never the tool
+        // identifier the model called: `create_agent` names its name, and
+        // `run_agent` the agent it runs.
+        let created = row("create_agent", r#"{"name":"researcher"}"#);
+        assert_eq!(created.verb, "Create agent ");
+        assert_eq!(created.subject, "\u{201C}researcher\u{201D}");
+
+        let run = row("run_agent", r#"{"agent_id":"researcher"}"#);
+        assert_eq!(run.verb, "Run agent ");
+        assert_eq!(run.subject, "\u{201C}researcher\u{201D}");
     }
 
     /// Every name family the reference parses is parsed here too.

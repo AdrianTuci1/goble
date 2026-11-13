@@ -178,3 +178,43 @@ fn a_chat_deleted_out_of_band_leaves_the_list() {
     );
     assert!(state.store_clone().list_chats().unwrap().len() == 1);
 }
+
+/// The sidebar's list is newest first, by the store's own stamp: a turn the
+/// harness writes straight to the store moves its conversation to the top even
+/// though the in-memory cache never saw the write.
+#[test]
+fn a_conversation_is_listed_by_its_last_message() {
+    let (_dir, state) = tmp_state();
+    let first = state.create_chat("First", None, None).expect("create chat");
+    let second = state.create_chat("Second", None, None).expect("create chat");
+
+    let listed = state.list_chats();
+    assert_eq!(
+        listed.first().map(|chat| chat.id.as_str()),
+        Some(second.as_str()),
+        "creation order puts the newest conversation first"
+    );
+
+    state
+        .store_clone()
+        .insert_chat_message(
+            "m1",
+            &first,
+            "assistant",
+            "answered later",
+            None,
+            "2099-01-01T00:00:00Z",
+        )
+        .expect("write a message straight to the store");
+
+    let listed = state.list_chats();
+    assert_eq!(
+        listed.first().map(|chat| chat.id.as_str()),
+        Some(first.as_str()),
+        "the conversation last said in is listed first"
+    );
+    assert_eq!(
+        listed[0].updated_at, "2099-01-01T00:00:00Z",
+        "the age label reads the store's stamp, not the cache's"
+    );
+}

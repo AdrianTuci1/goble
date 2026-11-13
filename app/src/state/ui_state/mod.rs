@@ -186,16 +186,11 @@ pub struct UiState {
     /// so the filter bar of one pty/agent pane does not open in its sibling.
     pub terminal_global_filters: HashMap<u64, TerminalFilter>,
     pub crons_open: bool,
-    /// Whether the workflow-runs overlay is up (it covers the workspace without
-    /// replacing it).
-    pub task_workflow_open: bool,
-    /// The run the overlay's list has selected — its key, not its row, because
-    /// a new run moves the list under the pointer — and the phase, one of that
-    /// run's steps, selected inside its detail. Shared cells because the
-    /// element tree is rebuilt every frame: a row the user clicked writes there
-    /// and the next frame's rows read it back.
-    pub task_workflow_selected: Rc<RefCell<Option<String>>>,
-    pub task_workflow_phase: Rc<RefCell<usize>>,
+    /// The workflow-runs views open in a pane, keyed by pane id: the ledger's
+    /// runs shown in the pane itself, entered from the work dock's workflow row
+    /// or the workflow toggle ([`UiState::open_workflow_view`]) and left with
+    /// Esc ([`UiState::close_workflow_view`]).
+    pub workflow_views: HashMap<u64, WorkflowView>,
     /// Whether the keyboard shortcuts panel is up.
     pub shortcuts_help_open: bool,
     /// The shortcuts panel's filter text, and the row it highlights — an index
@@ -209,7 +204,8 @@ pub struct UiState {
     pub crons: Vec<CronEntry>,
     /// Harness workflows (real daemon workflow store).
     pub workflows: Vec<WorkflowEntry>,
-    /// Settled workflow runs, newest first (real `workflow_runs` ledger).
+    /// Workflow runs, newest first (real `workflow_runs` ledger): live runs as
+    /// the service records them at start, and settled ones.
     pub workflow_runs: Vec<WorkflowRunEntry>,
     /// Executions from the daemon execution ledger (real data).
     pub executions: Vec<ExecutionEntry>,

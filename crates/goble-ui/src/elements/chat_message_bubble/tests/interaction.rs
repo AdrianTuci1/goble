@@ -7,7 +7,7 @@ use crate::elements::chat_content::{ChatAction, ChatFragment, ChatRole};
 use crate::elements::{AppContext, LayoutContext, PaintContext};
 use crate::event::DispatchedEvent;
 use crate::geometry::vec2f;
-use crate::render::Renderer;
+use crate::render::{RenderCommand, Renderer};
 use super::*;
 use super::super::{ChatMessageBubble};
 
@@ -89,5 +89,77 @@ fn link_fragment_becomes_interactive_action() {
         fired.borrow().len(),
         1,
         "only the link, not the paragraph around it, is a target"
+    );
+}
+
+/// A file written as inline code is a mention: the run leads with its file
+/// type's icon, and a click asks the app to open that path.
+#[test]
+fn a_file_mention_opens_the_file() {
+    let app = AppContext::default();
+    let message = ChatMessage::from_markdown(
+        ChatRole::Assistant,
+        "See `crates/goble-ui/src/lib.rs:42` for the seam",
+    );
+    let fired = Rc::new(RefCell::new(Vec::<ChatAction>::new()));
+    let recorder = fired.clone();
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments)
+        .with_on_action(move |action| recorder.borrow_mut().push(action));
+
+    let commands = paint_bubble_at(&mut bubble, &app, 600.0);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "file-rust"
+        )),
+        "the mention leads with its file type's icon, got {commands:?}"
+    );
+
+    let run = run_origin(&commands, "crates/goble-ui/src/lib.rs:42");
+    click_at(&mut bubble, &app, run + vec2f(6.0, 4.0));
+    assert_eq!(
+        *fired.borrow(),
+        vec![ChatAction::OpenFile(
+            "crates/goble-ui/src/lib.rs".to_string()
+        )],
+        "a mention opens the path it names, without the line suffix"
+    );
+}
+
+/// The table's copy control sits under the grid, and a click hands the app the
+/// rows as CSV.
+#[test]
+fn a_table_copy_control_copies_csv() {
+    let app = AppContext::default();
+    let message = ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::table(
+            vec!["File".to_string(), "Notes".to_string()],
+            vec![vec!["a.rs".to_string(), "one, \"two\"".to_string()]],
+        )],
+    );
+    let fired = Rc::new(RefCell::new(Vec::<ChatAction>::new()));
+    let recorder = fired.clone();
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments)
+        .with_on_action(move |action| recorder.borrow_mut().push(action));
+
+    let commands = paint_bubble_at(&mut bubble, &app, 600.0);
+    let (origin, size) = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawIcon { origin, name, size, .. } if name == "copy" => {
+                Some((*origin, *size))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the table draws a copy control, got {commands:?}"));
+
+    click_at(&mut bubble, &app, origin + vec2f(size / 2.0, size / 2.0));
+    assert_eq!(
+        *fired.borrow(),
+        vec![ChatAction::CopyText(
+            "File,Notes\na.rs,\"one, \"\"two\"\"\"".to_string()
+        )],
+        "the control copies the table's rows as CSV"
     );
 }

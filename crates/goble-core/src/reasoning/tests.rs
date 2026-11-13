@@ -64,6 +64,33 @@ async fn test_reasoning_mode_switch_and_execute() {
     assert!(events.iter().any(|e| matches!(e, HarnessEvent::ReasoningDone { decision, .. } if decision == "\"execute\"")));
 }
 
+/// A planning reply that calls no decision tool is the model's answer: the turn
+/// executes with it. Reading it as "keep thinking" asked the same planner again
+/// for every step, so the conversation sat silent until the step cap.
+#[tokio::test]
+async fn a_reasoning_reply_without_a_decision_tool_executes_instead_of_looping() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let llm = llm_with_reasoning_tools("Here is the plan: ship it.", Vec::new());
+    let harness = Harness::new(store).with_llm(llm).with_reasoning(true);
+    let events: Vec<_> = harness
+        .run_turn(&chat_id, "build a daily report workflow", "mock", "mock")
+        .collect()
+        .await;
+    let planning_rounds = events
+        .iter()
+        .filter(|event| matches!(event, HarnessEvent::ReasoningStarted { .. }))
+        .count();
+    assert_eq!(
+        planning_rounds, 1,
+        "one planning round, not a loop: {events:?}"
+    );
+    assert!(events.iter().any(
+        |event| matches!(event, HarnessEvent::ReasoningDone { decision, .. } if decision == "\"execute\"")
+    ));
+    assert!(events.iter().any(|event| matches!(event, HarnessEvent::Done)));
+}
+
 #[tokio::test]
 async fn test_ask_user_suspends_and_creates_pending_ask() {
     let store = Store::open_in_memory().unwrap();

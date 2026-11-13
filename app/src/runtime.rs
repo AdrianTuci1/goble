@@ -40,8 +40,9 @@ pub fn run_turn(
     harness_id: Option<&str>,
     pane_session: Option<Arc<dyn PaneSession>>,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    // Run the harness in the pane's own working directory when one is set,
-    // else fall back to the harness default (process cwd).
+    // Run the harness in the pane's own working directory when one is set; a
+    // pane with none gets a per-chat workspace under `~/.goble/worktrees`, so a
+    // turn never writes into the directory the app was launched from.
     let workspace_dir = if cwd.is_empty() { None } else { Some(cwd) };
     DaemonModel::new(Arc::clone(desktop))
         .with_pane_session(pane_session)

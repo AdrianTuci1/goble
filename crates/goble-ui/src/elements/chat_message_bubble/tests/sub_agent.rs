@@ -11,7 +11,7 @@ use crate::render::{RenderCommand, Renderer};
 use crate::theme::ColorToken;
 use goble_core::harness::ToolCallStatus;
 use super::*;
-use super::super::{ChatMessageBubble, SUB_AGENT_TRANSCRIPT_NOTE};
+use super::super::ChatMessageBubble;
 
 /// A sub-agent shows its own rows: its id, the input, then its output.
 #[test]
@@ -43,13 +43,9 @@ fn sub_agent_call_shows_its_own_rows() {
 
 /// Each of the four statuses draws its own line on the parent transcript.
 ///
-/// A running child is the delegation itself — the description and what it is
-/// doing — and an ended one keeps its terminal phrase, with the elapsed time
-/// inside it. The row carries no controls: the pane's strip owns those.
-///
-/// The row carries no status mark either: its terminal word and detail state
-/// where the child is, and the row reads as part of the chain rather than as a
-/// separate kind of line.
+/// A running child leads with the spinner frame, the delegation's own mark,
+/// and an ended one with the status diamond in its status colour. Both keep the
+/// description and the detail that says where the child is.
 #[test]
 fn each_sub_agent_status_draws_its_own_line() {
     let cases = [
@@ -97,10 +93,16 @@ fn each_sub_agent_status_draws_its_own_line() {
             .iter()
             .find(|row| row.contains("Agent "))
             .unwrap_or_else(|| panic!("status {status:?} draws its row, got {rows:?}"));
-        // One ruler row: the diamond, the verb, the child and what it is
-        // doing, with no body and no card.
+        // One ruler row: the mark, the verb, the child and what it is doing,
+        // with no body and no card.
+        let expected_mark = if status == SubAgentRowStatus::Running {
+            // The first spinner frame at phase 0.
+            "◐"
+        } else {
+            "◆"
+        };
         assert!(
-            row.starts_with("◆ Agent "),
+            row.starts_with(&format!("{expected_mark} Agent ")),
             "status {status:?} names the spawned child behind its mark, got {row:?}"
         );
         assert!(
@@ -111,14 +113,12 @@ fn each_sub_agent_status_draws_its_own_line() {
             row.contains(line),
             "status {status:?} must draw {line:?}, got {row:?}"
         );
-        assert!(
-            !row.contains("Stop") && !row.contains("open child"),
-            "status {status:?} draws no controls of its own, got {row:?}"
-        );
         assert_eq!(
-            rows.iter().filter(|row| row.starts_with("◆ Agent ")).count(),
+            rows.iter()
+                .filter(|row| row.starts_with(&format!("{expected_mark} Agent ")))
+                .count(),
             1,
-            "the collapsed call draws one marked row, got {rows:?}"
+            "the call draws one marked row, got {rows:?}"
         );
     }
 }
@@ -194,12 +194,11 @@ fn a_running_sub_agent_row_states_responding_and_the_panes_model() {
     );
 }
 
-/// The sub-agent row folds exactly like every other tool shape: one line
-/// folded, the record's detail open, `Collapsed -> Truncated -> Expanded` on
-/// the header click — and the expanded body says what the record does not
-/// carry.
+/// A sub-agent card is not a fold: grok-build's sub-agent block is always one
+/// line, and a click on it selects the child — the pane opens its takeover
+/// rather than an outcome body the chat does not own.
 #[test]
-fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
+fn a_sub_agent_card_opens_its_child_and_never_folds() {
     let app = AppContext::default();
     let call = spawn_call(ToolCallStatus::Finished);
     let key = tool_fold_key(&call, 0);
@@ -212,92 +211,40 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
     );
     let fold = Rc::new(RefCell::new(HashMap::new()));
     let calls = vec![call.clone()];
-    let (mut bubble, _) = sub_agent_bubble(
+    let (mut bubble, actions) = sub_agent_bubble(
         calls,
         HashMap::from([(call.id.clone(), record)]),
         fold.clone(),
     );
 
-    // A transcript is as wide as its pane. The record's line and the row's
-    // actions share the row, so the test gives it a pane wide enough for the
-    // whole line and checks the folding, not the wrapping.
+    // A transcript is as wide as its pane. The record's line and the card's
+    // controls share the row, so the test gives it a pane wide enough for the
+    // whole line.
     let paint = |bubble: &mut ChatMessageBubble| paint_bubble_at(bubble, &app, 800.0);
-    let header_click = |bubble: &mut ChatMessageBubble| {
-        let commands = paint(bubble);
-        let origin = run_origin(&commands, "Agent ");
-        click_at(bubble, &app, origin + vec2f(2.0, 4.0));
-    };
-
-    // A spawn call is its own row, so it is on screen without opening anything:
-    // the child in quotes and the record's line are the whole folded shape.
     let folded = drawn_row_texts(&paint(&mut bubble));
     assert_eq!(
         folded.iter().filter(|row| row.contains("Agent ")).count(),
         1,
-        "a collapsed spawn call draws its own header line, got {folded:?}"
+        "the card draws its own line, got {folded:?}"
     );
     assert!(
         !folded.iter().any(|row| row.contains("tool calls")),
-        "a folded spawn draws none of the record's counters, got {folded:?}"
+        "the card draws none of the record's counters, got {folded:?}"
     );
 
-    header_click(&mut bubble);
+    // A click on the card's words enters the child.
+    let commands = paint(&mut bubble);
+    let origin = run_origin(&commands, "Agent ");
+    click_at(&mut bubble, &app, origin + vec2f(2.0, 4.0));
+    assert_eq!(
+        *actions.borrow(),
+        vec![ChatAction::OpenSubAgent("conv-child-1".to_string())],
+        "a click on the card opens the child it names"
+    );
     assert_eq!(
         fold.borrow().get(&key),
-        Some(&ToolDisplayMode::Truncated),
-        "the first click truncates the call, like every other shape"
-    );
-    let truncated = drawn_row_texts(&paint(&mut bubble));
-    assert!(
-        truncated
-            .iter()
-            .any(|row| row == "sub-agent conv-child-1 · type reviewer"),
-        "the open body names the child, got {truncated:?}"
-    );
-    assert!(
-        truncated
-            .iter()
-            .any(|row| row == "2 turns · 4 tool calls · 1234 tokens · background"),
-        "the open body carries the record's counters, got {truncated:?}"
-    );
-    assert!(
-        truncated
-            .iter()
-            .any(|row| row.starts_with(SUB_AGENT_TRANSCRIPT_NOTE)),
-        "the open body says the child's own rows are not in the record, got {truncated:?}"
-    );
-    assert!(
-        truncated.iter().any(|row| row == "…"),
-        "a truncated outcome elides its middle lines, got {truncated:?}"
-    );
-    assert!(
-        !truncated.iter().any(|row| row == "line 6"),
-        "the elided middle line is not drawn truncated, got {truncated:?}"
-    );
-
-    header_click(&mut bubble);
-    assert_eq!(
-        fold.borrow().get(&key),
-        Some(&ToolDisplayMode::Expanded),
-        "the second click expands the call"
-    );
-    let expanded = drawn_row_texts(&paint(&mut bubble));
-    assert!(
-        expanded
-            .iter()
-            .any(|row| row.contains("line 1") && row.contains("line 9")),
-        "expanded draws the whole outcome the record carries, got {expanded:?}"
-    );
-    assert!(
-        !expanded.iter().any(|row| row == "…"),
-        "expanded draws no ellipsis, got {expanded:?}"
-    );
-
-    header_click(&mut bubble);
-    assert_eq!(
-        fold.borrow().get(&key),
-        Some(&ToolDisplayMode::Collapsed),
-        "the third click folds the call back, like every other shape"
+        None,
+        "the card never advances a fold"
     );
     assert_eq!(
         drawn_row_texts(&paint(&mut bubble))
@@ -305,57 +252,117 @@ fn the_sub_agent_row_folds_like_the_other_tool_shapes() {
             .filter(|row| row.contains("Agent "))
             .count(),
         1,
-        "folded again the header is one line"
+        "the card stays one line after the click"
     );
 }
 
-/// The row carries no controls at all, whatever the child's status: entering
-/// and stopping a child belong to the pane's sub-agent strip, and the chat says
-/// only what the child is doing.
+/// The card carries the two controls the pane's dock does, in place: the one
+/// that enters the child and, while it runs, the one that stops it. They fire
+/// the same actions, so every surface hands the app the same request.
 #[test]
-fn a_sub_agent_row_draws_no_controls_of_its_own() {
+fn a_sub_agent_card_carries_its_open_and_stop_controls() {
+    let app = AppContext::default();
     let call = spawn_call(ToolCallStatus::Running);
-    let texts_for = |status: SubAgentRowStatus| {
-        let record = record(
-            "conv-child-1",
-            status,
-            "reading",
-            Duration::from_secs(4),
-            None,
-        );
-        let (commands, _) = paint_sub_agent(
-            vec![call.clone()],
-            HashMap::from([(call.id.clone(), record)]),
-            None,
-        );
-        drawn_texts(&commands)
-    };
-
-    for status in [
+    let running = record(
+        "conv-child-1",
         SubAgentRowStatus::Running,
+        "reading",
+        Duration::from_secs(4),
+        None,
+    );
+    let (mut bubble, actions) = sub_agent_bubble(
+        vec![call.clone()],
+        HashMap::from([(call.id.clone(), running)]),
+        Rc::new(RefCell::new(HashMap::new())),
+    );
+    let commands = paint_bubble_at(&mut bubble, &app, 800.0);
+    let open = icon_origin(&commands, "arrow-up").expect("the card's open control");
+    let stop = icon_origin(&commands, "x-close").expect("a running child's stop control");
+    click_at(&mut bubble, &app, open);
+    click_at(&mut bubble, &app, stop);
+    assert_eq!(
+        *actions.borrow(),
+        vec![
+            ChatAction::OpenSubAgent("conv-child-1".to_string()),
+            ChatAction::StopSubAgent("conv-child-1".to_string()),
+        ],
+        "the card's controls carry the child they belong to"
+    );
+
+    // An ended child has nothing left to stop, and a dead affordance is not
+    // drawn.
+    let ended = record(
+        "conv-child-1",
         SubAgentRowStatus::Completed,
-        SubAgentRowStatus::Failed,
-        SubAgentRowStatus::Cancelled,
-    ] {
-        let texts = texts_for(status);
-        assert!(
-            !texts
-                .iter()
-                .any(|text| text == "Stop" || text == "open child"),
-            "a {status:?} row draws no controls, got {texts:?}"
-        );
-    }
+        "",
+        Duration::from_secs(43),
+        Some("done"),
+    );
+    let (commands, _) = paint_sub_agent(
+        vec![call.clone()],
+        HashMap::from([(call.id.clone(), ended)]),
+        None,
+    );
+    assert!(
+        icon_origin(&commands, "arrow-up").is_some(),
+        "an ended child is still enterable"
+    );
+    assert!(
+        icon_origin(&commands, "x-close").is_none(),
+        "an ended child draws no stop"
+    );
 
     // No record at all: the spawn call's own row is the fallback shape, and it
-    // has no controls either.
+    // has no controls.
     let (commands, _) = paint_sub_agent(vec![call], HashMap::new(), None);
-    let texts = drawn_texts(&commands);
     assert!(
-        !texts
-            .iter()
-            .any(|text| text == "Stop" || text == "open child"),
-        "a row with no record draws no controls, got {texts:?}"
+        icon_origin(&commands, "arrow-up").is_none()
+            && icon_origin(&commands, "x-close").is_none(),
+        "a row with no record draws no controls"
     );
+}
+
+/// The card reads a step under the reply: 12 px, like grok-build's status line,
+/// rather than the tool row's 13.
+#[test]
+fn a_sub_agent_card_reads_a_step_under_the_tool_rows() {
+    let call = spawn_call(ToolCallStatus::Running);
+    let record = record(
+        "conv-child-1",
+        SubAgentRowStatus::Running,
+        "reading",
+        Duration::from_secs(4),
+        None,
+    );
+    let (commands, _) = paint_sub_agent(
+        vec![call.clone()],
+        HashMap::from([(call.id.clone(), record)]),
+        None,
+    );
+    let sizes: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { font_size, .. } => Some(*font_size),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        sizes.iter().all(|size| *size <= 12.0),
+        "the card's text stays under the tool row's size, got {sizes:?}"
+    );
+}
+
+/// Where a drawn icon's centre is, which is what a click lands on.
+fn icon_origin(commands: &[RenderCommand], name: &str) -> Option<crate::geometry::Vector2F> {
+    commands.iter().find_map(|command| match command {
+        RenderCommand::DrawIcon {
+            name: drawn,
+            origin,
+            size,
+            ..
+        } if drawn == name => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+        _ => None,
+    })
 }
 
 /// Every call draws one row whatever its status. The diamond is the row's

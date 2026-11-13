@@ -105,10 +105,7 @@ fn with_conversation_commands(
     };
     // The conversation's commands live in its own shell; reading the pane's
     // terminal here is what made a `!` command appear on both surfaces.
-    let blocks = state
-        .terminal
-        .borrow()
-        .agent_visible_blocks(pane_id, &view);
+    let blocks = state.terminal.borrow().agent_visible_blocks(pane_id, &view);
     merge_conversation_commands(messages, conversation_command_rows(&blocks))
 }
 
@@ -313,19 +310,20 @@ pub fn build_agent_chat(
         } else {
             let on_toggle = actions.on_toggle_work_section.clone();
             let on_show_all = actions.on_show_all_work_section.clone();
-            let open_overlay = actions.on_open_task_workflow.clone();
+            let open_workflow_run = actions.on_open_workflow_run.clone();
             let on_open: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
                 let open_sub_agent = on_open_sub_agent.clone();
-                let open_overlay = open_overlay.clone();
+                let open_workflow_run = open_workflow_run.clone();
                 Rc::new(RefCell::new(move |section: WorkSection, id: String| {
                     match section {
                         WorkSection::Subagents => (open_sub_agent.borrow_mut())(id),
-                        WorkSection::Workflows | WorkSection::Watchers => {
-                            (open_overlay.borrow_mut())()
-                        }
+                        // A workflow row opens that run's detail in this pane,
+                        // the way a sub-agent row opens the child in it.
+                        WorkSection::Workflows => (open_workflow_run.borrow_mut())(pane_id, id),
                         // A task is a tool call already drawn in the transcript;
-                        // there is no separate surface to open.
-                        WorkSection::Tasks => {}
+                        // there is no separate surface to open. A watcher is the
+                        // same call under the monitor tool.
+                        WorkSection::Tasks | WorkSection::Watchers => {}
                     }
                 }))
             };
@@ -432,11 +430,18 @@ pub fn build_agent_chat(
         // spawn call's arguments.
         .with_sub_agents(session.sub_agents.clone())
         .with_sub_agent_model(controls.model.clone())
+        .with_spinner_phase(session.work_dock_phase)
         // The pane's work dock: drawn under the header, above the transcript.
         .with_work_dock(work_dock)
-        // A link inside a paragraph dispatches `ChatAction::OpenUrl`; the
-        // sub-agent controls are the strip's own, wired above.
-        .with_on_action(chat_action_relay(on_open_url))
+        // A link inside a paragraph dispatches `ChatAction::OpenUrl`; a
+        // sub-agent card's controls enter and stop the child this pane spawned.
+        .with_on_action(chat_action_relay(
+            on_open_url,
+            actions.on_copy_terminal.clone(),
+            actions.on_explorer_file_click.clone(),
+            Some(on_open_sub_agent.clone()),
+            Some(on_stop_sub_agent.clone()),
+        ))
         .with_composer_value(session.composer_draft.clone())
         // Only the active pane's composer is focused, so a background chat pane
         // never swallows keys before the active pane (e.g. a terminal) sees them.
@@ -925,9 +930,16 @@ mod link_action_tests {
         labels: &[&str],
     ) {
         let app = AppContext::default();
-        let mut view = ChatView::new()
-            .with_messages(vec![message])
-            .with_on_action(chat_action_relay(on_open_url));
+        let mut view =
+            ChatView::new()
+                .with_messages(vec![message])
+                .with_on_action(chat_action_relay(
+                    on_open_url,
+                    Rc::new(RefCell::new(|_: String| {})),
+                    Rc::new(RefCell::new(|_: String| {})),
+                    None,
+                    None,
+                ));
         for label in labels {
             view.layout(
                 SizeConstraint::loose(vec2f(600.0, 400.0)),
@@ -1064,7 +1076,9 @@ mod link_action_tests {
             "the row names the pane's model, got {texts:?}"
         );
         assert!(
-            !texts.iter().any(|text| text == "Stop" || text == "open child"),
+            !texts
+                .iter()
+                .any(|text| text == "Stop" || text == "open child"),
             "the transcript row draws no controls, got {texts:?}"
         );
     }

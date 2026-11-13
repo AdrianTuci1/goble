@@ -66,6 +66,27 @@ fn test_state_agent_and_workflow() {
     assert!(state.list_agents().is_empty());
 }
 
+/// A workflow's turns and a chat with no pane directory work under the app
+/// home's worktrees root, never in the directory the app was launched from.
+#[test]
+fn agent_workspaces_live_under_the_worktrees_root() {
+    let (dir, state) = tmp_state();
+    state.set_worktrees_root(dir.path().join("worktrees"));
+
+    let workflow = state
+        .agent_workspace("workflows", "Daily report")
+        .expect("a state with a home has a worktrees root");
+    assert_eq!(workflow, dir.path().join("worktrees/workflows/daily-report"));
+    assert!(workflow.is_dir(), "the workspace is created on demand");
+
+    let chat = state.agent_workspace("chats", "0dcb4f28-aaaa").unwrap();
+    assert_eq!(chat, dir.path().join("worktrees/chats/0dcb4f28-aaaa"));
+
+    // No home, no redirect: a bare state leaves the harness on its own workspace.
+    let (_dir2, bare) = tmp_state();
+    assert!(bare.agent_workspace("workflows", "x").is_none());
+}
+
 #[test]
 fn test_state_team_and_vault() {
     let (_dir, state) = tmp_state();

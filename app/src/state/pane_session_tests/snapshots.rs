@@ -211,3 +211,66 @@ fn refresh_reparses_only_the_changed_message() {
         "the delta is reflected in the re-parsed message"
     );
 }
+
+#[test]
+fn the_workflow_view_is_the_panes_own_surface() {
+    let mut state = UiState::mock();
+    for pane_id in [1u64, 2] {
+        state.pane_sessions.insert(
+            pane_id,
+            PaneSession {
+                conversation_id: format!("c{pane_id}"),
+                draft: String::new(),
+                path: format!("/p{pane_id}"),
+                daemon_session_id: String::new(),
+            },
+        );
+    }
+    state.open_workflow_view(1, Some("run-1".to_string()));
+
+    let snap = state.pane_chat_snapshot();
+    assert_eq!(
+        snap.get(&1)
+            .and_then(|pane| pane.workflow_view.as_ref())
+            .and_then(|view| view.selected.as_deref()),
+        Some("run-1"),
+        "the pane opens on the run the dock row named"
+    );
+    assert!(
+        snap.get(&2)
+            .and_then(|pane| pane.workflow_view.as_ref())
+            .is_none(),
+        "a sibling pane keeps its own surface"
+    );
+
+    // The detail's way back to the list, and the toggle's close.
+    assert!(state.select_workflow_run(1, None));
+    let snap = state.pane_chat_snapshot();
+    assert_eq!(
+        snap.get(&1)
+            .and_then(|pane| pane.workflow_view.as_ref())
+            .and_then(|view| view.selected.as_deref()),
+        None,
+        "no selected run draws the list"
+    );
+    assert!(state.close_workflow_view(1));
+    assert!(!state.close_workflow_view(1), "a second Esc has nothing to close");
+
+    // The toggle opens the list and closes it again.
+    state.toggle_workflow_view(2);
+    assert!(state.workflow_view(2).is_some());
+    state.toggle_workflow_view(2);
+    assert!(state.workflow_view(2).is_none());
+
+    // A closed pane forgets its view too.
+    state.open_workflow_view(2, None);
+    state.forget_pane(2);
+    assert!(state.workflow_view(2).is_none());
+}
+
+#[test]
+fn selecting_a_run_without_the_view_open_does_nothing() {
+    let mut state = UiState::mock();
+    assert!(!state.select_workflow_run(7, Some("run-1".to_string())));
+    assert!(state.workflow_view(7).is_none());
+}

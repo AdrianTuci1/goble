@@ -2,9 +2,10 @@
 //!
 //! One module per surface of a pane: the agent view itself ([`agent`]), the
 //! pane's topbar ([`header`]), the terminal pane's rich input ([`composer`]),
-//! the sub-agent child view ([`sub_agent`]) and the pane's overlay sheets
-//! ([`overlays`]). What the surfaces share — this pane's chat snapshot and the
-//! relay that carries a fragment's action out of the view — lives here.
+//! the sub-agent child view ([`sub_agent`]), the workflow-runs view
+//! ([`workflow`]) and the pane's overlay sheets ([`overlays`]). What the
+//! surfaces share — this pane's chat snapshot and the relay that carries a
+//! fragment's action out of the view — lives here.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,6 +19,7 @@ mod composer;
 mod header;
 mod overlays;
 mod sub_agent;
+mod workflow;
 
 pub(crate) use agent::build_agent_chat;
 pub(crate) use composer::{build_pending_approval, build_terminal_composer};
@@ -28,24 +30,43 @@ pub(crate) use overlays::{
     build_agent_error, build_chat_panel_overlay, build_onboarding_tip, build_workspace_choice,
 };
 pub(crate) use sub_agent::build_sub_agent_child_view;
+pub(crate) use workflow::build_workflow_view;
 
 /// Relay a transcript fragment's action to the app: a link's `OpenUrl` is handed
-/// to `on_open_url`, the app's guarded external-URL opener. The sub-agent
-/// controls live in the pane's strip, so the transcript dispatches nothing else
-/// and the remaining variants are ignored here.
+/// to `on_open_url`, the app's guarded external-URL opener; a block's own copy
+/// control to `on_copy_text`, the transcript's clipboard sink; a file mention to
+/// `on_open_file`, which opens the path in a file pane; and a sub-agent card's
+/// controls to the pane-bound handlers that enter and stop the child. A surface
+/// with no child handlers (`None`) simply draws the card's controls inert.
 fn chat_action_relay(
     on_open_url: Rc<RefCell<dyn FnMut(String)>>,
+    on_copy_text: Rc<RefCell<dyn FnMut(String)>>,
+    on_open_file: Rc<RefCell<dyn FnMut(String)>>,
+    on_open_sub_agent: Option<Rc<RefCell<dyn FnMut(String)>>>,
+    on_stop_sub_agent: Option<Rc<RefCell<dyn FnMut(String)>>>,
 ) -> impl FnMut(ChatAction) + 'static {
     move |action| match action {
         ChatAction::OpenUrl(url) => (on_open_url.borrow_mut())(url),
-        ChatAction::OpenSubAgent(_) | ChatAction::StopSubAgent(_) => {}
+        ChatAction::CopyText(text) => (on_copy_text.borrow_mut())(text),
+        ChatAction::OpenFile(path) => (on_open_file.borrow_mut())(path),
+        ChatAction::OpenSubAgent(child_id) => {
+            if let Some(callback) = on_open_sub_agent.as_ref() {
+                (callback.borrow_mut())(child_id);
+            }
+        }
+        ChatAction::StopSubAgent(child_id) => {
+            if let Some(callback) = on_stop_sub_agent.as_ref() {
+                (callback.borrow_mut())(child_id);
+            }
+        }
         ChatAction::RunCommand(_) | ChatAction::Custom(_) => {}
     }
 }
 
 /// This pane's own chat data, falling back to the global active view for a pane
 /// that somehow has no entry yet (so the first frame still reads sane values).
-pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {    state
+pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneChatSnapshot {
+    state
         .pane_chat
         .get(&pane_id)
         .cloned()
@@ -74,6 +95,7 @@ pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneCha
             work_dock_phase: 0.0,
             turn_error: None,
             sub_agent_view: None,
+            workflow_view: None,
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
             text_selection: Rc::new(RefCell::new(goble_ui::TranscriptSelection::default())),
             usage: Default::default(),

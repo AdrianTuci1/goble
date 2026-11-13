@@ -15,7 +15,8 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 /// - fenced ANSI/SGR output, drawn as coloured prose with no code panel. An
 ///   `ansi`, `sgr` or `colors` fence says so outright; a plain fence carrying
 ///   escapes is coloured output too. See `is_ansi_fence`.
-/// - links `[label](url)`, kept inline in the paragraph they appear in
+/// - links `[label](url)`, kept inline in the paragraph they appear in, and a
+///   bare `http(s)://` URL in prose, which becomes a link of its own
 /// - images `![alt](url)`, carried as alt text plus destination
 /// - unordered/ordered lists (ordered keeps the source start number), including
 ///   nested lists and GFM task lists
@@ -30,7 +31,126 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 pub fn parse_markdown(input: &str) -> Vec<ChatFragment> {
     let options = Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
     let events: Vec<Event<'_>> = Parser::new_ext(input, options).collect();
-    MarkdownParser::new(events).parse()
+    linkify(MarkdownParser::new(events).parse())
+}
+
+/// Turn a bare `http(s)://` URL in prose into a link fragment, keeping the
+/// prose around it. A URL the source already wrote as a link, a code run or a
+/// fenced block is left alone; nested list items and quotes are walked, since
+/// the parser emits their content as fragment sequences of their own.
+fn linkify(fragments: Vec<ChatFragment>) -> Vec<ChatFragment> {
+    let mut out = Vec::with_capacity(fragments.len());
+    for fragment in fragments {
+        match fragment.kind {
+            ChatFragmentKind::Text(text) => {
+                let color = fragment.color;
+                let mut rest = text.as_str();
+                let mut pieces: Vec<ChatFragment> = Vec::new();
+                while let Some(start) = find_url(rest) {
+                    if start > 0 {
+                        pieces.push(colored_text(&rest[..start], color));
+                    }
+                    let (url, tail) = split_url(&rest[start..]);
+                    pieces.push(ChatFragment::link(url, url));
+                    rest = tail;
+                }
+                if pieces.is_empty() {
+                    out.push(colored_text(&text, color));
+                } else {
+                    if !rest.is_empty() {
+                        pieces.push(colored_text(rest, color));
+                    }
+                    out.extend(pieces);
+                }
+            }
+            ChatFragmentKind::BlockQuote(content) => {
+                out.push(ChatFragment::block_quote(linkify(content)));
+            }
+            ChatFragmentKind::List { items, start } => {
+                let items = items
+                    .into_iter()
+                    .map(|item| ListItem {
+                        checked: item.checked,
+                        content: linkify(item.content),
+                    })
+                    .collect();
+                out.push(ChatFragment::list(items, start));
+            }
+            _ => out.push(fragment),
+        }
+    }
+    out
+}
+
+fn colored_text(text: &str, color: Option<ColorU>) -> ChatFragment {
+    let fragment = ChatFragment::text(text);
+    match color {
+        Some(color) => fragment.with_color(color),
+        None => fragment,
+    }
+}
+
+/// The first `http://` or `https://` in `text` that starts a word.
+fn find_url(text: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(offset) = text[from..].find("http") {
+        let start = from + offset;
+        let after = &text[start..];
+        let scheme = if after.starts_with("http://") {
+            "http://"
+        } else if after.starts_with("https://") {
+            "https://"
+        } else {
+            from = start + 4;
+            continue;
+        };
+        // The scheme alone is not a destination: a URL needs a host after it.
+        let host = after[scheme.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_whitespace() && !matches!(c, '.' | ',' | ';' | ':' | '!' | '?'));
+        if !host {
+            from = start + 4;
+            continue;
+        }
+        let starts_word = start == 0
+            || text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_whitespace() || matches!(c, '(' | '[' | '<' | '"' | '\''));
+        if starts_word {
+            return Some(start);
+        }
+        from = start + 4;
+    }
+    None
+}
+
+/// Split the URL at the head of `text` from the prose after it, dropping the
+/// sentence punctuation that ends a URL in a sentence rather than in a path.
+fn split_url(text: &str) -> (&str, &str) {
+    let end = text
+        .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`'))
+        .unwrap_or(text.len());
+    let mut url = &text[..end];
+    let mut tail = &text[end..];
+    loop {
+        let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+        // A closing parenthesis belongs to the prose when the URL opened none.
+        let trimmed = if trimmed.ends_with(')')
+            && trimmed.matches('(').count() < trimmed.matches(')').count()
+        {
+            trimmed[..trimmed.len() - 1].trim_end_matches(['.', ',', ';', ':', '!', '?'])
+        } else {
+            trimmed
+        };
+        if trimmed.len() == url.len() {
+            break;
+        }
+        tail = &text[trimmed.len()..];
+        url = trimmed;
+    }
+    (url, tail)
 }
 
 /// State for an image whose alt text is still being accumulated.
@@ -1163,6 +1283,45 @@ mod tests {
                 ChatFragment::line_break(),
                 ChatFragment::text("more"),
             ]
+        );
+    }
+
+    #[test]
+    fn a_bare_url_becomes_a_link() {
+        let url = "https://github.com/goble/goble/pull/12";
+        let fragments = parse_markdown(&format!("see {url} for details"));
+        assert_eq!(
+            fragments,
+            vec![
+                ChatFragment::text("see "),
+                ChatFragment::link(url, url),
+                ChatFragment::text(" for details"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sentence_ending_url_drops_its_punctuation() {
+        let fragments = parse_markdown("The docs are at https://x.ai/docs.");
+        assert_eq!(
+            fragments,
+            vec![
+                ChatFragment::text("The docs are at "),
+                ChatFragment::link("https://x.ai/docs", "https://x.ai/docs"),
+                ChatFragment::text("."),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_url_in_code_or_a_markdown_link_is_left_alone() {
+        assert_eq!(
+            parse_markdown("`https://x.ai`"),
+            vec![ChatFragment::code("https://x.ai")]
+        );
+        assert_eq!(
+            parse_markdown("[docs](https://x.ai)"),
+            vec![ChatFragment::link("docs", "https://x.ai")]
         );
     }
 }

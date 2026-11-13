@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, ListItem, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text, TextSpan};
+use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, MainAxisAlignment, Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text, TextSpan, TopbarButton};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
@@ -23,6 +23,43 @@ const PROMPT_ARROW_GAP: f32 = 4.0;
 /// first line's box rather than on the row's top edge.
 const MESSAGE_FONT_SIZE: f32 = 14.0;
 const MESSAGE_LINE_HEIGHT: f32 = 1.2;
+/// How much of a still-streaming thought its row draws: its newest lines, and
+/// at most one window of characters, so a thought written as a few long
+/// paragraphs stays about seven wrapped rows. The tail is what the model is
+/// writing now, and bounding it keeps the row's height — and the whole run the
+/// text atlas rasterizes for it — from growing with the whole thought.
+const LIVE_REASONING_LINES: usize = 6;
+const LIVE_REASONING_CHARS: usize = 600;
+
+/// The end of a thought that is still streaming, started on a line boundary
+/// and led by an ellipsis row when anything was left out.
+fn reasoning_tail(text: &str) -> String {
+    let by_lines = text
+        .rmatch_indices('\n')
+        .nth(LIVE_REASONING_LINES - 1)
+        .map_or(0, |(index, _)| index + 1);
+    let rest = &text[by_lines..];
+    let by_chars = rest
+        .char_indices()
+        .rev()
+        .nth(LIVE_REASONING_CHARS - 1)
+        .map_or(0, |(index, _)| index);
+    let cut = by_lines + by_chars;
+    if cut == 0 {
+        return text.to_string();
+    }
+    let tail = &text[cut..];
+    if by_chars == 0 {
+        // The window starts a line: the ellipsis takes the row before it.
+        return format!("…\n{tail}");
+    }
+    // The character window may land inside a line: begin at the next whole
+    // one, with the ellipsis above it.
+    match tail.split_once('\n') {
+        Some((_, rest)) if !rest.is_empty() => format!("…\n{rest}"),
+        _ => format!("…{tail}"),
+    }
+}
 
 pub struct ChatMessageBubble {
     role: ChatRole,
@@ -53,6 +90,8 @@ pub struct ChatMessageBubble {
     /// The model the pane's turns run on, which a running child's row names
     /// beside what the child is doing. Empty draws no model there.
     sub_agent_model: String,
+    /// The shared spinner phase a running sub-agent card's mark advances with.
+    spinner_phase: f32,
     /// The whole-transcript filter, applied to every terminal block.
     global_terminal_filter: Option<TerminalFilter>,
     on_copy_terminal: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
@@ -75,6 +114,7 @@ impl ChatMessageBubble {
             tool_hover: Rc::new(RefCell::new(None)),
             sub_agents: HashMap::new(),
             sub_agent_model: String::new(),
+            spinner_phase: 0.0,
             global_terminal_filter: None,
             on_copy_terminal: None,
             root: None,
@@ -174,6 +214,13 @@ impl ChatMessageBubble {
         self
     }
 
+    /// Set the shared spinner phase a running sub-agent card's mark advances
+    /// with, so it turns with the pane's dock and footer.
+    pub fn with_spinner_phase(mut self, phase: f32) -> Self {
+        self.spinner_phase = phase;
+        self
+    }
+
     pub fn with_global_terminal_filter(mut self, filter: Option<TerminalFilter>) -> Self {
         self.global_terminal_filter = filter;
         self
@@ -238,6 +285,8 @@ impl ChatMessageBubble {
                 &self.tool_hover,
                 &self.sub_agents,
                 &self.sub_agent_model,
+                self.spinner_phase,
+                &self.on_action,
                 app,
             ));
         }
@@ -449,12 +498,8 @@ impl ChatMessageBubble {
         // live thinking panel transparent; when it finishes it folds back to
         // the one-line `Thought` row unless the user opened it. An entry in the
         // app-owned map always wins, so a manual fold survives both phases.
-        let expanded = self
-            .reasoning_expanded
-            .borrow()
-            .get(key)
-            .copied()
-            .unwrap_or(!done);
+        let opened = self.reasoning_expanded.borrow().get(key).copied();
+        let expanded = opened.unwrap_or(!done);
         let label = if done { "Thought" } else { "Thinking…" };
 
         let toggle = self.reasoning_expanded.clone();
@@ -479,10 +524,21 @@ impl ChatMessageBubble {
             .with_spacing(2.0)
             .with_child(header);
         if expanded {
+            // A thought that is still streaming draws its tail only, bounded
+            // to a few rows: grok-build draws a running thinking block
+            // truncated to its last lines the same way, so the block keeps one
+            // height while the model writes instead of growing to the whole
+            // transcript. A body the user opened, and a finished one, draw in
+            // full.
+            let body = if done || opened == Some(true) {
+                text.to_string()
+            } else {
+                reasoning_tail(text)
+            };
             column = column.with_child(
                 QuoteRail::new(
                     self.recorded_text(
-                        Text::new(text.to_string())
+                        Text::new(body)
                             .with_theme_color(ColorToken::Muted, app)
                             .with_font_family(FontFamily::Mono)
                             .with_font_size(TOOL_ROW_FONT_SIZE),
@@ -572,7 +628,38 @@ impl ChatMessageBubble {
                 index + 1 < rows.len(),
             ));
         }
-        grid.outline(column.finish(), app)
+        let table = grid.outline(column.finish(), app);
+
+        // The table's footer: one copy control at the trailing edge, under the
+        // grid, holding the rows as CSV. A paste into a spreadsheet wants the
+        // data, not the drawn rules.
+        let csv = table_csv(header, rows);
+        let on_action = self.on_action.clone();
+        let copy = TopbarButton::new(
+            Icon::new("copy")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(22.0)
+        .with_on_click(move || {
+            if let Some(cb) = on_action.as_ref() {
+                (cb.borrow_mut())(ChatAction::CopyText(csv.clone()));
+            }
+        })
+        .finish();
+        let footer = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_child(copy)
+            .finish();
+
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(2.0)
+            .with_child(table)
+            .with_child(footer)
+            .finish()
     }
 
     fn render_table_row(
@@ -605,6 +692,43 @@ impl ChatMessageBubble {
             })
             .collect()
     }
+}
+
+/// The rows of a table as CSV: the header first, then one line per body row,
+/// every row padded to the widest one. A field is quoted only when it carries
+/// a comma, a quote or a line break, and its quotes are doubled.
+fn table_csv(header: &[String], rows: &[Vec<String>]) -> String {
+    let width = std::iter::once(header.len())
+        .chain(rows.iter().map(Vec::len))
+        .max()
+        .unwrap_or(0);
+    let mut out = String::new();
+    let mut first = true;
+    for row in std::iter::once(header).chain(rows.iter().map(|row| row.as_slice())) {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        for column in 0..width {
+            if column > 0 {
+                out.push(',');
+            }
+            let cell = row.get(column).map(String::as_str).unwrap_or("");
+            if cell.contains(|c: char| matches!(c, ',' | '"' | '\n' | '\r')) {
+                out.push('"');
+                for glyph in cell.chars() {
+                    if glyph == '"' {
+                        out.push('"');
+                    }
+                    out.push(glyph);
+                }
+                out.push('"');
+            } else {
+                out.push_str(cell);
+            }
+        }
+    }
+    out
 }
 
 impl Element for ChatMessageBubble {

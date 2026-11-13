@@ -177,6 +177,13 @@ impl ChatView {
         self
     }
 
+    /// Set the shared spinner phase a running child's card advances with, so
+    /// its mark turns with the pane's dock and footer.
+    pub fn with_spinner_phase(mut self, phase: f32) -> Self {
+        self.spinner_phase = phase;
+        self
+    }
+
     /// Set the whole-transcript filter (app-owned), applied to every terminal
     /// block in this conversation.
     pub fn with_global_terminal_filter(mut self, filter: Option<TerminalFilter>) -> Self {

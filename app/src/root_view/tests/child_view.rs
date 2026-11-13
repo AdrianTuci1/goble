@@ -123,19 +123,33 @@ use super::*;
                 })
                 .collect()
         };
-        let click_icon = |root: &mut Box<dyn Element>, name: &str| {
-            let commands = render_element(root, vec2f(1024.0, 768.0), &app);
-            let position = commands
-                .iter()
-                .find_map(|c| match c {
-                    RenderCommand::DrawIcon {
-                        origin, name: drawn, size, ..
-                    } if drawn == name && origin.x >= crate::ui::SIDEBAR_WIDTH => {
-                        Some(*origin + vec2f(size / 2.0, size / 2.0))
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("the pane draws the {name:?} icon"));
+        let icon_position =
+            |root: &mut Box<dyn Element>, name: &str, deepest: bool| {
+                let commands = render_element(root, vec2f(1024.0, 768.0), &app);
+                let positions: Vec<goble_ui::Vector2F> = commands
+                    .iter()
+                    .filter_map(|c| match c {
+                        RenderCommand::DrawIcon {
+                            origin, name: drawn, size, ..
+                        } if drawn == name && origin.x >= crate::ui::SIDEBAR_WIDTH => {
+                            Some(*origin + vec2f(size / 2.0, size / 2.0))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if deepest {
+                    positions
+                        .into_iter()
+                        .max_by(|a, b| a.y.total_cmp(&b.y))
+                        .unwrap_or_else(|| panic!("the pane draws the {name:?} icon"))
+                } else {
+                    positions
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| panic!("the pane draws the {name:?} icon"))
+                }
+            };
+        let click_at = |root: &mut Box<dyn Element>, position: goble_ui::Vector2F| {
             let mut ctx = EventContext;
             for event in [
                 DispatchedEvent::MouseDown {
@@ -149,6 +163,10 @@ use super::*;
             ] {
                 root.dispatch_event(&event, &mut ctx, &app);
             }
+        };
+        let click_icon = |root: &mut Box<dyn Element>, name: &str| {
+            let position = icon_position(root, name, false);
+            click_at(root, position);
         };
         let press_escape = |root: &mut Box<dyn Element>| {
             let mut ctx = EventContext;
@@ -217,16 +235,18 @@ use super::*;
             !texts.iter().any(|t| t.contains("PARENT TRANSCRIPT MARKER")),
             "the parent's transcript is off screen while the child is open: {texts:?}"
         );
-        // The framed title: type, description, status and elapsed time.
+        // The framed title: type, description, activity and elapsed time.
         assert!(
             texts.iter().any(|t| t == "reviewer · audit the migration"),
             "the title names the child's type and description: {texts:?}"
         );
         assert!(
-            texts
-                .iter()
-                .any(|t| t == "running · reading the schema · 4.5s"),
-            "the title carries the record's status, activity and elapsed time: {texts:?}"
+            texts.iter().any(|t| t == "reading the schema"),
+            "the title carries the record's activity: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "4.5s"),
+            "the title carries the child's elapsed time: {texts:?}"
         );
         assert!(
             texts.iter().any(|t| t == "Esc to return"),
@@ -261,9 +281,10 @@ use super::*;
             "the child's transcript leaves with the child view: {texts:?}"
         );
 
-        // The child ends while the parent's turn is still in flight, so the
-        // strip keeps the ended row and its open control; trip two titles the
-        // view from the finished record.
+        // The child ends while the parent's turn is still in flight: its row
+        // leaves the strip, whose rows are work in flight, and the card in the
+        // transcript is the way back in. Trip two titles the view from the
+        // finished record.
         state
             .borrow_mut()
             .apply_subagent_finished(&SubAgentFinishedEvent {
@@ -284,8 +305,10 @@ use super::*;
             .expect("the pane runtime exists")
             .busy = true;
 
-        // Trip two: the same round trip again, through the same strip.
-        click_icon(&mut root, "arrow-up");
+        // Trip two: the same round trip again. The strip no longer lists the
+        // ended child, so the card it left in the transcript is the way in.
+        let card_open = icon_position(&mut root, "arrow-up", true);
+        click_at(&mut root, card_open);
         let texts = pane_texts(&mut root);
         assert!(
             texts
@@ -315,5 +338,38 @@ use super::*;
         assert!(
             texts.iter().any(|t| t.contains("PARENT TRANSCRIPT MARKER")),
             "and the parent's transcript is back again: {texts:?}"
+        );
+
+        // The parent's own reply carries the card too, under the dock: the
+        // card's open control (the deepest one in the pane) enters the child
+        // from the transcript, and the takeover frame's x is the way back —
+        // the same handoff the dock makes, through the surface the user is
+        // reading.
+        let card_open = icon_position(&mut root, "arrow-up", true);
+        click_at(&mut root, card_open);
+        assert_eq!(
+            state.borrow().pane_view(1),
+            BlockView::Agent {
+                conversation_id: "conv-child-1".to_string()
+            },
+            "the transcript card enters the child it names"
+        );
+        let texts = pane_texts(&mut root);
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("CHILD CONVERSATION MARKER")),
+            "the card's handoff shows the child's conversation: {texts:?}"
+        );
+        click_icon(&mut root, "x-close");
+        assert_eq!(
+            state.borrow().pane_view(1),
+            BlockView::Terminal,
+            "the frame's x returns to the parent it came from"
+        );
+        let texts = pane_texts(&mut root);
+        assert!(
+            texts.iter().any(|t| t.contains("PARENT TRANSCRIPT MARKER")),
+            "the parent's transcript is back after the frame's x: {texts:?}"
         );
     }

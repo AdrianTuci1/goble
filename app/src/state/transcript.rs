@@ -428,13 +428,29 @@ pub(crate) fn overlay_in_flight(messages: &mut Vec<ChatMessage>, in_flight: &Has
 /// there it would migrate down the transcript on every execution step and end
 /// up under the tools it drove. The synthetic block is replaced on every call,
 /// so a live delta or a refresh never duplicates it.
-pub(crate) fn overlay_reasoning(messages: &mut Vec<ChatMessage>, reasoning: &[ReasoningRow]) {
+///
+/// Only the rows of the conversation on screen are drawn: a pane holds its own
+/// conversation and the children it spawned, and a child's thinking is that
+/// child's record, never a block in the parent's transcript. A row with no text
+/// yet is a step that has not said anything — a `started` before its first
+/// delta, or a planning step whose reply was all tool calls — so it draws no
+/// block either, instead of an empty `Thought` under the user's message.
+pub(crate) fn overlay_reasoning(
+    messages: &mut Vec<ChatMessage>,
+    conversation_id: &str,
+    reasoning: &[ReasoningRow],
+) {
     messages.retain(|message| !is_reasoning_overlay(message));
-    if reasoning.is_empty() {
+    let rows: Vec<&ReasoningRow> = reasoning
+        .iter()
+        .filter(|row| row.chat_id == conversation_id)
+        .filter(|row| !row.text.trim().is_empty())
+        .collect();
+    if rows.is_empty() {
         return;
     }
-    let fragments: Vec<ChatFragment> = reasoning
-        .iter()
+    let fragments: Vec<ChatFragment> = rows
+        .into_iter()
         .map(|row| {
             ChatFragment::reasoning(
                 reasoning_row_key(&row.chat_id, row.step),

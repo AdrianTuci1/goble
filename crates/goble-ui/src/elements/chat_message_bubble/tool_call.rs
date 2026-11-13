@@ -4,7 +4,11 @@ use std::rc::Rc;
 
 use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::{resolve_inline_span, CrossAxisAlignment, Element, Empty, Flex, HoverRow, InlineText, TextSpan};
+use crate::elements::running_indicator::SPINNER_FRAMES;
+use crate::elements::{
+    resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Expanded, Flex, HoverRow, Icon,
+    InlineText, MainAxisSize, TextSpan,
+};
 use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
@@ -28,10 +32,16 @@ const HOVER_ARROW: &str = "❯ ";
 /// state never collides with the call that anchors the run.
 const VERB_GROUP_KEY_PREFIX: &str = "verb-group:";
 
-/// The row's own text size. A sub-agent row draws nothing beside it: the
-/// controls that enter and stop a child belong to the pane's strip, not to the
-/// reply the child was spawned from.
+/// The row's own text size. A sub-agent's card is a step smaller: it is the
+/// status line of a delegation, not a paragraph of the reply.
 pub(super) const TOOL_ROW_FONT_SIZE: f32 = 13.0;
+
+/// A sub-agent card's text and its controls. grok-build draws a sub-agent as a
+/// single small status line with an animated bullet and its control targets at
+/// the row's far edge, so the card reads as chrome over the reply rather than
+/// as another command the agent ran.
+const SUB_AGENT_FONT_SIZE: f32 = 12.0;
+const SUB_AGENT_CONTROL_SIZE: f32 = 12.0;
 
 /// Resolve a model [`ModelSpan`] (text + style) into a renderable [`TextSpan`]
 /// using the current theme colors. A link span also carries a click handler, so
@@ -51,12 +61,38 @@ pub(super) fn to_text_span(
     };
     let is_code = matches!(span.style, InlineStyle::Code);
     let is_link = matches!(span.style, InlineStyle::Link(_));
-    let mut resolved = resolve_inline_span(text, bold, italic, is_code, is_link, app);
+    let mut resolved = resolve_inline_span(text.clone(), bold, italic, is_code, is_link, app);
     // A run that named its own colour keeps it in every style: the marker is
     // the source's statement, so it overrides the theme's text, accent or code
     // colour.
     if let Some(color) = span.color {
         resolved = resolved.with_color(color);
+    }
+
+    // Inline code that names a workspace file leads with the file type's icon
+    // and opens the file, the way a mention does in the editor.
+    if is_code {
+        if let Some(path) = crate::elements::chat_content::inline_code_file_path(&text) {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            resolved = resolved
+                .with_icon(crate::elements::file_icon_name(name))
+                .with_icon_color(app.theme.color(ColorToken::Muted));
+            let on_action = on_action.clone();
+            let path = path.to_string();
+            resolved = resolved.with_on_click(move || {
+                if let Some(cb) = on_action.as_ref() {
+                    (cb.borrow_mut())(ChatAction::OpenFile(path.clone()));
+                }
+            });
+        }
+    }
+
+    // A link leads with the link mark, so the run reads as a destination even
+    // when its label is a bare word.
+    if is_link {
+        resolved = resolved
+            .with_icon("link")
+            .with_icon_color(app.theme.color(ColorToken::Muted));
     }
 
     let InlineStyle::Link(url) = &span.style else {
@@ -541,15 +577,25 @@ fn single_call_column(
     hover: &Rc<RefCell<Option<String>>>,
     sub_agents: &HashMap<String, SubAgentRow>,
     sub_agent_model: &str,
+    spinner_phase: f32,
+    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
     app: &crate::elements::AppContext,
 ) -> (Box<dyn Element>, bool) {
     let key = tool_fold_key(call, index);
     let fallback = call.default_display_mode();
-    let mode = fold.borrow().get(&key).copied().unwrap_or(fallback);
     // The record S4 holds for the child a call spawned, found by the call's
     // own id (`parent_call_id` is the spawn call's id). It exists only for a
     // sub-agent-shaped call, so one lookup serves the row.
     let record = sub_agents.get(&call.id);
+    // A child's card is not a fold: grok-build's sub-agent block is always
+    // collapsed, and the card's own controls are what enter and stop the
+    // child. A stale fold entry is ignored rather than opening a body the card
+    // no longer has.
+    let mode = if record.is_some() {
+        ToolDisplayMode::Collapsed
+    } else {
+        fold.borrow().get(&key).copied().unwrap_or(fallback)
+    };
     let header = tool_call_header(
         call,
         &key,
@@ -560,6 +606,8 @@ fn single_call_column(
         hover,
         record,
         sub_agent_model,
+        spinner_phase,
+        on_action,
         app,
     );
     // Stretch, so the header and the body are measured at the transcript's
@@ -570,8 +618,10 @@ fn single_call_column(
         .with_spacing(2.0)
         .with_child(header);
 
-    for row in build_tool_call_body(call, mode, record, app) {
-        call_column = call_column.with_child(row);
+    if record.is_none() {
+        for row in build_tool_call_body(call, mode, record, app) {
+            call_column = call_column.with_child(row);
+        }
     }
     (call_column.finish(), mode == ToolDisplayMode::Collapsed)
 }
@@ -599,6 +649,8 @@ pub(super) fn build_tool_call_rows(
     hover: &Rc<RefCell<Option<String>>>,
     sub_agents: &HashMap<String, SubAgentRow>,
     sub_agent_model: &str,
+    spinner_phase: f32,
+    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Sm);
@@ -636,6 +688,8 @@ pub(super) fn build_tool_call_rows(
                 hover,
                 sub_agents,
                 sub_agent_model,
+                spinner_phase,
+                on_action,
                 app,
             );
             // A call with its body open reads as selected, so it keeps the rail
@@ -716,6 +770,8 @@ pub(super) fn build_tool_call_rows(
                 hover,
                 sub_agents,
                 sub_agent_model,
+                spinner_phase,
+                on_action,
                 app,
             );
             group = group.with_child(element);
@@ -768,6 +824,9 @@ fn sub_agent_detail(record: &SubAgentRow, model: &str) -> String {
 /// The row is clickable: a click advances that call's fold, the mouse arm of
 /// the same toggle.
 ///
+/// A spawned child draws a different row, [`sub_agent_card`]: the record's
+/// live status, and the controls that enter and stop the child.
+///
 /// The row carries no underline at any weight: grok-build paints a tool row's
 /// path and URL plain even when they carry a link target, and the runs here are
 /// drawn the same way.
@@ -781,6 +840,8 @@ pub(super) fn tool_call_header(
     hover: &Rc<RefCell<Option<String>>>,
     sub_agent: Option<&SubAgentRow>,
     sub_agent_model: &str,
+    spinner_phase: f32,
+    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
     let arguments: serde_json::Value =
@@ -795,21 +856,10 @@ pub(super) fn tool_call_header(
         }
     }
     if let Some(record) = sub_agent {
-        // A child's own record carries what the arguments cannot: what the
-        // child is doing and how long it has been doing it. The chat states
-        // the delegation and nothing else; the controls that enter and stop
-        // the child belong to the pane's strip.
-        parsed.verb = "Agent ";
-        parsed.subject = sub_agent_subject(record);
-        parsed.detail = sub_agent_detail(record, sub_agent_model);
-    } else if parsed.kind == ToolKind::SubAgent {
-        // grok-build names the spawned child's row by what it is, then the
-        // description the parent gave it.
-        parsed.verb = "Agent ";
-        parsed.subject = match argument_str(&arguments, "description") {
-            Some(description) => subagent_subject(description),
-            None => call.name.clone(),
-        };
+        // The card reads the child's own record: its mark turns while the
+        // child runs, and its controls are the two gestures the pane's dock
+        // makes — enter the child, and stop it.
+        return sub_agent_card(record, sub_agent_model, spinner_phase, on_action, app);
     }
 
     // The row is one line of runs: the verb in bold, the operand and the
@@ -900,6 +950,124 @@ pub(super) fn tool_call_header(
         folds.insert(toggle_key.clone(), current.next());
     })
     .finish()
+}
+
+/// A spawned child's card, in grok-build's shape: one small line whose leading
+/// mark turns while the child runs and settles into its status colour once it
+/// ends, with the control that enters the child and, while it runs, the one
+/// that stops it. A click anywhere on the line enters the child, the way
+/// grok-build's selected sub-agent block opens its takeover.
+fn sub_agent_card(
+    record: &SubAgentRow,
+    model: &str,
+    spinner_phase: f32,
+    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    app: &crate::elements::AppContext,
+) -> Box<dyn Element> {
+    let running = record.is_running();
+    let (mark, token) = if running {
+        let count = SPINNER_FRAMES.len();
+        let index = (spinner_phase.rem_euclid(1.0) * count as f32) as usize;
+        (SPINNER_FRAMES[index.min(count - 1)], ColorToken::Warning)
+    } else {
+        record.status_affordance()
+    };
+    let run = |text: String, color: ColorU, weight: FontWeight| -> TextSpan {
+        TextSpan::plain(text)
+            .with_color(color)
+            .with_family(FontFamily::Mono)
+            .with_weight(weight)
+    };
+    let detail = sub_agent_detail(record, model);
+    let mut spans = vec![
+        run(
+            format!("{mark} "),
+            app.theme.color(token),
+            FontWeight::Regular,
+        ),
+        run(
+            "Agent ".to_string(),
+            app.theme.color(ColorToken::Text),
+            FontWeight::Bold,
+        ),
+        run(
+            sub_agent_subject(record),
+            app.theme.color(ColorToken::Muted),
+            FontWeight::Regular,
+        ),
+    ];
+    if !detail.trim().is_empty() {
+        // A running child's detail already opens with its own `·`; an ended
+        // one's phrase gets one here, so every card reads as one line.
+        let separator = if detail.starts_with('·') { " " } else { " · " };
+        spans.push(run(
+            format!("{separator}{detail}"),
+            app.theme.color(ColorToken::Muted),
+            FontWeight::Regular,
+        ));
+    }
+    let line = InlineText::new(spans)
+        .with_font_size(SUB_AGENT_FONT_SIZE)
+        .with_line_height(1.4)
+        .finish();
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(Expanded::new(line).with_flex(1.0).finish());
+    let child_id = record.child_id.clone();
+    if !child_id.is_empty() {
+        row = row.with_child(sub_agent_control(
+            "arrow-up",
+            ColorToken::Muted,
+            ChatAction::OpenSubAgent(child_id.clone()),
+            on_action,
+            app,
+        ));
+        if running {
+            row = row.with_child(sub_agent_control(
+                "x-close",
+                ColorToken::Error,
+                ChatAction::StopSubAgent(child_id.clone()),
+                on_action,
+                app,
+            ));
+        }
+    }
+    let row = row.finish();
+    let Some(callback) = on_action.as_ref().filter(|_| !child_id.is_empty()) else {
+        return row;
+    };
+    let callback = callback.clone();
+    HoverRow::new(row)
+        .with_quiet_hover()
+        .with_on_click(move || {
+            (callback.borrow_mut())(ChatAction::OpenSubAgent(child_id.clone()));
+        })
+        .finish()
+}
+
+/// One of a card's two icon controls: a bare hit target around the glyph,
+/// firing the chat action with the child it belongs to.
+fn sub_agent_control(
+    icon: &'static str,
+    token: ColorToken,
+    action: ChatAction,
+    on_action: &Option<Rc<RefCell<dyn FnMut(ChatAction) + 'static>>>,
+    app: &crate::elements::AppContext,
+) -> Box<dyn Element> {
+    let mut chip = Chip::flat(
+        Icon::new(icon)
+            .with_size(SUB_AGENT_CONTROL_SIZE)
+            .with_theme_color(token, app)
+            .finish(),
+    );
+    if let Some(callback) = on_action {
+        let callback = callback.clone();
+        chip = chip.with_on_click(move || (callback.borrow_mut())(action.clone()));
+    }
+    chip.finish()
 }
 
 /// One body row of a tool call: mono, at the tool row's size.

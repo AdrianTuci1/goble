@@ -3,12 +3,11 @@ use std::rc::Rc;
 
 use goble_ui::elements::{
     harness_bar_mark, AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider,
-    EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, Spacer,
-    Text, Tooltip, TooltipPosition, TopbarButton,
+    EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize,
+    Spacer, Text, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
-
 
 use super::super::{UiActions, UiSnapshot};
 use crate::state::PaneWorkItem;
@@ -257,7 +256,11 @@ pub(crate) fn build_agent_header_with(
     });
     let work_chip = build_work_chip(
         app,
-        state.pane_live_work.get(&pane_id).map(Vec::as_slice).unwrap_or(&[]),
+        state
+            .pane_live_work
+            .get(&pane_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
     );
     let HeaderSlots {
         leading,
@@ -334,9 +337,9 @@ pub(crate) fn build_agent_header_with(
     };
 
     Container::new(row)
-    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-    .with_padding(EdgeInsets::new(bar_inset, v_pad, 0.0, v_pad))
-    .finish()
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_padding(EdgeInsets::new(bar_inset, v_pad, 0.0, v_pad))
+        .finish()
 }
 
 /// The pane's own work cue, drawn between the header's empty space and the
@@ -417,7 +420,12 @@ mod tests {
 
     /// The real window over an in-memory store, with the overlays a fresh start
     /// can carry switched off, so the pane's own chrome is what is on screen.
-    fn pane_root() -> (RootView, Rc<RefCell<UiState>>, Arc<DesktopState>, tempfile::TempDir) {
+    fn pane_root() -> (
+        RootView,
+        Rc<RefCell<UiState>>,
+        Arc<DesktopState>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
@@ -437,7 +445,12 @@ mod tests {
     /// A horizontal split of two chat panes (left 7, right 8) as the only
     /// space, active on the left one — the shape the pane-space tests measure
     /// against.
-    fn split_root() -> (RootView, Rc<RefCell<UiState>>, Arc<DesktopState>, tempfile::TempDir) {
+    fn split_root() -> (
+        RootView,
+        Rc<RefCell<UiState>>,
+        Arc<DesktopState>,
+        tempfile::TempDir,
+    ) {
         let (root, state, desktop, dir) = pane_root();
         {
             let mut s = state.borrow_mut();
@@ -507,12 +520,12 @@ mod tests {
 
     /// One frame of the real tree: layout and paint, with the pointer at
     /// `cursor` when one is given (hover is read at paint).
-    fn frame(root: &mut RootView, app: &AppContext, cursor: Option<Vector2F>) -> Vec<RenderCommand> {
-        let _ = root.layout(
-            SizeConstraint::loose(window()),
-            &mut LayoutContext,
-            app,
-        );
+    fn frame(
+        root: &mut RootView,
+        app: &AppContext,
+        cursor: Option<Vector2F>,
+    ) -> Vec<RenderCommand> {
+        let _ = root.layout(SizeConstraint::loose(window()), &mut LayoutContext, app);
         let renderer = Renderer::new();
         let mut paint_ctx = PaintContext::new(renderer);
         if let Some(position) = cursor {
@@ -552,7 +565,10 @@ mod tests {
         cmds.iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawIcon {
-                    origin, name: drawn, size, ..
+                    origin,
+                    name: drawn,
+                    size,
+                    ..
                 } if drawn == name => Some((origin.x + size / 2.0, origin.y + size / 2.0)),
                 _ => None,
             })
@@ -573,7 +589,10 @@ mod tests {
         cmds.iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawIcon {
-                    origin, name: drawn, size, ..
+                    origin,
+                    name: drawn,
+                    size,
+                    ..
                 } if drawn == name => Some((origin.x + size / 2.0, origin.y + size / 2.0)),
                 _ => None,
             })
@@ -611,7 +630,11 @@ mod tests {
     }
 
     /// The pane header's accent diamonds: where each was drawn and how big.
-    fn header_diamonds(cmds: &[RenderCommand], app: &AppContext, bar_y: f32) -> Vec<(Vector2F, f32)> {
+    fn header_diamonds(
+        cmds: &[RenderCommand],
+        app: &AppContext,
+        bar_y: f32,
+    ) -> Vec<(Vector2F, f32)> {
         let accent = app.theme.color(ColorToken::Accent);
         cmds.iter()
             .filter_map(|command| match command {

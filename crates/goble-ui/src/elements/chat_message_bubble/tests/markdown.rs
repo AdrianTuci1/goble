@@ -43,10 +43,10 @@ fn a_coloured_run_is_painted_in_its_colour() {
     );
 }
 
-/// Inline code is one accent run. A list of paths must not become a wall of
-/// raised chips, which is what a per-run background box reads as.
+/// Inline code is a raised chip: mono glyphs in the text colour on a quiet
+/// band, so a path reads as a highlight instead of as a coloured link.
 #[test]
-fn inline_code_is_one_accent_run_without_a_box() {
+fn inline_code_is_a_raised_chip() {
     use crate::theme::FontFamily;
 
     let app = AppContext::default();
@@ -64,19 +64,20 @@ fn inline_code_is_one_accent_run_without_a_box() {
             .unwrap_or_else(|| panic!("{word:?} is drawn, got {commands:?}"));
         assert_eq!(
             run.1,
-            app.theme.color(ColorToken::Accent),
-            "{word:?} takes the accent colour"
+            app.theme.color(ColorToken::Text),
+            "{word:?} takes the text colour"
         );
         assert_eq!(run.2, FontFamily::Mono, "{word:?} stays code-shaped");
         assert_eq!(run.3, 14.0, "{word:?} sits at the message's size");
     }
-    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    let chip = app.theme.color(ColorToken::Hover);
     assert!(
-        !commands.iter().any(|command| matches!(
+        commands.iter().any(|command| matches!(
             command,
-            RenderCommand::FillRect { color, .. } if *color == raised
+            RenderCommand::FillRect { color, corner_radius, .. }
+                if *color == chip && *corner_radius > 0.0
         )),
-        "inline code draws no raised box, got {commands:?}"
+        "inline code draws a raised chip, got {commands:?}"
     );
 }
 
@@ -560,4 +561,114 @@ fn lists_draw_muted_bullets_and_ordered_numbers() {
             "the item body {item:?} is drawn, got {texts:?}"
         );
     }
+}
+
+/// The text runs one reasoning row draws for `text`, in the phase the test
+/// needs; the header and the body are separate runs.
+fn reasoning_runs_in(
+    expanded: &Rc<RefCell<HashMap<String, bool>>>,
+    key: &str,
+    text: &str,
+    done: bool,
+) -> Vec<String> {
+    let app = AppContext::default();
+    let message = ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::reasoning(key, "contemplating", text, done)],
+    );
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments)
+        .with_reasoning_expanded(expanded.clone());
+    bubble.layout(
+        SizeConstraint::loose(vec2f(600.0, 4000.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    bubble.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    paint_ctx
+        .renderer
+        .take()
+        .map(|r| r.commands().to_vec())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A thought that is still streaming draws its newest lines only, so the block
+/// keeps one height while the model writes — grok-build draws a running
+/// thinking block truncated to its last lines the same way. A row the user
+/// opened draws in full, and a finished one folds away.
+#[test]
+fn a_streaming_reasoning_row_draws_only_its_newest_lines() {
+    let expanded = Rc::new(RefCell::new(HashMap::new()));
+    let key = "c1:0";
+    let lines: Vec<String> = (0..40)
+        .map(|index| format!("step {index} of the argument"))
+        .collect();
+    let body = lines.join("\n");
+
+    let runs = reasoning_runs_in(&expanded, key, &body, false);
+    let drawn = runs
+        .iter()
+        .find(|run| run.contains("step"))
+        .unwrap_or_else(|| panic!("the live body is drawn, got {runs:?}"));
+    assert!(
+        drawn.starts_with('…'),
+        "the tail names what it left out: {drawn:?}"
+    );
+    assert!(
+        drawn.contains("step 39 of the argument"),
+        "the newest line is drawn: {drawn:?}"
+    );
+    assert!(
+        !drawn.contains("step 0 of the argument"),
+        "the oldest line is left out: {drawn:?}"
+    );
+    assert!(
+        drawn.lines().count() <= 8,
+        "a streaming thought keeps a few rows, got {}: {drawn:?}",
+        drawn.lines().count()
+    );
+
+    // A thought written as long paragraphs is cut by its newest characters.
+    let paragraphs = format!(
+        "{}\n{}\n{}",
+        "a".repeat(800),
+        "b".repeat(800),
+        "c".repeat(800)
+    );
+    let runs = reasoning_runs_in(&expanded, key, &paragraphs, false);
+    let drawn = runs
+        .iter()
+        .find(|run| run.contains('c'))
+        .unwrap_or_else(|| panic!("the newest paragraph is drawn, got {runs:?}"));
+    assert!(
+        drawn.chars().count() <= 620,
+        "a long paragraph is cut to a bounded window, got {}",
+        drawn.chars().count()
+    );
+
+    // A row the user opened draws the whole thought.
+    expanded.borrow_mut().insert(key.to_string(), true);
+    let runs = reasoning_runs_in(&expanded, key, &body, false);
+    let drawn = runs
+        .iter()
+        .find(|run| run.contains("step"))
+        .unwrap_or_else(|| panic!("the opened body is drawn, got {runs:?}"));
+    assert!(
+        drawn.contains("step 0 of the argument"),
+        "an opened row draws in full: {drawn:?}"
+    );
+
+    // A finished row folds back to its one-line header.
+    expanded.borrow_mut().clear();
+    let runs = reasoning_runs_in(&expanded, key, &body, true);
+    assert!(
+        !runs.iter().any(|run| run.contains("step")),
+        "a finished row folds away, got {runs:?}"
+    );
 }

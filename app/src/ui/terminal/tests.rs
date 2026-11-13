@@ -407,17 +407,6 @@ fn the_executed_command_block_reports_when_its_command_started() {
 /// test drives. The pane's session is detached (no pty): the pane has a
 /// real grid/session to draw and route against without spawning a shell.
 fn shell_root() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
-    let (root, state, dir) = shell_fixture();
-    (Box::new(root) as Box<dyn Element>, state, dir)
-}
-
-/// The unboxed root, so a test can reach the app's own action closures as
-/// well as the element tree.
-fn shell_fixture() -> (
-    crate::root_view::RootView,
-    Rc<RefCell<UiState>>,
-    tempfile::TempDir,
-) {
     use crate::root_view::RootView;
     use crate::ui::{Pane, PaneKind, Space};
     use goble_core::store::Store;
@@ -459,7 +448,7 @@ fn shell_fixture() -> (
             .sessions
             .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
     }
-    (root, state, dir)
+    (Box::new(root) as Box<dyn Element>, state, dir)
 }
 
 /// A `RootView` on the default space (the chat pane), the surface the shell
@@ -729,14 +718,8 @@ fn the_rich_input_steps_aside_while_a_full_screen_agent_owns_the_pane() {
 fn a_cli_harness_line_opens_its_agent_view_and_never_starts_a_tui() {
     use std::os::unix::fs::PermissionsExt;
 
-    let (root, state, _dir) = shell_fixture();
-    let on_run_shell_command = Rc::clone(
-        &root
-            .actions
-            .as_ref()
-            .expect("the root built its actions")
-            .on_run_shell_command,
-    );
+    let app = AppContext::default();
+    let (mut root, state, _dir) = shell_root();
     // A harness this machine has: a temp executable named for one, so the
     // catalog recognises the line without depending on what is installed.
     let bin = tempfile::tempdir().expect("temp bin");
@@ -745,7 +728,12 @@ fn a_cli_harness_line_opens_its_agent_view_and_never_starts_a_tui() {
     std::fs::set_permissions(&hermes, std::fs::Permissions::from_mode(0o755))
         .expect("make the stub executable");
 
-    (on_run_shell_command.borrow_mut())(1, hermes.display().to_string());
+    // `env` is the wrapper the line starts with, so the draft is no slash
+    // command; the path after it is the program the catalog reads.
+    let _ = pane_runs(&mut root, &app);
+    let line = format!("env {}", hermes.display());
+    type_line(&mut root, &app, &line);
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
 
     let s = state.borrow();
     assert!(
@@ -802,8 +790,8 @@ fn an_inline_cli_agent_keeps_the_rich_input_below_its_screen() {
         .borrow_mut()
         .sessions
         .insert(1, TerminalSession::with_emulator(emulator));
-    // Focus sits with the CLI's screen, as it does after Esc left the agent
-    // view: the bar under it is the CLI's prompt line, not a typing surface.
+    // Focus sits with the CLI's screen: the bar under it is the CLI's prompt
+    // line, not a typing surface.
     state.borrow_mut().composer_focused = false;
     assert!(
         !state
@@ -816,7 +804,7 @@ fn an_inline_cli_agent_keeps_the_rich_input_below_its_screen() {
             .is_alt_screen(),
         "agy needs no alternate screen"
     );
-
+    // The agent view is not open: the CLI was started in the shell itself.
     let runs = pane_runs(&mut root, &app);
     assert!(
         runs.iter()
@@ -860,7 +848,7 @@ fn an_inline_cli_agent_keeps_the_rich_input_below_its_screen() {
         CommandFinishedValue::default(),
     )));
     state
-        .borrow_mut()
+        .borrow()
         .terminal
         .borrow_mut()
         .sessions
@@ -1557,68 +1545,103 @@ fn a_reported_cwd_reaches_the_panes_directory_pill() {
     );
 }
 
-/// The rich input belongs to the agent on every surface: the first character
-/// typed at a shell's bar opens that pane's harness, with the draft carried
-/// into the agent view's composer and Esc as the way back. The shell never
-/// receives the line, so no CLI TUI is started in the terminal Esc returns to.
+/// The shell's bar is the pane's submit line for *commands*: Enter runs the
+/// draft in this pane's own PTY and leaves the pane on the shell — it does
+/// not open the harness, because the agent view has a composer of its own
+/// that takes prompts. Cmd+Enter is what opens that view. The bar is the
+/// pane's only typing surface, so it holds the keys whenever the pane is
+/// active and no full-screen program owns the screen; Esc puts the shell
+/// back with the conversation's card left behind.
 #[test]
-fn typing_at_the_shells_bar_opens_the_agent_view_and_esc_returns_to_the_shell() {
+fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
 
-    // The shell's bar is the only typing surface, so it holds the keys.
+    // A model is configured here, because Cmd+Enter below opens a *new*
+    // conversation and nothing is created while nothing could answer it
+    // (that refusal is covered in `terminal/tests::a_prompt_with_no_model`).
+    let rt = tokio::runtime::Runtime::new().expect("build runtime");
+    let _guard = rt.enter();
+    {
+        let mut s = state.borrow_mut();
+        s.settings_llm_provider = "mock".to_string();
+        s.settings_llm_api_key = "test-key".to_string();
+    }
+
+    // No focus flag is set by hand: an active shell pane's own build gives
+    // the bar the keyboard, because typing happens only there.
     let _ = pane_runs(&mut root, &app);
     let typed = "ls -la";
-    type_line(&mut root, &app, typed);
-
-    let conversation_id = {
-        let s = state.borrow();
+    for ch in typed.chars() {
         assert!(
-            s.pane_controls(1).harness_mode,
-            "the first keystroke opened the pane's harness"
+            press(&mut root, &app, &ch.to_string()),
+            "the focused bar takes {ch:?}"
         );
-        let conversation_id = s
-            .pane_conversation_id(1)
-            .expect("the agent view has a conversation of its own to draw");
-        assert_eq!(
-            s.pane_view(1),
-            BlockView::Agent {
-                conversation_id: conversation_id.clone()
-            },
-            "the pane draws the agent view"
-        );
-        assert_eq!(
-            s.pane_sessions.get(&1).unwrap().draft,
-            typed,
-            "the draft came with the pane into the agent composer"
-        );
-        assert_eq!(
-            s.terminal.borrow().input(1),
-            "",
-            "the terminal never receives typed characters"
-        );
-        assert_eq!(
-            s.terminal.borrow().mode(1),
-            crate::terminal::TerminalMode::Shell,
-            "no CLI TUI was started in the pane's shell"
-        );
-        conversation_id
-    };
+    }
+    assert_eq!(
+        state.borrow().pane_sessions.get(&1).unwrap().draft,
+        typed,
+        "typing edits this pane's own draft"
+    );
 
-    // The agent surface draws the shared composer with the draft, the
-    // harness's own pill over it, and its way back.
+    // Enter is the command affordance: the draft is submitted to this
+    // pane's PTY and the pane stays on the shell. An agent turn here would
+    // have opened the harness and bound this pane a conversation.
+    assert!(press(&mut root, &app, "Enter"));
+    assert!(
+        !state.borrow().pane_controls(1).harness_mode,
+        "Enter runs a command instead of opening the harness"
+    );
+    assert_eq!(
+        state.borrow().pane_view(1),
+        BlockView::Terminal,
+        "the pane is still the shell after a command"
+    );
+    assert!(
+        state.borrow().pane_conversation_id(1).is_none(),
+        "a command does not bind this pane an agent conversation"
+    );
+    assert_eq!(
+        state.borrow().pane_sessions.get(&1).unwrap().draft,
+        "",
+        "the bar clears after the command"
+    );
+
+    // Cmd+Enter is the way to the agent view: a draft typed at the same bar
+    // opens the harness on this pane's conversation and goes to the agent.
+    for ch in "explain the last command".chars() {
+        assert!(press(&mut root, &app, &ch.to_string()));
+    }
+    let cmd_enter = key(
+        "Enter",
+        ModifiersState {
+            command: true,
+            ..ModifiersState::default()
+        },
+    );
+    let mut ctx = EventContext;
+    assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
+    assert!(
+        state.borrow().pane_controls(1).harness_mode,
+        "Cmd+Enter opens the harness"
+    );
+    let conversation_id = state
+        .borrow()
+        .pane_conversation_id(1)
+        .expect("the pane bound a conversation of its own");
+    assert_eq!(
+        state.borrow().pane_view(1),
+        BlockView::Agent {
+            conversation_id: conversation_id.clone()
+        },
+        "the harness draws the conversation's agent view"
+    );
+    // The open harness is the shared agent view, and the shared composer is
+    // still pinned at the bottom of it.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, typed),
-        "the agent view's composer carries the draft: {runs:?}"
-    );
-    assert!(
-        pane_has(&runs, "Local"),
-        "the rich input names the harness that answers: {runs:?}"
-    );
-    assert!(
-        pane_has(&runs, "for terminal"),
-        "the open harness names Esc as the way back: {runs:?}"
+        pane_has(&runs, ChatComposer::new().placeholder()),
+        "the agent view carries the shared composer: {runs:?}"
     );
 
     // Esc returns the pane to the shell; the card stays in its block list.
@@ -1639,45 +1662,27 @@ fn typing_at_the_shells_bar_opens_the_agent_view_and_esc_returns_to_the_shell() 
         vec![conversation_id.clone()],
         "the conversation's card stays in the terminal scrollback"
     );
-    assert_eq!(
-        state.borrow().terminal.borrow().mode(1),
-        crate::terminal::TerminalMode::Shell,
-        "the returned terminal still runs no CLI TUI"
-    );
 
-    // The shell's bar is back, and typing there reopens the same view.
+    // The bar takes the keys back: it is the pane's only typing surface, so
+    // the keystrokes that once reached the shell now edit the draft, and the
+    // shell's input mirror stays empty.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, "new conversation"),
+        pane_has(&runs, ChatComposer::new().placeholder()),
         "the shell's bar is back at the bottom: {runs:?}"
     );
     assert!(press(&mut root, &app, "l"));
-    assert!(
-        state.borrow().pane_controls(1).harness_mode,
-        "typing reopens the harness"
-    );
-    assert_eq!(
-        state.borrow().pane_view(1),
-        BlockView::Agent {
-            conversation_id: conversation_id.clone()
-        },
-        "the pane reopens the conversation it was on"
-    );
+    assert!(press(&mut root, &app, "s"));
     assert_eq!(
         state.borrow().pane_sessions.get(&1).unwrap().draft,
-        "ls -lal",
-        "the draft continues where the shell's bar left it"
+        "ls",
+        "the bar takes the keys"
     );
     assert_eq!(
         state.borrow().terminal.borrow().input(1),
         "",
         "the terminal never receives typed characters"
     );
-
-    // Back on the shell for the card's own click: the frame has to be built
-    // from the reopened state before it can route the key.
-    let _ = pane_runs(&mut root, &app);
-    assert!(press(&mut root, &app, "Escape"));
 
     // The card reads the harness off the app's conversation list, so the mark
     // it leads with is the conversation's own, not a fixed native one.
@@ -1736,12 +1741,15 @@ fn typing_at_the_shells_bar_opens_the_agent_view_and_esc_returns_to_the_shell() 
 /// (the shared-composer test above pins that side).
 const AGENT_SURFACE_RUNS: [&str; 4] = ["send", "send to cloud", "tasks", "for terminal"];
 
-/// S4: a shell pane draws the shell until something is typed at its rich
-/// input. The pane's kind alone is not an agent session — its mode is off, so
-/// it draws the shell and no agent surface — and the first keystroke is what
-/// opens the harness, carrying the draft it was typed into.
+/// S4: a shell pane in terminal mode builds no agent surface and dispatches
+/// no agent action. Nothing about the pane's kind has made it an agent
+/// session — its mode is off — so the pane draws the shell, and a
+/// prompt-shaped line submitted at its bar stays a shell command: no
+/// conversation is bound to the pane, the pane does not switch itself into
+/// agent mode, and no turn is attempted (a turn that could not run is what
+/// would raise the missing-model notice, and it is never reached).
 #[test]
-fn a_shell_pane_draws_the_shell_until_the_first_keystroke_opens_the_harness() {
+fn a_shell_pane_in_terminal_mode_builds_no_agent_surface_and_dispatches_no_agent_action() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
     let _ = pane_runs(&mut root, &app);
@@ -1762,32 +1770,41 @@ fn a_shell_pane_draws_the_shell_until_the_first_keystroke_opens_the_harness() {
             "a shell pane draws no agent surface, so no {label:?}: {runs:?}"
         );
     }
-    assert!(
-        state.borrow().pane_conversation_id(1).is_none(),
-        "a shell pane owns no conversation"
-    );
 
-    // The first keystroke opens the pane's harness; the character stays in
-    // the draft, and the shell never receives it.
-    assert!(press(&mut root, &app, "e"), "the bar takes the keystroke");
+    // A line that reads like a prompt is a command like any other at this
+    // bar. (That the submitted line really ran in the pane's shell is pinned
+    // where the shell reports it — `a_bound_shell_pane_names_its_host...`
+    // above binds the pane from the line it types — and by
+    // `the_shells_bar_runs_its_draft_as_a_command...`.)
+    type_line(&mut root, &app, "explain the last command");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
     let s = state.borrow();
     assert!(
-        s.pane_controls(1).harness_mode,
-        "typing opened the pane's harness"
+        !s.pane_controls(1).harness_mode,
+        "Enter runs the line instead of switching the pane into agent mode"
     );
     assert_eq!(
-        s.pane_sessions.get(&1).unwrap().draft,
-        "e",
-        "the character stayed in the draft"
+        s.pane_view(1),
+        BlockView::Terminal,
+        "and the pane is still the shell"
     );
     assert!(
-        s.pane_conversation_id(1).is_some(),
-        "the agent view has a conversation of its own"
+        s.pane_conversation_id(1).is_none(),
+        "a shell command binds this pane no conversation"
     );
+    assert!(
+        !s.show_llm_key_banner,
+        "no agent turn was dispatched (a refused one raises the notice band)"
+    );
+    assert!(
+        !s.pane_runtime.get(&1).map(|rt| rt.busy).unwrap_or(false),
+        "and no turn is running for the pane"
+    );
+    drop(s);
     assert_eq!(
-        s.terminal.borrow().input(1),
+        state.borrow().terminal.borrow().input(1),
         "",
-        "the terminal never receives typed characters"
+        "the line was submitted at the bar, not typed into the shell's grid"
     );
 }
 
@@ -1799,15 +1816,7 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
     /// What the fixture's `web` alias resolves to, as the chip reads it.
     const CHIP: &str = "deploy@web (web.example.com)";
     let app = AppContext::default();
-    let (root, state, _dir) = shell_fixture();
-    let on_run_shell_command = Rc::clone(
-        &root
-            .actions
-            .as_ref()
-            .expect("the root built its actions")
-            .on_run_shell_command,
-    );
-    let mut root: Box<dyn Element> = Box::new(root);
+    let (mut root, state, _dir) = shell_root();
     let home = tempfile::tempdir().expect("temp home");
     std::fs::create_dir_all(home.path().join(".ssh")).expect("fixture .ssh");
     std::fs::write(
@@ -1819,7 +1828,8 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
     let _ = pane_runs(&mut root, &app);
 
     // The line binds the pane to the host it names ...
-    (on_run_shell_command.borrow_mut())(1, "ssh web".to_string());
+    type_line(&mut root, &app, "ssh web");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
     assert_eq!(
         state
             .borrow()
@@ -1856,7 +1866,8 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
     // Another line — prompt-shaped, and nothing the shell can bind — leaves
     // the pane where it is: on the same session, out of agent mode, with no
     // conversation and no turn.
-    (on_run_shell_command.borrow_mut())(1, "explain the last command".to_string());
+    type_line(&mut root, &app, "explain the last command");
+    assert!(press(&mut root, &app, "Enter"), "the bar takes Enter");
     let s = state.borrow();
     assert!(
         !s.pane_controls(1).harness_mode,

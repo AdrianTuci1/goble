@@ -2,13 +2,33 @@ use std::time::Duration;
 
 use crate::store::Store;
 use crate::subagent::{SubAgentBudget, SubAgentStatus};
-use crate::subagent_run::default_child_budget;
+use crate::subagent_run::budget::MAX_CHILD_STEPS;
+use crate::subagent_run::child_budget;
 
 use super::{
     background_args, completion, credentials_call_forever, host_for, host_with_wait, parent_chat,
     roles, run_direct, spec_for, spawn_args, spawn_through_tool, tool_call, wait_until_terminal,
     GateProvider, ScriptedProvider,
 };
+
+#[test]
+fn a_child_gets_two_hundred_steps_unless_the_spawn_names_a_budget() {
+    let default = default_child_budget();
+    assert_eq!(default.max_turns, 200);
+    assert_eq!(default.max_tool_calls, 400);
+    assert_eq!(default.max_tokens, 2_000_000);
+
+    let asked = child_budget(Some(30));
+    assert_eq!(asked.max_turns, 30);
+    assert_eq!(asked.max_tool_calls, 60);
+    assert_eq!(asked.max_tokens, 300_000);
+
+    // A budget outside the range is clamped rather than refused: a caller
+    // that asked for nothing still gets one step, and a huge number stops at
+    // the cap.
+    assert_eq!(child_budget(Some(0)).max_turns, 1);
+    assert_eq!(child_budget(Some(u32::MAX)).max_turns, MAX_CHILD_STEPS);
+}
 
 #[tokio::test]
 async fn a_turn_budget_exhausted_mid_run_ends_the_child_terminal_with_the_reason() {
@@ -142,6 +162,44 @@ async fn a_foreground_child_past_its_wait_moves_to_the_background() {
 }
 
 #[tokio::test]
+async fn a_spawn_carries_its_step_budget_into_the_child() {
+    let store = Store::open_in_memory().unwrap();
+    let workspace = tempfile::TempDir::new().unwrap();
+    let parent_chat = parent_chat(&store);
+    let llm = ScriptedProvider::loops_forever(credentials_call_forever());
+    let host = host_for(&store, workspace.path(), llm);
+
+    // A spawn that names no budget gets the default: room for a real
+    // delegation, not the handful of turns that stopped one.
+    spawn_through_tool(
+        &host,
+        &store,
+        workspace.path(),
+        &parent_chat,
+        background_args("default budget"),
+    )
+    .await
+    .expect("a background child");
+    let default_child = host.registry.records()[0].spec.budget;
+    assert_eq!(default_child.max_turns, default_child_budget().max_turns);
+    assert_eq!(default_child.max_turns, 200);
+    host.registry
+        .cancel(&host.registry.records()[0].spec.id, "test done");
+
+    // A spawn that names one passes it through, clamped by the budget module.
+    let mut args = background_args("asked budget");
+    args["max_steps"] = serde_json::json!(25);
+    spawn_through_tool(&host, &store, workspace.path(), &parent_chat, args)
+        .await
+        .expect("a background child with a budget");
+    let asked = host.registry.records()[1].spec.budget;
+    assert_eq!(asked.max_turns, 25);
+    assert_eq!(asked.max_tool_calls, 50);
+    host.registry
+        .cancel(&host.registry.records()[1].spec.id, "test done");
+}
+
+#[tokio::test]
 async fn a_budget_exhausted_background_child_is_terminal_in_the_registry() {
     let store = Store::open_in_memory().unwrap();
     let workspace = tempfile::TempDir::new().unwrap();
@@ -149,15 +207,11 @@ async fn a_budget_exhausted_background_child_is_terminal_in_the_registry() {
     // A child that would loop forever on tool calls; only its budget stops it.
     let llm = ScriptedProvider::loops_forever(credentials_call_forever());
     let host = host_for(&store, workspace.path(), llm);
-    spawn_through_tool(
-        &host,
-        &store,
-        workspace.path(),
-        &parent_chat,
-        background_args("burn the budget"),
-    )
-    .await
-    .expect("a background child");
+    let mut args = background_args("burn the budget");
+    args["max_steps"] = serde_json::json!(4);
+    spawn_through_tool(&host, &store, workspace.path(), &parent_chat, args)
+        .await
+        .expect("a background child");
 
     let id = host.registry.records()[0].spec.id.clone();
     let done = wait_until_terminal(&host, &id).await;
@@ -172,7 +226,7 @@ async fn a_budget_exhausted_background_child_is_terminal_in_the_registry() {
     let rows = roles(&store, &id.0);
     assert_eq!(
         rows.iter().filter(|(role, _)| role == "assistant").count(),
-        default_child_budget().max_turns as usize - 1,
-        "the child stopped on its turn ceiling, not on the test: {rows:?}"
+        3,
+        "the child stopped on its four-step ceiling, not on the test: {rows:?}"
     );
 }

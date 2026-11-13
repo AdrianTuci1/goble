@@ -5,7 +5,7 @@ use crate::color::ColorU;
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::text_selection::{RunMetrics, SelectableText, SelectionRun};
 use crate::elements::{
-    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
+    AppContext, Element, EventContext, IconName, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
@@ -15,6 +15,8 @@ use crate::theme::{ColorToken, FontFamily};
 const DEFAULT_FONT_SIZE: f32 = 12.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 const CODE_BG_PAD: f32 = 2.0;
+/// The room between an inline glyph and the run it leads.
+const ICON_GAP: f32 = 4.0;
 
 /// A single run of text with a resolved appearance, used by [`InlineText`].
 #[derive(Clone)]
@@ -30,6 +32,12 @@ pub struct TextSpan {
     pub strikeout: bool,
     pub color: ColorU,
     pub background: Option<ColorU>,
+    /// A glyph drawn at the run's left edge, inside its background box. A file
+    /// mention leads with its file-type icon and a link with the link mark, so
+    /// a run of prose names what it points at without a second element.
+    pub icon: Option<IconName>,
+    /// The glyph's colour. `None` draws it in the run's own colour.
+    pub icon_color: Option<ColorU>,
     /// When set, this run is a live hit target: a click on it invokes the
     /// callback. A link carries one so the span the app painted is the thing
     /// the click lands on, not just text styled as a link.
@@ -47,6 +55,8 @@ impl TextSpan {
             strikeout: false,
             color: ColorU::default(),
             background: None,
+            icon: None,
+            icon_color: None,
             on_click: None,
         }
     }
@@ -83,6 +93,18 @@ impl TextSpan {
 
     pub fn with_background(mut self, color: impl Into<ColorU>) -> Self {
         self.background = Some(color.into());
+        self
+    }
+
+    /// Lead the run with `icon`, drawn inside the run's background box.
+    pub fn with_icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Draw the leading icon in its own colour instead of the run's.
+    pub fn with_icon_color(mut self, color: impl Into<ColorU>) -> Self {
+        self.icon_color = Some(color.into());
         self
     }
 
@@ -203,6 +225,8 @@ fn same_style(a: &TextSpan, b: &TextSpan) -> bool {
         && a.strikeout == b.strikeout
         && a.color == b.color
         && a.background == b.background
+        && a.icon == b.icon
+        && a.icon_color == b.icon_color
         && match (&a.on_click, &b.on_click) {
             (None, None) => true,
             (Some(a), Some(b)) => Rc::ptr_eq(a, b),
@@ -228,10 +252,16 @@ fn drawn_run_width(max_width: f32, cursor_x: f32, advance: f32) -> f32 {
 /// adjacent on the same line and styled alike. A line of one style then draws
 /// as one run — one underline, one colour — rather than one per word.
 fn push_chunk(placed: &mut Vec<PlacedSpan>, chunk: PlacedSpan, max_width: f32) {
+    // An inline glyph is its own placed run: merging a word into it would move
+    // the glyph's background and its click target onto the word.
+    if chunk.span.icon.is_some() {
+        placed.push(chunk);
+        return;
+    }
     if let Some(last) = placed.last_mut() {
         let adjacent = (last.y - chunk.y).abs() < 0.5
             && (last.x + last.width - chunk.x).abs() < 0.5;
-        if adjacent && same_style(&last.span, &chunk.span) {
+        if adjacent && last.span.icon.is_none() && same_style(&last.span, &chunk.span) {
             last.span.text.push_str(&chunk.span.text);
             last.width += chunk.width;
             // The merged run is as wide as the advances it now holds, which is
@@ -277,6 +307,13 @@ impl Element for InlineText {
         let mut pending_space: Option<(usize, String, f32)> = None;
         let mut placed: Vec<PlacedSpan> = Vec::with_capacity(self.spans.len());
         let mut bottom = 0.0;
+        // Each span's leading glyph is placed once, in front of its first word,
+        // so a run that wraps keeps its glyph on the word's first line.
+        let mut pending_icons: Vec<bool> = self
+            .spans
+            .iter()
+            .map(|span| span.icon.is_some())
+            .collect();
 
         // Words, not whole spans, are what a line breaks between: filling a line
         // to its edge is what makes a paragraph read as one column of text. A
@@ -323,11 +360,16 @@ impl Element for InlineText {
             }
 
             let gap = pending_space.as_ref().map(|(_, _, w)| *w).unwrap_or(0.0);
+            let icon_advance = if pending_icons[index] {
+                self.font_size + ICON_GAP
+            } else {
+                0.0
+            };
             // A single word wider than the paragraph is drawn wrapped inside it,
             // and the flow restarts under the lines that word took. What it then
             // occupies is those lines, not the one width it asked for.
             let over_wide = width > max_width;
-            if line_has_word && cursor_x + gap + width > max_width {
+            if line_has_word && cursor_x + gap + icon_advance + width > max_width {
                 // Break to a new line and drop the space that was held back.
                 cursor_y += line_h;
                 cursor_x = 0.0;
@@ -357,6 +399,25 @@ impl Element for InlineText {
                 }
             }
 
+            if pending_icons[index] {
+                pending_icons[index] = false;
+                let mut icon_span = self.spans[index].clone();
+                icon_span.text.clear();
+                push_chunk(
+                    &mut placed,
+                    PlacedSpan {
+                        x: cursor_x,
+                        y: cursor_y,
+                        max_width: drawn_run_width(max_width, cursor_x, icon_advance),
+                        width: icon_advance,
+                        span: icon_span,
+                        state: InteractiveState::default(),
+                    },
+                    max_width,
+                );
+                cursor_x += icon_advance;
+            }
+
             let advance = width;
             let (width, height) = if over_wide {
                 let wrapped = measure_text_family(
@@ -382,6 +443,10 @@ impl Element for InlineText {
             };
             let mut word_span = span;
             word_span.text = text;
+            // The glyph belongs to the run's first placed piece; the word it
+            // leads is an ordinary run that can merge with the words after it.
+            word_span.icon = None;
+            word_span.icon_color = None;
             push_chunk(
                 &mut placed,
                 PlacedSpan {
@@ -433,9 +498,10 @@ impl Element for InlineText {
                 if self.cell_backgrounds {
                     let height = self.font_size * self.line_height;
                     renderer.fill_rect(rectf(base.x, base.y, placed.width, height), bg);
-                } else if !placed.span.text.trim().is_empty() {
+                } else if !placed.span.text.trim().is_empty() || placed.span.icon.is_some() {
                     // Whitespace only pads a run out to the next word; it
-                    // carries no box of its own.
+                    // carries no box of its own. A glyph leads its run and sits
+                    // inside the same box.
                     let height = self.font_size * self.line_height;
                     renderer.fill_rounded_rect(
                         rectf(base.x - CODE_BG_PAD, base.y - CODE_BG_PAD, placed.width + CODE_BG_PAD * 2.0, height + CODE_BG_PAD * 2.0),
@@ -443,6 +509,16 @@ impl Element for InlineText {
                         3.0,
                     );
                 }
+            }
+            if let Some(icon) = placed.span.icon {
+                let size = self.font_size;
+                let glyph_y = base.y + (self.font_size * self.line_height - size) / 2.0;
+                renderer.draw_icon(
+                    vec2f(base.x, glyph_y),
+                    crate::elements::icon_atlas_name(icon),
+                    size,
+                    placed.span.icon_color.unwrap_or(placed.span.color),
+                );
             }
             renderer.draw_text_with_font(
                 base,
@@ -564,9 +640,14 @@ pub fn resolve_span(
         FontWeight::Regular
     };
     let (family, color, background) = if is_code {
-        // Code reads as one accent run: the transcript keeps a small palette,
-        // and a box per word turns a list of paths into a wall of chips.
-        (FontFamily::Mono, app.theme.color(ColorToken::Accent), None)
+        // Code reads as a raised chip: mono glyphs in the text colour on a
+        // quiet band, the way the chat draws a highlight. A colour alone made
+        // a path look like a link and vanished under the model's own markers.
+        (
+            FontFamily::Mono,
+            app.theme.color(ColorToken::Text),
+            Some(app.theme.color(ColorToken::Hover)),
+        )
     } else if is_link {
         (
             FontFamily::System,
@@ -589,6 +670,8 @@ pub fn resolve_span(
         strikeout: false,
         color,
         background,
+        icon: None,
+        icon_color: None,
         on_click: None,
     }
 }

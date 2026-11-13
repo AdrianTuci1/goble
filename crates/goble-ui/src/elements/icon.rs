@@ -86,7 +86,7 @@ impl Element for Icon {
 }
 
 /// Maps logical icon names used by components to canonical SVG file names in the icon atlas.
-fn icon_atlas_name(name: IconName) -> IconName {
+pub(crate) fn icon_atlas_name(name: IconName) -> IconName {
     match name {
         "close" => "close",
         "x" => "x-close",

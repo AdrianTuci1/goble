@@ -1469,11 +1469,27 @@ mod ui_tests {
             "the banner is drawn over settings: {:?}",
             drawn_texts(&commands)
         );
-        let panel = commands
+        // The banner's surface is the one the title is drawn on, not whichever
+        // raised fill the page under it happens to paint first.
+        let title = commands
             .iter()
             .find_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. } if text == "Turn finished" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the banner's title is drawn");
+        let panel = commands
+            .iter()
+            .rev()
+            .find_map(|command| match command {
                 RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::SurfaceRaised) =>
+                    if *color == app.theme.color(ColorToken::SurfaceRaised)
+                        && rect.min_x() <= title.x
+                        && rect.max_x() >= title.x
+                        && rect.min_y() <= title.y
+                        && rect.max_y() >= title.y =>
                 {
                     Some(*rect)
                 }

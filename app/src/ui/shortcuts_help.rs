@@ -576,7 +576,7 @@ mod tests {
             s.show_llm_key_banner = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
-            s.task_workflow_open = false;
+            s.workflow_views.clear();
             s.shortcuts_help_open = false;
         }
         (Box::new(root), state, dir)
@@ -918,9 +918,10 @@ mod tests {
                         chord(&mut root, &app, &keys[0], modifiers),
                         "⌘⇧W answers"
                     );
+                    let active = state.borrow().active_pane_id;
                     assert!(
-                        state.borrow().task_workflow_open,
-                        "⌘⇧W opens the workflow-runs overlay"
+                        state.borrow().workflow_view(active).is_some(),
+                        "⌘⇧W opens the workflow runs in the active pane"
                     );
                 }
                 "previous / next pane" | "pane above / below" => {

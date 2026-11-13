@@ -95,7 +95,7 @@ mod rich_input_tests {
             s.show_llm_key_banner = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
-            s.task_workflow_open = false;
+            s.workflow_views.clear();
         }
         (Box::new(root), state, dir)
     }

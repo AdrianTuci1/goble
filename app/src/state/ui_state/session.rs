@@ -6,6 +6,42 @@ impl UiState {
         self.sub_agent_views.get(&pane_id)
     }
 
+    /// The workflow-runs view `pane_id` shows, if any.
+    pub fn workflow_view(&self, pane_id: u64) -> Option<&WorkflowView> {
+        self.workflow_views.get(&pane_id)
+    }
+
+    /// Show the workflow runs in `pane_id`: `run_id`'s detail when one is
+    /// named, otherwise the list. Opening from a dock row names the run the row
+    /// stands for.
+    pub fn open_workflow_view(&mut self, pane_id: u64, run_id: Option<String>) {
+        self.workflow_views
+            .insert(pane_id, WorkflowView { selected: run_id });
+    }
+
+    /// Open one run's detail in a pane that already shows the workflow view.
+    /// `None` goes back to the list. Returns whether the pane had the view.
+    pub fn select_workflow_run(&mut self, pane_id: u64, run_id: Option<String>) -> bool {
+        let Some(view) = self.workflow_views.get_mut(&pane_id) else {
+            return false;
+        };
+        view.selected = run_id;
+        true
+    }
+
+    /// Leave the workflow view open in `pane_id`. Returns whether one was open.
+    pub fn close_workflow_view(&mut self, pane_id: u64) -> bool {
+        self.workflow_views.remove(&pane_id).is_some()
+    }
+
+    /// The workflow toggle: open the run list in `pane_id`, or close the view
+    /// that is already there.
+    pub fn toggle_workflow_view(&mut self, pane_id: u64) {
+        if self.workflow_views.remove(&pane_id).is_none() {
+            self.workflow_views.insert(pane_id, WorkflowView::default());
+        }
+    }
+
     /// Move the focus to `pane_id` within the space on screen.
     ///
     /// The pane drawn over the panes space gives way to the one the focus moved
@@ -153,7 +189,10 @@ impl UiState {
         // rather than inferred from a pane that may later be closed.
         if !path.trim().is_empty() {
             if let Err(e) = desktop.set_chat_working_dir(&conversation_id, &path) {
-                log::warn!("set_chat_working_dir for harness {} failed: {e}", harness.id);
+                log::warn!(
+                    "set_chat_working_dir for harness {} failed: {e}",
+                    harness.id
+                );
             }
         }
         // The session the conversation will own is claimed later
@@ -260,6 +299,7 @@ impl UiState {
             // on the conversation it names.
             if self.pane_is_terminal(pane_id) {
                 self.sub_agent_views.remove(&pane_id);
+                self.workflow_views.remove(&pane_id);
                 self.open_harness_agent_view(pane_id);
             }
             self.sync_active_view();
@@ -485,6 +525,7 @@ impl UiState {
         if self.sub_agent_views.remove(&self.active_pane_id).is_some() {
             self.leave_agent_view(self.active_pane_id);
         }
+        self.workflow_views.remove(&self.active_pane_id);
         let pane_id = self.active_pane_id;
         if let Some(session) = self.pane_sessions.get_mut(&pane_id) {
             session.conversation_id = conversation_id.clone();
@@ -705,6 +746,11 @@ impl UiState {
                             messages: view.messages.clone(),
                             draft: view.draft.clone(),
                             caret: view.caret.clone(),
+                        }
+                    }),
+                    workflow_view: self.workflow_views.get(pane_id).map(|view| {
+                        crate::ui::WorkflowViewSnapshot {
+                            selected: view.selected.clone(),
                         }
                     }),
                     scroll: self.pane_scroll(*pane_id),

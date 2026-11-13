@@ -22,6 +22,12 @@ pub enum ChatAction {
     /// id, which the app cancels the child's turn by; the parent's own turn is
     /// left running.
     StopSubAgent(String),
+    /// Copy text a block carries its own control for. The payload is the exact
+    /// text the control stands for — a table's rows as CSV, say.
+    CopyText(String),
+    /// Open a workspace file named by an inline code mention. The payload is
+    /// the path the mention drew, with any line suffix removed.
+    OpenFile(String),
     Custom(String),
 }
 

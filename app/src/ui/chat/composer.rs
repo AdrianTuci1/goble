@@ -134,7 +134,8 @@ pub(crate) fn build_terminal_composer(
                 // input model, where the agent composer's `!cmd` is the same
                 // thing.
                 None => {
-                    if let Some(InputClass::TerminalCommand(command)) = classify_input(&text, false) {
+                    if let Some(InputClass::TerminalCommand(command)) = classify_input(&text, false)
+                    {
                         (on_run_shell_command.borrow_mut())(pane_id, command);
                     }
                 }

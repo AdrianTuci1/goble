@@ -67,9 +67,17 @@ const GREETINGS: &[&str] = &[
 /// and so is a subject the agent derived earlier, but a subject the user typed
 /// is never taken back.
 pub fn agent_subject(stored_title: &str, messages: &[(&str, &str)]) -> Option<String> {
-    let derived: Vec<Option<String>> = exchanges(messages)
-        .into_iter()
+    let exchanges = exchanges(messages);
+    let derived: Vec<Option<String>> = exchanges
+        .iter()
         .map(|(question, reply)| derive(question, reply))
+        .collect();
+    // A title an earlier version derived from the prompt alone still counts as
+    // the agent's own, so the answer's subject can replace it. A title the user
+    // typed matches neither rule and stands.
+    let prompted: Vec<Option<String>> = exchanges
+        .iter()
+        .map(|(question, _)| prompt_subject_of(question))
         .collect();
     // A follow-up that only thanks or agrees names nothing, so it leaves the
     // conversation under the subject of the last exchange that did.
@@ -77,41 +85,62 @@ pub fn agent_subject(stored_title: &str, messages: &[(&str, &str)]) -> Option<St
     if subject == stored_title || subject == NEW_CONVERSATION_TITLE {
         return None;
     }
-    // A subject the user typed is not one any exchange of this conversation
-    // derives, so it stands.
     let user_named = stored_title != NEW_CONVERSATION_TITLE
-        && !derived.iter().any(|s| s.as_deref() == Some(stored_title));
+        && !derived
+            .iter()
+            .chain(prompted.iter())
+            .any(|s| s.as_deref() == Some(stored_title));
     (!user_named).then_some(subject)
 }
 
-/// Pair each reply the agent wrote with the prompt it answered, in order. A
-/// tool result is the agent's own doing rather than an answer to a question, so
-/// it pairs with nothing.
+/// Pair each prompt with the agent's final answer to it, in order. A turn can
+/// write several assistant rows — an announcement before each tool call and
+/// the answer after them — and the answer is the one that names the work. A
+/// tool result is the agent's own doing rather than an answer to a question,
+/// so it pairs with nothing.
 fn exchanges<'a>(messages: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
     let mut pairs = Vec::new();
     let mut asked: Option<&'a str> = None;
+    let mut answered: Option<&'a str> = None;
     for &(role, content) in messages {
         match role {
-            "user" => asked = Some(content),
-            "assistant" => {
-                if let Some(question) = asked.take() {
-                    pairs.push((question, content));
+            "user" => {
+                if let (Some(question), Some(reply)) = (asked.take(), answered.take()) {
+                    pairs.push((question, reply));
                 }
+                asked = Some(content);
+            }
+            "assistant" if asked.is_some() && !content.trim().is_empty() => {
+                answered = Some(content);
             }
             _ => {}
         }
+    }
+    if let (Some(question), Some(reply)) = (asked, answered) {
+        pairs.push((question, reply));
     }
     pairs
 }
 
 /// The subject one exchange names, or `None` when it names nothing at all.
+///
+/// The agent's answer names the work: what it says it did, found or decided is
+/// the thing the conversation turned out to be about, and the prompt is the
+/// fallback for a reply that only acknowledges or narrates its own steps.
 fn derive(question: &str, reply: &str) -> Option<String> {
     let asked = words(question);
+    // A greeting opens onboarding however the agent answered it.
+    if !asked.is_empty() && is_greeting(&asked) {
+        return Some(GREETING_SUBJECT.to_string());
+    }
+    reply_subject(reply).or_else(|| prompt_subject_of(question))
+}
+
+/// The subject the prompt alone names, using the opener and greeting rules.
+fn prompt_subject_of(question: &str) -> Option<String> {
+    let asked = words(question);
     if asked.is_empty() {
-        // Nothing the user typed can name this — an attachment-only prompt, a
-        // bare "?" — so the agent's own opening words are all there is.
-        let answered = words(first_sentence(reply));
-        return (!answered.is_empty()).then(|| shorten(&answered));
+        return None;
     }
     if is_greeting(&asked) {
         return Some(GREETING_SUBJECT.to_string());
@@ -119,10 +148,215 @@ fn derive(question: &str, reply: &str) -> Option<String> {
     let named = strip_openers(&asked);
     // A message made only of asking words — `thanks!`, `ok` — responds to the
     // conversation instead of moving it, and names nothing.
-    if named.is_empty() {
-        return None;
+    (!named.is_empty()).then(|| shorten(named))
+}
+
+/// The subject the agent's own words name: its first heading or sentence that
+/// states something, skipping procedural narration ("Let me read…") and bare
+/// acknowledgements ("Done."). A fenced code block is skipped, because a title
+/// is prose.
+fn reply_subject(reply: &str) -> Option<String> {
+    let mut in_fence = false;
+    for line in reply.lines() {
+        let line = line.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || line.is_empty() {
+            continue;
+        }
+        if let Some(heading) = heading_text(line) {
+            let named = words(&heading);
+            if !is_structural_heading(&named) && names_work(&named) {
+                return Some(shorten(&named));
+            }
+        }
+        for sentence in sentences(strip_list_marker(line)) {
+            let cleaned = clean_markdown(strip_lead_in(sentence));
+            let named = words(&cleaned);
+            if names_work(&named) {
+                return Some(shorten(&named));
+            }
+        }
     }
-    Some(shorten(named))
+    None
+}
+
+/// A markdown heading's text, without its hashes.
+fn heading_text(line: &str) -> Option<String> {
+    let text = line.strip_prefix('#')?.trim_start_matches('#').trim();
+    Some(clean_markdown(text.trim_end_matches('#').trim()))
+}
+
+/// Headings that label a section rather than name the work.
+fn is_structural_heading(words: &[String]) -> bool {
+    let lower: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+    matches!(
+        lower.join(" ").as_str(),
+        "summary" | "overview" | "plan" | "next steps" | "notes" | "example" | "usage"
+    )
+}
+
+/// A sentence's worth of the line: a run of text ending at a period, a bang or
+/// a question mark that is followed by a space or the end. A dot inside a file
+/// name or an abbreviation does not split.
+fn sentences(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (index, character) in line.char_indices() {
+        if !matches!(character, '.' | '!' | '?') {
+            continue;
+        }
+        let end = index + character.len_utf8();
+        let next = line[end..].chars().next();
+        if next.is_none() || next.is_some_and(char::is_whitespace) {
+            out.push(&line[start..end]);
+            start = end;
+        }
+    }
+    if start < line.len() {
+        out.push(&line[start..]);
+    }
+    out
+}
+
+/// Drop a short conversational lead-in before a colon or a dash, so
+/// `Short version: in Goble the cloud is a worker` names the statement and
+/// `Fair challenge — the docs are stale` names the claim.
+fn strip_lead_in(sentence: &str) -> &str {
+    let trimmed = sentence.trim_start();
+    for (index, character) in trimmed.char_indices() {
+        let limit = match character {
+            ':' => 8,
+            '—' | '–' => 2,
+            _ => continue,
+        };
+        let prefix = trimmed[..index].trim();
+        if prefix.split_whitespace().count() <= limit && !prefix.contains('`') {
+            return trimmed[index + character.len_utf8()..].trim_start();
+        }
+        break;
+    }
+    trimmed
+}
+
+/// A list item's marker (`- `, `* `, `1. `) without its marker; other lines are
+/// returned as they are.
+fn strip_list_marker(line: &str) -> &str {
+    let line = line.trim_start();
+    for marker in ["- ", "* ", "• ", "+ "] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            return rest;
+        }
+    }
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 {
+        if let Some(rest) = line[digits..].strip_prefix(". ") {
+            return rest;
+        }
+    }
+    line
+}
+
+/// Remove inline markdown from a candidate: emphasis marks, backticks, heading
+/// hashes and the brackets of a link's label. Underscores stay, because they
+/// are part of an identifier like `is_palindrome`.
+fn clean_markdown(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '`' | '*' | '#' | '>' => {}
+            '[' => {
+                let mut label = String::new();
+                while let Some(&next) = chars.peek() {
+                    if next == ']' {
+                        chars.next();
+                        break;
+                    }
+                    label.push(next);
+                    chars.next();
+                }
+                if chars.peek() == Some(&'(') {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next == ')' {
+                            break;
+                        }
+                    }
+                }
+                out.push_str(&label);
+            }
+            _ => out.push(character),
+        }
+    }
+    out.trim_start_matches(['·', '•', '-', ' ', '\t'])
+        .trim()
+        .to_string()
+}
+
+/// Whether `words` states something rather than acknowledging the turn or
+/// narrating the next tool call. At least two words are needed to name work;
+/// the conversational phrases are the ones an agent opens with on its way to
+/// the answer.
+fn names_work(words: &[String]) -> bool {
+    if words.len() < 2 {
+        return false;
+    }
+    let lower: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+    let phrase = lower.join(" ");
+    const NOT_WORK: &[&str] = &[
+        "absolutely",
+        "any time",
+        "done",
+        "fair challenge",
+        "good question",
+        "got it",
+        "great",
+        "happy to help",
+        "here is",
+        "here's",
+        "i am going",
+        "i checked",
+        "i grepped",
+        "i have",
+        "i looked",
+        "i mapped",
+        "i need to",
+        "i opened",
+        "i ran",
+        "i read",
+        "i searched",
+        "i started",
+        "i will",
+        "i'll",
+        "i'm checking",
+        "i'm going",
+        "i'm reading",
+        "i've",
+        "let me",
+        "let's",
+        "no problem",
+        "ok",
+        "okay",
+        "on it",
+        "perfect",
+        "sounds good",
+        "sure",
+        "thanks",
+        "thinking",
+        "thought",
+        "understood",
+        "will do",
+        "you are welcome",
+        "you're welcome",
+    ];
+    !NOT_WORK.iter().any(|opening| {
+        phrase == *opening
+            || phrase.starts_with(&format!("{opening} "))
+            || phrase.starts_with(&format!("{opening},"))
+    })
 }
 
 /// The words of `text`, each trimmed of the punctuation around it: the word a
@@ -133,12 +367,6 @@ fn words(text: &str) -> Vec<String> {
         .filter(|word| !word.is_empty())
         .map(str::to_string)
         .collect()
-}
-
-/// `text` up to its first sentence break: what a reply opens with is what it
-/// answered, and a whole reply is far more than a subject needs.
-fn first_sentence(text: &str) -> &str {
-    text.split(['.', '!', '?', '\n']).next().unwrap_or(text)
 }
 
 fn is_greeting(words: &[String]) -> bool {
@@ -244,6 +472,63 @@ mod tests {
             derive("the sidebar test is failing", "...").as_deref(),
             Some("Sidebar test is failing")
         );
+    }
+
+    /// The agent's answer names the conversation: it states what the work
+    /// turned out to be, which the prompt alone cannot.
+    #[test]
+    fn the_agents_answer_names_the_conversation() {
+        assert_eq!(
+            derive("what does the store do?", "SQLite keeps every message durable.").as_deref(),
+            Some("SQLite keeps every message durable")
+        );
+        assert_eq!(
+            derive("what did you find?", "Major finding — the worker has no cloud provider.")
+                .as_deref(),
+            Some("The worker has no cloud provider")
+        );
+        assert_eq!(
+            derive(
+                "check the sidebar",
+                "Short version: the cloud is just a worker."
+            )
+            .as_deref(),
+            Some("The cloud is just a worker"),
+        );
+    }
+
+    /// The reply's own narration is not a subject: a model that announces the
+    /// tool it is about to call still gets named by the statement after it.
+    #[test]
+    fn the_replys_procedural_openers_are_skipped() {
+        assert_eq!(
+            derive(
+                "look at the renderer",
+                "Let me read the element tree.\nThe sidebar orders cards by recency."
+            )
+            .as_deref(),
+            Some("The sidebar orders cards by recency")
+        );
+        assert_eq!(
+            derive("fix it", "Sure. Done.").as_deref(),
+            Some("Fix it"),
+            "a reply of acknowledgements leaves the prompt to name the work"
+        );
+    }
+
+    /// A title an earlier derivation wrote from the prompt is still the
+    /// agent's own, so the answer replaces it. A title the user typed does not.
+    #[test]
+    fn the_answers_subject_replaces_an_earlier_prompt_title() {
+        let messages = [
+            ("user", "fix the sidebar"),
+            ("assistant", "The sidebar now orders its cards by recency."),
+        ];
+        assert_eq!(
+            agent_subject("Fix the sidebar", &messages).as_deref(),
+            Some("The sidebar now orders its cards…")
+        );
+        assert_eq!(agent_subject("Launch plan", &messages), None);
     }
 
     /// The same exchange always names the same subject: the derivation reads the

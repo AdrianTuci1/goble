@@ -175,10 +175,10 @@ impl Element for RootView {
                     (actions.on_open_ssh_host_picker.borrow_mut())();
                     return true;
                 }
-                // Cmd/Ctrl+Shift+W toggles the workflow-runs overlay: the
-                // workspace stays mounted, the panel floats over it.
+                // Cmd/Ctrl+Shift+W opens the workflow runs in the active pane,
+                // or closes the view already there.
                 if has_ctrl_cmd && modifiers.shift && key.eq_ignore_ascii_case("w") {
-                    (actions.on_toggle_task_workflow.borrow_mut())();
+                    (actions.on_toggle_workflow_view.borrow_mut())();
                     return true;
                 }
                 if has_ctrl_cmd && !modifiers.shift && key.eq_ignore_ascii_case("w") {

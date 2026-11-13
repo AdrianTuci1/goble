@@ -78,6 +78,11 @@ pub struct Harness {
     mcp_manager: McpManager,
     cancel: Arc<AtomicBool>,
     workspace_dir: PathBuf,
+    /// Root for the working directories agent runs get of their own — a
+    /// sub-agent's, a workflow's. `~/.goble/worktrees` by default, mirroring
+    /// grok-build. It sits outside every project, so a child's files never land
+    /// in the checkout the app was launched from.
+    worktrees_dir: PathBuf,
     docs_dir: PathBuf,
     reasoning_enabled: bool,
     auto_approve: bool,
@@ -104,6 +109,9 @@ impl Harness {
             mcp_manager: McpManager::new(),
             cancel: Arc::new(AtomicBool::new(false)),
             workspace_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            worktrees_dir: crate::app_home::GobleHome::locate()
+                .map(|h| h.worktrees_dir())
+                .unwrap_or_else(|_| std::env::temp_dir().join("goble-worktrees")),
             docs_dir: crate::app_home::GobleHome::locate()
                 .map(|h| h.docs_user_guide_dir())
                 .unwrap_or_else(|_| PathBuf::from(".goble/docs/user-guide")),
@@ -145,6 +153,14 @@ impl Harness {
 
     pub fn with_workspace_dir(mut self, workspace_dir: impl Into<std::path::PathBuf>) -> Self {
         self.workspace_dir = workspace_dir.into();
+        self
+    }
+
+    /// Point the agent-run working directories at `dir` instead of the app
+    /// home's `worktrees/`. A test pins a temp dir this way; the app keeps the
+    /// default so nothing an agent writes lands in the checkout it runs from.
+    pub fn with_worktrees_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.worktrees_dir = dir.into();
         self
     }
 
@@ -228,6 +244,7 @@ impl Harness {
             deploy_sender: self.deploy_sender.clone(),
             mcp_manager: self.mcp_manager.clone(),
             docs_dir: self.docs_dir.clone(),
+            worktrees_dir: self.worktrees_dir.clone(),
             registry: self.subagents.clone(),
             parent_cancel: Arc::clone(&self.cancel),
             foreground_wait: DEFAULT_FOREGROUND_CHILD_WAIT,

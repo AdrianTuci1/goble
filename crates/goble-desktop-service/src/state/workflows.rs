@@ -21,6 +21,43 @@ use goble_workflow::{
 use super::{DesktopState, WorkflowRunInfo, WorkflowRunStep};
 
 impl DesktopState {
+    /// Settle runs a previous process left recorded as running: this process
+    /// owns no such run, so nothing will ever finish it and the dock would spin
+    /// forever. Called once when the real state opens.
+    pub fn settle_interrupted_runs(&self) {
+        let rows = match self.store.lock().list_workflow_runs() {
+            Ok(rows) => rows,
+            Err(error) => {
+                log::warn!("workflow runs unavailable on start: {error}");
+                return;
+            }
+        };
+        for (id, workflow_id, status, json, started_at, finished_at) in rows {
+            if status != "running" || finished_at.is_some() {
+                continue;
+            }
+            let Ok(mut run) = serde_json::from_str::<WorkflowRun>(&json) else {
+                continue;
+            };
+            run.status = RunStatus::Failed("the run was interrupted by a restart".to_string());
+            run.finished_at = Some(Utc::now());
+            let Ok(json) = serde_json::to_string(&run) else {
+                continue;
+            };
+            let finished = run.finished_at.map(|at| at.to_rfc3339());
+            if let Err(error) = self.store.lock().insert_workflow_run(
+                &id,
+                &workflow_id,
+                status_label(&run.status),
+                &json,
+                &started_at,
+                finished.as_deref(),
+            ) {
+                log::warn!("interrupted workflow run {id} could not be settled: {error}");
+            }
+        }
+    }
+
     /// Read the persisted definition of `workflow_id`.
     fn stored_workflow(&self, workflow_id: &str) -> anyhow::Result<CoreWorkflow> {
         let rows = self.store.lock().list_workflows()?;
@@ -32,7 +69,9 @@ impl DesktopState {
     }
 
     /// Start one run of `workflow_id` on a background thread. The run is
-    /// persisted and `workflows:updated` is emitted when it settles.
+    /// recorded as running — and `workflows:updated` is emitted — before its
+    /// first step, so the pane's work dock lists it while it works; settling
+    /// overwrites the row and emits again.
     ///
     /// A workflow with a Rhai body runs that body; a step-list workflow runs
     /// its steps through the same daemon seam.
@@ -66,6 +105,14 @@ impl DesktopState {
             .with_web_search(self.get_web_search_setting())
             .with_runner(runner)
             .with_id(harness_id.clone());
+        // A workflow's turns belong to the workflow, not to the project the app
+        // was launched from: they work in `<worktrees>/workflows/<name>`, so a
+        // step's relative write stays under the app home instead of appearing in
+        // the checkout.
+        let internal = match self.agent_workspace("workflows", &workflow.name) {
+            Some(dir) => internal.with_workspace_dir(dir),
+            None => internal,
+        };
         self.daemon_state.register(Arc::new(internal));
 
         let text_weak = Arc::downgrade(self);
@@ -107,6 +154,15 @@ impl DesktopState {
             workflow.trigger.clone(),
             serde_json::json!({}),
         );
+        // The ledger holds the run while it works, not only once it settles, so
+        // the pane's work dock can list it and open it live. `persist_run`
+        // overwrites this row with the settled run.
+        self.persist_running(&run_id, workflow_id);
+        self.emit(
+            "workflows:updated",
+            serde_json::json!({ "workflow_id": workflow_id }),
+        );
+
         let state = Arc::clone(self);
         let event_id = workflow_id.to_string();
         let execute = move || {
@@ -127,6 +183,34 @@ impl DesktopState {
             Err(_) => execute(),
         }
         Ok(())
+    }
+
+    /// Record the run as started, before its first step: the row the dock and
+    /// the run view read while it works.
+    fn persist_running(&self, run_id: &str, workflow_id: &str) {
+        let run = WorkflowRun {
+            workflow_id: WorkflowId::new(workflow_id),
+            status: RunStatus::Running,
+            steps: Vec::new(),
+            started_at: Utc::now(),
+            finished_at: None,
+            output: None,
+            log: Vec::new(),
+        };
+        let Ok(json) = serde_json::to_string(&run) else {
+            log::error!("workflow run {run_id} could not be serialized");
+            return;
+        };
+        if let Err(error) = self.store.lock().insert_workflow_run(
+            run_id,
+            workflow_id,
+            status_label(&run.status),
+            &json,
+            &run.started_at.to_rfc3339(),
+            None,
+        ) {
+            log::error!("workflow run {run_id} could not be persisted: {error}");
+        }
     }
 
     fn persist_run(&self, run_id: &str, workflow_id: &str, result: anyhow::Result<WorkflowRun>) {

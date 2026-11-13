@@ -741,9 +741,10 @@ fn the_window_chords_still_answer_while_the_settings_tab_is_open() {
         ..Default::default()
     };
     assert!(press_event(&mut root, &app, &chord("w", shift_command)));
+    let active = state.borrow().active_pane_id;
     assert!(
-        state.borrow().task_workflow_open,
-        "⌘⇧W opens the tasks & workflows overlay while the settings tab is up"
+        state.borrow().workflow_view(active).is_some(),
+        "⌘⇧W opens the workflow runs in the active pane while the settings tab is up"
     );
     let s = state.borrow();
     assert_eq!(s.spaces.len(), spaces, "and the settings tab stays open");

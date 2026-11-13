@@ -496,6 +496,108 @@ fn the_footer_reads_thinking_and_responding_from_the_reasoning_rows() {
     );
 }
 
+/// A conversation's thinking stays its own: the pane holds the parent's turn
+/// and a child's at once, so the child's step 0 must not erase the parent's
+/// rows, and its deltas must not append to them.
+#[test]
+fn a_childs_reasoning_stays_out_of_the_parents_rows() {
+    use goble_desktop_service::{ReasoningEvent, ReasoningPhase};
+
+    let event = |chat_id: &str,
+                 phase,
+                 step,
+                 mode: &str,
+                 delta: &str,
+                 content: Option<&str>| ReasoningEvent {
+        chat_id: chat_id.to_string(),
+        step,
+        mode: mode.to_string(),
+        delta: delta.to_string(),
+        content: content.map(str::to_string),
+        decision: None,
+        phase,
+    };
+
+    let mut state = UiState::mock();
+    state.apply_reasoning_event(&event(
+        "c1",
+        ReasoningPhase::Delta,
+        None,
+        "",
+        "weighing options",
+        None,
+    ));
+    // The child begins its own turn in the same pane: step 0 of its own
+    // conversation, then a delta.
+    state.apply_reasoning_event(&event(
+        "conv-child-1",
+        ReasoningPhase::Started,
+        Some(0),
+        "contemplating",
+        "",
+        None,
+    ));
+    state.apply_reasoning_event(&event(
+        "conv-child-1",
+        ReasoningPhase::Delta,
+        None,
+        "",
+        "auditing the schema",
+        None,
+    ));
+
+    let rows = &state.pane_runtime.get(&1).unwrap().reasoning;
+    assert_eq!(rows.len(), 2, "each conversation keeps its own step");
+    assert_eq!(
+        (rows[0].chat_id.as_str(), rows[0].text.as_str()),
+        ("c1", "weighing options"),
+        "the child's step 0 left the parent's row alone"
+    );
+    assert_eq!(
+        (rows[1].chat_id.as_str(), rows[1].text.as_str()),
+        ("conv-child-1", "auditing the schema"),
+        "the child's delta landed on the child's row"
+    );
+}
+
+/// A new turn starts with no thinking block: the previous turn's rows are that
+/// turn's record, and the overlay would otherwise carry them under the message
+/// the user just sent. A child's live rows stay with the child.
+#[test]
+fn a_new_turn_drops_the_previous_turns_reasoning() {
+    use goble_desktop_service::{ReasoningEvent, ReasoningPhase};
+
+    let event = |chat_id: &str, phase, delta: &str| ReasoningEvent {
+        chat_id: chat_id.to_string(),
+        step: None,
+        mode: String::new(),
+        delta: delta.to_string(),
+        content: None,
+        decision: None,
+        phase,
+    };
+
+    let mut state = UiState::mock();
+    state.apply_reasoning_event(&event("c1", ReasoningPhase::Delta, "weighing options"));
+    state.apply_reasoning_event(&event(
+        "conv-child-1",
+        ReasoningPhase::Delta,
+        "auditing the schema",
+    ));
+
+    state.begin_turn(1);
+
+    let rows = &state.pane_runtime.get(&1).unwrap().reasoning;
+    assert!(
+        rows.iter().all(|row| row.chat_id != "c1"),
+        "the pane's own previous step leaves with its turn: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.chat_id == "conv-child-1"),
+        "the child's live step stays with the child: {rows:?}"
+    );
+}
+
 /// A turn that spawned a child and is awaiting it names the child, not the
 /// spawn call: the call's own row would read `create_agent`, which says
 /// nothing about what the pane is waiting on.

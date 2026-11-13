@@ -274,6 +274,7 @@ impl UiState {
         self.pane_hover.remove(&pane_id);
         self.pane_transcript_selection.remove(&pane_id);
         self.sub_agent_views.remove(&pane_id);
+        self.workflow_views.remove(&pane_id);
         self.pane_workers.remove(&pane_id);
         self.pane_ssh.remove(&pane_id);
         if self
@@ -420,7 +421,7 @@ impl UiState {
         // The live reasoning steps are overlaid first, so they sit ahead of the
         // assistant message's prose; a running tool call is then overlaid after
         // the store read, visible even if its persisted row has not landed.
-        overlay_reasoning(&mut rt.messages, &rt.reasoning);
+        overlay_reasoning(&mut rt.messages, conv, &rt.reasoning);
         overlay_in_flight(&mut rt.messages, &rt.in_flight_tools);
         // The conversation's durable token total, for a pane that has not seen a
         // live `chat:usage` event yet (a restored conversation, or one whose

@@ -23,7 +23,7 @@ impl AnthropicProvider {
             name: "anthropic".to_string(),
             api_key: api_key.into(),
             base_url: "https://api.anthropic.com/v1".to_string(),
-            client: reqwest::Client::new(),
+            client: crate::llm::streaming_client(),
         }
     }
 }

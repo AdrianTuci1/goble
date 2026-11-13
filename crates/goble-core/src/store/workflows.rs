@@ -52,8 +52,11 @@ impl Store {
         Ok(())
     }
 
-    /// Persist one settled workflow run. `run_json` is the full
-    /// [`goble_workflow::WorkflowRun`] as the overlay reads it back.
+    /// Persist one workflow run. `run_json` is the full
+    /// [`goble_workflow::WorkflowRun`] as the renderer reads it back. A run is
+    /// inserted as `running` when it starts and upserted with the settled run,
+    /// so the row exists for the whole run and `finished_at` stays `None`
+    /// until it settles.
     pub fn insert_workflow_run(
         &self,
         id: &str,

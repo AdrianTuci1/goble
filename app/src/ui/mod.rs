@@ -36,7 +36,6 @@ pub mod shortcuts_help;
 pub mod sidebar;
 pub mod space_bar;
 pub mod tab_menu;
-pub mod task_workflow;
 pub mod terminal;
 pub mod vault;
 pub mod worker;
@@ -60,7 +59,7 @@ pub use pane::{
 pub use snapshot::{
     AiSnapshot, ComposerContext, MediaNode, MediaProject, MediaSession, MediaSnapshot,
     PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, SubAgentViewSnapshot,
-    UiSnapshot, WorkerPaneSnapshot,
+    UiSnapshot, WorkerPaneSnapshot, WorkflowViewSnapshot,
 };
 pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use types::{

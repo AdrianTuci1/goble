@@ -31,6 +31,25 @@ pub use types::{
 /// echoes a large request keeps the line readable and the log bounded.
 const MAX_BODY_CHARS: usize = 4_000;
 
+/// How long a model endpoint may take to accept a connection.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How long a streamed completion may go silent between bytes. The read timeout
+/// applies between reads, so a long answer that keeps arriving is never cut off;
+/// a request the endpoint stops answering becomes an error instead of a turn
+/// that never settles and leaves its pane busy forever.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// The HTTP client the streaming backends use: fail fast on an unreachable
+/// endpoint, and never wait forever on a silent one.
+pub(crate) fn streaming_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 fn truncate_body(body: &str) -> String {
     if body.chars().count() <= MAX_BODY_CHARS {
         return body.to_string();

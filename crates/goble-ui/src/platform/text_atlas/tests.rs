@@ -450,6 +450,81 @@ fn an_overflowing_frame_keeps_the_chrome_drawn_last() {
     );
 }
 
+/// When the atlas fills with text earlier frames drew, the clear is followed
+/// by this frame's own runs from its first key: a frame that fits keeps every
+/// run, so a streaming block's stale versions cannot blank the sidebar and the
+/// header for a frame.
+#[test]
+fn a_frame_that_fits_after_the_clear_keeps_every_run() {
+    let mut store = AtlasStore::for_test(128);
+    let kept = [
+        text_key(
+            "Conversations",
+            12.0,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+            f32::INFINITY,
+            1.2,
+        ),
+        text_key(
+            "Goble",
+            12.0,
+            FontWeight::Bold,
+            FontFamily::System,
+            false,
+            f32::INFINITY,
+            1.2,
+        ),
+    ];
+    let (_, placed) = pack(&mut store, &kept);
+    assert!(placed.len() == kept.len(), "the frame's runs are placed");
+    assert!(kept.iter().all(|key| store.contains(key)));
+
+    // Text from earlier frames, no longer drawn — a streaming block's previous
+    // versions — takes the rest of the atlas.
+    let mut full = false;
+    for index in 0..64 {
+        let stale = text_key(
+            &format!("a stale streaming line {index}"),
+            13.0,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+            120.0,
+            1.35,
+        );
+        if let Placement::Full = store.place(&stale) {
+            full = true;
+            break;
+        }
+    }
+    assert!(full, "the stale runs fill the test atlas");
+
+    // This frame draws the two runs that were cached, plus one new run.
+    let mut frame = kept.to_vec();
+    // A run the frame draws for the first time, of the shape that filled the
+    // atlas: it cannot fit in the space the stale text left behind.
+    frame.push(text_key(
+        "a fresh streaming line",
+        13.0,
+        FontWeight::Regular,
+        FontFamily::Mono,
+        false,
+        120.0,
+        1.35,
+    ));
+    let (restarted, _) = pack(&mut store, &frame);
+
+    assert!(restarted, "the stale text had to be cleared");
+    for key in &frame {
+        assert!(
+            store.contains(key),
+            "the clear cost this frame one of its runs"
+        );
+    }
+}
+
 fn placement_name(placement: &Placement) -> &'static str {
     match placement {
         Placement::Written { .. } => "written",

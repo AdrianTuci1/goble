@@ -37,7 +37,7 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use budget::{default_child_budget, DEFAULT_FOREGROUND_CHILD_WAIT};
+pub(crate) use budget::{child_budget, DEFAULT_FOREGROUND_CHILD_WAIT};
 pub(crate) use cancel::PARENT_CANCEL_REASON;
 pub(crate) use events::with_subagent_lifecycle;
 pub(crate) use host::SubAgentHost;

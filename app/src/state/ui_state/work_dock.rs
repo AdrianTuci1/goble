@@ -106,7 +106,7 @@ impl UiState {
                 {
                     row = row.with_activity(format!("phase {phase}"));
                 }
-                if let Some(elapsed) = run.elapsed {
+                if let Some(elapsed) = run.live_elapsed() {
                     row = row.with_meta(format_elapsed(elapsed));
                 }
                 row
@@ -315,6 +315,44 @@ mod tests {
     }
 
     #[test]
+    fn an_ended_child_leaves_the_dock_even_while_a_turn_runs() {
+        let mut state = UiState::mock();
+        let rt = state.pane_runtime.entry(1).or_default();
+        // The pane's turn keeps running after the child answers — the main
+        // agent carries on with its own work — and the next turn sets the same
+        // flag again.
+        rt.busy = true;
+        rt.sub_agents.insert(
+            "conv-child-1".to_string(),
+            SubAgentRecord {
+                parent_call_id: "call_spawn".to_string(),
+                row: SubAgentRow {
+                    child_id: "conv-child-1".to_string(),
+                    subagent_type: "reviewer".to_string(),
+                    description: "audit the migration".to_string(),
+                    status: SubAgentRowStatus::Completed,
+                    activity: String::new(),
+                    elapsed: Duration::from_secs(12),
+                    turns: 3,
+                    tool_calls: 5,
+                    tokens: 2048,
+                    outcome: Some("the migration is safe".to_string()),
+                    background: false,
+                },
+            },
+        );
+        let groups = state.work_dock_groups(1);
+        assert!(
+            group(&groups, WorkSection::Subagents).is_none(),
+            "a finished child is not work in flight, so the dock draws no group"
+        );
+        assert!(
+            state.pane_sub_agents(1).is_empty(),
+            "the strip lists only the children still running"
+        );
+    }
+
+    #[test]
     fn a_running_workflow_is_named_by_its_definition() {
         let mut state = UiState::mock();
         state.workflows = vec![WorkflowEntry {
@@ -338,6 +376,7 @@ mod tests {
             }],
             started_at: "1 min ago".to_string(),
             elapsed: Some(Duration::from_secs(65)),
+            elapsed_measured_at: None,
             finished_at: None,
             output: None,
             log: Vec::new(),

@@ -263,7 +263,7 @@ fn the_reasoning_block_sits_at_the_start_of_the_turn() {
         done: true,
     }];
 
-    overlay_reasoning(&mut messages, &rows);
+    overlay_reasoning(&mut messages, "c1", &rows);
 
     assert_eq!(messages.len(), 3, "one block is added");
     assert_eq!(messages[0].role, ChatRole::User);
@@ -287,6 +287,70 @@ fn the_reasoning_block_sits_at_the_start_of_the_turn() {
                 .any(|fragment| matches!(&fragment.kind, goble_ui::ChatFragmentKind::Text(text) if text.contains("Done."))),
             "the answer stays after the thinking"
         );
+}
+
+/// A step that said nothing draws nothing: the `started` before its first delta
+/// and a planning reply that was all tool calls leave no block behind, so no
+/// empty `Thought` sits under the user's message.
+#[test]
+fn a_reasoning_step_with_no_text_draws_no_block() {
+    use crate::state::transcript::overlay_reasoning;
+
+    let mut messages = vec![ChatMessage::new(
+        ChatRole::User,
+        vec![ChatFragment::text("fix the test")],
+    )];
+    let rows = vec![
+        ReasoningRow {
+            chat_id: "c1".into(),
+            step: 0,
+            mode: "contemplating".into(),
+            text: String::new(),
+            done: false,
+        },
+        ReasoningRow {
+            chat_id: "c1".into(),
+            step: 1,
+            mode: "contemplating".into(),
+            text: "  \n ".into(),
+            done: true,
+        },
+    ];
+
+    overlay_reasoning(&mut messages, "c1", &rows);
+
+    assert_eq!(
+        messages.len(),
+        1,
+        "a step with no text adds no synthetic block"
+    );
+}
+
+/// A child's thinking is that child's own record: the pane holds both
+/// conversations, so only the one on screen contributes a block.
+#[test]
+fn a_childs_reasoning_draws_no_block_in_the_parent() {
+    use crate::state::transcript::overlay_reasoning;
+
+    let mut messages = vec![ChatMessage::new(
+        ChatRole::User,
+        vec![ChatFragment::text("fix the test")],
+    )];
+    let rows = vec![ReasoningRow {
+        chat_id: "conv-child-1".into(),
+        step: 0,
+        mode: "contemplating".into(),
+        text: "weighing the options".into(),
+        done: true,
+    }];
+
+    overlay_reasoning(&mut messages, "c1", &rows);
+
+    assert_eq!(
+        messages.len(),
+        1,
+        "the parent's transcript carries the parent's conversation only"
+    );
 }
 
 #[test]

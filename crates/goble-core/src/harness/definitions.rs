@@ -442,7 +442,7 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: SPAWN_SUBAGENT_TOOL.to_string(),
-            description: "Spawn a sub-agent: a real child run on its own bounded conversation and its own working directory. It executes on its own budget and tool set, and its record (activity, elapsed, output) is readable while it runs. `description` is the one-line summary shown in the transcript; `subagent_type` is the child's role; `prompt` is the full instruction the child works from; `run_in_background: false` awaits the child and returns its output as this tool's result (a child that outlives the wait moves to the background and the result is its id), `run_in_background: true` returns the child's id at once and the child keeps running; `cwd` optionally places the child in a workspace-relative directory instead of its own derived one.".to_string(),
+            description: "Spawn a sub-agent: a real child run on its own bounded conversation and its own working directory. It executes on its own budget and tool set, and its record (activity, elapsed, output) is readable while it runs. `description` is the one-line summary shown in the transcript; `subagent_type` is the child's role; `prompt` is the full instruction the child works from; `max_steps` sets the child's step budget (default 200, at most 1000) for a child that must explore, edit and test; `run_in_background: false` awaits the child and returns its output as this tool's result (a child that outlives the wait moves to the background and the result is its id), `run_in_background: true` returns the child's id at once and the child keeps running; `cwd` optionally places the child in a workspace-relative directory instead of its own derived one.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -450,6 +450,7 @@ pub(crate) fn harness_tool_definitions() -> Vec<ToolDefinition> {
                     "prompt": { "type": "string", "description": "The instruction the child runs from" },
                     "subagent_type": { "type": "string", "description": "The child's role, e.g. reviewer or researcher" },
                     "run_in_background": { "type": "boolean", "description": "false awaits the child's output; true returns the child's id at once and keeps it running" },
+                    "max_steps": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "How many steps (turns) the child may take; defaults to 200" },
                     "cwd": { "type": "string", "description": "Optional workspace-relative working directory for the child" }
                 },
                 "required": ["description", "prompt", "subagent_type", "run_in_background"]

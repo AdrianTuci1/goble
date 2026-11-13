@@ -2,11 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill,
-    Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
+    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, EventContext,
+    Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
+    CARET_HEIGHT,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{PointF, Vector2F};
+use crate::geometry::{vec2f, PointF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 
 pub struct TextInput {
@@ -123,6 +124,14 @@ impl TextInput {
             // width, so the container below stretches with it.
             row = row.with_main_axis_size(MainAxisSize::Max);
         }
+        // The beam is taller than a line of text, so the row always reserves
+        // its height: focusing the field paints the beam into the same band
+        // instead of growing the field by the difference.
+        row = row.with_child(
+            Empty::new()
+                .with_size(vec2f(0.0, CARET_HEIGHT))
+                .finish(),
+        );
         if self.focused && empty {
             row = row.with_child(caret_beam(app));
         }
@@ -370,6 +379,29 @@ mod tests {
             "the beam trails the value at the pen, got x={} against {}",
             beam.min_x(),
             origin.x + run_width(value)
+        );
+    }
+
+    /// The beam is taller than the text it sits beside, so the field reserves
+    /// its line box in both states: focusing it paints the beam without
+    /// changing the field's height.
+    #[test]
+    fn focusing_the_field_keeps_its_height() {
+        let app = AppContext::default();
+        let size = |field: &mut TextInput| {
+            field.layout(
+                SizeConstraint::loose(vec2f(200.0, 200.0)),
+                &mut LayoutContext::default(),
+                &app,
+            )
+        };
+
+        let mut idle = TextInput::new().with_value("hi");
+        let mut focused = TextInput::new().with_value("hi").with_focused(true);
+        assert_eq!(
+            size(&mut idle).y,
+            size(&mut focused).y,
+            "the focus beam does not grow the field"
         );
     }
 

@@ -1642,11 +1642,10 @@ fn the_chain_label_reads_quiet_until_selected() {
     );
 }
 
-/// The row is drawn at 13 px, and its retracted and open shapes draw the same
-/// text: the controls that enter and stop a child live in the pane's strip, so
-/// the row owns no action of its own.
+/// The card reads as one 12 px transcript line whatever the fold map says, and
+/// it always carries the control that enters the child.
 #[test]
-fn a_sub_agent_row_is_thirteen_px_with_no_action_text() {
+fn a_sub_agent_card_is_twelve_px_in_both_folds() {
     let call = spawn_call(ToolCallStatus::Running);
     let record = record(
         "conv-child-1",
@@ -1655,39 +1654,29 @@ fn a_sub_agent_row_is_thirteen_px_with_no_action_text() {
         std::time::Duration::from_secs(4),
         None,
     );
-    let (folded, _) = paint_sub_agent(
-        vec![call.clone()],
-        HashMap::from([(call.id.clone(), record.clone())]),
-        None,
-    );
-    let sizes: HashMap<String, f32> = text_runs(&folded)
-        .into_iter()
-        .map(|(text, _, _, size)| (text, size))
-        .collect();
-    assert_eq!(
-        sizes.get("Agent "),
-        Some(&13.0),
-        "the row itself stays 13 px"
-    );
-    assert!(
-        !sizes.contains_key("open child"),
-        "the row draws no action, got {sizes:?}"
-    );
-
-    let (open, _) = paint_sub_agent(
-        vec![call.clone()],
-        HashMap::from([(call.id, record)]),
-        Some(ToolDisplayMode::Expanded),
-    );
-    let sizes: HashMap<String, f32> = text_runs(&open)
-        .into_iter()
-        .map(|(text, _, _, size)| (text, size))
-        .collect();
-    assert_eq!(sizes.get("Agent "), Some(&13.0), "an open row stays 13 px");
-    assert!(
-        !sizes.contains_key("open child"),
-        "an open row draws no action either, got {sizes:?}"
-    );
+    for mode in [None, Some(ToolDisplayMode::Expanded)] {
+        let (commands, _) = paint_sub_agent(
+            vec![call.clone()],
+            HashMap::from([(call.id.clone(), record.clone())]),
+            mode,
+        );
+        let sizes: HashMap<String, f32> = text_runs(&commands)
+            .into_iter()
+            .map(|(text, _, _, size)| (text, size))
+            .collect();
+        assert_eq!(
+            sizes.get("Agent "),
+            Some(&12.0),
+            "the card reads at 12 px in every fold"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "arrow-up"
+            )),
+            "the card draws its open control, got {sizes:?}"
+        );
+    }
 }
 
 /// Consecutive folded calls of every groupable family stack into one

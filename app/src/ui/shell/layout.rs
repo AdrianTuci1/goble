@@ -105,8 +105,13 @@ impl Element for SidebarLayout {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        self.sidebar.paint(origin, ctx, app);
+        // The main column paints before the sidebar: the two regions do not
+        // overlap, so the picture is the same, and the sidebar's runs come last
+        // in the frame. The text atlas keeps the runs drawn last when a frame
+        // is too large for it — the runs a window cannot afford to lose — so
+        // the conversation list never blinks while a long pane streams.
         self.main.paint(origin + vec2f(self.width, 0.0), ctx, app);
+        self.sidebar.paint(origin, ctx, app);
 
         // Resizable divider along the sidebar's right edge; highlights while
         // dragging so the user can see where the grab point is.

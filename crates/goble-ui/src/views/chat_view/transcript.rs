@@ -646,6 +646,7 @@ impl ChatView {
                     .with_tool_hover(self.tool_hover.clone())
                     .with_sub_agents(self.sub_agents.clone())
                     .with_sub_agent_model(self.sub_agent_model.clone())
+                    .with_spinner_phase(self.spinner_phase)
                     .with_global_terminal_filter(self.global_terminal_filter.clone())
                     .with_on_copy_terminal(self.on_copy_terminal.clone())
                     .with_on_action(move |action| {

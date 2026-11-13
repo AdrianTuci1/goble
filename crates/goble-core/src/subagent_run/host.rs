@@ -43,6 +43,9 @@ pub(crate) struct SubAgentHost {
         Option<Arc<dyn Fn(&WorkerId, DesktopMessage) -> Result<()> + Send + Sync>>,
     pub(crate) mcp_manager: McpManager,
     pub(crate) docs_dir: PathBuf,
+    /// Root the children's own working directories are made under, outside any
+    /// project (`~/.goble/worktrees` for the app).
+    pub(crate) worktrees_dir: PathBuf,
     pub(crate) registry: SubAgentRegistry,
     pub(crate) parent_cancel: Arc<AtomicBool>,
     pub(crate) foreground_wait: Duration,

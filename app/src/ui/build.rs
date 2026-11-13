@@ -11,7 +11,7 @@ use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
     agent_dashboard, chat, connectors, crons, hosts, inbox, media, model_form, onboarding, settings,
-    shell, shortcuts_help, sidebar, task_workflow, vault, CONNECTORS_WIDTH,
+    shell, shortcuts_help, sidebar, vault, CONNECTORS_WIDTH,
 };
 
 /// The thickness of the rule that wraps the whole window, warp-new's window
@@ -126,19 +126,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         .with_on_close(move || (on_close_crons.borrow_mut())())
         .finish();
 
-    // The workflow-runs overlay: the daemon's workflows as runs, over the
-    // workspace rather than in place of it, and floating with a margin on every
-    // side so it reads as a panel rather than a sidebar. Cmd/Ctrl+Shift+W
-    // toggles it; its ✕, Escape and the backdrop close it.
-    let on_close_task_workflow = actions.on_close_task_workflow.clone();
-    let task_workflow_dialog = Dialog::new(task_workflow::build_task_workflow_overlay(
-        app, state, actions,
-    ))
-    .with_open(state.task_workflow_open)
-    .with_inset(task_workflow::OVERLAY_MARGIN)
-    .with_on_close(move || (on_close_task_workflow.borrow_mut())())
-    .finish();
-
     // The global inbox: approvals and questions from every pane, plus the
     // terminal reports of turns and sub-agents. It is a popover hung from the
     // topbar's inbox control (see [`inbox::build_inbox_popover`]) rather than a
@@ -201,7 +188,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         // reason. Sheets and dialogs below stay above the toolbar.
         topbar,
         crons_sheet,
-        task_workflow_dialog,
         connectors_sheet,
         vault_sheet,
         chat_panel_sheet,

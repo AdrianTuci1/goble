@@ -99,6 +99,11 @@ pub struct DesktopState {
     /// the located home, tests pin a temp file. Nothing resolves the user's real
     /// home on its own, so a state over a temp store cannot write into it.
     config_path: Mutex<Option<PathBuf>>,
+    /// The managed agent-run workspace root, `~/.goble/worktrees`. A run that
+    /// has no project workspace of its own — a workflow's turns, a chat with no
+    /// pane directory — works here, so its files never land in the directory the
+    /// app was launched from. `None` on a state built without a home.
+    worktrees_root: Mutex<Option<PathBuf>>,
     /// The `~/.goble/environment.toml` groups as last read, and why the last
     /// read failed. The file is the identity of a group; this is only the page's
     /// last view of it.

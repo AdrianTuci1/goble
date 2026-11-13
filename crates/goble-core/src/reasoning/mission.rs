@@ -34,7 +34,15 @@ fn parse_reasoning_tool_calls(
     tool_calls: &[LlmToolCall],
     mode: &mut ThinkingMode,
 ) -> (ReasoningDecision, Vec<String>) {
-    let mut decision = ReasoningDecision::Continue;
+    // A planning reply that calls no decision tool at all is the model's answer,
+    // so the turn executes with it. Reading it as "keep thinking" makes the loop
+    // ask the same question again and again — the model answers in prose, the
+    // panel shows nothing, and the conversation stays busy until the step cap.
+    let mut decision = if tool_calls.is_empty() {
+        ReasoningDecision::Execute
+    } else {
+        ReasoningDecision::Continue
+    };
     let mut focus_notes = Vec::new();
 
     for call in tool_calls {

@@ -1,10 +1,12 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use goble_ui::elements::{
-    AppContext, Container, CrossAxisAlignment, Divider,
-    EdgeInsets, Element, Fill, Flex, MainAxisSize, Spacer, Text,
+    AppContext, Chip, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Fill, Flex,
+    Icon, MainAxisSize, Spacer, Text,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::ChatView;
-
 
 use super::super::{PaneChatSnapshot, SubAgentViewSnapshot, UiActions, UiSnapshot};
 use super::chat_action_relay;
@@ -31,62 +33,90 @@ pub(crate) fn build_sub_agent_child_view(
 ) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let md = app.theme.spacing_px(SpacingToken::Md);
-    // The title's status mark is the transcript row's own mark, so the row and
-    // the view it enters agree on what each status looks like.
-    let (bullet, bullet_color, subject, status) = match &child.row {
-        Some(row) => {
-            let (mark, color) = row.status_affordance();
-            (
-                mark,
-                color,
-                format!("{} · {}", row.subagent_type, row.description),
-                row.status_line(),
-            )
-        }
+    // The title's status mark is the transcript card's own mark, so the row and
+    // the view it enters agree on what each status looks like. A running child
+    // turns, the way grok-build's takeover frame does; an ended one settles
+    // into its status colour.
+    let running = child.row.as_ref().is_some_and(|row| row.is_running());
+    let (bullet, bullet_color) = match &child.row {
+        Some(row) if running => (spinner_frame(session.work_dock_phase), ColorToken::Warning),
+        Some(row) => row.status_affordance(),
         // A child whose live record the pane no longer holds still has its
-        // conversation. The title names it by id and leaves the status out rather
-        // than inventing one; the mark is the one every status draws.
-        None => (
-            "◆",
-            ColorToken::Muted,
-            child.child_id.clone(),
-            "no live record".to_string(),
-        ),
+        // conversation. The mark is the one every status draws.
+        None => ("◆", ColorToken::Muted),
     };
+    let (subject, status) = match &child.row {
+        // The title names the child by its type and the description the parent
+        // gave it, and states what it is doing — its activity while it runs,
+        // its terminal phrase once it ends.
+        Some(row) => (
+            format!("{} · {}", row.subagent_type, row.description),
+            row.panel_status(),
+        ),
+        // With no live record the conversation's own name is all there is.
+        None => (child.child_id.clone(), "no live record".to_string()),
+    };
+    let elapsed = child
+        .row
+        .as_ref()
+        .filter(|row| row.is_running())
+        .map(|row| goble_ui::elements::chat_content::format_elapsed(row.elapsed));
+    let on_close = actions.on_close_sub_agent.clone();
+    let close = {
+        let on_close = on_close.clone();
+        Chip::flat(
+            Icon::new("x-close")
+                .with_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_on_click(move || (on_close.borrow_mut())(pane_id))
+        .finish()
+    };
+    let mut title_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm)
+        .with_child(
+            Text::new(bullet)
+                .with_theme_color(bullet_color, app)
+                .with_font_size(12.0)
+                .finish(),
+        )
+        .with_child(
+            Text::new(subject)
+                .with_theme_color(ColorToken::Text, app)
+                .with_font_size(12.0)
+                .finish(),
+        )
+        .with_child(
+            Text::new(status)
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(11.0)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish());
+    if let Some(elapsed) = elapsed {
+        title_row = title_row.with_child(
+            Text::new(elapsed)
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(11.0)
+                .finish(),
+        );
+    }
     let title = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(
             Container::new(
-                Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(sm)
-                    .with_child(
-                        Text::new(bullet)
-                            .with_theme_color(bullet_color, app)
-                            .with_font_size(13.0)
-                            .finish(),
-                    )
-                    .with_child(
-                        Text::new(subject)
-                            .with_theme_color(ColorToken::Text, app)
-                            .with_font_size(13.0)
-                            .finish(),
-                    )
-                    .with_child(
-                        Text::new(status)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
-                            .finish(),
-                    )
-                    .with_child(Spacer::new().finish())
+                title_row
                     .with_child(
                         Text::new("Esc to return")
                             .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
+                            .with_font_size(11.0)
                             .finish(),
                     )
+                    .with_child(close)
                     .finish(),
             )
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
@@ -98,7 +128,6 @@ pub(crate) fn build_sub_agent_child_view(
         .with_child(Divider::horizontal().finish())
         .finish();
 
-    let on_close = actions.on_close_sub_agent.clone();
     // The child accepts a message of its own once it has ended: the text goes
     // to the child's conversation, the way grok-build's takeover lets the user
     // type in the child's own input. A child still working owns that
@@ -107,6 +136,20 @@ pub(crate) fn build_sub_agent_child_view(
     let draft = child.draft.clone();
     let on_change_draft = draft.clone();
     let on_send_child = actions.on_send_sub_agent_message.clone();
+    // A child can spawn a child of its own: the card's controls enter and stop
+    // that grandchild in this same pane, so the way back stays the pane's own.
+    let on_open_child: Rc<RefCell<dyn FnMut(String)>> = {
+        let open = actions.on_open_sub_agent.clone();
+        Rc::new(RefCell::new(move |child_id: String| {
+            (open.borrow_mut())(pane_id, child_id)
+        }))
+    };
+    let on_stop_child: Rc<RefCell<dyn FnMut(String)>> = {
+        let stop = actions.on_stop_sub_agent.clone();
+        Rc::new(RefCell::new(move |child_id: String| {
+            (stop.borrow_mut())(pane_id, child_id)
+        }))
+    };
     let mut view = ChatView::new()
         .with_header(title)
         // The child's own rows, read from the store by its conversation id on
@@ -129,8 +172,16 @@ pub(crate) fn build_sub_agent_child_view(
         // feed this view's rows too, so a nested child is drawn here as the
         // same status line the parent's transcript draws.
         .with_sub_agents(session.sub_agents.clone())
+        .with_sub_agent_model(state.selected_model.clone())
+        .with_spinner_phase(session.work_dock_phase)
         .with_pane_active(active)
-        .with_on_action(chat_action_relay(actions.on_open_url.clone()))
+        .with_on_action(chat_action_relay(
+            actions.on_open_url.clone(),
+            actions.on_copy_terminal.clone(),
+            actions.on_explorer_file_click.clone(),
+            Some(on_open_child),
+            Some(on_stop_child),
+        ))
         .with_on_escape(move || (on_close.borrow_mut())(pane_id));
     if can_reply {
         view = view
@@ -143,4 +194,12 @@ pub(crate) fn build_sub_agent_child_view(
         view = view.without_composer();
     }
     view.finish()
+}
+
+/// The spinner glyph the takeover frame draws for `phase`, the same frames the
+/// pane's dock and the turn footer use.
+fn spinner_frame(phase: f32) -> &'static str {
+    let count = goble_ui::elements::SPINNER_FRAMES.len();
+    let index = (phase.rem_euclid(1.0) * count as f32) as usize;
+    goble_ui::elements::SPINNER_FRAMES[index.min(count - 1)]
 }

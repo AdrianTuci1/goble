@@ -2,18 +2,34 @@ use std::time::Duration;
 
 use crate::subagent::SubAgentBudget;
 
-/// The child's ceilings, as the spawn handler stamps them into the spec.
-/// Charges are hard: reaching a limit *is* the exhaustion outcome, so the
-/// child gets strictly fewer actions than the limit (S1's budget contract).
-const CHILD_MAX_TURNS: u32 = 8;
-const CHILD_MAX_TOOL_CALLS: u32 = 16;
-const CHILD_MAX_TOKENS: u64 = 100_000;
+/// The step budget a spawn gets when its call names none. A child that reads,
+/// edits, runs a check and fixes what it found needs many turns; eight stopped
+/// a real delegation before its first test run.
+pub(crate) const DEFAULT_CHILD_STEPS: u32 = 200;
+
+/// The largest step budget a caller may ask for: a mistyped number must not
+/// turn a child into an unbounded run.
+pub(crate) const MAX_CHILD_STEPS: u32 = 1_000;
+
+/// The room a step gets for tokens. Every turn carries the conversation, so a
+/// step costs well more than the text it adds.
+const CHILD_TOKENS_PER_STEP: u64 = 10_000;
 
 /// How long a foreground spawn waits for its child before the child moves to
 /// the background and the call returns its id. The child is neither restarted
 /// nor cancelled by this — its record stays live in the registry.
 pub(crate) const DEFAULT_FOREGROUND_CHILD_WAIT: Duration = Duration::from_secs(600);
 
-pub(crate) fn default_child_budget() -> SubAgentBudget {
-    SubAgentBudget::new(CHILD_MAX_TURNS, CHILD_MAX_TOOL_CALLS, CHILD_MAX_TOKENS)
+/// The budget a child gets for `steps` turns, or the default when the spawn
+/// names none. Each step allows two tool calls and a prompt's worth of tokens,
+/// so the turn ceiling is the one that normally stops a child.
+pub(crate) fn child_budget(steps: Option<u32>) -> SubAgentBudget {
+    let steps = steps
+        .map(|steps| steps.clamp(1, MAX_CHILD_STEPS))
+        .unwrap_or(DEFAULT_CHILD_STEPS);
+    SubAgentBudget::new(
+        steps,
+        steps.saturating_mul(2),
+        u64::from(steps) * CHILD_TOKENS_PER_STEP,
+    )
 }

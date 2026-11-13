@@ -306,9 +306,10 @@ pub struct PaneRuntime {
     /// When this pane's work dock first drew live work. The dock's spinner
     /// advances from it, so a child that outlives the turn still turns.
     pub work_started_at: Option<std::time::Instant>,
-    /// The model's reasoning (thinking) steps for this pane, fed by the live
-    /// `chat:reasoning` events. Overlaid on the transcript as their own rows;
-    /// replaced when the next reasoning turn starts (step 0).
+    /// The model's reasoning (thinking) steps this pane has seen, fed by the
+    /// live `chat:reasoning` events. One list for every conversation the pane
+    /// owns — its own turn and the children it spawned — and a conversation's
+    /// rows replace its own when its next reasoning turn starts (step 0).
     pub reasoning: Vec<ReasoningRow>,
     /// The sub-agent children this pane spawned, fed by the live
     /// `chat:subagent_*` events and keyed by the child's own conversation id.
@@ -375,6 +376,19 @@ impl SubAgentChildView {
     }
 }
 
+/// The workflow-runs view a pane shows: the ledger's runs in the pane, with one
+/// run's detail open or the list itself. It is the pane's own surface, entered
+/// from the work dock's workflow row ([`UiState::open_workflow_view`]) or the
+/// workflow toggle, and left with Esc ([`UiState::close_workflow_view`]).
+///
+/// The rows are read live from the run ledger each frame, so a run that settles
+/// while its detail is open reports its final state without reopening the view.
+#[derive(Clone, Debug, Default)]
+pub struct WorkflowView {
+    /// The id of the run whose detail is open; `None` lists the runs.
+    pub selected: Option<String>,
+}
+
 /// One reasoning (thinking) step carried by the live `chat:reasoning` events,
 /// accumulated as the step's deltas stream in.
 #[derive(Clone, Debug, PartialEq)]
@@ -419,18 +433,23 @@ impl PaneRuntime {
 
     /// Fold one live reasoning transition into the pane's accumulated steps.
     ///
-    /// A `started` at step 0 begins a new reasoning turn, so the previous
-    /// turn's rows are dropped; a `delta` appends to the currently open step; a
-    /// `done` finalises the step with the authoritative full text.
+    /// A `started` at step 0 begins a new reasoning turn for its conversation,
+    /// so that conversation's previous rows are dropped and another's are left
+    /// alone; a `delta` appends to the conversation's open step; a `done`
+    /// finalises the step with the authoritative full text.
     pub(crate) fn apply_reasoning(&mut self, event: &goble_desktop_service::ReasoningEvent) {
         use goble_desktop_service::ReasoningPhase;
         match event.phase {
             ReasoningPhase::Started => {
                 let step = event.step.unwrap_or(0);
                 if step == 0 {
-                    self.reasoning.clear();
+                    self.reasoning.retain(|row| row.chat_id != event.chat_id);
                 }
-                if let Some(row) = self.reasoning.iter_mut().find(|r| r.step == step) {
+                if let Some(row) = self
+                    .reasoning
+                    .iter_mut()
+                    .find(|r| r.chat_id == event.chat_id && r.step == step)
+                {
                     row.mode = event.mode.clone();
                     row.done = false;
                 } else {
@@ -443,7 +462,12 @@ impl PaneRuntime {
                     });
                 }
             }
-            ReasoningPhase::Delta => match self.reasoning.last_mut() {
+            ReasoningPhase::Delta => match self
+                .reasoning
+                .iter_mut()
+                .rev()
+                .find(|row| row.chat_id == event.chat_id)
+            {
                 Some(row) => row.text.push_str(&event.delta),
                 None => self.reasoning.push(ReasoningRow {
                     chat_id: event.chat_id.clone(),
@@ -455,7 +479,11 @@ impl PaneRuntime {
             },
             ReasoningPhase::Done => {
                 let step = event.step.unwrap_or(0);
-                if let Some(row) = self.reasoning.iter_mut().find(|r| r.step == step) {
+                if let Some(row) = self
+                    .reasoning
+                    .iter_mut()
+                    .find(|r| r.chat_id == event.chat_id && r.step == step)
+                {
                     row.mode = event.mode.clone();
                     if let Some(content) = &event.content {
                         row.text = content.clone();

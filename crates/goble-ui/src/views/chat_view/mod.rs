@@ -71,6 +71,9 @@ pub struct ChatView {
     sub_agents: HashMap<String, SubAgentRow>,
     /// The model the pane's turns run on, named by a running child's row.
     sub_agent_model: String,
+    /// The shared spinner phase a running child's card advances with, so its
+    /// mark turns with the pane's dock and footer.
+    spinner_phase: f32,
     /// The whole-transcript filter, applied to every terminal block (filtered
     /// via a bar above the transcript). App-owned so it survives the rebuild.
     global_terminal_filter: Option<TerminalFilter>,
@@ -250,6 +253,7 @@ impl ChatView {
             tool_hover: Rc::new(RefCell::new(None)),
             sub_agents: HashMap::new(),
             sub_agent_model: String::new(),
+            spinner_phase: 0.0,
             global_terminal_filter: None,
             on_copy_terminal: None,
             empty_title: None,

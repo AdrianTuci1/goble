@@ -1010,6 +1010,65 @@ fn the_agent_transcript_paints_no_pill() {
     }
 }
 
+/// The child takeover draws no work dock, so the spinner on the sub-agent card
+/// and in its title band is the only animation there. It keeps the frame clock
+/// running only while the child still works.
+#[test]
+fn a_live_sub_agent_keeps_the_transcript_animating() {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use crate::elements::chat_content::{SubAgentRow, SubAgentRowStatus, ToolCall};
+    use goble_core::harness::ToolCallStatus;
+
+    let spawn = ToolCall {
+        id: "call_subagent".to_string(),
+        name: "spawn_subagent".to_string(),
+        arguments: r#"{"subagent_type":"reviewer","input":"audit the migration"}"#.to_string(),
+        status: ToolCallStatus::Running,
+        result: None,
+        diff: None,
+    };
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Auditing the migration.")],
+    )
+    .with_tool_calls(vec![spawn.clone()])];
+    let record = |status| SubAgentRow {
+        child_id: "conv-child-1".to_string(),
+        subagent_type: "reviewer".to_string(),
+        description: "audit the migration".to_string(),
+        status,
+        activity: "reading the schema".to_string(),
+        elapsed: Duration::from_millis(4500),
+        turns: 2,
+        tool_calls: 4,
+        tokens: 1234,
+        outcome: None,
+        background: true,
+    };
+    let view = |row| {
+        ChatView::new()
+            .with_messages(messages.clone())
+            .with_sub_agents(HashMap::from([(spawn.id.clone(), row)]))
+            .without_composer()
+            .finish()
+    };
+
+    assert!(
+        view(record(SubAgentRowStatus::Running)).wants_animation(),
+        "a running child keeps the spinner turning"
+    );
+    assert!(
+        !view(record(SubAgentRowStatus::Completed)).wants_animation(),
+        "a finished child leaves the pane at rest"
+    );
+    assert!(
+        !ChatView::new().with_messages(messages).wants_animation(),
+        "no child record asks for no frames"
+    );
+}
+
 /// The pending ask closes the transcript as grok-new's "Agent questions" band:
 /// a titled header with Skip all and Next, then the question and one numbered
 /// row per answer, ending in "Other…".

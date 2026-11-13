@@ -95,6 +95,14 @@ impl GobleHome {
         self.root.join("threads")
     }
 
+    /// The worktrees root: the working directories agent runs get of their own —
+    /// a workflow's turns, a sub-agent's. Mirrors `~/.grok/worktrees`, so an
+    /// agent's scratch files land under the app home instead of the checkout the
+    /// app was launched from.
+    pub fn worktrees_dir(&self) -> PathBuf {
+        self.root.join("worktrees")
+    }
+
     pub fn principals_dir(&self) -> PathBuf {
         self.root.join("principals")
     }

@@ -65,8 +65,7 @@ use super::*;
                 .insert(1, TerminalSession::with_emulator(Emulator::new(80, 24)));
             s.pane_controls_mut(1).model = "deepseek".to_string();
             // The parent's turn is in flight while it delegates, as it is when
-            // a child is spawned: an ended row stays in the strip until that
-            // turn ends.
+            // a child is spawned: the strip lists the child while it runs.
             s.pane_runtime.entry(1).or_default().busy = true;
             s.apply_subagent_spawned(&SubAgentSpawnedEvent {
                 chat_id: parent.clone(),
@@ -266,7 +265,7 @@ use super::*;
     }
 
     /// The stop control in the dock cancels the child it belongs to: the
-    /// child's record reads `cancelled`, with no stop left to press.
+    /// record reads `cancelled` and the ended row leaves the dock.
     #[test]
     fn the_docks_stop_cancels_the_child() {
         let Fixture { root, .. } = fixture();
@@ -292,17 +291,15 @@ use super::*;
         );
 
         let commands = pane_commands(&mut root, &app);
-        // The dock's own band is below its header word, so a stop anywhere
-        // under that word would be the cancelled child's; the pane bar's close
-        // control sits above it.
-        let strip_y = run_origin(&commands, "Subagents").y;
+        // A cancelled child is no longer running, so the dock drops its row
+        // and the stop that carried the cancellation with it: the group has
+        // nothing left to list.
         assert!(
             !commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { origin, name, .. }
-                    if name == "x-close" && origin.y > strip_y
+                RenderCommand::DrawText { text, .. } if text == "Subagents"
             )),
-            "a cancelled child draws no stop"
+            "a cancelled child leaves the dock"
         );
     }
 

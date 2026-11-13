@@ -66,9 +66,7 @@ impl UiState {
             tool_hover: Rc::new(RefCell::new(None)),
             terminal_global_filters: HashMap::new(),
             crons_open: false,
-            task_workflow_open: false,
-            task_workflow_selected: Rc::new(RefCell::new(None)),
-            task_workflow_phase: Rc::new(RefCell::new(0)),
+            workflow_views: HashMap::new(),
             shortcuts_help_open: false,
             shortcuts_help_filter: String::new(),
             shortcuts_help_index: 0,
@@ -320,7 +318,8 @@ impl UiState {
             .collect();
     }
 
-    /// Settled workflow runs from the persisted run ledger, newest first.
+    /// Workflow runs from the persisted ledger, newest first: the live ones —
+    /// recorded when they start — and the settled ones.
     pub fn refresh_workflow_runs(&mut self, desktop: &DesktopState) {
         self.workflow_runs = desktop
             .list_workflow_runs()
@@ -346,6 +345,9 @@ impl UiState {
                     Some(finished_at) => elapsed_between(&run.started_at, finished_at),
                     None => elapsed_since(&run.started_at),
                 },
+                // A live run's clock keeps moving from the moment the ledger
+                // was read; a settled run's span is final.
+                elapsed_measured_at: run.finished_at.is_none().then(std::time::Instant::now),
                 finished_at: run.finished_at.as_deref().map(time_ago),
                 output: run.output,
                 log: run.log,

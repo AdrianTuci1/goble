@@ -10,6 +10,7 @@
 
 pub mod ansi;
 mod block;
+mod file_mention;
 mod fragment;
 mod message;
 mod sub_agent;
@@ -20,6 +21,7 @@ mod tool_call;
 mod tests;
 
 pub use block::{group_fragments_into_blocks, ChatBlock, InlineSpan, InlineStyle};
+pub use file_mention::inline_code_file_path;
 pub use fragment::{ChatFragment, ChatFragmentKind, ListItem};
 pub use message::{ChatAction, ChatMessage, ChatRole};
 pub use sub_agent::{format_elapsed, SubAgentRow, SubAgentRowStatus};

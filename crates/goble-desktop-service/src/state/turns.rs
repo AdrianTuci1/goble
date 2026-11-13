@@ -127,9 +127,15 @@ impl DesktopState {
                     .with_context_window(self.model_context_window(&model_name))
                     .with_runner(runner)
                     .with_id(hid.clone());
-                // Run the harness with the pane's own working directory when
-                // provided (the per-session cwd), so commands execute there.
-                if let Some(dir) = workspace_dir {
+                // A chat with a pane directory works there. One without — a
+                // conversation opened with no workspace — gets its own directory
+                // under the app home's worktrees, so the turn's files never land
+                // in the directory the app was launched from.
+                let workspace = match workspace_dir {
+                    Some(dir) => Some(std::path::PathBuf::from(dir)),
+                    None => self.agent_workspace("chats", chat_id),
+                };
+                if let Some(dir) = workspace {
                     internal = internal.with_workspace_dir(dir);
                 }
                 self.daemon_state.register(Arc::new(internal));

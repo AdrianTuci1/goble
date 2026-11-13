@@ -230,14 +230,31 @@ pub struct WorkflowRunEntry {
     pub steps: Vec<WorkflowRunStepEntry>,
     /// Relative label, e.g. `2m ago`.
     pub started_at: String,
-    /// How long the run has been going, when its recorded start parsed. The
-    /// work dock states it on a running row; a run with no parseable start
-    /// states none rather than inventing a clock.
+    /// How long the run has been going when the ledger was read. The work dock
+    /// and the run view state it on a running row; a run with no parseable
+    /// start states none rather than inventing a clock.
     pub elapsed: Option<std::time::Duration>,
+    /// When `elapsed` was measured on this process's clock. A run still running
+    /// has no `finished_at`, so the row keeps counting from here between ledger
+    /// refreshes ([`WorkflowRunEntry::live_elapsed`]).
+    pub elapsed_measured_at: Option<std::time::Instant>,
     pub finished_at: Option<String>,
     /// The value a script passed to `complete()`.
     pub output: Option<serde_json::Value>,
     pub log: Vec<String>,
+}
+
+impl WorkflowRunEntry {
+    /// The run's clock as it stands now: a settled run's measured span, or a
+    /// running run's span at the last read plus the time since.
+    pub fn live_elapsed(&self) -> Option<std::time::Duration> {
+        match (self.elapsed, self.elapsed_measured_at) {
+            (Some(measured), Some(at)) if self.finished_at.is_none() => {
+                Some(measured + at.elapsed())
+            }
+            _ => self.elapsed,
+        }
+    }
 }
 
 /// One phase of a run, in run order.

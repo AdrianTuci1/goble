@@ -24,7 +24,7 @@ impl OllamaProvider {
         Self {
             name: "ollama".to_string(),
             base_url: base_url.into(),
-            client: reqwest::Client::new(),
+            client: crate::llm::streaming_client(),
         }
     }
 

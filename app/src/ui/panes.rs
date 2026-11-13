@@ -1225,38 +1225,50 @@ fn build_leaf_column(
     lift: bool,
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
-    let content = match kind {
-        PaneKind::Chat => chat::build_agent_chat(app, state, actions, id, active, None),
-        // A viewer session: the conversation runs on a worker, so the pane is
-        // the conversation's own surface with no shell behind it. It is never
-        // given the shell builder below, which is the only thing that mounts a
-        // pty — there is nothing local for a viewer pane to fall back to.
-        PaneKind::Worker => worker::build_worker_pane(app, state, actions, id, active),
-        // The settings tab's surface: the rail, the page and the footer, with
-        // the page the leaf carries. It composes with the tree like any other
-        // pane — it can be split, walked to and closed.
-        PaneKind::Settings { page } => settings::build_settings_pane(app, state, actions, id, page),
-        // A file view is read-only: no composer, no shell, just the file the
-        // pane was opened on.
-        PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),
-        // The review pane: the file list and every changed file's diff, with
-        // the options that shape the view (refresh, expand/collapse, sidebar).
-        PaneKind::Diff { cwd } => diff_panel::build_diff_pane(app, state, actions, id, &cwd),
-        PaneKind::Terminal => {
-            // The terminal spawns in this pane's own cwd (the same per-session
-            // path used by the composer for chat panes), so a terminal and a
-            // chat pane never share a working directory.
-            let cwd = state
-                .pane_chat
-                .get(&id)
-                .map(|c| c.composer_path.clone())
-                .unwrap_or_default();
-            // The pane's own builder picks the surface from the pane's mode:
-            // the shell's grid with its rich input bar, or — while Cmd+Enter's
-            // switch has put this pane in agent mode — the very agent view a
-            // chat pane mounts.
-            terminal::build_terminal(app, state, actions, id, cwd, active)
-        }
+    // The pane's workflow-runs view, when one is open, is a pane surface: it
+    // takes the pane's body the way a sub-agent child view does, and Esc gives
+    // the body back to whatever the pane was drawing.
+    let workflow_view = state
+        .pane_chat
+        .get(&id)
+        .and_then(|chat| chat.workflow_view.clone());
+    let content = match workflow_view {
+        Some(view) => chat::build_workflow_view(app, state, actions, id, active, &view),
+        None => match kind {
+            PaneKind::Chat => chat::build_agent_chat(app, state, actions, id, active, None),
+            // A viewer session: the conversation runs on a worker, so the pane is
+            // the conversation's own surface with no shell behind it. It is never
+            // given the shell builder below, which is the only thing that mounts a
+            // pty — there is nothing local for a viewer pane to fall back to.
+            PaneKind::Worker => worker::build_worker_pane(app, state, actions, id, active),
+            // The settings tab's surface: the rail, the page and the footer, with
+            // the page the leaf carries. It composes with the tree like any other
+            // pane — it can be split, walked to and closed.
+            PaneKind::Settings { page } => {
+                settings::build_settings_pane(app, state, actions, id, page)
+            }
+            // A file view is read-only: no composer, no shell, just the file the
+            // pane was opened on.
+            PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),
+            // The review pane: the file list and every changed file's diff, with
+            // the options that shape the view (refresh, expand/collapse, sidebar).
+            PaneKind::Diff { cwd } => diff_panel::build_diff_pane(app, state, actions, id, &cwd),
+            PaneKind::Terminal => {
+                // The terminal spawns in this pane's own cwd (the same per-session
+                // path used by the composer for chat panes), so a terminal and a
+                // chat pane never share a working directory.
+                let cwd = state
+                    .pane_chat
+                    .get(&id)
+                    .map(|c| c.composer_path.clone())
+                    .unwrap_or_default();
+                // The pane's own builder picks the surface from the pane's mode:
+                // the shell's grid with its rich input bar, or — while Cmd+Enter's
+                // switch has put this pane in agent mode — the very agent view a
+                // chat pane mounts.
+                terminal::build_terminal(app, state, actions, id, cwd, active)
+            }
+        },
     };
     // Clicking anywhere in the pane body focuses the pane (mouse-driven pane
     // navigation), while child interactions (composer, buttons, terminal keys)

@@ -28,7 +28,7 @@ impl OpenAiProvider {
             name: name.into(),
             api_key: api_key.into(),
             base_url: base_url.into(),
-            client: reqwest::Client::new(),
+            client: crate::llm::streaming_client(),
         }
     }
 

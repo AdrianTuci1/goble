@@ -244,6 +244,7 @@ fn host_with_wait(
         deploy_sender: None,
         mcp_manager: McpManager::new(),
         docs_dir: workspace.to_path_buf(),
+        worktrees_dir: workspace.to_path_buf(),
         registry: SubAgentRegistry::default(),
         parent_cancel: Arc::new(AtomicBool::new(false)),
         foreground_wait,

@@ -125,7 +125,7 @@ fn status(app: &AppContext, status: &str) -> (ColorToken, Box<dyn Element>) {
 
 /// Shell for a single list row: a square `SurfaceRaised` band, the shape the
 /// transcript's rows and the sidebar's cards use. Shared by the observability
-/// pages and the workflow-runs overlay, so a record is drawn once.
+/// pages and the pane's workflow-runs view, so a record is drawn once.
 fn card(app: &AppContext, content: Box<dyn Element>) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     Container::new(content)
@@ -187,27 +187,6 @@ pub(crate) fn build_workflow_row(app: &AppContext, wf: &WorkflowEntry) -> Box<dy
             .with_child(status_el)
             .finish(),
     )
-}
-
-/// How many phases a workflow declares.
-pub(crate) fn workflow_run_step_count(wf: &WorkflowEntry) -> String {
-    let count = wf.steps.len();
-    format!("{count} phase{}", if count == 1 { "" } else { "s" })
-}
-
-/// How many distinct agents the workflow's phases name. A step the record left
-/// without an agent counts for nobody, so the number never claims an agent that
-/// no execution could ever be matched to.
-pub(crate) fn workflow_run_agent_count(wf: &WorkflowEntry) -> String {
-    let mut seen: Vec<&str> = Vec::new();
-    for step in &wf.steps {
-        let agent = step.agent_id.trim();
-        if !agent.is_empty() && !seen.contains(&agent) {
-            seen.push(agent);
-        }
-    }
-    let count = seen.len();
-    format!("{count} agent{}", if count == 1 { "" } else { "s" })
 }
 
 /// Tasks / executions page: the daemon execution ledger plus durable tasks.

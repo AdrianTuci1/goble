@@ -44,6 +44,15 @@ pub struct SubAgentViewSnapshot {
     pub caret: std::rc::Rc<std::cell::RefCell<usize>>,
 }
 
+/// What a pane's workflow-runs view shows: which run's detail is open, or
+/// `None` for the run list. The runs themselves are read from
+/// [`UiSnapshot::workflow_runs`], so a run that settles while the view is open
+/// reports its final state without reopening it.
+#[derive(Clone, Debug)]
+pub struct WorkflowViewSnapshot {
+    pub selected: Option<String>,
+}
+
 /// A viewer pane's session as its surface draws it: which worker the
 /// conversation runs on, and how the connection stands. `None` on every pane
 /// that is not a viewer pane ([`crate::ui::PaneKind::Worker`]), which is why a
@@ -145,6 +154,10 @@ pub struct PaneChatSnapshot {
     /// conversation, entered from the pane's sub-agent strip. `None` when the
     /// pane shows its own transcript.
     pub sub_agent_view: Option<SubAgentViewSnapshot>,
+    /// The workflow-runs view this pane shows, when it has one: the ledger's
+    /// runs in place of the pane's own surface, with one run's detail open or
+    /// the list. `None` when the pane shows its ordinary surface.
+    pub workflow_view: Option<WorkflowViewSnapshot>,
     /// This pane's transcript scroll offset (app-owned, so the scrollback
     /// position and follow-the-stream flag survive the per-frame rebuild).
     pub scroll: Rc<RefCell<ScrollState>>,
@@ -312,18 +325,9 @@ pub struct UiSnapshot {
     /// per-frame rebuild.
     pub file_buffers: HashMap<(u64, String), Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
     pub crons_open: bool,
-    /// Whether the workflow-runs overlay is up. It floats over the workspace, so
-    /// the panes stay mounted underneath it.
-    pub task_workflow_open: bool,
-    /// The run the overlay's list has selected — keyed by run (or workflow,
-    /// for one that has never run) so a new run does not move the selection to
-    /// another row — and the phase selected inside that run's detail. Shared
-    /// with app state so the choice outlives the per-frame rebuild.
-    pub task_workflow_selected: Rc<RefCell<Option<String>>>,
-    /// The active pane's work clock, so a live run's mark in the overlay turns
-    /// with the same spinner the dock and the footer show.
+    /// The active pane's work clock, so a live row in the dock, a live workflow
+    /// view and the footer's indicator turn together.
     pub work_dock_phase: f32,
-    pub task_workflow_phase: Rc<RefCell<usize>>,
     /// Whether the keyboard shortcuts panel is up (also an overlay over the
     /// workspace, opened with Ctrl+.).
     pub shortcuts_help_open: bool,
@@ -336,7 +340,8 @@ pub struct UiSnapshot {
     pub crons: Vec<CronEntry>,
     /// Workflows registered with the embedded daemon (real data).
     pub workflows: Vec<WorkflowEntry>,
-    /// Settled workflow runs, newest first (real run ledger).
+    /// Workflow runs, newest first (real run ledger): the live ones the dock
+    /// lists and the settled ones as the ledger recorded them.
     pub workflow_runs: Vec<WorkflowRunEntry>,
     /// Executions from the daemon execution ledger (real data).
     pub executions: Vec<ExecutionEntry>,

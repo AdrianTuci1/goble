@@ -12,9 +12,9 @@
 //! below the topbar, in place of the panes, beside the tools sidebar.
 
 use goble_ui::elements::{
-    AppContext, Axis, Button, ButtonVariant, Container, ConversationEntry, ConversationStatus,
-    CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, Icon,
-    KeyHandler, MainAxisSize, Padding, Scrollable, Spacer, Text, TextInput, TopbarButton,
+    AppContext, Axis, Container, ConversationEntry, ConversationStatus, CrossAxisAlignment,
+    Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler,
+    MainAxisSize, Padding, Scrollable, Spacer, Text, TextInput, TopbarButton,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::{ChatMessage, ChatMessageBubble, ChatRole};
@@ -28,6 +28,10 @@ use crate::state::InboxKind;
 const CHORD: &str = "⌘";
 #[cfg(not(target_os = "macos"))]
 const CHORD: &str = "Ctrl+";
+
+/// The close control's hit box, and the height the row's right end always
+/// reserves so swapping the age for the control does not resize the row.
+const CLOSE_CONTROL_SIZE: f32 = 20.0;
 
 /// The five states a roster row can be in, in the order the list sorts them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,8 +175,9 @@ fn is_pinned(state: &UiSnapshot, entry: &ConversationEntry) -> bool {
     state.starred.iter().any(|id| id == &entry.id)
 }
 
-/// The rows the roster draws for the current filter, pinned first and then by
-/// state, each group in the order the conversations were listed in.
+/// The rows the roster draws for the current filter: pinned ones first, then
+/// the newest conversation at the top, which is the order the sidebar lists
+/// them in. A state grouping keeps that order inside each of its sections.
 fn visible_rows(state: &UiSnapshot) -> Vec<&ConversationEntry> {
     let query = state.agent_dashboard.query.trim().to_lowercase();
     let mut rows: Vec<&ConversationEntry> = state
@@ -190,7 +195,10 @@ fn visible_rows(state: &UiSnapshot) -> Vec<&ConversationEntry> {
                     || entry.last_response.to_lowercase().contains(&query))
         })
         .collect();
-    rows.sort_by_key(|entry| (!is_pinned(state, entry), row_state(state, entry)));
+    // A stable partition: the pinned rows keep their recency order above the
+    // rest instead of being grouped by state, which would move an older
+    // conversation above a newer one.
+    rows.sort_by_key(|entry| !is_pinned(state, entry));
     rows
 }
 
@@ -201,17 +209,28 @@ fn grouped_rows<'a>(
     rows: &[&'a ConversationEntry],
 ) -> Vec<(String, Vec<&'a ConversationEntry>)> {
     match state.agent_dashboard.grouping {
-        AgentDashboardGrouping::State => RowState::ALL
-            .iter()
-            .filter_map(|state_row| {
-                let entries: Vec<&ConversationEntry> = rows
-                    .iter()
-                    .copied()
-                    .filter(|entry| row_state(state, entry) == *state_row)
-                    .collect();
-                (!entries.is_empty()).then(|| (state_row.label().to_string(), entries))
-            })
-            .collect(),
+        AgentDashboardGrouping::State => {
+            let mut groups: Vec<(String, Vec<&ConversationEntry>)> = RowState::ALL
+                .iter()
+                .filter_map(|state_row| {
+                    let entries: Vec<&ConversationEntry> = rows
+                        .iter()
+                        .copied()
+                        .filter(|entry| row_state(state, entry) == *state_row)
+                        .collect();
+                    (!entries.is_empty()).then(|| (state_row.label().to_string(), entries))
+                })
+                .collect();
+            // The section holding the newest conversation comes first, so the
+            // top row of the panel is always the most recent one.
+            groups.sort_by_key(|(_, entries)| {
+                entries
+                    .first()
+                    .and_then(|entry| rows.iter().position(|row| row.id == entry.id))
+                    .unwrap_or(usize::MAX)
+            });
+            groups
+        }
         AgentDashboardGrouping::Directory => {
             let label = |entry: &ConversationEntry| -> String {
                 let directory = entry.directory.trim();
@@ -352,6 +371,31 @@ pub fn build_agent_dashboard(
                 return true;
             }
             if typing {
+                // The search field keeps the arrows: they walk the roster
+                // under the filter while the query stays focused, so a search
+                // narrows the list and the next row is one key away without
+                // leaving the field.
+                if search_focused {
+                    match key {
+                        "ArrowDown" => {
+                            (on_action.borrow_mut())(AgentDashboardAction::Select(step(
+                                &visible_ids,
+                                selected_id.as_deref(),
+                                1,
+                            )));
+                            return true;
+                        }
+                        "ArrowUp" => {
+                            (on_action.borrow_mut())(AgentDashboardAction::Select(step(
+                                &visible_ids,
+                                selected_id.as_deref(),
+                                -1,
+                            )));
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
                 return false;
             }
             if modified {
@@ -490,32 +534,24 @@ fn header(
     }
 
     let on_new = actions.on_agent_dashboard.clone();
-    let new_agent = Button::new(
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(sm * 0.5)
-            .with_child(
-                Icon::new("plus")
-                    .with_size(14.0)
-                    .with_theme_color(ColorToken::Accent, app)
-                    .finish(),
-            )
-            .with_child(
-                Text::new("New Agent")
-                    .with_font_size(13.0)
-                    .with_theme_color(
-                        if state.agent_dashboard.dispatch_open {
-                            ColorToken::Accent
-                        } else {
-                            ColorToken::Text
-                        },
-                        app,
-                    )
-                    .finish(),
+    // The control is text on the panel, with no fill or outline: the header
+    // reads as one line, and the accent while dispatch is open is the only
+    // chrome it carries.
+    let new_agent = HoverRow::new(
+        Text::new("New Agent")
+            .with_font_size(13.0)
+            .with_theme_color(
+                if state.agent_dashboard.dispatch_open {
+                    ColorToken::Accent
+                } else {
+                    ColorToken::Text
+                },
+                app,
             )
             .finish(),
     )
-    .with_variant(ButtonVariant::Ghost)
+    .with_quiet_hover()
+    .with_padding(EdgeInsets::new(0.0, sm * 0.25, 0.0, sm * 0.25))
     .with_on_click(move || {
         // The control is the dispatch mode's handle: one press clears the
         // cursor and puts the caret in the prompt line, the next drops the
@@ -722,37 +758,42 @@ fn roster_row(
                 .finish(),
         );
     }
-    if hovered {
-        // Under the pointer the row names its state and swaps the age for the
-        // way out of the conversation, the way grok-build's dashboard does.
-        title = title.with_child(
-            Text::new(row_state.label())
-                .with_font_size(11.0)
-                .with_theme_color(row_state.color(), app)
-                .with_max_lines(1)
-                .finish(),
-        );
-        title = title.with_child(close_control(app, actions, entry, armed));
+    // The right end is the same height whether it shows the age or the way
+    // out, so the row does not jump under the pointer or when it is selected.
+    // Under the pointer it swaps the age for the close control; the state is
+    // already carried by the mark on the left.
+    let right: Box<dyn Element> = if hovered {
+        close_control(app, actions, entry, armed)
     } else {
-        title = title.with_child(
-            Text::new(if armed {
-                format!("{CHORD}⌫ again")
+        Text::new(if armed {
+            format!("{CHORD}⌫ again")
+        } else {
+            entry.timestamp.clone()
+        })
+        .with_font_size(12.0)
+        .with_theme_color(
+            if armed {
+                ColorToken::Error
             } else {
-                entry.timestamp.clone()
-            })
-            .with_font_size(12.0)
-            .with_theme_color(
-                if armed {
-                    ColorToken::Error
-                } else {
-                    ColorToken::Muted
-                },
-                app,
+                ColorToken::Muted
+            },
+            app,
+        )
+        .with_max_lines(1)
+        .finish()
+    };
+    title = title.with_child(
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm * 0.5)
+            .with_child(
+                Empty::new()
+                    .with_size(goble_ui::vec2f(0.0, CLOSE_CONTROL_SIZE))
+                    .finish(),
             )
-            .with_max_lines(1)
+            .with_child(right)
             .finish(),
-        );
-    }
+    );
 
     // The activity sits under the name, indented past the glyph, so the row
     // reads as a titled item rather than a single squeezed line.
@@ -810,7 +851,7 @@ fn close_control(
             )
             .finish(),
     )
-    .with_size(20.0)
+    .with_size(CLOSE_CONTROL_SIZE)
     .with_corner_radius(4.0)
     .with_on_click(move || {
         (on_delete.borrow_mut())(AgentDashboardAction::Delete(id.clone()));
@@ -1407,7 +1448,7 @@ mod ui_tests {
             .collect();
         let field = strokes
             .iter()
-            .find(|rect| (rect.size.height - 38.4).abs() < 1.0)
+            .find(|rect| (36.0..=44.0).contains(&rect.size.height))
             .expect("the filter field draws its box");
         assert!(
             field.size.width >= pane_width - 24.0,
@@ -1510,11 +1551,25 @@ mod ui_tests {
                 _ => None,
             })
             .expect("the panel draws its new-agent control");
+        // The card starts below the roster; its own heading is drawn as
+        // "Steps", so a raw "# Steps" run anywhere under the card's top edge
+        // would be markdown printed instead of rendered.
+        let card_top = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Long answer" => {
+                    Some(origin.y)
+                }
+                _ => None,
+            })
+            .fold(f32::MIN, f32::max);
         assert!(
             !commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::DrawText { text, origin, .. }
-                    if text.starts_with("# Steps") && origin.x >= panel_x
+                    if text.starts_with("# Steps")
+                        && origin.x >= panel_x
+                        && origin.y > card_top
             )),
             "no raw markdown reaches the card: {texts:?}"
         );
@@ -1744,6 +1799,130 @@ mod ui_tests {
         );
     }
 
+    /// The arrows walk the roster while the search field keeps the keyboard:
+    /// a query narrows the list and the next row is one key away.
+    #[test]
+    fn the_search_field_keeps_the_arrows() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = root();
+        {
+            let mut s = state.borrow_mut();
+            s.conversations = vec![
+                conversation(
+                    "a",
+                    "Fix the login flow",
+                    "one",
+                    ConversationStatus::Default,
+                ),
+                conversation("b", "Audit the diff", "two", ConversationStatus::Default),
+            ];
+            s.agent_dashboard.open = true;
+            s.agent_dashboard.search_focused = true;
+        }
+
+        assert!(press(&mut root, &app, "ArrowDown", ModifiersState::none()));
+        assert_eq!(
+            state.borrow().agent_dashboard.selected.as_deref(),
+            Some("a"),
+            "the first arrow lands on the first matching row"
+        );
+        assert!(press(&mut root, &app, "ArrowDown", ModifiersState::none()));
+        assert_eq!(
+            state.borrow().agent_dashboard.selected.as_deref(),
+            Some("b"),
+            "the next arrow walks down the filtered roster"
+        );
+        assert!(
+            state.borrow().agent_dashboard.search_focused,
+            "navigating the roster leaves the query focused"
+        );
+    }
+
+    /// The roster keeps the sidebar's order: the newest conversation is the
+    /// first row, and a row's state only decides its section, never its place
+    /// inside it.
+    #[test]
+    fn the_roster_lists_the_newest_conversation_first() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = root();
+        {
+            let mut s = state.borrow_mut();
+            s.conversations = vec![
+                conversation(
+                    "new",
+                    "Newest",
+                    "one",
+                    ConversationStatus::Success,
+                ),
+                conversation(
+                    "mid",
+                    "Middle",
+                    "two",
+                    ConversationStatus::Default,
+                ),
+                conversation(
+                    "old",
+                    "Oldest",
+                    "three",
+                    ConversationStatus::Success,
+                ),
+            ];
+            s.agent_dashboard.open = true;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let y = |label: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. } if text == label => Some(origin.y),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the row {label} is drawn: {commands:?}"))
+        };
+        assert!(
+            y("Newest") < y("Middle") && y("Middle") < y("Oldest"),
+            "the roster follows the list's recency order"
+        );
+    }
+
+    /// A row keeps its height under the pointer: the age and the close control
+    /// share one fixed right-end slot, so the activity line does not move.
+    #[test]
+    fn a_hovered_row_keeps_its_height() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = root();
+        {
+            let mut s = state.borrow_mut();
+            s.conversations = vec![conversation(
+                "a",
+                "Fix the login flow",
+                "The fix is in.",
+                ConversationStatus::Default,
+            )];
+            s.agent_dashboard.open = true;
+        }
+        let activity_y = |root: &mut Box<dyn Element>| {
+            let commands = render_element(root, window(), &app);
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. } if text == "The fix is in." => {
+                        Some(origin.y)
+                    }
+                    _ => None,
+                })
+                .expect("the activity line is drawn")
+        };
+
+        let idle = activity_y(&mut root);
+        *state.borrow().agent_dashboard.hovered_row.borrow_mut() = Some("a".to_string());
+        let hovered = activity_y(&mut root);
+        assert_eq!(
+            idle, hovered,
+            "the row's right end reserves the close control's height in both states"
+        );
+    }
+
     /// The response card is grok-build's output box: the agent's name and age,
     /// its response, a plain prompt line and the model as text. Every row
     /// control lives on the keyboard instead, so nothing in the card is a
@@ -1910,10 +2089,11 @@ mod ui_tests {
         );
     }
 
-    /// Under the pointer a row names its state and swaps its age for the close
-    /// control, so the two things a row can be doing live where the eye is.
+    /// Under the pointer a row swaps its age for the close control. Its state
+    /// stays on the mark at the left and is not repeated at the right end, so
+    /// the row does not change shape or wording under the pointer.
     #[test]
-    fn hover_reveals_the_state_and_the_close_control() {
+    fn hover_reveals_the_close_control_without_the_state_label() {
         let app = AppContext::default();
         let (mut root, state, _dir) = root();
         let sidebar_width = state.borrow().sidebar_width;
@@ -1938,12 +2118,12 @@ mod ui_tests {
         let commands = render_element(&mut root, window(), &app);
         let panel_x = |origin: Vector2F| origin.x >= sidebar_width;
         assert!(
-            commands.iter().any(|command| matches!(
+            !commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::DrawText { text, origin, .. }
-                    if text == "Awaiting your input" && panel_x(*origin) && origin.x > window().x / 2.0
+                    if text == "Awaiting your input" && panel_x(*origin) && origin.y > 150.0
             )),
-            "the hovered row names its state at the right end"
+            "the hovered row does not repeat its state at the right end"
         );
         assert!(
             !commands.iter().any(|command| matches!(

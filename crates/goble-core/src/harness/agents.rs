@@ -221,6 +221,11 @@ pub(super) async fn spawn_subagent(
         .context("subagent_type is required")?
         .to_string();
     let run_in_background = args["run_in_background"].as_bool().unwrap_or(false);
+    // The parent sets the child's step budget on the call; a spawn that names
+    // none gets the default. The budget module clamps both ends.
+    let max_steps = args["max_steps"]
+        .as_u64()
+        .map(|steps| steps.min(u64::from(u32::MAX)) as u32);
     if !can_spawn_subagent(turn.depth) {
         anyhow::bail!(
             "sub-agent spawn refused at depth {} (limit {})",
@@ -229,11 +234,13 @@ pub(super) async fn spawn_subagent(
         );
     }
     let id = SubAgentId::generate();
-    // The child's cwd is its per-child subdir of the spawner's workspace dir;
-    // an explicit `cwd` may relocate it inside the same root, never outside.
+    // The child's cwd is its own directory under the app home's worktrees root,
+    // never inside the project — grok-build gives a sub-agent a worktree under
+    // `<home>/worktrees` rather than a folder in the checkout. An explicit
+    // `cwd` keeps its meaning and still resolves inside the parent's workspace.
     let cwd = match args["cwd"].as_str() {
         Some(path) => resolve_path(path, workspace_dir)?,
-        None => id.child_cwd(workspace_dir),
+        None => id.child_cwd(&turn.host.worktrees_dir),
     };
     std::fs::create_dir_all(&cwd).with_context(|| format!("failed to create child cwd {cwd:?}"))?;
     let now = Utc::now().to_rfc3339();
@@ -256,7 +263,7 @@ pub(super) async fn spawn_subagent(
         cwd,
         run_in_background,
         depth: turn.depth + 1,
-        budget: crate::subagent_run::default_child_budget(),
+        budget: crate::subagent_run::child_budget(max_steps),
     };
     let record = SubAgentRecord::new(spec);
     // The record is registered and the loop put on a task before this returns, so

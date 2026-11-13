@@ -103,6 +103,7 @@ sandbox never outlives its run's deadline plus a grace period.
 | `e2b` | `auto_pause: true` and the request timeout; a paused sandbox is resumed for a follow-up turn, then killed by the reaper |
 | `daytona` | `auto_stop_interval` from the timeout (minutes) |
 | `box` | `ttl_seconds` from the timeout |
+| `cloud_run` | one job execution per run; the task timeout (one day at most) is the cap, and there is no pause/resume |
 | `docker` | `--rm` plus a reaper label; local development only |
 | `ssh` | no auto-stop; the hub stops the worker's run, not the host |
 
@@ -156,6 +157,12 @@ Run 1 ── 1 Session (project, worktree, ledger)
 
 - Single user: one binary, SQLite at `~/.goble/hub.db`, embedded scheduler. It dials the relay; no
   inbound port.
+- The settings the binary will read live in `~/.goble/hub.toml` (`database`, `relay_url`, `token`,
+  `workflows`), written by `goble-cli setup hub` or by the agent in the app's hub-setup conversation.
+  The file is `HubConfig` in `goble-core::config::hub`. A missing file reads as `None` and
+  `goble-cli setup status` prints `not configured`; the defaults are filled in only when
+  `goble-cli setup hub` writes the file. Nothing runs the hub binary yet, so the file is the record
+  of what it will start with.
 - Team: the same binary with Postgres (`DATABASE_URL`) and N replicas behind the relay's registry;
   the scheduler takes a database advisory lock so two replicas cannot lease the same run.
 - The hub's own UI is the same `goble-ui` element set as the desktop, served by `goble-web`; the API
@@ -194,7 +201,10 @@ with a property Paseo's hub does not claim: the trail is verifiable offline.
       requeue and expiry are implemented; the always-on scheduler loop is pending.
 - [~] Add the sandbox reaper and the warm pool — `dispatch::should_reap` is the rule; provider
       listing and the warm pool are pending.
-- [ ] Add the Cloud Run Jobs adapter for one-shot runs (documented as non-interactive).
+- [x] Add the Cloud Run Jobs adapter for one-shot runs (documented as non-interactive) —
+      `goble-remote::cloud_run` creates or replaces one job per workspace name, runs it, and
+      treats the execution name as the sandbox id; the token is `api_key` or a cached
+      `gcloud auth print-access-token`. The hub does not dispatch runs onto it yet.
 - [~] Link runs to sessions/checkpoints and expose fork/replay/revert — `link_session` is in;
       checkpoint linking and the verbs are pending.
 - [~] Add approvals with device-signed events and grant enforcement — the approval state gate is in;

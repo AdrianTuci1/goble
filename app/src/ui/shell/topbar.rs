@@ -42,11 +42,12 @@ pub const TOPBAR_HEIGHT: f32 = 36.0;
 #[cfg(not(target_os = "macos"))]
 pub const TOPBAR_HEIGHT: f32 = 40.0;
 
-/// The room the macOS traffic lights take at the bar's leading edge. They are
-/// real OS controls overlaying the content (the bar doubles as the titlebar),
-/// so the bar's controls start past them.
+/// The room the macOS traffic lights take at the bar's leading edge, plus the
+/// gap that sets the Tools control apart from them. They are real OS controls
+/// overlaying the content (the bar doubles as the titlebar), so the bar's
+/// controls start past them.
 #[cfg(target_os = "macos")]
-pub(super) const TOPBAR_TRAFFIC_INSET: f32 = 76.0;
+pub(super) const TOPBAR_TRAFFIC_INSET: f32 = 94.0;
 #[cfg(not(target_os = "macos"))]
 pub(super) const TOPBAR_TRAFFIC_INSET: f32 = 0.0;
 
@@ -87,9 +88,11 @@ pub(super) const TOPBAR_RIGHT_PADDING: f32 = TOPBAR_FULLSCREEN_PADDING;
 /// side, so the icon reads tight against the bar's edge.
 pub(super) const TOPBAR_ICON_BUTTON_SIZE: f32 = 22.0;
 
-/// The height of the rule that opens the tab strip: the bar's height less a
-/// small inset at both ends, so it reads as a divider rather than a tab edge.
-const TOPBAR_RULE_HEIGHT: f32 = TOPBAR_HEIGHT - 8.0;
+/// The height of the rules that close the tab strip's column — the one after
+/// the bar's own controls and the one after the last tab. Each runs the bar's
+/// full height, so the edge reads as a column boundary rather than a tick
+/// floating inside the row.
+const TOPBAR_RULE_HEIGHT: f32 = TOPBAR_HEIGHT;
 
 /// The gap between the bar's own controls, and between the last of them and
 /// the tab strip's leading rule.
@@ -140,10 +143,11 @@ fn tab_slot(room: f32, tabs: usize) -> f32 {
 /// the current one instead of replacing it.
 ///
 /// The "+" opens a new workspace in the active environment; the "▾" lists the
-/// environments (the VMs the user added appear by name) — choosing one opens a
-/// new workspace that runs on it, and hovering one shows a tray whose
-/// "Make default" makes it the environment new workspaces start in — plus a
-/// trailing "New environment…" entry.
+/// two kinds of workspace it can start — a terminal and an agent view holding a
+/// fresh conversation — then the environments (the VMs the user added appear by
+/// name) — choosing one opens a new workspace that runs on it, and hovering one
+/// shows a tray whose "Make default" makes it the environment new workspaces
+/// start in — plus a trailing "New environment…" entry.
 pub fn build_topbar(
     app: &AppContext,
     state: &UiSnapshot,
@@ -195,10 +199,13 @@ pub fn build_topbar(
     .with_position(TooltipPosition::Below)
     .finish();
 
-    // A hairline between the dashboard control and the tab strip, with the
-    // strip's own 3 pt gap on the leading side: the two left controls read as
-    // one group, the workspaces as the next.
+    // A hairline on each long edge of the tab strip, flush against the first
+    // and the last tab: the workspaces read as a column between the bar's own
+    // controls, with the bar's control gap on the outside of each rule.
     let strip_rule = ConstrainedBox::new(Divider::vertical().finish())
+        .with_height(TOPBAR_RULE_HEIGHT)
+        .finish();
+    let strip_end_rule = ConstrainedBox::new(Divider::vertical().finish())
         .with_height(TOPBAR_RULE_HEIGHT)
         .finish();
 
@@ -211,13 +218,17 @@ pub fn build_topbar(
     // lifted pane treats the whole bar as its tab strip, so a release on the
     // empty room beside the tabs still names an insertion point.
     let bar_bounds: Rc<RefCell<Option<RectF>>> = Rc::new(RefCell::new(None));
-    let workspaces = TabStrip::new(vec![build_workspace_strip(
-        app,
-        state,
-        actions,
-        Rc::clone(&bar_bounds),
-    )])
-    .finish();
+    let workspaces = StripColumn::new(
+        strip_rule,
+        TabStrip::new(vec![build_workspace_strip(
+            app,
+            state,
+            actions,
+            Rc::clone(&bar_bounds),
+        )])
+        .finish(),
+        strip_end_rule,
+    );
 
     // "+ ▾": open a new workspace, or pick the environment it runs in.
     let add_workspace = build_add_workspace_control(app, state, media, media_actions, actions);
@@ -263,8 +274,8 @@ pub fn build_topbar(
     // Settings leave behind, and the controls keep the positions they had (see
     // [`TopbarRow`]).
     let row = TopbarRow::new(
-        vec![sidebar_button, agent_dashboard_button, strip_rule],
-        workspaces,
+        vec![sidebar_button, agent_dashboard_button],
+        Box::new(workspaces),
         vec![add_workspace],
         vec![live_indicator, inbox_button, settings_button],
     )
@@ -727,6 +738,92 @@ impl Element for TabStrip {
     }
 }
 
+/// The tab strip with the two hairlines that close its column: one flush
+/// against the first tab and one flush against the last, so neither leaves a
+/// gap between the rule and the tab it borders. [`TopbarRow`] hands this
+/// element the room the bar's controls leave; the rules take their point from
+/// it and the strip divides the rest.
+struct StripColumn {
+    open: Box<dyn Element>,
+    strip: Box<dyn Element>,
+    close: Box<dyn Element>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl StripColumn {
+    fn new(
+        open: Box<dyn Element>,
+        strip: Box<dyn Element>,
+        close: Box<dyn Element>,
+    ) -> Self {
+        Self {
+            open,
+            strip,
+            close,
+            size: None,
+            origin: None,
+        }
+    }
+
+    /// A child of the column, so a test and the paint loop can walk them alike.
+    fn children(&mut self) -> [&mut Box<dyn Element>; 3] {
+        [&mut self.open, &mut self.strip, &mut self.close]
+    }
+}
+
+impl Element for StripColumn {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let inner = SizeConstraint::loose(vec2f(f32::INFINITY, f32::INFINITY));
+        let open = self.open.layout(inner, ctx, app);
+        let close = self.close.layout(inner, ctx, app);
+        // The rules take their point from the column's own room; the strip
+        // divides what is left of it.
+        let room = (constraint.max.x - open.x - close.x).max(0.0);
+        let strip = self
+            .strip
+            .layout(SizeConstraint::loose(vec2f(room, constraint.max.y)), ctx, app);
+        let size = vec2f(open.x + strip.x + close.x, strip.y.max(open.y).max(close.y));
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let height = self.size.unwrap_or(Vector2F::zero()).y;
+        let mut x = origin.x;
+        for child in self.children() {
+            let y = (height - child.size().unwrap_or(Vector2F::zero()).y).max(0.0) / 2.0;
+            child.paint(vec2f(x, origin.y + y), ctx, app);
+            x += child.size().unwrap_or(Vector2F::zero()).x;
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.children()
+            .into_iter()
+            .any(|child| child.dispatch_event(event, ctx, app))
+    }
+}
+
 /// One frame of tabs: its tabs laid out in slots of equal width — the room the
 /// strip handed the frame, less the rules between the tabs, divided evenly — with
 /// [`TAB_RULE_WIDTH`] of rule between neighbours, and as tall as the bar.
@@ -1008,17 +1105,13 @@ impl Element for TopbarRow {
             *bounds.borrow_mut() = Some(rectf(origin.x, origin.y, width, height));
         }
 
-        // The left group: the controls and the strip, flush with `left_spacing`
-        // between neighbours.
+        // The left group: the controls, then the strip a `left_spacing` past
+        // the last of them.
         let mut x = 0.0;
-        let leading = self.leading.len();
-        for (index, child) in self.leading.iter_mut().enumerate() {
+        for child in self.leading.iter_mut() {
             let y = Self::center_y(child.as_ref(), height);
             child.paint(origin + vec2f(x, y), ctx, app);
-            x += Self::width_of(child.as_ref());
-            if index + 1 < leading {
-                x += self.left_spacing;
-            }
+            x += Self::width_of(child.as_ref()) + self.left_spacing;
         }
         let y = Self::center_y(self.strip.as_ref(), height);
         self.strip.paint(origin + vec2f(x, y), ctx, app);
@@ -1642,8 +1735,8 @@ impl Element for WorkspaceChip {
 }
 
 /// The "+ ▾" control: "+" opens a new workspace in the active environment, and
-/// "▾" opens the environment menu (a new terminal, the environments, plus
-/// "New environment…").
+/// "▾" opens the environment menu (a new terminal, a new agent tab, the
+/// environments, plus "New environment…").
 fn build_add_workspace_control(
     app: &AppContext,
     state: &UiSnapshot,
@@ -1673,11 +1766,15 @@ fn build_add_workspace_control(
     .with_size(20.0)
     .finish();
 
-    // The menu opens with the terminal the workspace can launch — a new space
-    // holding a plain PTY — and then the environments themselves: choosing one
-    // opens a new space that runs on it (the check mark still marks the active
-    // environment), and the trailing entry adds a brand-new one.
-    let mut items = vec![PopupMenuItem::new("New terminal").with_icon("terminal")];
+    // The menu opens with the two kinds of space the workspace can start — a
+    // plain PTY, and an agent pane holding a fresh conversation — and then the
+    // environments themselves: choosing one opens a new space that runs on it
+    // (the check mark still marks the active environment), and the trailing
+    // entry adds a brand-new one.
+    let mut items = vec![
+        PopupMenuItem::new("New terminal").with_icon("terminal"),
+        PopupMenuItem::new("New Agent").with_icon("agent"),
+    ];
     // `(medium id, label)` per environment row, in item order.
     let mut envs: Vec<(String, String)> = Vec::new();
     for m in &media.mediums {
@@ -1688,7 +1785,7 @@ fn build_add_workspace_control(
         items.push(item);
         envs.push((m.id.clone(), m.label.clone()));
     }
-    // The trailing "New environment…" entry; its index is `1 + envs.len()`.
+    // The trailing "New environment…" entry; its index is `2 + envs.len()`.
     items.push(PopupMenuItem::new("New environment…").with_icon("plus"));
 
     // The tray warp-new shows beside the row under the pointer: the
@@ -1701,16 +1798,17 @@ fn build_add_workspace_control(
     let tray_open = state.env_selector_open.clone();
 
     let on_add_space = actions.on_add_space.clone();
+    let on_add_agent = actions.on_add_agent_space.clone();
     let on_add_space_with_medium = actions.on_add_space_with_medium.clone();
     let on_open_add_medium = actions.on_open_add_medium.clone();
     let menu = PopupMenu::new(trigger, items)
         .with_open(state.env_selector_open.clone())
         .with_hover_index(state.env_selector_hover.clone())
         .with_hover_tray(ENV_TRAY_WIDTH, move |index, app| {
-            // Item 0 is the terminal and the trailing item adds an environment:
-            // only the rows in between are environments, and only they carry a
-            // tray.
-            let (id, label) = tray_envs.get(index.checked_sub(1)?)?.clone();
+            // Items 0 and 1 start a space (a terminal, an agent pane) and the
+            // trailing item adds an environment: only the rows in between are
+            // environments, and only they carry a tray.
+            let (id, label) = tray_envs.get(index.checked_sub(2)?)?.clone();
             let is_default = id == tray_default;
             let select = on_select_medium.clone();
             let open = tray_open.clone();
@@ -1723,11 +1821,15 @@ fn build_add_workspace_control(
         .with_on_select(move |index| {
             if index == 0 {
                 (on_add_space.borrow_mut())();
-            } else if index <= envs.len() {
+            } else if index == 1 {
+                // A fresh conversation: an agent pane in a space of its own,
+                // opened in the same environment "+" would use.
+                (on_add_agent.borrow_mut())();
+            } else if index <= envs.len() + 1 {
                 // An environment row opens a space running on that environment
                 // (the tab lands at the end of the strip, as "+" does) instead
                 // of only switching which environment is active.
-                (on_add_space_with_medium.borrow_mut())(envs[index - 1].0.clone());
+                (on_add_space_with_medium.borrow_mut())(envs[index - 2].0.clone());
             } else {
                 (on_open_add_medium.borrow_mut())();
             }
@@ -2357,8 +2459,10 @@ mod tests {
             .expect("the active workspace tab is the filled tab of the strip")
     }
 
-    /// The x of every rule the strip draws between two tabs, in draw order.
-    fn tab_rules(commands: &[RenderCommand], app: &AppContext) -> Vec<f32> {
+    /// The rectangle of every full-height rule the bar paints, in draw order:
+    /// the one after the dashboard control, the ones between the tabs, and the
+    /// one before the "+ ▾" control.
+    fn column_rules(commands: &[RenderCommand], app: &AppContext) -> Vec<RectF> {
         let border = app.theme.color(ColorToken::Border);
         commands
             .iter()
@@ -2366,13 +2470,27 @@ mod tests {
                 RenderCommand::FillRect { rect, color, .. }
                     if *color == border
                         && rect.width() == TAB_RULE_WIDTH
-                        && rect.min_y() == 0.0 =>
+                        && rect.min_y() == 0.0
+                        && (rect.height() - TOPBAR_HEIGHT).abs() < 0.5 =>
                 {
-                    Some(rect.min_x())
+                    Some(*rect)
                 }
                 _ => None,
             })
             .collect()
+    }
+
+    /// The x of every rule the strip draws between two tabs, in draw order. The
+    /// bar closes both ends of the strip with a rule of its own, and those two
+    /// are the first and the last of the bar's rules: the boundaries are what
+    /// lies between.
+    fn tab_rules(commands: &[RenderCommand], app: &AppContext) -> Vec<f32> {
+        let mut rules = column_rules(commands, app);
+        if rules.len() >= 2 {
+            rules.remove(0);
+            rules.pop();
+        }
+        rules.into_iter().map(|rect| rect.min_x()).collect()
     }
 
     /// The rightmost x anything is drawn at inside the topbar band, so a test
@@ -2499,6 +2617,60 @@ mod tests {
         assert!(
             (rule.origin.x - (agents.x + 11.0 + 3.0)).abs() < 0.5,
             "three points separate the dashboard control from the rule: {rule:?}"
+        );
+        assert!(
+            rule.min_y() == 0.0 && (rule.height() - TOPBAR_HEIGHT).abs() < 0.5,
+            "the rule runs the bar from its top edge to its bottom edge: {rule:?}"
+        );
+    }
+
+    /// The tabs read as a column ruled off on both ends: the hairline after the
+    /// dashboard control and the matching one after the last tab, before the
+    /// "+ ▾" control. Both run the bar's full height, and each sits flush
+    /// against the tab it borders rather than a gap away.
+    #[test]
+    fn the_strip_is_ruled_off_after_its_last_tab() {
+        let app = AppContext::default();
+        let (mut root, _state, _threads) =
+            app_with_workspaces(vec!["One".to_string(), "Two".to_string()]);
+        let commands = render_element(&mut root, window(), &app);
+
+        let rules = column_rules(&commands, &app);
+        assert_eq!(
+            rules.len(),
+            3,
+            "a rule on each end of the strip and one between its tabs: {rules:?}"
+        );
+        for rule in &rules {
+            assert!(
+                rule.min_y() == 0.0 && (rule.height() - TOPBAR_HEIGHT).abs() < 0.5,
+                "every rule runs the bar from edge to edge: {rule:?}"
+            );
+        }
+
+        let agents = topbar_icon(&commands, "robot").expect("the agent management control");
+        assert!(
+            rules[0].min_x() > agents.x,
+            "the leading rule closes the bar's own controls: {rules:?} after {agents:?}"
+        );
+        let first_tab = active_tab(&commands, &app);
+        assert!(
+            (first_tab.min_x() - rules[0].max_x()).abs() < 0.5,
+            "the first tab begins on the rule's trailing edge: {first_tab:?} after {rules:?}"
+        );
+
+        // Two tabs sit at the cap in a wide window, so the last one ends one
+        // rule and its own slot after the boundary, and the trailing rule
+        // begins on the tab's own edge.
+        let last_tab_right = rules[1].max_x() + MAX_TAB_WIDTH;
+        assert!(
+            (rules[2].min_x() - last_tab_right).abs() < 0.5,
+            "the rule follows the last tab with no gap: {rules:?} against {last_tab_right}"
+        );
+        let plus = topbar_icon(&commands, "plus").expect("the new-workspace control");
+        assert!(
+            plus.x > rules[2].max_x(),
+            "the new-workspace control follows the trailing rule: {plus:?} in {rules:?}"
         );
     }
 

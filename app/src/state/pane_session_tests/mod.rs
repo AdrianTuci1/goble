@@ -6,8 +6,9 @@
 //! [`transcript`] (the rows a refresh builds), [`sessions`] (active-pane
 //! fallbacks and rebinding), [`chats`] (which conversations are sidebar cards),
 //! [`harness_resume`] (reopening a harness's own session), [`harness_sessions`]
-//! (which session a conversation claims), [`proposals`] (a suspended command)
-//! and [`snapshots`] (the per-pane chat snapshot and controls).
+//! (which session a conversation claims), [`proposals`] (a suspended command),
+//! [`snapshots`] (the per-pane chat snapshot and controls) and
+//! [`terminal_switch`] (Esc giving a chat pane a shell).
 
 use super::*;
 use crate::emulator::Emulator;
@@ -21,5 +22,6 @@ mod live_events;
 mod proposals;
 mod sessions;
 mod snapshots;
+mod terminal_switch;
 mod transcript;
 mod usage;

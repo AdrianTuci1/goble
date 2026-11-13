@@ -142,7 +142,7 @@ pub(crate) fn build_diff_pane(
         },
         _ => chat::HeaderSlots::default(),
     };
-    let header = chat::build_agent_header_with(app, state, actions, pane_id, false, slots);
+    let header = chat::build_agent_header_with(app, state, actions, pane_id, None, slots);
 
     // The second bar is painted with the header, above the cards: its commit
     // menu opens down over the file list, and a menu painted with the content

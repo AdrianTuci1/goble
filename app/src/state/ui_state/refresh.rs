@@ -34,6 +34,8 @@ impl UiState {
             composer_draft: String::new(),
             composer_focused: false,
             models: Vec::new(),
+            model_groups: Vec::new(),
+            composer_catalog: goble_harness_types::HarnessCatalog::empty(),
             selected_model: String::new(),
             harnesses: vec![HarnessEntry::internal("internal", "Goble")],
             selected_harness: "internal".to_string(),

@@ -80,7 +80,7 @@ pub fn build_terminal(
             (on_harness_mode.borrow_mut())(pane_id, false);
             (on_composer_focus.borrow_mut())(false);
         }));
-        return chat::build_agent_chat(app, state, actions, pane_id, active, Some(leave));
+        return chat::build_agent_chat(app, state, actions, pane_id, active, true, Some(leave));
     }
 
     // Out of agent mode the pane is exactly its shell, and the block list it
@@ -96,7 +96,7 @@ pub fn build_terminal(
         state,
         actions,
         pane_id,
-        false,
+        None,
         // A shell names the CLI agent running in it, never the conversation the
         // pane happens to hold: out of agent mode this pane is the shell.
         None,

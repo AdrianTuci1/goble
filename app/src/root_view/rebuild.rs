@@ -19,6 +19,10 @@ use crate::ui::{
 
 use super::RootView;
 
+/// How many paths a `@` draft lists. A long directory is windowed by the band
+/// anyway, and a prompt only ever names a few.
+const MENTION_PATH_LIMIT: usize = 200;
+
 impl RootView {
     /// Rebuild the element tree from the current app state.
     pub(super) fn rebuild(&mut self, app: &AppContext) {
@@ -128,6 +132,31 @@ impl RootView {
             // The topbar's live cue reads C1's one accessor once; the count and
             // phase are carried on the snapshot so `build_topbar` stays pure.
             let live_work = s.live_work();
+            // The composer's `@`: the paths under the active pane's working
+            // directory. They are read for exactly as long as that pane's draft
+            // is a mention, so a pane typing a prompt pays nothing for a list
+            // nobody is looking at.
+            let mention_paths = {
+                let pane_id = s.active_pane_id;
+                let draft = s
+                    .pane_sessions
+                    .get(&pane_id)
+                    .map(|session| session.draft.clone())
+                    .unwrap_or_default();
+                let asked = !*s.pane_controls(pane_id).slash_dismissed.borrow()
+                    && goble_ui::elements::DraftTrigger::from_draft(&draft)
+                        == Some(goble_ui::elements::DraftTrigger::Mention);
+                if asked {
+                    let cwd = s
+                        .pane_sessions
+                        .get(&pane_id)
+                        .map(|session| session.path.clone())
+                        .unwrap_or_default();
+                    crate::ui::palette::mention_paths(&cwd, MENTION_PATH_LIMIT)
+                } else {
+                    Vec::new()
+                }
+            };
             // Fan the composer pills out per pane: the harness (medium) choice
             // is window-level, but each pane keeps its own working directory,
             // branch and dropdown open flags. The directory and branch menus are
@@ -422,6 +451,9 @@ impl RootView {
                 composer_draft: s.composer_draft.clone(),
                 composer_focused: s.composer_focused,
                 models: s.models.clone(),
+                model_groups: s.model_groups.clone(),
+                composer_catalog: s.composer_catalog.clone(),
+                mention_paths,
                 selected_model: s.selected_model.clone(),
                 harnesses: s.harnesses.clone(),
                 selected_harness: s.selected_harness.clone(),

@@ -184,6 +184,36 @@ impl UiState {
         controls.view = BlockView::Terminal;
     }
 
+    /// Make the chat pane `pane_id` a terminal pane, in place.
+    ///
+    /// A chat pane has no shell behind it, so Esc at its agent view has nothing
+    /// to return to. The way out is a terminal of the pane's own: the leaf
+    /// becomes [`PaneKind::Terminal`] in the same space, the shell starts in the
+    /// pane's directory, and the conversation stays bound — Cmd+Enter reopens
+    /// its agent view. Returns false when the pane is not a chat.
+    pub fn show_pane_terminal(&mut self, pane_id: u64) -> bool {
+        let Some(space_idx) = self.space_index_of_pane(pane_id) else {
+            return false;
+        };
+        if !matches!(
+            self.spaces[space_idx].leaf_kind(pane_id),
+            Some(PaneKind::Chat)
+        ) {
+            return false;
+        }
+        self.spaces[space_idx].set_leaf_kind(pane_id, PaneKind::Terminal);
+        self.leave_agent_view(pane_id);
+        // The shell starts now, so the surface the Esc reaches is a terminal
+        // already instead of a blank pane waiting for its first line.
+        self.start_terminal_sessions();
+        // The tab is named after what it holds, and what it holds just changed.
+        self.refresh_space_labels();
+        // The terminal's bar is its typing surface; the chat composer that held
+        // the keys is gone with the surface.
+        self.composer_focused = false;
+        true
+    }
+
     /// Point the file pane at another file it already has open, or add the file
     /// to the pane's chips. The pane stays where it is: two files share one
     /// topbar instead of splitting the space.

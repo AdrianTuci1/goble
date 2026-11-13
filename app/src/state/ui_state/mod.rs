@@ -102,6 +102,16 @@ pub struct UiState {
     pub composer_focused: bool,
     /// Model choices shown in the composer's model dropdown.
     pub models: Vec<String>,
+    /// The same models grouped the way the model tray lists them: one column
+    /// per provider the configuration declares models for, each with the
+    /// thinking levels its harness runs them at. Read from the desktop's
+    /// catalog, so the tray shows what a turn can actually run.
+    pub model_groups: Vec<goble_desktop_service::ModelGroup>,
+    /// The harness's own composer catalog: the commands and skills a draft can
+    /// list, and the models it runs with their thinking levels. Read from the
+    /// desktop, so the composer lists what the harness advertises instead of a
+    /// table kept here.
+    pub composer_catalog: goble_harness_types::HarnessCatalog,
     /// Currently selected model (shown as the composer's model label).
     pub selected_model: String,
     /// Harnesses the composer can route a turn to (native only in this build).

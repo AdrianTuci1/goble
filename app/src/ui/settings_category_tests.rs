@@ -1403,6 +1403,8 @@ fn the_agent_page_picks_the_default_model_from_the_menu_its_field_opens() {
             SettingsControl::DefaultModel,
             SettingsControl::AutoApprove,
             SettingsControl::VimMode,
+            SettingsControl::SetupRemoteWithAgent,
+            SettingsControl::SetupHubWithAgent,
             SettingsControl::OpenConfigFile,
             SettingsControl::ReloadRemoteAgents,
         ],
@@ -1657,6 +1659,8 @@ fn the_agent_page_reports_where_turns_run_without_buttons() {
             SettingsControl::DefaultModel,
             SettingsControl::AutoApprove,
             SettingsControl::VimMode,
+            SettingsControl::SetupRemoteWithAgent,
+            SettingsControl::SetupHubWithAgent,
             SettingsControl::OpenConfigFile,
             SettingsControl::ReloadRemoteAgents,
         ],
@@ -2953,8 +2957,8 @@ fn the_reload_row_is_in_the_focus_order_and_enter_reloads_the_config() {
     let (mut root, state, dir, _desktop) = remote_agents_root("");
 
     press(&mut root, &app, "ArrowRight"); // into the pane: Auto-approve
-    for _ in 0..5 {
-        press(&mut root, &app, "ArrowDown"); // Vim, Local, Remote, Reload
+    for _ in 0..7 {
+        press(&mut root, &app, "ArrowDown"); // Vim, the two setup rows, config, Reload
     }
     assert_eq!(
         state.borrow().settings_focused_control(),

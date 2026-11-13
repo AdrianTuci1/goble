@@ -433,6 +433,11 @@ pub enum SettingsControl {
     ReloadModels,
     /// Agent & Approval: re-read `[remote_agents.<name>]` from the config file.
     ReloadRemoteAgents,
+    /// Agent & Approval: talk Remote through with the agent, which asks for
+    /// what is missing and writes it with `goble-cli setup`.
+    SetupRemoteWithAgent,
+    /// Agent & Approval: the same conversation for the hub's own settings.
+    SetupHubWithAgent,
     /// Agent & Approval, Connections, Models and Advanced: open
     /// `~/.goble/config.toml` in a file pane beside this one.
     OpenConfigFile,

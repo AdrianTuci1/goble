@@ -169,13 +169,16 @@ pub(crate) fn build_terminal_composer(
             (on_command_decision.borrow_mut())(pane_id, id, decision)
         });
 
-    // The bar's own slash commands: `/` opens the palette's command list above
-    // the editor, narrowed by what was typed after the slash. Same list as the
-    // Cmd+K overlay, drawn in place.
-    let slash_commands = crate::ui::palette::slash_commands(state, actions);
-    let slash_query = crate::ui::palette::slash_query(&session.composer_draft).unwrap_or_default();
-    let slash_filtered = crate::ui::palette::matching_slash_commands(&slash_commands, &slash_query);
+    // The bar's own band: `/` lists the harness's commands, `$` its skills and
+    // `@` the paths under the working directory, narrowed by what was typed
+    // after the prefix. The same band the agent view draws, in place.
+    let draft_commands =
+        crate::ui::palette::draft_commands(state, actions, &session.composer_draft);
+    let draft_query = crate::ui::palette::draft_query(&session.composer_draft).unwrap_or_default();
+    let slash_filtered =
+        crate::ui::palette::matching_slash_commands(&draft_commands, &draft_query);
     let slash_items = crate::ui::palette::slash_items(&slash_filtered);
+    let on_composer_insert = actions.on_composer_insert.clone();
     composer = composer
         .with_slash_menu(
             slash_items.clone(),
@@ -186,6 +189,7 @@ pub(crate) fn build_terminal_composer(
         .with_on_slash_accept(crate::ui::palette::slash_accept(
             slash_filtered.clone(),
             on_slash_close,
+            on_composer_insert.clone(),
         ))
         .with_on_slash_dismiss(move || (on_slash_dismiss.borrow_mut())());
 
@@ -255,7 +259,11 @@ pub(crate) fn build_terminal_composer(
     }
     let menu = SlashMenu::new(slash_items, controls.slash_index.clone())
         .with_on_move(move |index| (on_slash_move_menu.borrow_mut())(index))
-        .with_on_accept(slash_accept(slash_filtered, on_slash_close_menu));
+        .with_on_accept(slash_accept(
+            slash_filtered,
+            on_slash_close_menu,
+            on_composer_insert,
+        ));
     Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(menu.finish())

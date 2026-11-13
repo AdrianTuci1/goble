@@ -19,8 +19,8 @@ use goble_ui::elements::{
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::{ChatMessage, ChatMessageBubble, ChatRole};
 
-use super::{AgentDashboardAction, AgentDashboardGrouping, UiActions, UiSnapshot};
-use crate::state::InboxKind;
+use super::{AgentDashboardAction, AgentDashboardGrouping, CronEntry, UiActions, UiSnapshot};
+use crate::state::{InboxItem, InboxKind};
 
 /// The key chord the footer names for a shortcut. The window's own chords are
 /// Command on macOS and Ctrl elsewhere.
@@ -101,15 +101,29 @@ impl RowState {
     }
 }
 
-/// The state one conversation is in: a pending approval or question wins over
-/// the turn's own status, because that is the thing the row is waiting on.
-fn row_state(state: &UiSnapshot, entry: &ConversationEntry) -> RowState {
-    let awaiting = state.inbox_items.iter().any(|item| {
+/// The prompt report the row is waiting on, when the conversation is still
+/// waiting at all. A report can outlive the turn it was raised for (the pane
+/// resolved the card outside the two paths the app settles, or the harness
+/// moved on), and a finished conversation must not keep showing it: the row
+/// would sit under "Awaiting your input" for good.
+fn awaiting_item<'a>(
+    state: &'a UiSnapshot,
+    entry: &ConversationEntry,
+) -> Option<&'a InboxItem> {
+    if entry.status != ConversationStatus::Waiting {
+        return None;
+    }
+    state.inbox_items.iter().rev().find(|item| {
         !item.acknowledged
             && item.conversation_id == entry.id
             && matches!(item.kind, InboxKind::Approval | InboxKind::Question)
-    });
-    if awaiting {
+    })
+}
+
+/// The state one conversation is in: a pending approval or question wins over
+/// the turn's own status, because that is the thing the row is waiting on.
+fn row_state(state: &UiSnapshot, entry: &ConversationEntry) -> RowState {
+    if awaiting_item(state, entry).is_some() {
         return RowState::Awaiting;
     }
     match entry.status {
@@ -123,15 +137,7 @@ fn row_state(state: &UiSnapshot, entry: &ConversationEntry) -> RowState {
 /// What a row's activity column says: the pending question or approval when
 /// there is one, the latest response otherwise.
 fn row_activity(state: &UiSnapshot, entry: &ConversationEntry) -> String {
-    state
-        .inbox_items
-        .iter()
-        .rev()
-        .find(|item| {
-            !item.acknowledged
-                && item.conversation_id == entry.id
-                && matches!(item.kind, InboxKind::Approval | InboxKind::Question)
-        })
+    awaiting_item(state, entry)
         .map(|item| preview(&item.title, 80))
         .unwrap_or_else(|| preview(&entry.last_response, 80))
 }
@@ -611,7 +617,9 @@ fn search_field(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
     field
 }
 
-/// The scrollable roster: one section per group, one row per conversation.
+/// The scrollable roster: the scheduled tasks first, then one section per
+/// group and one row per conversation. One scroll holds every piece of work
+/// the app runs, the way grok-build's list does.
 fn roster(
     app: &AppContext,
     state: &UiSnapshot,
@@ -620,26 +628,31 @@ fn roster(
     sm: f32,
     xs: f32,
 ) -> Box<dyn Element> {
+    let mut list = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(1.0);
+    // The app's timers come first: there are few of them, they are not bound
+    // to a pane, and they stay in view while the roster scrolls behind them.
+    list = list.with_child(schedules(app, state, actions, sm, xs));
+    list = list.with_child(Empty::new().with_size(goble_ui::vec2f(0.0, xs)).finish());
     if groups.is_empty() {
         let label = if state.agent_dashboard.query.trim().is_empty() {
             "No agents yet. Dispatch one below to start a conversation."
         } else {
             "No agent matches this search."
         };
-        return Container::new(
-            Text::new(label)
-                .with_font_size(13.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .with_padding(EdgeInsets::uniform(sm))
-        .finish();
+        list = list.with_child(
+            Container::new(
+                Text::new(label)
+                    .with_font_size(13.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::uniform(sm))
+            .finish(),
+        );
     }
-
-    let mut list = Flex::column()
-        .with_main_axis_size(MainAxisSize::Min)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(1.0);
     for (index, (label, entries)) in groups.iter().enumerate() {
         list = list.with_child(section_header(app, label, entries.len(), sm, xs));
         for entry in entries {
@@ -655,6 +668,195 @@ fn roster(
     Scrollable::new(list.finish(), Axis::Vertical)
         .with_state(state.agent_dashboard.scroll.clone())
         .finish()
+}
+
+/// The scheduled tasks the query keeps: grok-build lists its loops beside the
+/// agents, so the panel's one list holds every piece of work the app runs on a
+/// timer. An empty query keeps them all.
+fn visible_crons(state: &UiSnapshot) -> Vec<&CronEntry> {
+    let query = state.agent_dashboard.query.trim().to_lowercase();
+    state
+        .crons
+        .iter()
+        .filter(|cron| {
+            query.is_empty()
+                || cron.name.to_lowercase().contains(&query)
+                || cron.schedule.to_lowercase().contains(&query)
+        })
+        .collect()
+}
+
+/// The panel's scheduled-task section: grok-build's loop rows, under the
+/// agents in the same scroll. Each row runs now or is deleted from here; the
+/// "New schedule" control creates one, so the panel is the only surface a
+/// timer needs.
+fn schedules(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    sm: f32,
+    xs: f32,
+) -> Box<dyn Element> {
+    let rows = visible_crons(state);
+
+    let on_create = actions.on_cron_create.clone();
+    let new_schedule = HoverRow::new(
+        Text::new("New schedule")
+            .with_font_size(11.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_quiet_hover()
+    .with_padding(EdgeInsets::new(0.0, sm * 0.25, 0.0, sm * 0.25))
+    .with_on_click(move || (on_create.borrow_mut())())
+    .finish();
+
+    let header = Container::new(
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm * 0.75)
+            .with_child(
+                Text::new("▾")
+                    .with_font_size(10.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new("Scheduled")
+                    .with_font_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(rows.len().to_string())
+                    .with_font_size(11.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_child(Expanded::new(Divider::horizontal().finish()).finish())
+            .with_child(new_schedule)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(0.0, xs, 0.0, xs))
+    .finish();
+
+    let mut list = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(1.0)
+        .with_child(header);
+    if rows.is_empty() {
+        let label = if state.crons.is_empty() {
+            "No scheduled tasks yet."
+        } else {
+            "No schedule matches this search."
+        };
+        list = list.with_child(
+            Container::new(
+                Text::new(label)
+                    .with_font_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
+            .finish(),
+        );
+    }
+    for cron in rows {
+        list = list.with_child(schedule_row(app, cron, actions, sm));
+    }
+    list.finish()
+}
+
+/// One scheduled task: its status mark and name over the schedule, the last
+/// run and whether it is live, with run-now and delete on the right. The row
+/// is not selectable: a timer is not a conversation to reply into.
+fn schedule_row(
+    app: &AppContext,
+    cron: &CronEntry,
+    actions: &UiActions,
+    sm: f32,
+) -> Box<dyn Element> {
+    let status_color = if cron.enabled {
+        ColorToken::Success
+    } else {
+        ColorToken::Muted
+    };
+    let status = if cron.enabled { "enabled" } else { "paused" };
+    let title = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(sm * 0.75)
+        .with_child(
+            Text::new("↻")
+                .with_font_size(13.0)
+                .with_theme_color(status_color, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(preview(&cron.name, 72))
+                .with_font_size(14.0)
+                .with_theme_color(ColorToken::Text, app)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish());
+
+    let on_trigger = actions.on_cron_trigger.clone();
+    let trigger = TopbarButton::new(
+        Icon::new("refresh")
+            .with_size(13.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(CLOSE_CONTROL_SIZE)
+    .with_corner_radius(4.0)
+    .with_on_click({
+        let id = cron.id.clone();
+        move || (on_trigger.borrow_mut())(id.clone())
+    })
+    .finish();
+    let on_delete = actions.on_cron_delete.clone();
+    let delete = TopbarButton::new(
+        Icon::new("trash")
+            .with_size(13.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(CLOSE_CONTROL_SIZE)
+    .with_corner_radius(4.0)
+    .with_on_click({
+        let id = cron.id.clone();
+        move || (on_delete.borrow_mut())(id.clone())
+    })
+    .finish();
+    let title = title.with_child(trigger).with_child(delete).finish();
+
+    let detail = Padding::new(
+        Text::new(format!(
+            "{} · {} · last run {}",
+            cron.schedule, status, cron.last_run
+        ))
+        .with_font_size(12.0)
+        .with_theme_color(ColorToken::Muted, app)
+        .with_max_lines(1)
+        .finish(),
+        EdgeInsets::new(18.0, 0.0, 0.0, 0.0),
+    )
+    .finish();
+
+    Container::new(
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(3.0)
+            .with_child(title)
+            .with_child(detail)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
+    .finish()
 }
 
 /// One group's title: its chevron, name, count and the rule that runs to the
@@ -1126,6 +1328,7 @@ mod ui_tests {
 
     use crate::root_view::RootView;
     use crate::state::{InboxKind, UiState};
+    use crate::ui::CronEntry;
 
     fn window() -> Vector2F {
         vec2f(1280.0, 800.0)
@@ -1625,6 +1828,87 @@ mod ui_tests {
             texts.iter().any(|text| text == "◈ 1 awaiting"),
             "the header counts it as awaiting: {texts:?}"
         );
+    }
+
+    /// A report that outlived its turn (the card was resolved outside the
+    /// pane, or the harness moved on) must not hold the row in Awaiting: the
+    /// conversation's own status has the last word.
+    #[test]
+    fn a_question_report_on_a_finished_conversation_is_not_awaiting() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = root();
+        {
+            let mut s = state.borrow_mut();
+            s.conversations = vec![conversation(
+                "a",
+                "Fix the login flow",
+                "The fix is in.",
+                ConversationStatus::Success,
+            )];
+            s.raise_inbox(
+                1,
+                "a",
+                InboxKind::Question,
+                "Which branch?",
+                "main or release",
+            );
+            s.agent_dashboard.open = true;
+        }
+        let texts = drawn_texts(&mut render_element(&mut root, window(), &app));
+        assert!(
+            !texts.iter().any(|text| text == "◈ 1 awaiting"),
+            "a finished turn is not awaiting: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|text| text == "◆ 1 done"),
+            "the status decides: {texts:?}"
+        );
+    }
+
+    /// The panel is where a timer lives: the scheduled task is listed with its
+    /// schedule, its last run, and the controls that run or delete it, the way
+    /// grok-build lists its loops beside the agents.
+    #[test]
+    fn the_dashboard_lists_scheduled_tasks_and_their_controls() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = root();
+        {
+            let mut s = state.borrow_mut();
+            s.crons.push(CronEntry::new(
+                "cron-1",
+                "Morning digest",
+                "0 9 * * *",
+                "2h ago",
+            ));
+            s.agent_dashboard.open = true;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"Scheduled"), "the section is titled: {texts:?}");
+        assert!(
+            texts.contains(&"Morning digest"),
+            "the schedule is listed: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"0 9 * * * · enabled · last run 2h ago"),
+            "the schedule, its state and its last run share the detail line: {texts:?}"
+        );
+        assert!(texts.contains(&"New schedule"), "it can be created from here");
+        for icon in ["refresh", "trash"] {
+            assert!(
+                commands.iter().any(|command| matches!(
+                    command,
+                    RenderCommand::DrawIcon { name, .. } if name == icon
+                )),
+                "the row draws its {icon} control"
+            );
+        }
     }
 
     #[test]

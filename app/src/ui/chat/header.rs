@@ -65,7 +65,9 @@ impl PaneHeading {
 /// here, because the rich input at the bottom of the pane already carries them.
 /// A terminal pane adds the "Run agent" menu, since that pane can host a real
 /// TUI agent, and while its harness is open the bar leads with `esc` — the way
-/// back to the plain shell, spelled out at the front.
+/// back to the plain shell, spelled out at the front. A chat pane has no shell
+/// behind it, so the same hint stands there for the terminal Esc opens in its
+/// place.
 ///
 /// The expand control is the bar's only action besides closing the pane: it
 /// draws this pane over the whole panes space and then draws itself as the way
@@ -78,7 +80,11 @@ pub(crate) fn build_agent_header(
     state: &UiSnapshot,
     actions: &UiActions,
     pane_id: u64,
-    harness_open: bool,
+    // The way off the surface this bar heads, drawn as the `esc for terminal`
+    // hint at the bar's leading edge: a terminal pane's harness view passes its
+    // return to the shell, a chat pane the switch that gives it a terminal to
+    // return to. `None` draws no hint.
+    esc: Option<Rc<RefCell<dyn FnMut()>>>,
     // The harness the pane's surface works with when no CLI agent is running in
     // its pty: the conversation's own harness on the agent view, `None` on a
     // plain shell.
@@ -119,7 +125,7 @@ pub(crate) fn build_agent_header(
         state,
         actions,
         pane_id,
-        harness_open,
+        esc,
         HeaderSlots {
             center,
             leading,
@@ -181,7 +187,7 @@ pub(crate) fn build_agent_header_with(
     state: &UiSnapshot,
     actions: &UiActions,
     pane_id: u64,
-    harness_open: bool,
+    esc: Option<Rc<RefCell<dyn FnMut()>>>,
     slots: HeaderSlots,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Sm);
@@ -239,20 +245,16 @@ pub(crate) fn build_agent_header_with(
     .with_on_click(move || (on_close.borrow_mut())())
     .finish();
 
-    let esc_hint = harness_open.then(|| {
-        // Clicking the hint is the switch itself: the harness closes and the
-        // bar's editor lets go of the keys, which is what Esc does.
-        let on_harness_mode = actions.on_set_pane_harness_mode.clone();
-        let on_composer_focus = actions.on_composer_focus_change.clone();
+    let esc_hint = esc.map(|on_escape| {
+        // Clicking the hint is the switch itself: the callback is the same one
+        // Esc fires — the harness closes and the bar's editor lets go of the
+        // keys, or a chat pane becomes the terminal it has no shell behind.
         let hover = state
             .pane_hover
             .get(&pane_id)
             .cloned()
             .unwrap_or_else(|| Rc::new(RefCell::new(false)));
-        super::super::panes::build_esc_hint(app, hover, move || {
-            (on_harness_mode.borrow_mut())(pane_id, false);
-            (on_composer_focus.borrow_mut())(false);
-        })
+        super::super::panes::build_esc_hint(app, hover, move || (on_escape.borrow_mut())())
     });
     let work_chip = build_work_chip(
         app,

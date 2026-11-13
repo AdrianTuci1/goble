@@ -81,6 +81,33 @@ impl UiState {
                 "goble-agent (reasoning)".to_string(),
             ],
             selected_model: "goble-agent".to_string(),
+            composer_catalog: goble_harness_types::HarnessCatalog::empty().with_commands(vec![
+                goble_harness_types::HarnessCommand::slash(
+                    "new",
+                    "Start a fresh conversation",
+                    "new",
+                ),
+                goble_harness_types::HarnessCommand::slash(
+                    "settings",
+                    "Open settings",
+                    "settings",
+                ),
+            ]),
+            model_groups: vec![goble_desktop_service::ModelGroup {
+                harness: "goble".to_string(),
+                label: "Goble".to_string(),
+                models: vec![
+                    goble_harness_types::HarnessModel::new("goble-agent", "goble-agent")
+                        .with_thinking(vec!["off".to_string(), "on".to_string()]),
+                    goble_harness_types::HarnessModel::new("goble-agent-fast", "goble-agent (fast)")
+                        .with_thinking(vec!["off".to_string(), "on".to_string()]),
+                    goble_harness_types::HarnessModel::new(
+                        "goble-agent-reasoning",
+                        "goble-agent (reasoning)",
+                    )
+                    .with_thinking(vec!["off".to_string(), "on".to_string()]),
+                ],
+            }],
             harnesses: vec![HarnessEntry::internal("internal", "Goble")],
             selected_harness: "internal".to_string(),
             model_menu_open: Rc::new(RefCell::new(false)),

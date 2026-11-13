@@ -252,6 +252,7 @@ fn topbar_environment_menu_rows_draw_their_icons() {
     let cmds = render(&mut root, &app);
     for (icon, label) in [
         ("terminal", "New terminal"),
+        ("agent", "New Agent"),
         ("conversation-local", "Local"),
         ("cloud", "Remote (worker)"),
         ("plus", "New environment…"),
@@ -293,6 +294,44 @@ fn topbar_environment_menu_launches_a_terminal() {
             *kind,
             goble_app::ui::PaneKind::Terminal,
             "the new space's pane is a terminal"
+        ),
+        other => panic!("the new space's root should be one leaf, got {other:?}"),
+    }
+    assert!(
+        !*state_rc.borrow().env_selector_open.borrow(),
+        "choosing an entry closes the menu"
+    );
+}
+
+/// The menu's second entry starts a conversation: choosing it opens a new space
+/// whose root pane is the agent view, the same surface a fresh chat tab mounts.
+#[test]
+fn topbar_environment_menu_starts_an_agent() {
+    let (mut root, _desktop, _dir) = build_root();
+    let app = AppContext::default();
+    let _ = render(&mut root, &app);
+    let cmds = render(&mut root, &app);
+    let pos = topmost_icon_center(&cmds, "chevron-down").expect("topbar environment menu trigger");
+    click(&mut root, &app, pos);
+
+    let spaces_before = root.state_rc().borrow().spaces.len();
+    let cmds = render(&mut root, &app);
+    let item = text_center(&cmds, "New Agent").expect("the menu lists the agent entry");
+    click(&mut root, &app, item);
+
+    let state_rc = root.state_rc();
+    let state = state_rc.borrow();
+    assert_eq!(
+        state.spaces.len(),
+        spaces_before + 1,
+        "choosing the entry opens a new space"
+    );
+    let space = state.spaces.last().expect("the new space");
+    match &space.root {
+        goble_app::ui::Pane::Leaf { kind, .. } => assert_eq!(
+            *kind,
+            goble_app::ui::PaneKind::Chat,
+            "the new space's pane is the agent view"
         ),
         other => panic!("the new space's root should be one leaf, got {other:?}"),
     }

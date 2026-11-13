@@ -203,10 +203,34 @@ impl UiState {
     /// Populate the composer's model dropdown from the configured provider and
     /// default the selected model. The selection is only set on first load, so
     /// a user's per-session model choice survives subsequent refreshes.
+    ///
+    /// The same provider answer fills the model tray's columns, and each pane's
+    /// thinking level is read back from its conversation's stored setting, so
+    /// the tray opens on the level the turns actually run at.
     pub fn refresh_llm_models(&mut self, desktop: &DesktopState) {
         self.models = desktop.available_models(&self.settings_llm_provider);
         if self.selected_model.trim().is_empty() {
             self.selected_model = desktop.default_model(&self.settings_llm_provider);
+        }
+        self.model_groups = desktop.model_groups(&self.settings_llm_provider);
+        // The harness's own answer to "what can this draft list": the commands
+        // and skills behind `/` and `$`, and the models behind the tray.
+        self.composer_catalog = desktop.composer_catalog(&self.settings_llm_provider);
+        let conversations: Vec<(u64, String)> = self
+            .pane_sessions
+            .iter()
+            .map(|(pane_id, session)| (*pane_id, session.conversation_id.clone()))
+            .collect();
+        for (pane_id, chat_id) in conversations {
+            if chat_id.trim().is_empty() {
+                continue;
+            }
+            let level = if desktop.get_chat_reasoning(&chat_id) {
+                "on"
+            } else {
+                "off"
+            };
+            self.pane_controls_mut(pane_id).thinking = level.to_string();
         }
     }
 

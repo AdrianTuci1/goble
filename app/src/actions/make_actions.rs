@@ -15,7 +15,7 @@ use goble_ui::{ChatMessage, ChatRole, SettingsPage};
 
 use crate::media::MediaState;
 use crate::state::{
-    default_pane_path, routing_to_str, DiffGitResult, SpaceMenu, SpacePressRun, UiState,
+    default_pane_path, routing_to_str, DiffGitResult, InboxKind, SpaceMenu, SpacePressRun, UiState,
     MULTI_CLICK_INTERVAL_MS, NEW_CONVERSATION_TITLE,
 };
 use crate::terminal::{classify_input, InputClass};
@@ -81,6 +81,7 @@ fn answer_pending_ask(
             }
             state.agent_busy = true;
             state.pending_ask = None;
+            state.settle_inbox_prompts(pane_id, &chat_id, &[InboxKind::Question]);
         }
         Err(e) => log::warn!("resume_chat_turn failed: {e}"),
     }
@@ -243,6 +244,7 @@ pub fn make_actions(
     let on_slash_move = Rc::clone(&state);
     let on_slash_close = Rc::clone(&state);
     let on_slash_dismiss = Rc::clone(&state);
+    let on_composer_insert = Rc::clone(&state);
     let on_composer_focus_change = Rc::clone(&state);
     let on_send_message = Rc::clone(&state);
     let on_agent_prompt = Rc::clone(&state);
@@ -279,10 +281,12 @@ pub fn make_actions(
     let on_command_decision = Rc::clone(&state);
     let on_toggle_auto_approve = Rc::clone(&state);
     let on_select_approval_mode_state = Rc::clone(&state);
+    let on_select_thinking_state = Rc::clone(&state);
     let on_toggle_vim_mode = Rc::clone(&state);
     let on_toggle_auto_save_on_close = Rc::clone(&state);
     let on_fork_conversation = Rc::clone(&state);
     let on_set_harness_mode = Rc::clone(&state);
+    let on_show_pane_terminal = Rc::clone(&state);
     let on_open_agent_view = Rc::clone(&state);
     let on_send_queued = Rc::clone(&state);
     let on_dismiss_queued = Rc::clone(&state);
@@ -328,6 +332,12 @@ pub fn make_actions(
     let on_set_font_size = Rc::clone(&state);
     let on_reload_model_config = Rc::clone(&state);
     let on_reload_remote_agents = Rc::clone(&state);
+    let on_setup_remote_with_agent = Rc::clone(&state);
+    let desktop_setup_remote_with_agent = desktop.clone();
+    let media_setup_remote_with_agent = Rc::clone(&media);
+    let on_setup_hub_with_agent = Rc::clone(&state);
+    let desktop_setup_hub_with_agent = desktop.clone();
+    let media_setup_hub_with_agent = Rc::clone(&media);
     let on_reload_ssh_hosts = Rc::clone(&state);
     let on_projects = Rc::clone(&state);
     let on_workflows = Rc::clone(&state);
@@ -383,6 +393,7 @@ pub fn make_actions(
     let on_switch_space = Rc::clone(&state);
     let on_add_space = Rc::clone(&state);
     let on_add_space_with_medium = Rc::clone(&state);
+    let on_add_agent_space = Rc::clone(&state);
     let on_open_add_medium = Rc::clone(&state);
     let on_add_medium_draft_change = Rc::clone(&state);
     let on_add_medium_focus_change = Rc::clone(&state);
@@ -451,6 +462,7 @@ pub fn make_actions(
     let desktop_command = desktop.clone();
     let desktop_auto = desktop.clone();
     let desktop_approval_mode = desktop.clone();
+    let desktop_thinking = desktop.clone();
     let desktop_vim = desktop.clone();
     let desktop_auto_save = desktop.clone();
     let desktop_default_model = desktop.clone();
@@ -458,6 +470,7 @@ pub fn make_actions(
     let desktop_commit_settings_field = desktop.clone();
     let desktop_fork = desktop.clone();
     let desktop_set_harness = desktop.clone();
+    let desktop_show_terminal = desktop.clone();
     let desktop_send_queued = desktop.clone();
     let desktop_cron_create = desktop.clone();
     let desktop_cron_delete = desktop.clone();
@@ -560,6 +573,7 @@ pub fn make_actions(
     let desktop_close_space = desktop.clone();
     let desktop_add_space = desktop.clone();
     let desktop_add_space_with_medium = desktop.clone();
+    let desktop_add_agent = desktop.clone();
     let desktop_space_reorder = desktop.clone();
     let desktop_workspace_click = desktop.clone();
     let desktop_space_menu_action = desktop.clone();
@@ -579,6 +593,7 @@ pub fn make_actions(
     let media_term_cmd = Rc::clone(&media);
     let media_add_space = Rc::clone(&media);
     let media_add_space_with_medium = Rc::clone(&media);
+    let media_add_agent = Rc::clone(&media);
     let media_select_space = Rc::clone(&media);
     let media_switch_space = Rc::clone(&media);
     let media_close_space = Rc::clone(&media);
@@ -698,6 +713,31 @@ pub fn make_actions(
         }
         state.refresh_remote_agents(Some(desktop));
     }));
+    // Setting Remote or the hub up is a conversation: the page opens an agent
+    // pane whose first message is the brief, built from the config the app has
+    // loaded. The agent asks for what is missing and writes the answers through
+    // `goble-cli setup`, so the file keeps its header and the sections it does
+    // not own.
+    let action_setup_remote_with_agent: Rc<RefCell<dyn FnMut()>> =
+        Rc::new(RefCell::new(move || {
+            let mut state = on_setup_remote_with_agent.borrow_mut();
+            open_setup_conversation(
+                &mut state,
+                desktop_setup_remote_with_agent.as_ref(),
+                &media_setup_remote_with_agent,
+                goble_core::config::SetupTarget::Remote,
+            );
+        }));
+    let action_setup_hub_with_agent: Rc<RefCell<dyn FnMut()>> =
+        Rc::new(RefCell::new(move || {
+            let mut state = on_setup_hub_with_agent.borrow_mut();
+            open_setup_conversation(
+                &mut state,
+                desktop_setup_hub_with_agent.as_ref(),
+                &media_setup_hub_with_agent,
+                goble_core::config::SetupTarget::Hub,
+            );
+        }));
     // Remote is configured on the Settings page it belongs to. Every chooser
     // that names it before anything is configured opens that page with the
     // keyboard on the form, so there is one place to configure and one shape
@@ -759,6 +799,46 @@ pub fn make_actions(
                 .pane_controls_mut(pane_id)
                 .approval_menu_open
                 .borrow_mut() = false;
+        }));
+    // The model tray's thinking column: the level a pane's next turn plans
+    // with. It is stored on the conversation, so reopening the chat brings back
+    // the level its turns actually ran at.
+    let action_select_thinking: Rc<RefCell<dyn FnMut(u64, String)>> =
+        Rc::new(RefCell::new(move |pane_id: u64, level: String| {
+            let mut state = on_select_thinking_state.borrow_mut();
+            let chat_id = state
+                .pane_sessions
+                .get(&pane_id)
+                .map(|session| session.conversation_id.clone())
+                .unwrap_or_default();
+            let controls = state.pane_controls_mut(pane_id);
+            controls.thinking = level.clone();
+            *controls.model_tray_open.borrow_mut() = false;
+            if chat_id.trim().is_empty() {
+                return;
+            }
+            if let Some(desktop) = &desktop_thinking {
+                if let Err(e) = desktop.set_chat_reasoning(&chat_id, level == "on") {
+                    log::warn!("set_chat_reasoning for {chat_id} failed: {e}");
+                }
+            }
+        }));
+    // A taken model: the pane's own choice, from the flat list or from the
+    // tray's columns. Both bands close with the pick, and the window's
+    // selection follows when the pane is the active one.
+    let action_model_select: Rc<RefCell<dyn FnMut(u64, String)>> =
+        Rc::new(RefCell::new(move |pane_id: u64, model: String| {
+            let mut state = on_model_select.borrow_mut();
+            {
+                let controls = state.pane_controls_mut(pane_id);
+                controls.model = model.clone();
+                *controls.model_menu_open.borrow_mut() = false;
+                *controls.model_tray_open.borrow_mut() = false;
+            }
+            if pane_id == state.active_pane_id {
+                state.selected_model = model;
+                *state.model_menu_open.borrow_mut() = false;
+            }
         }));
     // Modal (vim) editing for the rich input, off by default. The choice is
     // persisted; turning it off drops every pane's half-typed command and
@@ -967,29 +1047,6 @@ pub fn make_actions(
         // the only surface that can explain it.
         on_create_submit: Rc::new(RefCell::new(move || {
             let mut state = on_create_submit.borrow_mut();
-            let medium_id = on_create_medium.borrow().selected_medium_id().to_string();
-            let routing = crate::media::medium_routing(&medium_id);
-            let id = state.next_pane_id;
-            state.next_pane_id += 1;
-            // An unnamed space: its tab derives its label from what it holds —
-            // here the conversation bound to its pane, so the tab reads `New
-            // Agent` until that conversation has a subject.
-            state.spaces.push(
-                Space::unnamed(Pane::Leaf {
-                    id,
-                    kind: PaneKind::Chat,
-                })
-                .with_medium(medium_id.clone()),
-            );
-            state.active_space = state.spaces.len() - 1;
-            state.active_pane_id = id;
-            state.workspace_routing = Some(WorkspaceRouting::from_routing(routing));
-            ensure_pane_hover(&mut state, id);
-            let project_id = on_create_medium
-                .borrow()
-                .default_project_for_medium(&medium_id);
-            let path = default_pane_path(&project_id, desktop_create.as_deref());
-            state.set_active_pane_path(path.clone());
             // The subject the row was given names the conversation from the
             // start; a blank one means the user clicked the row directly, so the
             // conversation opens on the placeholder, which the agent replaces
@@ -999,44 +1056,13 @@ pub fn make_actions(
             } else {
                 state.new_conversation_draft.trim().to_string()
             };
-            state.bind_pane_new_conversation_titled(id, &title, desktop_create.as_deref());
+            create_conversation_space(
+                &mut state,
+                &on_create_medium,
+                desktop_create.as_ref(),
+                &title,
+            );
             state.new_conversation_draft.clear();
-            if let Some(conversation_id) = state.pane_conversation_id(id) {
-                // The conversation belongs to the selected environment — so its
-                // card lands in the matching sidebar folder — and starts where
-                // its pane does, which is what the card's directory says.
-                if let Some(desktop) = &desktop_create {
-                    if let Err(e) =
-                        desktop.set_chat_workspace_routing(&conversation_id, Some(routing))
-                    {
-                        log::warn!("set_chat_workspace_routing failed: {e}");
-                    }
-                    if !path.trim().is_empty() {
-                        if let Err(e) = desktop.set_chat_working_dir(&conversation_id, &path) {
-                            log::warn!("set_chat_working_dir failed: {e}");
-                        }
-                    }
-                }
-                // Bind it to the active pane (the new one) and load its empty
-                // transcript, so the tab starts on a clean thread.
-                state.bind_active_pane_conversation(conversation_id, desktop_create.as_deref());
-            }
-            // A space opened on an environment whose conversations run on a
-            // worker holds a viewer pane from the start: the conversation's
-            // shell is the worker's, so the pane is never given a local
-            // terminal it would only have to be torn out of (and never a pty
-            // process it should not have spawned). A local environment keeps
-            // the agent pane it always had.
-            if let Some(desktop) = &desktop_create {
-                state.adopt_routing(id, Some(WorkspaceRouting::from_routing(routing)), desktop);
-            }
-            open_pane_harness(&mut state, id, desktop_create.as_ref());
-            state.refresh_space_labels();
-            state.sync_active_view();
-            if let Some(desktop) = &desktop_create {
-                state.refresh_from_desktop(desktop);
-                state.save_panes(desktop);
-            }
         })),
         on_select_conversation: Rc::new(RefCell::new(move |id: String| {
             let mut state = on_select_conversation.borrow_mut();
@@ -1084,6 +1110,11 @@ pub fn make_actions(
                 .slash_dismissed
                 .borrow_mut() = true;
             *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
+        })),
+        on_composer_insert: Rc::new(RefCell::new(move |text: String| {
+            on_composer_insert
+                .borrow_mut()
+                .insert_active_pane_trigger_text(text);
         })),
         on_composer_focus_change: Rc::new(RefCell::new(move |focused: bool| {
             on_composer_focus_change.borrow_mut().composer_focused = focused;
@@ -1327,19 +1358,7 @@ pub fn make_actions(
         on_select_model: Rc::new(RefCell::new(move || {
             log::info!("model selector pressed");
         })),
-        on_model_select: Rc::new(RefCell::new(move |pane_id: u64, model: String| {
-            let mut state = on_model_select.borrow_mut();
-            {
-                let controls = state.pane_controls_mut(pane_id);
-                controls.model = model.clone();
-                let flag = controls.model_menu_open.clone();
-                *flag.borrow_mut() = false;
-            }
-            if pane_id == state.active_pane_id {
-                state.selected_model = model;
-                *state.model_menu_open.borrow_mut() = false;
-            }
-        })),
+        on_model_select: action_model_select.clone(),
         // The environment control selects the medium the conversation's turns
         // run on, not a registered harness; an unknown medium id is ignored. A
         // conversation running on a worker keeps its own choice: it is persisted
@@ -1457,6 +1476,12 @@ pub fn make_actions(
             }
             state.pending_ask = None;
             state.queued_prompt = None;
+            let chat_id = state.pane_conversation_id(pane_id).unwrap_or_default();
+            state.settle_inbox_prompts(
+                pane_id,
+                &chat_id,
+                &[InboxKind::Approval, InboxKind::Question],
+            );
             state.sync_active_view();
         })),
         on_stop: Rc::new(RefCell::new(move || {
@@ -1609,6 +1634,8 @@ pub fn make_actions(
                     rt.pending_ask = None;
                 }
                 state.pending_ask = None;
+                let chat_id = state.pane_conversation_id(pane_id).unwrap_or_default();
+                state.settle_inbox_prompts(pane_id, &chat_id, &[InboxKind::Question]);
             }
         })),
         // Answer a suspended command proposal from the composer's card: approve
@@ -1639,6 +1666,7 @@ pub fn make_actions(
         )),
         on_toggle_auto_approve: action_toggle_auto_approve.clone(),
         on_select_approval_mode: action_select_approval_mode.clone(),
+        on_thinking_select: action_select_thinking.clone(),
         on_toggle_vim_mode: action_toggle_vim_mode.clone(),
         on_toggle_auto_save_on_close: action_toggle_auto_save_on_close.clone(),
         clipboard: crate::clipboard::system_clipboard(),
@@ -1671,6 +1699,18 @@ pub fn make_actions(
             } else {
                 state.pane_controls_mut(pane_id).harness_mode = false;
                 state.leave_agent_view(pane_id);
+            }
+        })),
+        // Esc at a chat pane's agent view: the pane has no shell behind it, so
+        // the way to a terminal is to make the pane one. The conversation stays
+        // bound, so Cmd+Enter opens its agent view over that shell again.
+        on_show_pane_terminal: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_show_pane_terminal.borrow_mut();
+            if state.show_pane_terminal(pane_id) {
+                state.sync_active_view();
+                if let Some(desktop) = &desktop_show_terminal {
+                    state.save_panes(desktop);
+                }
             }
         })),
         // A click on the card a conversation left behind in the terminal enters
@@ -2461,6 +2501,8 @@ pub fn make_actions(
             let on_auto_save = action_toggle_auto_save_on_close.clone();
             let on_reload = action_reload_model_config.clone();
             let on_reload_agents = action_reload_remote_agents.clone();
+            let on_setup_remote = action_setup_remote_with_agent.clone();
+            let on_setup_hub = action_setup_hub_with_agent.clone();
             let on_open_config = Rc::clone(&action_open_config_file);
             let on_step = action_settings_step.clone();
             let desktop_activate = desktop.clone();
@@ -2510,6 +2552,8 @@ pub fn make_actions(
                     Some(SettingsControl::OpenConfigFile) => (on_open_config.borrow_mut())(),
                     Some(SettingsControl::ReloadModels) => (on_reload.borrow_mut())(),
                     Some(SettingsControl::ReloadRemoteAgents) => (on_reload_agents.borrow_mut())(),
+                    Some(SettingsControl::SetupRemoteWithAgent) => (on_setup_remote.borrow_mut())(),
+                    Some(SettingsControl::SetupHubWithAgent) => (on_setup_hub.borrow_mut())(),
                     // Everything else belongs to the state: the environment
                     // rows, and a text field taking the caret or committing it.
                     _ => activate_state
@@ -2599,6 +2643,8 @@ pub fn make_actions(
         on_set_font_size: action_set_font_size.clone(),
         on_reload_model_config: action_reload_model_config.clone(),
         on_reload_remote_agents: action_reload_remote_agents.clone(),
+        on_setup_remote_with_agent: action_setup_remote_with_agent.clone(),
+        on_setup_hub_with_agent: action_setup_hub_with_agent.clone(),
         // Settings → Agent & Approval, and every place that chooses Remote:
         // one page holds the form that configures how Remote is reached.
         on_open_remote_settings: action_open_remote_settings.clone(),
@@ -3283,6 +3329,19 @@ pub fn make_actions(
                 &medium_id,
             );
         })),
+        // A new space holding an agent pane: the surface a fresh conversation
+        // starts on, in the environment "+" would use. It is the sidebar's "New
+        // conversation" row without the subject — the tab opens on the
+        // placeholder, which the agent replaces once it has answered in it.
+        on_add_agent_space: Rc::new(RefCell::new(move || {
+            let mut state = on_add_agent_space.borrow_mut();
+            create_conversation_space(
+                &mut state,
+                &media_add_agent,
+                desktop_add_agent.as_ref(),
+                NEW_CONVERSATION_TITLE,
+            );
+        })),
         // The topbar "+" menu's "Add new medium…" item opens the add-medium dialog.
         on_open_add_medium: Rc::new(RefCell::new(move || {
             let mut state = on_open_add_medium.borrow_mut();
@@ -3791,11 +3850,134 @@ fn adopt_space_medium(state: &mut UiState, media: &Rc<RefCell<MediaState>>, inde
     }
 }
 
-/// Open a new space whose default environment is `medium_id`: a fresh PTY
-/// pane scoped to that medium's default project. The workspace has no
-/// conversation until an agent turn runs in it. Shared by the topbar "+" menu
-/// and by the remote-setup dialog, which opens the space after it configures
-/// the environment the space asked for.
+/// What a setup conversation reads before it starts: Remote's tables and the
+/// hub's file, plus which provider keys this machine's environment carries.
+fn setup_status(desktop: &DesktopState) -> goble_core::config::SetupStatus {
+    let config = desktop.config();
+    let home = goble_core::app_home::GobleHome::locate().ok();
+    let config_path = desktop
+        .config_path()
+        .or_else(|| home.as_ref().map(|home| home.config_path()));
+    let hub_path = home.as_ref().map(|home| home.hub_config_path());
+    let hub = hub_path
+        .as_ref()
+        .and_then(|path| goble_core::config::HubConfig::load(path).ok().flatten());
+    let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let fallback_config = std::path::PathBuf::from("~/.goble/config.toml");
+    let fallback_hub = std::path::PathBuf::from("~/.goble/hub.toml");
+    goble_core::config::SetupStatus::from_config(
+        &config,
+        config_path.as_deref().unwrap_or(&fallback_config),
+        hub_path.as_deref().unwrap_or(&fallback_hub),
+        hub.as_ref(),
+        &env,
+    )
+}
+
+/// Open a conversation whose first message is the setup brief for `target`.
+///
+/// The brief carries the current state, the providers and the exact
+/// `goble-cli setup` commands, so the agent asks for the missing values and
+/// writes them through the CLI rather than rewriting the config by hand.
+fn open_setup_conversation(
+    state: &mut UiState,
+    desktop: Option<&Arc<DesktopState>>,
+    media: &Rc<RefCell<MediaState>>,
+    target: goble_core::config::SetupTarget,
+) {
+    let Some(desktop) = desktop else {
+        return;
+    };
+    let cli = goble_core::binaries::goble_cli().display().to_string();
+    let brief = setup_status(desktop).brief(target, &cli);
+    let title = match target {
+        goble_core::config::SetupTarget::Remote => "Remote setup",
+        goble_core::config::SetupTarget::Hub => "Hub setup",
+    };
+    create_conversation_space(state, media, Some(desktop), title);
+    let pane_id = state.active_pane_id;
+    if !send_agent_prompt(state, Some(desktop), media, &brief, pane_id) {
+        log::warn!("the setup conversation could not start a turn");
+    }
+}
+
+/// Open a new space holding one agent pane over a conversation of its own,
+/// titled `title`, in the environment currently selected.
+///
+/// The tab is left unnamed — its label derives from the conversation it holds —
+/// and the conversation belongs to the selected environment, so its card lands
+/// in the matching sidebar folder. Shared by the sidebar's "New conversation"
+/// row (with the subject typed there) and the topbar menu's "New Agent" (with
+/// the placeholder): both open the same surface.
+fn create_conversation_space(
+    state: &mut UiState,
+    media: &Rc<RefCell<MediaState>>,
+    desktop: Option<&Arc<DesktopState>>,
+    title: &str,
+) {
+    let desktop_state: Option<&DesktopState> = desktop.map(|desktop| &**desktop);
+    let medium_id = media.borrow().selected_medium_id().to_string();
+    let routing = crate::media::medium_routing(&medium_id);
+    let id = state.next_pane_id;
+    state.next_pane_id += 1;
+    // An unnamed space: its tab derives its label from what it holds — here the
+    // conversation bound to its pane, so the tab reads `New Agent` until that
+    // conversation has a subject.
+    state.spaces.push(
+        Space::unnamed(Pane::Leaf {
+            id,
+            kind: PaneKind::Chat,
+        })
+        .with_medium(medium_id.clone()),
+    );
+    state.active_space = state.spaces.len() - 1;
+    state.active_pane_id = id;
+    state.workspace_routing = Some(WorkspaceRouting::from_routing(routing));
+    ensure_pane_hover(state, id);
+    let project_id = media.borrow().default_project_for_medium(&medium_id);
+    let path = default_pane_path(&project_id, desktop_state);
+    state.set_active_pane_path(path.clone());
+    state.bind_pane_new_conversation_titled(id, title, desktop_state);
+    if let Some(conversation_id) = state.pane_conversation_id(id) {
+        // The conversation belongs to the selected environment — so its card
+        // lands in the matching sidebar folder — and starts where its pane does,
+        // which is what the card's directory says.
+        if let Some(desktop) = desktop_state {
+            if let Err(e) = desktop.set_chat_workspace_routing(&conversation_id, Some(routing)) {
+                log::warn!("set_chat_workspace_routing failed: {e}");
+            }
+            if !path.trim().is_empty() {
+                if let Err(e) = desktop.set_chat_working_dir(&conversation_id, &path) {
+                    log::warn!("set_chat_working_dir failed: {e}");
+                }
+            }
+        }
+        // Bind it to the active pane (the new one) and load its empty
+        // transcript, so the tab starts on a clean thread.
+        state.bind_active_pane_conversation(conversation_id, desktop_state);
+    }
+    // A space opened on an environment whose conversations run on a worker holds
+    // a viewer pane from the start: the conversation's shell is the worker's, so
+    // the pane is never given a local terminal it would only have to be torn out
+    // of (and never a pty process it should not have spawned). A local
+    // environment keeps the agent pane it always had.
+    if let Some(desktop) = desktop_state {
+        state.adopt_routing(id, Some(WorkspaceRouting::from_routing(routing)), desktop);
+    }
+    open_pane_harness(state, id, desktop);
+    state.refresh_space_labels();
+    state.sync_active_view();
+    if let Some(desktop) = desktop_state {
+        state.refresh_from_desktop(desktop);
+        state.save_panes(desktop);
+    }
+}
+
+/// Open a new space whose default environment is `medium_id`: a fresh PTY pane
+/// scoped to that medium's default project. The workspace has no conversation
+/// until an agent turn runs in it. Shared by the topbar "+" menu and by the
+/// remote-setup dialog, which opens the space after it configures the
+/// environment the space asked for.
 fn add_space_with_medium(
     state: &mut UiState,
     media: &Rc<RefCell<MediaState>>,
@@ -3819,8 +4001,9 @@ fn add_space_with_medium(
     // run there and the sidebar shows that environment's folders.
     let _ = media.borrow_mut().select_medium(medium_id);
     ensure_pane_hover(state, id);
-    // Plain PTY: the thread is created lazily, on the pane's first agent turn,
-    // so "+" never creates an empty conversation.
+    // No conversation is created here: the thread appears only once an agent
+    // turn runs in the pane, so a new tab never leaves an empty "New
+    // conversation" row behind.
     let project_id = media.borrow().default_project_for_medium(medium_id);
     let path = default_pane_path(&project_id, desktop);
     state.set_active_pane_path(path);

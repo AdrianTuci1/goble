@@ -878,7 +878,7 @@ fn workspace_tabs_fill_the_toolbar_and_draw_one_rule_per_boundary() {
     );
 
     let border = app.theme.color(ColorToken::Border);
-    let rules: Vec<_> = commands
+    let mut rules: Vec<_> = commands
         .iter()
         .filter_map(|c| match c {
             RenderCommand::FillRect { rect, color, .. }
@@ -889,6 +889,16 @@ fn workspace_tabs_fill_the_toolbar_and_draw_one_rule_per_boundary() {
             _ => None,
         })
         .collect();
+    // The bar also closes the strip's column on both ends — after the dashboard
+    // control and before the "+ ▾" control — so the tab boundaries are what
+    // lies between those two rules.
+    assert_eq!(
+        rules.len(),
+        space_count + 1,
+        "a rule on each end of the strip and one per boundary: {rules:?}"
+    );
+    rules.remove(0);
+    rules.pop();
     assert_eq!(
         rules.len(),
         space_count - 1,

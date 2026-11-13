@@ -162,12 +162,20 @@ pub struct UiActions {
     /// Put the slash-command menu away on Escape without touching the draft, so
     /// a command half-typed is not thrown away by closing the menu.
     pub on_slash_dismiss: Rc<RefCell<dyn FnMut()>>,
+    /// Take a skill or a path the band offered: the text replaces the trigger
+    /// token in the active pane's draft, so what the harness reads is the token
+    /// the user picked.
+    pub on_composer_insert: Rc<RefCell<dyn FnMut(String)>>,
     pub on_attach: Rc<RefCell<dyn FnMut()>>,
     pub on_voice: Rc<RefCell<dyn FnMut()>>,
     pub on_select_model: Rc<RefCell<dyn FnMut()>>,
     /// Select a specific model from one pane's composer dropdown, by display
     /// name. The pane id keeps the choice local to that pane.
     pub on_model_select: Rc<RefCell<dyn FnMut(u64, String)>>,
+    /// Set one pane's thinking level from the model tray, by the id the harness
+    /// reports (`on` plans the turn first, `off` answers it directly). The
+    /// choice is persisted on the pane's conversation.
+    pub on_thinking_select: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Select the composer harness (environment medium) by medium id.
     pub on_select_harness: Rc<RefCell<dyn FnMut(u64, String)>>,
     /// Select a pane's composer working directory (session) by session id.
@@ -234,6 +242,10 @@ pub struct UiActions {
     /// Turn one pane's harness mode on/off at the rich input (Warp-new style:
     /// Cmd+Enter activates the harness, Esc returns to the plain pty).
     pub on_set_pane_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
+    /// Esc at a chat pane's agent view: the pane has no shell behind it, so the
+    /// way to a terminal is to make the pane one — same directory, conversation
+    /// kept for Cmd+Enter to reopen.
+    pub on_show_pane_terminal: Rc<RefCell<dyn FnMut(u64)>>,
     /// Enter a conversation's agent view in a pane by clicking the card it left
     /// behind in the terminal (Warp-new style: the `EnterAgentView` block).
     pub on_open_agent_view: Rc<RefCell<dyn FnMut(u64, String)>>,
@@ -375,6 +387,11 @@ pub struct UiActions {
     /// Agent & Approval: re-read `[remote_agents.<name>]` from the global
     /// config file and refresh the page's rows.
     pub on_reload_remote_agents: Rc<RefCell<dyn FnMut()>>,
+    /// Agent & Approval: open a conversation that sets Remote up by asking for
+    /// what is missing and writing it through `goble-cli setup`.
+    pub on_setup_remote_with_agent: Rc<RefCell<dyn FnMut()>>,
+    /// Agent & Approval: the same conversation for the hub.
+    pub on_setup_hub_with_agent: Rc<RefCell<dyn FnMut()>>,
     /// Open Settings on Agent & Approval, with the keyboard on the Remote
     /// form. Every chooser that names Remote before anything is configured
     /// takes this path.
@@ -506,6 +523,9 @@ pub struct UiActions {
     /// Add a new space whose default environment medium is `medium_id`, making
     /// it active and setting the new thread's workspace routing to that medium.
     pub on_add_space_with_medium: Rc<RefCell<dyn FnMut(String)>>,
+    /// Add a new space holding an agent pane — the surface a fresh conversation
+    /// starts on — in the environment "+" would use.
+    pub on_add_agent_space: Rc<RefCell<dyn FnMut()>>,
     /// Open the "add a new medium" dialog (from the topbar "+" menu).
     pub on_open_add_medium: Rc<RefCell<dyn FnMut()>>,
     /// Update the add-medium dialog's text field.

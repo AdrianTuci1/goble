@@ -187,6 +187,8 @@ impl UiState {
             rt.busy = true;
             rt.agent_state = PaneAgentState::Working;
         }
+        let conversation_id = self.pane_conversation_id(pane_id).unwrap_or_default();
+        self.settle_inbox_prompts(pane_id, &conversation_id, &[InboxKind::Question]);
     }
 
     /// Stop a pane's turn. Cancellation has no terminal turn event of its own,
@@ -198,15 +200,26 @@ impl UiState {
         rt.turn_started_at = None;
         rt.reset_command_edit();
         rt.agent_state = PaneAgentState::Idle;
+        let ask_pending = rt.pending_ask.is_some();
+        // The approval went with the proposal above; a question that is still
+        // on the pane keeps its report until it is answered or skipped.
+        let mut kinds = vec![InboxKind::Approval];
+        if !ask_pending {
+            kinds.push(InboxKind::Question);
+        }
+        let conversation_id = self.pane_conversation_id(pane_id).unwrap_or_default();
+        self.settle_inbox_prompts(pane_id, &conversation_id, &kinds);
     }
 
     /// Clear `pane_id`'s pending command proposal, so the card disappears the
     /// moment a decision is submitted. A proposal id that no longer matches
     /// (a stale card) is left alone.
     pub fn clear_command_proposal(&mut self, pane_id: u64, proposal_id: &str) {
+        let mut cleared = false;
         if let Some(rt) = self.pane_runtime.get_mut(&pane_id) {
             if rt.pending_command.as_ref().map(|p| p.id.as_str()) == Some(proposal_id) {
                 rt.reset_command_edit();
+                cleared = true;
                 // The decision resumes the suspended turn; without a further
                 // signal the pane is simply running its turn again.
                 if rt.agent_state == PaneAgentState::NeedsInput {
@@ -217,6 +230,10 @@ impl UiState {
                     };
                 }
             }
+        }
+        if cleared {
+            let conversation_id = self.pane_conversation_id(pane_id).unwrap_or_default();
+            self.settle_inbox_prompts(pane_id, &conversation_id, &[InboxKind::Approval]);
         }
     }
 
@@ -278,6 +295,14 @@ impl UiState {
         if still_pending {
             return;
         }
+        // Nothing on this pane is waiting on the user any more, so a prompt
+        // report it raised earlier is stale: the dashboard would otherwise
+        // keep the conversation under "Awaiting your input" for good.
+        self.settle_inbox_prompts(
+            pane_id,
+            &conversation_id,
+            &[InboxKind::Approval, InboxKind::Question],
+        );
         match outcome {
             TurnOutcome::Success => self.raise_inbox(
                 pane_id,

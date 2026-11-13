@@ -4,7 +4,9 @@ use std::time::SystemTime;
 
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
-use goble_ui::elements::{AppContext, Element, PopupMenuItem};
+use goble_ui::elements::{
+    AppContext, ComposerModelTray, Element, ModelTrayHarness, ModelTrayModel, PopupMenuItem,
+};
 use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView, WorkSection};
 
 use crate::emulator::VisibleBlock;
@@ -185,15 +187,21 @@ fn composer_path(session: &PaneChatSnapshot) -> String {
 /// `pane_id` selects this pane's own transcript + composer draft + path, so
 /// every chat pane renders an independent session instead of the global one.
 ///
-/// `on_escape` is the transcript's Escape hook: a pane whose agent view is the
-/// way back out of another surface (the terminal pane's harness) passes its
-/// leave handler; a chat pane passes `None`.
+/// `harness_open` says this agent view is drawn over a shell the pane owns —
+/// the terminal pane's harness view — so its transcript carries the
+/// conversation's own terminal blocks rather than the pane's inline ones.
+///
+/// `on_escape` is the transcript's Escape hook and the bar's `esc for terminal`
+/// hint: a terminal pane passes its return to the shell, a chat pane the switch
+/// that gives it a terminal to return to, and a pane with neither passes
+/// `None`.
 pub fn build_agent_chat(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
     pane_id: u64,
     active: bool,
+    harness_open: bool,
     on_escape: Option<Rc<RefCell<dyn FnMut()>>>,
 ) -> Box<dyn Element> {
     let session = pane_session_snapshot(state, pane_id);
@@ -210,10 +218,6 @@ pub fn build_agent_chat(
         return build_sub_agent_child_view(app, state, actions, pane_id, active, &session, &child);
     }
 
-    // A pane whose harness is open *is* this pane's agent surface: the terminal
-    // pane reaches it through `build_terminal`'s escape closure, and it is the
-    // only caller that wires one.
-    let harness_open = on_escape.is_some();
     // The bar names the conversation this pane talks to, or the placeholder
     // while it has no subject yet.
     let heading = state
@@ -246,7 +250,7 @@ pub fn build_agent_chat(
         state,
         actions,
         pane_id,
-        harness_open,
+        on_escape.clone(),
         surface_harness,
         Some(PaneHeading::Agent(heading)),
     );
@@ -372,6 +376,34 @@ pub fn build_agent_chat(
     let models_for_select = state.models.clone();
     let model_menu_open = controls.model_menu_open.clone();
     let model_index = controls.model_index.clone();
+
+    // The tray the same control opens: the models a pane can run, grouped under
+    // the harness that owns each one. The groups are recognition — a mark and a
+    // name over the rows that harness runs — and a pick is always a model. The
+    // rows are the desktop's catalog, so the tray lists what a turn can run.
+    let tray_harnesses: Vec<ModelTrayHarness> = state
+        .model_groups
+        .iter()
+        .map(|group| {
+            ModelTrayHarness::new(group.harness.clone(), group.label.clone()).with_models(
+                group
+                    .models
+                    .iter()
+                    .map(|model| {
+                        ModelTrayModel::new(model.id.clone(), model.name.clone())
+                            .with_thinking(model.thinking.clone())
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    // What a pick resolves to: the model ids in the order the tray draws them,
+    // since the tray reports the row it took rather than the id behind it.
+    let tray_model_ids: Vec<String> = state
+        .model_groups
+        .iter()
+        .flat_map(|group| group.models.iter().map(|model| model.id.clone()))
+        .collect();
 
     // Append the live terminal blocks this pane's conversation owns, so a
     // command run from the agent input (`!cmd`) shows where it ran.
@@ -513,6 +545,27 @@ pub fn build_agent_chat(
     // model half).
     if session.worker.is_none() && native_harness {
         chat = chat.with_composer_model_label(controls.model.clone());
+        // The same control opens the tray: the model chip is the one entry
+        // point, and the band above the input is where the columns show.
+        {
+            let on_model_select = actions.on_model_select.clone();
+            let on_thinking_select = actions.on_thinking_select.clone();
+            let tray = ComposerModelTray::new(
+                tray_harnesses.clone(),
+                controls.model_tray_state.clone(),
+                controls.model_tray_open.clone(),
+            )
+            .with_current(controls.model.clone(), controls.thinking.clone())
+            .with_on_select_model(move |row| {
+                if let Some(id) = tray_model_ids.get(row) {
+                    (on_model_select.borrow_mut())(pane_id, id.clone());
+                }
+            })
+            .with_on_select_level(move |level| {
+                (on_thinking_select.borrow_mut())(pane_id, level);
+            });
+            chat = chat.with_composer_model_tray(tray);
+        }
         // The approval policy is the native agent's too: a CLI harness decides
         // its own approvals, so the always-approve control would write a
         // setting nothing in the conversation reads.
@@ -604,13 +657,17 @@ pub fn build_agent_chat(
                 });
         }
     }
-    // Slash commands: a draft that starts with `/` opens the command menu above
-    // the editor, narrowed by what was typed after the slash. The list is the
-    // Cmd+K palette's own, drawn in place instead of as a full-screen overlay.
-    let slash_commands = crate::ui::palette::slash_commands(state, actions);
-    let slash_query = crate::ui::palette::slash_query(&session.composer_draft).unwrap_or_default();
-    let slash_filtered = crate::ui::palette::matching_slash_commands(&slash_commands, &slash_query);
+    // The draft's own band: `/` lists the harness's commands, `$` the skills it
+    // advertises and `@` the paths under the pane's working directory. All three
+    // are the same band above the editor, narrowed by what was typed after the
+    // prefix, and the list is the harness's own — never one written here.
+    let draft_commands =
+        crate::ui::palette::draft_commands(state, actions, &session.composer_draft);
+    let draft_query = crate::ui::palette::draft_query(&session.composer_draft).unwrap_or_default();
+    let slash_filtered =
+        crate::ui::palette::matching_slash_commands(&draft_commands, &draft_query);
     let slash_items = crate::ui::palette::slash_items(&slash_filtered);
+    let on_composer_insert = actions.on_composer_insert.clone();
     let mut chat = chat
         .with_composer_slash_menu(
             slash_items,
@@ -621,10 +678,12 @@ pub fn build_agent_chat(
         .with_composer_on_slash_accept(crate::ui::palette::slash_accept(
             slash_filtered,
             on_slash_close,
+            on_composer_insert,
         ))
         .with_composer_on_slash_dismiss(move || (on_slash_dismiss.borrow_mut())());
-    // The way out of this view, for a pane that has one (the terminal pane's
-    // harness returns to the shell). A chat pane wires nothing here.
+    // The way out of this view, for a pane that has one: the terminal pane's
+    // harness returns to the shell, a chat pane becomes the terminal it has no
+    // shell behind. A pane with neither passes `None`.
     if let Some(on_escape) = on_escape {
         chat = chat.with_on_escape(move || (on_escape.borrow_mut())());
     }

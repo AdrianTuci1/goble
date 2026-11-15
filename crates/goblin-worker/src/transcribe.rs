@@ -29,7 +29,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// dictation for the providers listed as able to transcribe; the worker is the
 /// side that has to know how to call them.
 pub fn supports_transcription(provider: &str) -> bool {
-    matches!(normalize(provider), "openai" | "elevenlabs")
+    matches!(normalize(provider).as_str(), "openai" | "elevenlabs")
 }
 
 /// Transcribe one recorded segment with the provider's default endpoint (or the

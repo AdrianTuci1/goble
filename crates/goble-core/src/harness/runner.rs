@@ -105,10 +105,30 @@ impl SandboxedCommandRunner {
         .context("failed to execute command")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let body = format!("{stdout}{stderr}").trim().to_string();
         if !output.status.success() {
-            anyhow::bail!("command failed: {stderr}");
+            // A search that selected no line exits 1, which is an answer and
+            // not an error: reporting it as a failed tool call sends the model
+            // chasing a fault that is not there. A search that could not run at
+            // all exits 2 and stays a failure.
+            let program = std::path::Path::new(command)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(command);
+            if output.status.code() == Some(1) && matches!(program, "grep" | "rg") {
+                return Ok(body);
+            }
+            // What the command did print leaves with the failure: `ls` over a
+            // tree lists every directory it could open before it names the one
+            // it could not, and dropping that hand the model a stderr line with
+            // nothing around it.
+            let code = output
+                .status
+                .code()
+                .map_or_else(|| "a signal".to_string(), |code| code.to_string());
+            anyhow::bail!("command failed (exit {code}): {body}");
         }
-        Ok(format!("{stdout}{stderr}").trim().to_string())
+        Ok(body)
     }
 
     /// Run `command`, applying the configured sandbox when present.
@@ -390,4 +410,75 @@ fn quote_arg(arg: &str) -> String {
         return arg.to_string();
     }
     format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A command that fails still hands back what it printed. `ls` over a tree
+    /// lists every directory it could open before it names the one it could
+    /// not; the failure keeps that list alongside the error line.
+    #[tokio::test]
+    async fn a_failing_command_keeps_what_it_printed() {
+        let runner = SandboxedCommandRunner::new(["sh"], 10, std::env::temp_dir());
+        let error = runner
+            .run_argv(
+                "sh",
+                &[
+                    "-c".to_string(),
+                    "echo listed; echo missing >&2; exit 3".to_string(),
+                ],
+            )
+            .await
+            .expect_err("a command that exits 3 fails")
+            .to_string();
+
+        assert!(error.contains("exit 3"), "the exit code is stated: {error}");
+        assert!(
+            error.contains("listed"),
+            "the stdout the command printed before failing: {error}"
+        );
+        assert!(
+            error.contains("missing"),
+            "the stderr line the command failed on: {error}"
+        );
+    }
+
+    /// A search that matched nothing is an answer: `grep` and `rg` exit 1 for
+    /// "no line selected", and the tool call succeeds with the empty output.
+    #[tokio::test]
+    async fn a_search_that_matched_nothing_is_an_empty_answer() {
+        let dir = std::env::temp_dir().join("goble-grep-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("haystack.txt");
+        std::fs::write(&file, "a needle is not here\n").unwrap();
+        let runner = SandboxedCommandRunner::new(["grep"], 10, dir.clone());
+
+        let out = runner
+            .run_argv(
+                "grep",
+                &["-rn".to_string(), "missing".to_string(), file.to_string_lossy().to_string()],
+            )
+            .await
+            .expect("a search with no match is not a failure");
+
+        assert!(out.is_empty(), "nothing matched, so nothing is printed: {out:?}");
+        std::fs::remove_file(&file).ok();
+    }
+
+    /// A search that could not run stays a failure: exit 2 is grep's own error.
+    #[tokio::test]
+    async fn a_search_that_could_not_run_fails() {
+        let runner = SandboxedCommandRunner::new(["grep"], 10, std::env::temp_dir());
+        let error = runner
+            .run_argv(
+                "grep",
+                &["-rn".to_string(), "x".to_string(), "/no/such/tree".to_string()],
+            )
+            .await
+            .expect_err("a search over a missing path fails")
+            .to_string();
+        assert!(error.contains("exit 2"), "{error}");
+    }
 }

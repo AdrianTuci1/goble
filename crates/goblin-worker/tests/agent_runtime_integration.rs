@@ -165,7 +165,9 @@ async fn test_harness_for_thread_reply_returns_summary() {
         .await
         .unwrap();
 
-    assert_eq!(reply.as_deref(), Some("reply submitted"));
+    // The reply is the text the harness produced for this turn, which is what a
+    // phone draws in the thread; the mock answers every turn with "ok".
+    assert_eq!(reply.as_deref(), Some("ok"));
 
     let trace = state.get_trace(&trace_id).unwrap();
     assert_eq!(trace.status, ExecutionStatus::Success);

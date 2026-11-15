@@ -9,8 +9,46 @@ pub(super) fn read_file(
     workspace_dir: &std::path::Path,
 ) -> Result<String> {
     let path = args["path"].as_str().context("path is required")?;
-    let path = resolve_path(path, workspace_dir)?;
+    let path = resolve_read_path(path, workspace_dir)?;
     std::fs::read_to_string(&path).with_context(|| format!("failed to read {path:?}"))
+}
+
+/// The file a read opens: an absolute path is the one the caller named, so a
+/// repository the user pointed at outside the workspace can be read the way a
+/// command already reads it. Writes keep the stricter [`resolve_path`]: the
+/// workspace guard there is what stops a stray write from landing anywhere on
+/// the machine.
+fn resolve_read_path(path: &str, workspace_dir: &std::path::Path) -> Result<PathBuf> {
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        return Ok(canonicalize_loose(&p));
+    }
+    resolve_path(path, workspace_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A read reaches a file the workspace does not contain when the caller
+    /// names it by absolute path: the agent used to refuse it and fall back to
+    /// `cat`, which reads the same file one tool later.
+    #[test]
+    fn an_absolute_read_reaches_a_file_outside_the_workspace() {
+        let workspace = std::env::temp_dir().join("goble-read-workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = std::env::temp_dir().join("goble-read-outside.txt");
+        std::fs::write(&outside, "outside the workspace").unwrap();
+
+        let text = read_file(
+            &serde_json::json!({ "path": outside.to_string_lossy() }),
+            &workspace,
+        )
+        .expect("an absolute read outside the workspace");
+
+        assert_eq!(text, "outside the workspace");
+        std::fs::remove_file(&outside).ok();
+    }
 }
 
 pub(super) fn write_file(

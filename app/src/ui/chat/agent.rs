@@ -482,6 +482,10 @@ pub fn build_agent_chat(
         // never swallows keys before the active pane (e.g. a terminal) sees them.
         .with_composer_focused(active && state.composer_focused)
         .with_composer_caret(controls.caret.clone())
+        .with_composer_anchor(controls.selection_anchor.clone())
+        // The clipboard is the pane's own: a copy, a cut and a paste in the
+        // rich input read it, and the vim registers share the same handle.
+        .with_composer_clipboard(actions.clipboard.clone())
         // The transcript's own fold key (`e`) is the active pane's too.
         .with_pane_active(active)
         .with_composer_path(composer_path(&session))

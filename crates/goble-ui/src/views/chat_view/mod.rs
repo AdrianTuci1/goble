@@ -102,9 +102,14 @@ pub struct ChatView {
     /// view is rebuilt every frame, like the draft itself.
     composer_caret: Rc<RefCell<usize>>,
     /// Modal (vim) editing for the composer editor, when the user turned it on:
-    /// the host's mode state and the system clipboard its registers reach.
+    /// the host's mode state.
     composer_vim: Option<Rc<RefCell<VimState>>>,
+    /// The system clipboard the composer's copy, cut, paste and its vim
+    /// registers reach.
     composer_clipboard: Option<Rc<RefCell<dyn Clipboard>>>,
+    /// Where the composer editor's selection began, shared with the host so a
+    /// selection survives the per-frame rebuild.
+    composer_anchor: Rc<RefCell<Option<usize>>>,
     /// What the conversation has spent, from the provider's own token counts.
     /// Drawn at the end of the transcript; accounting only, never a price.
     usage: TokenUsage,
@@ -286,6 +291,7 @@ impl ChatView {
             composer_caret: Rc::new(RefCell::new(0)),
             composer_vim: None,
             composer_clipboard: None,
+            composer_anchor: Rc::new(RefCell::new(None)),
             usage: TokenUsage::default(),
             usage_open: Rc::new(RefCell::new(false)),
             on_fork: None,

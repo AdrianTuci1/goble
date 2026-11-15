@@ -18,13 +18,32 @@ Only call a tool when the user explicitly asks for an action you can perform wit
 If no tool is needed, reply conversationally.
 When you ask the user to pick between options, call ask_user with the choices in quick_replies instead of writing a numbered list in prose: the client draws them as a numbered picker.
 There is a user guide for this product at ~/.goble/docs/user-guide. For questions about how to set up or use Goble (credentials, workspaces, principals, remote/self-as-worker access, reaching this machine from the mobile app via Tailscale), call the user_guide tool to look up the relevant topic before answering.
-When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path.
+Reads take an absolute path wherever the file is; writes and edits stay inside the workspace directory unless the user explicitly provides an absolute path.
 Never print a secret. When a file, a command's output or a tool's result carries a token, an API key, a password or a private key, name where it lives (`~/.modal.toml`'s `token_secret`, say) and keep the value itself out of the reply and out of any summary you write. Show the value only when the user explicitly asks for that specific secret; that request is the one exception. A secret that is already on disk stays there: read what you need from it rather than copying it into the conversation, and write {{credential:<name>}} in a command instead of pasting the value."#;
 
 /// The harness's system prompt: the environment's rules plus the rich-text
 /// contract its replies are rendered with.
 pub(crate) fn harness_system_prompt() -> String {
-    format!("{HARNESS_BASE_PROMPT}\n{RICH_TEXT_GUIDE}")
+    format!(
+        "{HARNESS_BASE_PROMPT}\n{}\n{RICH_TEXT_GUIDE}",
+        shell_guidance()
+    )
+}
+
+/// What the model needs to know about the shell a tool call reaches.
+///
+/// `run_command` names one executable and its arguments; only a pane's own
+/// shell turns a line into a pipeline. The userland follows the host the
+/// harness runs on, and a command written for the other one fails on a flag
+/// that does not exist — `find -maxdepth` on macOS is the common one.
+fn shell_guidance() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "run_command runs one executable with its arguments; a pipeline, a redirect or a glob reaches a shell only when the pane's own shell runs the line. This host is macOS, so the userland is BSD: find has no -maxdepth (use -type d -name '…', mdfind, or rg --files), and ls, sed and stat take BSD flags. grep and rg exit 1 when nothing matched — that is an answer, not a failure to retry with a different dialect."
+    } else if cfg!(target_os = "windows") {
+        "run_command runs one executable with its arguments; a pipeline, a redirect or a glob reaches a shell only when the pane's own shell runs the line. This host is Windows, so the shell tools are the ones an installed Git Bash or WSL provides. grep and rg exit 1 when nothing matched — that is an answer, not a failure."
+    } else {
+        "run_command runs one executable with its arguments; a pipeline, a redirect or a glob reaches a shell only when the pane's own shell runs the line. This host is Linux, so the userland is GNU. grep and rg exit 1 when nothing matched — that is an answer, not a failure to retry with a different dialect."
+    }
 }
 
 /// The tool that spawns a sub-agent. Named here because the child's tool set

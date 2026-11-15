@@ -761,6 +761,7 @@ impl UiState {
             parse_cache: MessageParseCache::default(),
             draft: Rc::new(RefCell::new(String::new())),
             caret: Rc::new(RefCell::new(0)),
+            selection_anchor: Rc::new(RefCell::new(None)),
         };
         if let Some(desktop) = desktop {
             let row = view.row.clone();

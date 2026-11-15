@@ -205,8 +205,13 @@ pub struct ChatComposer {
     /// state lives with the host (the element is rebuilt every frame) and the
     /// footer draws the mode badge from it.
     vim: Option<Rc<RefCell<VimState>>>,
-    /// The system clipboard the engine's `"+`/`"*` registers reach.
+    /// The system clipboard the engine's `"+`/`"*` registers reach, and the
+    /// one a copy, a cut and a paste use.
     clipboard: Option<Rc<RefCell<dyn Clipboard>>>,
+    /// Where the editor's selection began, when the host shares it: a copy and
+    /// a cut take what is between the anchor and the beam, and a selection has
+    /// to survive the per-frame rebuild like the beam does.
+    anchor: Option<Rc<RefCell<Option<usize>>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -260,6 +265,7 @@ impl ChatComposer {
             model_index: Rc::new(RefCell::new(0)),
             vim: None,
             clipboard: None,
+            anchor: None,
             harness_label: None,
             harness_icon: "computer",
             harness_menu_items: Vec::new(),
@@ -750,9 +756,17 @@ impl ChatComposer {
         self
     }
 
-    /// The system clipboard the `"+`/`"*` registers read and write.
+    /// The system clipboard the `"+`/`"*` registers read and write, and the one
+    /// a copy, a cut and a paste use.
     pub fn with_clipboard(mut self, clipboard: Rc<RefCell<dyn Clipboard>>) -> Self {
         self.clipboard = Some(clipboard);
+        self
+    }
+
+    /// Share the editor's selection anchor with the host, so a shift-selection
+    /// survives the per-frame rebuild.
+    pub fn with_anchor(mut self, anchor: Rc<RefCell<Option<usize>>>) -> Self {
+        self.anchor = Some(anchor);
         self
     }
 
@@ -1582,9 +1596,14 @@ impl ChatComposer {
             // The editor owns its whole line: a press to the right of the text
             // is a press in the editor and puts the beam at the end.
             .with_full_width(true)
+            // A long draft folds inside the bar: the editor stays one text
+            // field, and its caret follows the row the index lands in instead
+            // of running past the bar's edge.
+            .with_wrapping(true)
             .with_caret(self.caret.clone())
             .with_vim_opt(self.vim.clone())
             .with_clipboard_opt(self.clipboard.clone())
+            .with_anchor_opt(self.anchor.clone())
             .with_on_change(move |text| {
                 *value.borrow_mut() = text.clone();
                 // The draft is the menu's query: the host re-filters the

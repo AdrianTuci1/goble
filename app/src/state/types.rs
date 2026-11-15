@@ -362,6 +362,9 @@ pub struct SubAgentChildView {
     /// grok-build's subagent takeover accepts a prompt in the child's input.
     pub draft: Rc<RefCell<String>>,
     pub caret: Rc<RefCell<usize>>,
+    /// Where the child input's shift-selection began, `None` when nothing is
+    /// selected.
+    pub selection_anchor: Rc<RefCell<Option<usize>>>,
 }
 
 impl SubAgentChildView {
@@ -736,6 +739,10 @@ pub struct PaneControls {
     /// index into the draft. App-owned because the composer element is rebuilt
     /// every frame and would otherwise lose the position on each one.
     pub caret: Rc<RefCell<usize>>,
+    /// Where this pane's shift-selection began, `None` when nothing is
+    /// selected. App-owned for the same reason as the caret: a copy takes what
+    /// is between this index and the beam.
+    pub selection_anchor: Rc<RefCell<Option<usize>>>,
     /// This pane's modal (vim) editing state: the mode, the half-typed command
     /// and the registers. One per pane, so two editors keep independent modes;
     /// the composer is rebuilt every frame, so it lives here and not in the
@@ -799,6 +806,7 @@ impl PaneControls {
             diff_git_result: Arc::new(Mutex::new(None)),
             diff_refresh: Rc::new(RefCell::new(0)),
             caret: Rc::new(RefCell::new(0)),
+            selection_anchor: Rc::new(RefCell::new(None)),
             vim: Rc::new(RefCell::new(VimState::new())),
             slash_index: Rc::new(RefCell::new(0)),
             slash_dismissed: Rc::new(RefCell::new(false)),

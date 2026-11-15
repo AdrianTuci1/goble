@@ -761,6 +761,7 @@ impl UiState {
                             messages: view.messages.clone(),
                             draft: view.draft.clone(),
                             caret: view.caret.clone(),
+                            selection_anchor: view.selection_anchor.clone(),
                         }
                     }),
                     workflow_view: self.workflow_views.get(pane_id).map(|view| {

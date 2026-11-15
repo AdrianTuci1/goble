@@ -903,6 +903,7 @@ impl ChatView {
             .with_focused(self.composer_focused)
             .with_queued_prompt_present(self.queued_prompt.is_some())
             .with_caret(self.composer_caret.clone())
+            .with_anchor(self.composer_anchor.clone())
             // While a turn is in flight the status row above the input carries
             // the one Stop control; an idle input keeps it in its action row.
             .with_stop_visible(self.composer_stop_visible && !self.turn_status.is_in_flight())
@@ -1071,9 +1072,12 @@ impl ChatView {
         // and the app's system clipboard for the `"+`/`"*` registers.
         if let Some(vim) = self.composer_vim.clone() {
             composer = composer.with_vim(vim);
-            if let Some(clipboard) = self.composer_clipboard.clone() {
-                composer = composer.with_clipboard(clipboard);
-            }
+        }
+        // The clipboard is handed over whether or not modal editing is on: the
+        // composer's own copy, cut and paste read it, and the vim registers are
+        // the same handle when it is.
+        if let Some(clipboard) = self.composer_clipboard.clone() {
+            composer = composer.with_clipboard(clipboard);
         }
         let composer = composer.finish();
         // A separator line above the rich input separates it from the

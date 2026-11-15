@@ -456,6 +456,11 @@ impl ApplicationHandler for App {
                 let event = DispatchedEvent::Focus { gained };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow().clone();
+                // A release that landed outside the window never reaches it:
+                // a window losing the keyboard ends any press it still counts.
+                if !gained {
+                    app_context.pointer_down.set(false);
+                }
                 let _ = self
                     .root
                     .dispatch_event(&event, &mut event_ctx, &app_context);
@@ -494,6 +499,12 @@ impl ApplicationHandler for App {
                 };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow().clone();
+                // The button's state is the app's while the event is handled:
+                // a field rebuilt every frame reads it to know a press that
+                // started on it is still dragging.
+                app_context
+                    .pointer_down
+                    .set(matches!(state, winit::event::ElementState::Pressed));
                 let _ = self
                     .root
                     .dispatch_event(&event, &mut event_ctx, &app_context);

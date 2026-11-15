@@ -119,6 +119,33 @@ pub fn wrapped_lines(
     lines
 }
 
+/// Where each row of [`wrapped_lines`] starts, in characters of the text.
+///
+/// A soft break consumes the whitespace it folds on: the text holds it, and
+/// neither row draws it. Summing the rows' own lengths would leave every row
+/// after the first starting too early, so a caret placed against those sums
+/// lands one column off per fold. A row that opens with whitespace draws it,
+/// and then nothing is skipped.
+pub fn row_starts(lines: &[WrappedLine], text: &str) -> Vec<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut starts = Vec::with_capacity(lines.len());
+    let mut consumed = 0usize;
+    for (row, line) in lines.iter().enumerate() {
+        starts.push(consumed);
+        consumed += line.text.chars().count();
+        let next_first = lines
+            .get(row + 1)
+            .and_then(|next| next.text.chars().next());
+        while consumed < chars.len()
+            && chars[consumed].is_whitespace()
+            && Some(chars[consumed]) != next_first
+        {
+            consumed += 1;
+        }
+    }
+    starts
+}
+
 fn wrapped_lines_uncached(
     text: &str,
     font_size: f32,
@@ -1006,6 +1033,7 @@ pub(super) fn rasterize_text_with_emoji(
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     /// A blank filler — `U+2800 BRAILLE PATTERN BLANK`, which TUI art uses to
     /// pad its cells — draws no ink. Falling through to the primary face's

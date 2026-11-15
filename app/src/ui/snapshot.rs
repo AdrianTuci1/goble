@@ -42,6 +42,9 @@ pub struct SubAgentViewSnapshot {
     /// so the composer survives the per-frame rebuild.
     pub draft: std::rc::Rc<std::cell::RefCell<String>>,
     pub caret: std::rc::Rc<std::cell::RefCell<usize>>,
+    /// Where the child input's shift-selection began, `None` when nothing is
+    /// selected.
+    pub selection_anchor: std::rc::Rc<std::cell::RefCell<Option<usize>>>,
 }
 
 /// What a pane's workflow-runs view shows: which run's detail is open, or

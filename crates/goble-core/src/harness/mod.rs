@@ -60,7 +60,7 @@ pub use runner::{
 pub use text_diff::{unified_diff, unified_diff_with_context, DIFF_CONTEXT};
 pub use types::{
     ChatToolCall, CommandDecision, HarnessEvent, ThinkingMode, ToolCallStatus, ToolOutcome,
-    ToolSchema, WebSearchConfig,
+    ToolSchema, WebSearchConfig, MAX_RECORDED_DIFF, MAX_TOOL_OUTPUT_BYTES,
 };
 
 pub(crate) use commands::{command_candidates, run_approved_command, COMMAND_TOOL};

@@ -7,9 +7,9 @@ use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
     Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
-    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
-    Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
-    TurnStatusFooter,
+    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
+    QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip,
+    TooltipPosition, TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::theme::{ColorToken, SpacingToken};
@@ -243,6 +243,22 @@ impl ChatView {
         Some(menu.finish())
     }
 
+    /// The tray the composer's model control opens: the models the pane can run,
+    /// grouped under the harness that owns each one, and the thinking levels of
+    /// the highlighted model.
+    ///
+    /// It is a band in the same slot as the command list (see [`Self::slash_menu`]
+    /// and the slot rule in `rebuild`), so the two never stack. The tray holds
+    /// none of its own state: what it lists, which rows the arrows are on and
+    /// whether it is up all come from the host handle the control toggled.
+    fn model_tray(&self) -> Option<Box<dyn Element>> {
+        if self.composer_proposal.is_some() {
+            return None;
+        }
+        let tray = self.composer_model_tray.as_ref()?;
+        Some(Box::new(tray.band()?))
+    }
+
     /// What a pane with nothing in its transcript shows: the title and the
     /// invitation, centered in a rounded bordered frame.
     ///
@@ -262,9 +278,21 @@ impl ChatView {
             .clone()
             .unwrap_or_else(|| "Ask anything to get started.".to_string());
 
-        let content = Flex::column()
+        let mut content = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
+            .with_spacing(spacing);
+        // A pane that opens on a kind of work leads with its mark: the cloud
+        // over a fresh cloud agent, so the surface names what it starts before
+        // the first word.
+        if let Some(icon) = self.empty_icon {
+            content = content.with_child(
+                Icon::new(icon)
+                    .with_size(28.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        }
+        let content = content
             .with_child(
                 Text::new(title)
                     .with_theme_color(ColorToken::Text, app)
@@ -617,12 +645,25 @@ impl ChatView {
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
             && self.composer_proposal.is_none()
-            && self.notice.is_none()
             && self.turn_error.is_none()
+            // A notice replaces the plain welcome box (the pane's state is the
+            // thing to read). A landing is the pane's own surface, so it keeps
+            // the box and the notice leads it — the cloud agent says where it
+            // will run and what it is about to start.
+            && (self.notice.is_none() || self.empty_icon.is_some())
         {
             // The empty state claims the remaining height itself, so the
             // composer stays pinned to the bottom of the window.
-            self.build_empty_state(app)
+            let landing = self.build_empty_state(app);
+            match self.notice.take() {
+                Some(notice) => Flex::column()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                    .with_child(notice)
+                    .with_child(Expanded::new(landing).finish())
+                    .finish(),
+                None => landing,
+            }
         } else {
             let mut message_column = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -901,6 +942,9 @@ impl ChatView {
                     (cb.borrow_mut())(text);
                 }
             });
+        if let Some(placeholder) = self.composer_placeholder.clone() {
+            composer = composer.with_placeholder(placeholder);
+        }
         if let Some(label) = self.composer_model_label.clone() {
             composer = composer.with_model_label(label);
         }
@@ -1002,6 +1046,11 @@ impl ChatView {
                 )
                 .with_branch_menu_highlight(self.composer_branch_menu_highlight.clone());
         }
+        // The column tray the model control opens: the composer toggles it from
+        // its footer and routes its keys, the band above the input draws it.
+        if let Some(tray) = self.composer_model_tray.clone() {
+            composer = composer.with_model_tray(tray);
+        }
         // The slash-command menu: the draft is its query, so the host hands the
         // view the commands it matches and the view keeps the editor focused.
         composer = composer.with_slash_menu(
@@ -1037,7 +1086,7 @@ impl ChatView {
         // The pane's instructions are the strip over the separator, the last row
         // of the content: they name the gestures the input under them answers,
         // and warp-new keeps them off the input's own rows. The build draws both
-        // bands — the draft's commands and the models the model control opened —
+        // bands — the draft's commands, the model tray and the flat model list —
         // over the whole input block, above the strip: one slot, which the
         // draft's own command list holds while the draft is a command, the way
         // grok-build puts them over the prompt and not over the pane.
@@ -1049,7 +1098,11 @@ impl ChatView {
             // Stop) stays, because the turn is still in flight.
             let waiting = self.composer_proposal.is_some() || self.pending_ask.is_some();
             if !waiting {
-                if let Some(menu) = self.slash_menu().or_else(|| self.model_menu()) {
+                if let Some(menu) = self
+                    .slash_menu()
+                    .or_else(|| self.model_tray())
+                    .or_else(|| self.model_menu())
+                {
                     column = column.with_child(menu);
                 }
             }

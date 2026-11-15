@@ -9,6 +9,7 @@ mod cli;
 mod commands;
 #[cfg(unix)]
 mod ctl;
+mod setup;
 mod worker;
 
 #[cfg(unix)]
@@ -17,6 +18,6 @@ pub use cli::{
 };
 pub use cli::{
     Args, ClusterAction, Command, DeviceAction, IdentityAction, ScheduleAction, SecretAction,
-    SnapshotAction,
+    SetupAction, SetupProviderArg, SetupTargetArg, SnapshotAction,
 };
 pub use commands::{async_main, main};

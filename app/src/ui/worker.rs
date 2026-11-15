@@ -38,7 +38,7 @@ pub fn build_worker_pane(
     pane_id: u64,
     active: bool,
 ) -> Box<dyn Element> {
-    chat::build_agent_chat(app, state, actions, pane_id, active, None)
+    chat::build_agent_chat(app, state, actions, pane_id, active, false, None)
 }
 
 /// The band a viewer pane leads its transcript with: the worker, and the state

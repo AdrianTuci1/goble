@@ -12,11 +12,61 @@ use crate::harness::{
 };
 use crate::llm::{CompletionRequest, CompletionResponse, Message, Role, ToolDefinition};
 use crate::mcp_manager::McpManager;
+use crate::reasoning::{compaction, stored_history};
 use crate::store::Store;
 use crate::subagent::{can_spawn_subagent, SubAgentRecord, SubAgentSpec};
 
 use super::host::ChildDeps;
 use super::registry::{publish, stop_if_cancelled};
+
+/// The request a child sends: its conversation as it stands and its tools.
+fn child_request(
+    deps: &ChildDeps,
+    history: &[Message],
+    tools: &[ToolDefinition],
+) -> CompletionRequest {
+    CompletionRequest::new(&deps.provider, &deps.model)
+        .with_messages(history.to_vec())
+        .with_tools(tools.to_vec())
+}
+
+/// The child's history from its own stored rows: its system prompt, then the
+/// summary a compaction left and the turns after it. The loop also builds the
+/// history per iteration; this is how it is read back once a compaction has
+/// shortened it.
+async fn child_history(deps: &ChildDeps, child_chat_id: &str, spec: &SubAgentSpec) -> Vec<Message> {
+    let mut history = vec![Message {
+        role: Role::System,
+        content: child_system_prompt(spec),
+        tool_calls: None,
+        tool_call_id: None,
+        tool_status: None,
+        reasoning_content: None,
+    }];
+    history.extend(stored_history(&deps.host.store, child_chat_id).await);
+    history
+}
+
+/// Compact the child's own conversation, the way a parent turn compacts its
+/// transcript. The events have no stream to go to — a child reports through
+/// its registry record, not the parent's event channel — and the notice row in
+/// the child's own transcript is what a host opening that view reads.
+async fn compact_child(
+    deps: &ChildDeps,
+    child_chat_id: &str,
+    trigger: compaction::CompactionTrigger,
+) -> Option<u64> {
+    let run = compaction::compact(
+        &deps.host.store,
+        child_chat_id,
+        &*deps.host.llm,
+        &deps.provider,
+        &deps.model,
+        trigger,
+    )
+    .await;
+    run.after_tokens
+}
 
 /// The body of a child's task. It owns the record so it can always publish a
 /// terminal status: a loop that unwinds leaves `Failed`, never a record that
@@ -110,24 +160,12 @@ pub(crate) fn run_child_turn<'a>(
             return;
         }
 
-        let mut history = vec![
-            Message {
-                role: Role::System,
-                content: child_system_prompt(&spec),
-                tool_calls: None,
-                tool_call_id: None,
-                tool_status: None,
-                reasoning_content: None,
-            },
-            Message {
-                role: Role::User,
-                content: spec.prompt.clone(),
-                tool_calls: None,
-                tool_call_id: None,
-                tool_status: None,
-                reasoning_content: None,
-            },
-        ];
+        let mut history = child_history(deps, &child_chat_id, &spec).await;
+        // How far the child's conversation must grow past a compaction before
+        // it is compacted again, and whether the last attempt failed: a summary
+        // that could not be written must not be retried on every round.
+        let mut compact_again_above = 0u64;
+        let mut compaction_failed = false;
 
         loop {
             // Stop before spending another action: the parent's bit or a kill of
@@ -142,10 +180,56 @@ pub(crate) fn run_child_turn<'a>(
                 return;
             }
             publish(record, deps);
-            let request = CompletionRequest::new(&deps.provider, &deps.model)
-                .with_messages(history.clone())
-                .with_tools(tools.clone());
-            let response = match deps.host.llm.complete(request).await {
+            let mut request = child_request(deps, &history, &tools);
+
+            // The endpoint's body cap is not the token window: a child that
+            // read a couple of large files is refused with 413 while its
+            // window reads almost empty. The body is measured before it is
+            // sent, and the child's own chat is compacted on its size.
+            if !compaction_failed {
+                if let Some(trigger) = compaction::payload_trigger(&request) {
+                    // A conversation that stays over the cap after a summary
+                    // has to grow again before it is compacted again.
+                    let stored = deps
+                        .host
+                        .store
+                        .list_chat_messages(&child_chat_id)
+                        .map(|rows| compaction::stored_rows_tokens(&rows))
+                        .unwrap_or(0);
+                    if stored > compact_again_above {
+                        match compact_child(deps, &child_chat_id, trigger).await {
+                            Some(after) => {
+                                compact_again_above = after.saturating_add(after / 10);
+                                history = child_history(deps, &child_chat_id, &spec).await;
+                                request = child_request(deps, &history, &tools);
+                            }
+                            None => compaction_failed = true,
+                        }
+                    }
+                }
+            }
+
+            // One retry, after compacting, when the endpoint refuses the
+            // body's size: its own cap can be below the one measured here. A
+            // second refusal fails the child, as before.
+            let mut attempt = deps.host.llm.complete(request.clone()).await;
+            let refused = matches!(
+                &attempt,
+                Err(e) if crate::llm::is_payload_too_large(&e.to_string())
+            );
+            if refused {
+                let trigger = compaction::CompactionTrigger::Payload {
+                    bytes: compaction::request_bytes(&request),
+                    cap: compaction::MAX_REQUEST_BYTES,
+                };
+                if let Some(after) = compact_child(deps, &child_chat_id, trigger).await {
+                    compact_again_above = after.saturating_add(after / 10);
+                    history = child_history(deps, &child_chat_id, &spec).await;
+                    request = child_request(deps, &history, &tools);
+                }
+                attempt = deps.host.llm.complete(request).await;
+            }
+            let response = match attempt {
                 Ok(response) => response,
                 Err(e) => {
                     record.fail(format!("sub-agent model call failed: {e}"));

@@ -20,6 +20,16 @@ impl ModifiersState {
 pub const BUTTON_PRIMARY: u32 = 0;
 pub const BUTTON_SECONDARY: u32 = 1;
 
+/// The window two presses on one point are a single gesture in, counted
+/// press-to-press so the time a press is held does not come out of it. The same
+/// 400 ms the app's workspace tabs use (`MULTI_CLICK_INTERVAL_MS`) and the
+/// terminal's own selection counts with.
+pub const MULTI_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How far the pointer may travel between the two presses of a double click and
+/// still be the same gesture, in logical pixels.
+pub const MULTI_CLICK_SLOP: f32 = 4.0;
+
 /// An OS-level event wrapped for dispatch in the element tree.
 #[derive(Clone, Debug)]
 pub enum DispatchedEvent {
@@ -33,6 +43,19 @@ pub enum DispatchedEvent {
     },
     MouseMove {
         position: crate::geometry::Vector2F,
+    },
+    /// The second release of a multi-click run, reported after the
+    /// [`Self::MouseUp`] that ends it.
+    ///
+    /// It is its own variant rather than a count carried on the press, so a
+    /// caller that knows no multi-click — a test, a scripted dispatch — keeps
+    /// building the same press and release it always did. The release comes
+    /// first on purpose: the row under the pointer has already run its own
+    /// click when this lands, which is what lets a control that opens on a
+    /// click close again on the double click.
+    MouseDoubleClick {
+        position: crate::geometry::Vector2F,
+        button: u32,
     },
     KeyDown {
         key: String,

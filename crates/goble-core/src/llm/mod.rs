@@ -72,6 +72,26 @@ pub(crate) fn log_http_failure(provider: &str, model: &str, url: &str, status: u
     );
 }
 
+/// Whether a failed model call was the endpoint refusing the request's size.
+///
+/// The provider's body cap is not the model's context window: a 256k-token
+/// model answered 413 Request Entity Too Large (an openresty page, so the cap
+/// is the endpoint's own) to a conversation still well inside the window. The
+/// status leads the error message; a proxy in front of the endpoint answers
+/// with its own words, so the phrases are matched too. Nothing here reads the
+/// body as data: it only classifies a message the app already holds.
+pub fn is_payload_too_large(message: &str) -> bool {
+    const MARKERS: [&str; 5] = [
+        "413",
+        "412",
+        "payload too large",
+        "request entity too large",
+        "content too large",
+    ];
+    let lower = message.to_ascii_lowercase();
+    MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
 /// Record a model call that never produced a response (DNS, TLS, connection
 /// reset, timeout). The returned error carries the same text to the UI.
 pub(crate) fn log_transport_failure(

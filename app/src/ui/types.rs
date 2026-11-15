@@ -433,6 +433,11 @@ pub enum SettingsControl {
     ReloadModels,
     /// Agent & Approval: re-read `[remote_agents.<name>]` from the config file.
     ReloadRemoteAgents,
+    /// Agent & Approval: talk Remote through with the agent, which asks for
+    /// what is missing and writes it with `goble-cli setup`.
+    SetupRemoteWithAgent,
+    /// Agent & Approval: the same conversation for the hub's own settings.
+    SetupHubWithAgent,
     /// Agent & Approval, Connections, Models and Advanced: open
     /// `~/.goble/config.toml` in a file pane beside this one.
     OpenConfigFile,
@@ -636,6 +641,23 @@ impl RemoteAgentEntry {
     pub fn detail(&self) -> String {
         format!("{} · {}", self.provider, self.status)
     }
+}
+
+/// What the last cloud-agent deploy reported, for the Remote row Settings →
+/// Agent & Approval already draws. The action starts one; its outcome arrives
+/// from the desktop service as `remote:deploy`, so this is the row's whole view
+/// of a deploy that is in flight or has landed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RemoteDeploy {
+    /// This run has not deployed a sandbox.
+    #[default]
+    Idle,
+    /// A deploy was started for `agent` on `provider` and has not reported back.
+    Deploying { agent: String, provider: String },
+    /// The sandbox exists and its binding is persisted: `provider · name`.
+    Ready { sandbox: String },
+    /// The deploy stopped, with the sentence naming the cause.
+    Failed { message: String },
 }
 
 /// The text field currently focused inside the model-provider dialog. Tracked

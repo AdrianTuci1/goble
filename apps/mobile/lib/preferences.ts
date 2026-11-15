@@ -1,7 +1,7 @@
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 
-import type { SessionMode } from "./types";
+import type { SessionMode, ThinkingLevel } from "./types";
 import {
   DEFAULT_VOICE_PREFERENCES,
   normalizeVoicePreferences,
@@ -13,6 +13,7 @@ const MODE_KEY = "goble.default_mode";
 const VOICE_KEY = "goble.voice_preferences";
 const MODELS_KEY = "goble.model_preferences";
 const NOTIFICATIONS_KEY = "goble.notification_preferences";
+const HAPTICS_KEY = "goble.haptics_enabled";
 
 export interface Preferences {
   instructions: string;
@@ -118,14 +119,25 @@ export async function saveVoicePreferences(
 export interface ModelPreferences {
   /** Model used when the top bar has not picked one for the session. */
   defaultModelId: string | null;
+  /** Thinking level a new session starts on. */
+  defaultThinking: ThinkingLevel;
   /** Models hidden from the top-bar menu on every screen. */
   disabled: string[];
 }
 
 export const DEFAULT_MODEL_PREFERENCES: ModelPreferences = {
   defaultModelId: null,
+  defaultThinking: "standard",
   disabled: [],
 };
+
+const thinkingLevels: ThinkingLevel[] = ["low", "standard", "high"];
+
+function normalizeThinking(value: unknown): ThinkingLevel {
+  return thinkingLevels.includes(value as ThinkingLevel)
+    ? (value as ThinkingLevel)
+    : "standard";
+}
 
 function normalizeModelPreferences(
   input: Partial<ModelPreferences> | null | undefined,
@@ -138,7 +150,11 @@ function normalizeModelPreferences(
     !disabled.includes(input.defaultModelId)
       ? input.defaultModelId
       : null;
-  return { defaultModelId, disabled };
+  return {
+    defaultModelId,
+    defaultThinking: normalizeThinking(input?.defaultThinking),
+    disabled,
+  };
 }
 
 const modelListeners = new Set<(preferences: ModelPreferences) => void>();
@@ -225,4 +241,25 @@ export async function saveNotificationPreferences(
   const next = normalizeNotificationPreferences(preferences);
   for (const listener of notificationListeners) listener(next);
   await write(NOTIFICATIONS_KEY, JSON.stringify(next));
+}
+
+const hapticsListeners = new Set<(enabled: boolean) => void>();
+
+export function subscribeHapticsPreference(
+  listener: (enabled: boolean) => void,
+): () => void {
+  hapticsListeners.add(listener);
+  return () => {
+    hapticsListeners.delete(listener);
+  };
+}
+
+/** Taps vibrate unless the phone turned them off in Settings. */
+export async function loadHapticsPreference(): Promise<boolean> {
+  return (await read(HAPTICS_KEY)) !== "off";
+}
+
+export async function saveHapticsPreference(enabled: boolean): Promise<void> {
+  for (const listener of hapticsListeners) listener(enabled);
+  await write(HAPTICS_KEY, enabled ? "on" : "off");
 }

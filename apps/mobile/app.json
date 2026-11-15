@@ -52,7 +52,13 @@
           "cameraPermission": "Goble uses the camera to attach a photo to a session."
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Goble uses the microphone to dictate your prompt."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false

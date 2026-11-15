@@ -23,11 +23,15 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod hub;
 mod migrate;
+pub mod setup;
 #[cfg(test)]
 mod tests;
 
+pub use hub::HubConfig;
 pub use migrate::{LegacyModelConfig, LlmConfig, ProviderConfig};
+pub use setup::{SetupAgent, SetupHub, SetupStatus, SetupTarget, CREDENTIAL_ENV_KEYS};
 
 /// The commented block `config.toml` opens with, documenting the file's own
 /// shape. It is written by [`GobleConfig::to_toml`] — the one writer for the
@@ -89,17 +93,21 @@ pub const CONFIG_HEADER: &str = "\
 #
 # A remote agent declares a sandbox provider the harness can be shipped to.
 # The table's name is the agent's. `provider` is one of modal, e2b, daytona,
-# box, docker or ssh; `enabled` is true unless it says otherwise. Modal reads
-# `token_id` and `token_secret`; e2b, daytona and box read `api_key`; docker
-# and ssh need no credentials. `api_url`, `image`, `region` and
-# `environment` are optional. `goble-remote` provisions the platform through
-# its provider API and passes the worker the gateway URL and token.
+# box, cloud_run, docker or ssh; `enabled` is true unless it says otherwise.
+# Modal reads `token_id` and `token_secret`; e2b, daytona and box read
+# `api_key`; cloud_run reads the GCP project from `environment`, the location
+# from `region`, and authenticates with `api_key` or the machine's own gcloud
+# session; docker and ssh need no credentials. `api_url`, `image`, `region`
+# and `environment` are optional. `goble-cli setup remote` writes the published
+# worker image (`ghcr.io/adriantuci1/goble-worker`) when a container provider is
+# given no `--image`. `goble-remote` provisions the platform through its
+# provider API and passes the worker the gateway URL and token.
 #
 #   [remote_agents.builder]
 #   provider = \"modal\"
 #   token_id = \"...\"
 #   token_secret = \"...\"
-#   image = \"ubuntu:24.04\"
+#   image = \"ghcr.io/adriantuci1/goble-worker:latest\"
 #
 #   [remote_agents.reviewer]
 #   provider = \"e2b\"
@@ -227,6 +235,14 @@ impl ModelConfig {
     }
 }
 
+/// The worker image this repository publishes for remote agents
+/// (`deploy/worker/Dockerfile`, built by `.github/workflows/worker-image.yml`,
+/// which derives the same `ghcr.io/<owner>/goble-worker` name from the
+/// repository owner). `goble-cli setup remote` writes it when a container
+/// provider is given no `--image`, so a table costs credentials and nothing
+/// else. A fork publishing its own image passes `--image`.
+pub const DEFAULT_WORKER_IMAGE: &str = "ghcr.io/adriantuci1/goble-worker:latest";
+
 /// A sandbox provider a remote agent can run on. The serialized names are the
 /// ones written in `config.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -237,6 +253,10 @@ pub enum RemoteAgentProvider {
     E2b,
     Daytona,
     Box,
+    /// Google Cloud Run jobs: `environment` is the GCP project, `region` the
+    /// Cloud Run location.
+    #[serde(rename = "cloud_run")]
+    CloudRun,
     Docker,
     Ssh,
 }
@@ -245,11 +265,12 @@ impl RemoteAgentProvider {
     /// Every provider this build knows, in the order the settings page offers
     /// them: the hosted sandboxes first, then the two that run on machines the
     /// user already owns.
-    pub const ALL: [RemoteAgentProvider; 6] = [
+    pub const ALL: [RemoteAgentProvider; 7] = [
         RemoteAgentProvider::Modal,
         RemoteAgentProvider::E2b,
         RemoteAgentProvider::Daytona,
         RemoteAgentProvider::Box,
+        RemoteAgentProvider::CloudRun,
         RemoteAgentProvider::Docker,
         RemoteAgentProvider::Ssh,
     ];
@@ -261,9 +282,16 @@ impl RemoteAgentProvider {
             RemoteAgentProvider::E2b => "E2B",
             RemoteAgentProvider::Daytona => "Daytona",
             RemoteAgentProvider::Box => "Box",
+            RemoteAgentProvider::CloudRun => "Cloud Run",
             RemoteAgentProvider::Docker => "Docker",
             RemoteAgentProvider::Ssh => "SSH",
         }
+    }
+
+    /// Whether the provider runs on Google Cloud and reads the project and
+    /// location from `environment` and `region`.
+    pub fn uses_google_cloud(self) -> bool {
+        matches!(self, RemoteAgentProvider::CloudRun)
     }
 
     /// Whether the provider reads a single `api_key`.
@@ -286,8 +314,25 @@ impl RemoteAgentProvider {
             RemoteAgentProvider::E2b => "e2b",
             RemoteAgentProvider::Daytona => "daytona",
             RemoteAgentProvider::Box => "box",
+            RemoteAgentProvider::CloudRun => "cloud_run",
             RemoteAgentProvider::Docker => "docker",
             RemoteAgentProvider::Ssh => "ssh",
+        }
+    }
+
+    /// The image this provider runs a container from when the table does not
+    /// name one: the published worker image, for every provider that pulls a
+    /// container. SSH is the exception — its `image` is an install directory or
+    /// a binary URL, so there is nothing to default it to.
+    pub fn default_image(self) -> Option<&'static str> {
+        match self {
+            RemoteAgentProvider::Ssh => None,
+            RemoteAgentProvider::Modal
+            | RemoteAgentProvider::E2b
+            | RemoteAgentProvider::Daytona
+            | RemoteAgentProvider::Box
+            | RemoteAgentProvider::CloudRun
+            | RemoteAgentProvider::Docker => Some(DEFAULT_WORKER_IMAGE),
         }
     }
 
@@ -299,6 +344,10 @@ impl RemoteAgentProvider {
             RemoteAgentProvider::E2b => &["E2B_API_KEY"],
             RemoteAgentProvider::Daytona => &["DAYTONA_API_KEY"],
             RemoteAgentProvider::Box => &["BOX_API_KEY"],
+            // Cloud Run reads the GCP project and location instead of a single
+            // secret; the adapter authenticates through `api_key` or the
+            // machine's own `gcloud` session.
+            RemoteAgentProvider::CloudRun => &["GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_REGION"],
             RemoteAgentProvider::Docker | RemoteAgentProvider::Ssh => &[],
         }
     }
@@ -361,6 +410,8 @@ impl RemoteAgentConfig {
             .filter(|key| match *key {
                 "MODAL_TOKEN_ID" => !filled(&self.token_id),
                 "MODAL_TOKEN_SECRET" => !filled(&self.token_secret),
+                "GOOGLE_CLOUD_PROJECT" => !filled(&self.environment),
+                "GOOGLE_CLOUD_REGION" => !filled(&self.region),
                 _ => !filled(&self.api_key),
             })
             .collect()

@@ -32,6 +32,11 @@ const CARD_DOTS_INSET: f32 = 5.0;
 /// taller than its text so it reads as a field rather than a label.
 pub(crate) const SEARCH_EXTRA_HEIGHT: f32 = 3.0;
 
+/// The corner radius of the sidebar's icon boxes: the view tabs, the "New
+/// conversation" plus and the close control. Rounded, each reads as a small
+/// control of its own rather than a slice of the flat band.
+const ICON_BOX_RADIUS: f32 = 4.0;
+
 /// The collapsible section that pins starred conversations, above the folder
 /// groups.
 const STARRED_SECTION: &str = "starred";
@@ -76,7 +81,9 @@ pub fn build_sidebar(
 }
 
 /// The sidebar's own toolbelt: which of its views is showing. Icon-only, with
-/// the view's name on the tooltip, so the strip costs one short row.
+/// the view's name on the tooltip, so the strip costs one short row. The close
+/// control sits at the row's trailing edge: the sidebar is dismissed from the
+/// surface it covers, beside the tabs it shares the row with.
 fn view_toolbelt(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
     let xs = app.theme.spacing_px(SpacingToken::Xs);
     let mut row = Flex::row()
@@ -109,6 +116,7 @@ fn view_toolbelt(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> B
             .finish(),
         )
         .with_selected(active)
+        .with_corner_radius(ICON_BOX_RADIUS)
         .with_on_click(move || (on_select.borrow_mut())(*view))
         .finish();
         row = row.with_child(
@@ -117,6 +125,28 @@ fn view_toolbelt(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> B
                 .finish(),
         );
     }
+
+    let on_close = actions.on_toggle_sidebar.clone();
+    let close = HoverRow::new(
+        Container::new(
+            Icon::new("x-close")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_padding(EdgeInsets::uniform(5.0))
+        .finish(),
+    )
+    .with_corner_radius(ICON_BOX_RADIUS)
+    .with_on_click(move || (on_close.borrow_mut())())
+    .finish();
+    row = row
+        .with_child(Spacer::new().finish())
+        .with_child(
+            Tooltip::new(close, "Hide sidebar")
+                .with_position(TooltipPosition::Below)
+                .finish(),
+        );
     row.finish()
 }
 
@@ -161,6 +191,7 @@ fn agents_view(
             .finish(),
     )
     .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+    .with_corner_radius(ICON_BOX_RADIUS)
     .with_padding(EdgeInsets::uniform(5.0))
     .finish();
     let header = HoverButton::new(
@@ -505,7 +536,7 @@ mod sidebar_surface_tests {
     use goble_ui::elements::{
         AgentCardUi, ConversationStatus, LayoutContext, PaintContext, SizeConstraint,
     };
-    use goble_ui::geometry::{vec2f, RectF};
+    use goble_ui::geometry::{vec2f, RectF, Vector2F};
     use goble_ui::render::{RenderCommand, Renderer};
     use goble_ui::test_util::render_element;
     use std::sync::Arc;
@@ -590,12 +621,14 @@ mod sidebar_surface_tests {
         rect.max_x() <= crate::ui::SIDEBAR_WIDTH && rect.min_y() >= crate::ui::shell::TOPBAR_HEIGHT
     }
 
-    /// The sidebar draws no rounded fill, no separator rule and no magnifier,
-    /// and it does draw the runs that make those assertions mean something. The
-    /// one card that rounds its corners is the tray an open 3-dot control hangs
-    /// beside itself — the card the rich input's controls open, so the two
-    /// trays are one surface — and it exists only while that tray is open
-    /// (`tray_open`).
+    /// The sidebar's surfaces draw no rounded fill, no separator rule and no
+    /// magnifier, and it does draw the runs that make those assertions mean
+    /// something. The fills that do round their corners are small controls and
+    /// cards, never a surface of the band: the icon boxes (each holds its own
+    /// glyph), the tray an open 3-dot control hangs beside itself — the card
+    /// the rich input's controls open, so the two trays are one surface, and it
+    /// exists only while that tray is open (`tray_open`) — and the card's
+    /// status badge.
     fn assert_the_band_is_flat(commands: &[RenderCommand], case: &str, tray_open: bool) {
         let band = crate::ui::SIDEBAR_WIDTH;
 
@@ -623,6 +656,22 @@ mod sidebar_surface_tests {
                     _ => false,
                 })
         };
+        // A rounded fill that holds a glyph is that glyph's box: the view tabs,
+        // the "New conversation" plus and the close control carry a 4 pt radius
+        // so each reads as a control of its own.
+        let holds_an_icon = |rect: &RectF| {
+            commands.iter().any(|other| match other {
+                RenderCommand::DrawIcon { origin, size, .. } => {
+                    let centre_x = origin.x + size / 2.0;
+                    let centre_y = origin.y + size / 2.0;
+                    rect.min_x() <= centre_x
+                        && centre_x <= rect.max_x()
+                        && rect.min_y() <= centre_y
+                        && centre_y <= rect.max_y()
+                }
+                _ => false,
+            })
+        };
 
         let rounded: Vec<String> = commands
             .iter()
@@ -639,7 +688,9 @@ mod sidebar_surface_tests {
                 } if in_band(*rect)
                     && *corner_radius > 0.0
                     && !is_status_badge(rect, *corner_radius)
-                    && !holds_a_tray_row(rect) => {
+                    && !holds_a_tray_row(rect)
+                    && !holds_an_icon(rect) =>
+                {
                     Some(format!("fill {rect:?} radius {corner_radius}"))
                 }
                 _ => None,
@@ -647,7 +698,7 @@ mod sidebar_surface_tests {
             .collect();
         assert!(
             rounded.is_empty(),
-            "{case}: the sidebar draws no rounded fill, got {}",
+            "{case}: the sidebar rounds only its icon boxes, got {}",
             rounded.join(", ")
         );
         // The tray itself is drawn, and drawn rounded: the rule above is not
@@ -719,12 +770,13 @@ mod sidebar_surface_tests {
         }
     }
 
-    /// The sidebar is a flat surface: its field, its rows and its controls draw
-    /// no rounded corner anywhere, the two section rules are gone, and the
-    /// search field carries no magnifier. Held in every hover state, because a
-    /// highlight is where a rounded band would come back.
+    /// The sidebar is a flat surface: its field, its rows and the surfaces they
+    /// sit on draw no rounded corner, the two section rules are gone, and the
+    /// search field carries no magnifier. The icon boxes round their own
+    /// corners, and they are the only fills that do. Held in every hover state,
+    /// because a highlight is where a rounded band would come back.
     #[test]
-    fn the_sidebar_is_flat_square_and_free_of_separators_and_the_magnifier() {
+    fn the_sidebar_is_flat_apart_from_its_icon_boxes() {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = Arc::new(DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
@@ -1364,6 +1416,81 @@ mod sidebar_surface_tests {
             scroll.borrow().offset(),
             0.0,
             "coming back to the conversations starts at the top"
+        );
+    }
+
+    /// The toolbelt row ends with the sidebar's close control: it shares the
+    /// row of the view tabs, sits at the band's trailing edge rather than beside
+    /// the tabs, and hides the sidebar when pressed.
+    #[test]
+    fn the_toolbelt_closes_the_sidebar_from_its_trailing_edge() {
+        use goble_ui::event::DispatchedEvent;
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let view = seeded_view(&app, &desktop);
+        let state = view.state_rc();
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+        let in_band = |origin: &Vector2F| origin.x < crate::ui::SIDEBAR_WIDTH;
+        let glyph = |name: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawIcon {
+                        name: drawn,
+                        origin,
+                        size,
+                        ..
+                    } if drawn == name && in_band(origin) => Some((*origin, *size)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the toolbelt draws {name:?}"))
+        };
+
+        let (close_origin, close_size) = glyph("x-close");
+        let (agents_origin, agents_size) = glyph("message-chat-square");
+        assert!(
+            (close_origin.y - agents_origin.y).abs() < 0.5
+                && (close_size - agents_size).abs() < 0.01,
+            "the close control shares the view tabs' row: {close_origin:?} against {agents_origin:?}"
+        );
+        let search = glyph("search").0;
+        assert!(
+            close_origin.x > search.x,
+            "the close control follows the view tabs: {close_origin:?} against {search:?}"
+        );
+        assert!(
+            close_origin.x + close_size >= crate::ui::SIDEBAR_WIDTH - 12.0,
+            "the close control sits at the band's trailing edge: {close_origin:?}"
+        );
+        assert!(
+            close_origin.x + close_size <= crate::ui::SIDEBAR_WIDTH,
+            "and stays inside the band: {close_origin:?}"
+        );
+
+        let at = vec2f(close_origin.x + close_size / 2.0, close_origin.y + close_size / 2.0);
+        let mut ctx = goble_ui::elements::EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(
+            !state.borrow().sidebar_visible,
+            "the close control hides the sidebar"
         );
     }
 

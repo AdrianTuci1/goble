@@ -31,6 +31,17 @@ mod transcript;
 #[cfg(test)]
 mod tests;
 
+/// The model tray a composer's model control opens: the models a pane can run,
+/// grouped under the harness that owns each one, and the thinking levels of the
+/// highlighted model.
+///
+/// The state is shared between the band [`ChatView`] draws above the input and
+/// the composer that routes its keys, so what the arrows move and what is drawn
+/// can never disagree. The open flag is the pane's own, like every other menu's.
+/// The type lives with the tray element, so the composer can hold it without
+/// reaching into a view; this module re-exports it beside the pane that uses it.
+pub use crate::elements::ComposerModelTray;
+
 pub struct ChatView {
     header: Option<Box<dyn Element>>,
     /// The pane's work dock, drawn directly under the header and above the
@@ -80,6 +91,12 @@ pub struct ChatView {
     on_copy_terminal: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     empty_title: Option<String>,
     empty_subtitle: Option<String>,
+    /// The glyph the empty state leads with, above its title: a pane that
+    /// starts on a kind of work (a cloud agent) names that with a mark.
+    empty_icon: Option<&'static str>,
+    /// What the composer's editor says while it is empty. `None` keeps the
+    /// composer's own `Ask anything...`.
+    composer_placeholder: Option<String>,
     composer_value: Rc<RefCell<String>>,
     /// The composer editor's insertion point. Shared with the host because the
     /// view is rebuilt every frame, like the draft itself.
@@ -140,6 +157,11 @@ pub struct ChatView {
     composer_model_menu_open: Rc<RefCell<bool>>,
     composer_model_index: Rc<RefCell<usize>>,
     on_select_model_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The model tray the model control opens when the host migrated to it:
+    /// the same slot over the input, in two lists (models grouped by harness,
+    /// and their thinking levels) instead of one flat list. `None` keeps the
+    /// flat band.
+    composer_model_tray: Option<ComposerModelTray>,
     composer_harness_items: Vec<PopupMenuItem>,
     composer_harness_menu_open: Rc<RefCell<bool>>,
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
@@ -258,6 +280,8 @@ impl ChatView {
             on_copy_terminal: None,
             empty_title: None,
             empty_subtitle: None,
+            empty_icon: None,
+            composer_placeholder: None,
             composer_value: Rc::new(RefCell::new(String::new())),
             composer_caret: Rc::new(RefCell::new(0)),
             composer_vim: None,
@@ -283,6 +307,7 @@ impl ChatView {
             composer_model_menu_open: Rc::new(RefCell::new(false)),
             composer_model_index: Rc::new(RefCell::new(0)),
             on_select_model_item: None,
+            composer_model_tray: None,
             composer_harness_label: None,
             composer_harness_icon: None,
             composer_agent_harness: None,

@@ -1,15 +1,25 @@
-//! Tab and focus model for the terminal client.
+//! Tab and focus model for the browser client.
 //!
 //! Pure data: the DOM layer owns canvases and sockets, this owns which tab is
 //! visible and how focus moves when tabs are opened, closed, or lose their
 //! worker.
 
-/// One terminal tab.
+/// What a tab draws in the main area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    /// A shell on the worker, drawn on the canvas.
+    Terminal,
+    /// A cloud agent conversation on the worker: transcript and composer.
+    Viewer,
+}
+
+/// One tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     pub id: u64,
     pub worker_id: String,
     pub title: String,
+    pub pane: Pane,
 }
 
 /// Ordered tabs with one active tab.
@@ -26,14 +36,25 @@ impl Tabs {
         Self::default()
     }
 
-    /// Append a tab and focus it.
+    /// Append a terminal tab and focus it.
     pub fn open(&mut self, worker_id: impl Into<String>, title: impl Into<String>) -> u64 {
+        self.open_pane(worker_id, title, Pane::Terminal)
+    }
+
+    /// Append a tab drawing `pane` and focus it.
+    pub fn open_pane(
+        &mut self,
+        worker_id: impl Into<String>,
+        title: impl Into<String>,
+        pane: Pane,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.tabs.push(Tab {
             id,
             worker_id: worker_id.into(),
             title: title.into(),
+            pane,
         });
         self.active = Some(id);
         id
@@ -152,6 +173,15 @@ impl Tabs {
             .filter(|tab| tab.worker_id == worker_id)
             .map(|tab| tab.id)
             .collect()
+    }
+
+    /// The first tab attached to `worker_id` that draws `pane`.
+    #[must_use]
+    pub fn first_for_worker(&self, worker_id: &str, pane: Pane) -> Option<u64> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.worker_id == worker_id && tab.pane == pane)
+            .map(|tab| tab.id)
     }
 
     /// Close every tab whose worker is no longer connected. Returns the closed
@@ -300,6 +330,25 @@ mod tests {
         assert_eq!(tabs.for_worker("w1").len(), 2);
         assert_eq!(tabs.for_worker("w2").len(), 1);
         assert!(tabs.for_worker("missing").is_empty());
+    }
+
+    #[test]
+    fn a_tab_keeps_the_pane_it_was_opened_with() {
+        let mut tabs = Tabs::new();
+        let terminal = tabs.open("w1", "shell");
+        let viewer = tabs.open_pane("w1", "New cloud agent", Pane::Viewer);
+        assert_eq!(tabs.get(terminal).unwrap().pane, Pane::Terminal);
+        assert_eq!(tabs.get(viewer).unwrap().pane, Pane::Viewer);
+        assert_eq!(tabs.active_id(), Some(viewer));
+    }
+
+    #[test]
+    fn first_for_worker_matches_the_pane() {
+        let mut tabs = tabs();
+        let viewer = tabs.open_pane("w1", "New cloud agent", Pane::Viewer);
+        assert_eq!(tabs.first_for_worker("w1", Pane::Viewer), Some(viewer));
+        assert_eq!(tabs.first_for_worker("w1", Pane::Terminal), Some(0));
+        assert_eq!(tabs.first_for_worker("w2", Pane::Viewer), None);
     }
 
     #[test]

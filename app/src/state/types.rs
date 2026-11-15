@@ -658,6 +658,17 @@ pub struct PaneControls {
     /// an agent one after its mode went off.
     pub view: BlockView,
     pub model_menu_open: Rc<RefCell<bool>>,
+    /// Whether this pane's model tray — the column picker the model control
+    /// opens — is up. App-owned like the flat menu's flag, so it survives the
+    /// per-frame rebuild.
+    pub model_tray_open: Rc<RefCell<bool>>,
+    /// The rows the tray's three columns are on. App-owned so the highlight the
+    /// arrows and the pointer move survives the rebuild.
+    pub model_tray_state: Rc<RefCell<goble_ui::ModelTrayState>>,
+    /// The thinking level this pane's turns run at, named the way the harness
+    /// names it: `on` plans the turn in explicit steps first, `off` answers it
+    /// directly. Written by the tray and persisted per conversation.
+    pub thinking: String,
     /// The row this pane's model menu has selected. App-owned like the caret
     /// and the slash menu's row: the composer element is rebuilt every frame,
     /// and the highlight the arrows move has to survive that.
@@ -756,6 +767,9 @@ impl PaneControls {
             harness_refusal: None,
             view: BlockView::Terminal,
             model_menu_open: Rc::new(RefCell::new(false)),
+            model_tray_open: Rc::new(RefCell::new(false)),
+            model_tray_state: Rc::new(RefCell::new(goble_ui::ModelTrayState::default())),
+            thinking: "on".to_string(),
             model_index: Rc::new(RefCell::new(0)),
             harness_menu_open: Rc::new(RefCell::new(false)),
             dir_menu_open: Rc::new(RefCell::new(false)),

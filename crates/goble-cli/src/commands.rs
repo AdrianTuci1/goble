@@ -27,6 +27,9 @@ pub async fn async_main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
+        // Setup reads and writes the app's config file; it needs no worker
+        // store, so it runs before one is opened.
+        Command::Setup { config, action } => crate::setup::run(config, action),
         #[cfg(unix)]
         Command::Ctl {
             json,
@@ -464,6 +467,8 @@ async fn run_stored(command: Command) -> Result<()> {
                 println!("{}", helm_args.join(""));
             }
         },
+        // Setup runs in `async_main`, before a store is opened.
+        Command::Setup { config, action } => crate::setup::run(config, action)?,
         #[cfg(unix)]
         Command::Ctl {
             json,

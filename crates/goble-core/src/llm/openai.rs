@@ -229,11 +229,12 @@ pub(super) fn into_openai_messages(
             let content = provider_content(&m);
             OpenAiMessage {
                 role,
-                content: if content.is_empty() {
-                    None
-                } else {
-                    Some(content)
-                },
+                // The field is always a string. An empty assistant turn and a
+                // tool result with nothing to report would otherwise serialize
+                // as `null`, and DeepSeek's request deserializer rejects that
+                // with "content should be a string or a list" (422) instead of
+                // reading it as an empty message.
+                content: Some(content),
                 reasoning_content,
                 tool_call_id,
                 tool_calls,

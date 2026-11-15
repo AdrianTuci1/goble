@@ -560,6 +560,28 @@ fn an_empty_remote_agent_map_is_not_written() {
 }
 
 #[test]
+fn the_published_worker_image_is_the_default_for_every_container_provider() {
+    // `goble-cli setup remote` writes this, so a table costs only credentials.
+    assert_eq!(
+        DEFAULT_WORKER_IMAGE,
+        "ghcr.io/adriantuci1/goble-worker:latest"
+    );
+    for provider in [
+        RemoteAgentProvider::Modal,
+        RemoteAgentProvider::E2b,
+        RemoteAgentProvider::Daytona,
+        RemoteAgentProvider::Box,
+        RemoteAgentProvider::CloudRun,
+        RemoteAgentProvider::Docker,
+    ] {
+        assert_eq!(provider.default_image(), Some(DEFAULT_WORKER_IMAGE));
+    }
+
+    // SSH's `image` is an install directory or a binary URL, so it has none.
+    assert_eq!(RemoteAgentProvider::Ssh.default_image(), None);
+}
+
+#[test]
 fn a_partial_remote_agent_table_keeps_its_defaults() {
     let agent = one_agent(r#"provider = "ssh""#);
 
@@ -680,13 +702,34 @@ fn the_provider_list_offers_every_known_platform() {
         .collect();
     assert_eq!(
         names,
-        vec!["modal", "e2b", "daytona", "box", "docker", "ssh"]
+        vec!["modal", "e2b", "daytona", "box", "cloud_run", "docker", "ssh"]
     );
     // The credential each platform reads is the one the config schema knows.
     for provider in RemoteAgentProvider::ALL {
         let (key, tokens) = (provider.uses_api_key(), provider.uses_modal_tokens());
         assert!(!(key && tokens), "{provider} reads one credential shape");
     }
+}
+
+#[test]
+fn cloud_run_reads_the_project_and_location_instead_of_a_key() {
+    let missing = one_agent(r#"provider = "cloud_run""#);
+    assert!(missing.provider.uses_google_cloud());
+    assert!(!missing.provider.uses_api_key());
+    assert_eq!(
+        missing.missing_credentials(),
+        vec!["GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_REGION"]
+    );
+
+    // `environment` is the project and `region` the location; the adapter
+    // accepts a bearer token in `api_key` or mints one from gcloud.
+    let configured = one_agent(
+        "provider = \"cloud_run\"\nenvironment = \"my-project\"\nregion = \"europe-west1\"\n",
+    );
+    assert!(configured.missing_credentials().is_empty());
+    assert_eq!(configured.status_label(), "ready");
+    assert_eq!(configured.environment.as_deref(), Some("my-project"));
+    assert_eq!(configured.region.as_deref(), Some("europe-west1"));
 }
 
 #[test]

@@ -1994,3 +1994,249 @@ fn an_asked_question_draws_as_an_ask_user_row() {
         "the row draws no underline rule"
     );
 }
+
+/// A member the user opened inside an opened run is bracketed on its own: the
+/// run's pair of strokes ends above it, and the member's own pair frames its
+/// A member the user opened inside an opened run is bracketed on its own: the
+/// run's pair of strokes ends above it, and the member's own pair frames its
+/// header and its body. Both pairs sit in the same gutter, so the rail reads as
+/// one line that steps aside for the block it holds instead of running through
+/// it.
+#[test]
+fn an_opened_member_inside_an_open_run_is_framed_on_its_own() {
+    let app = AppContext::default();
+    let mut calls = vec![
+        call(
+            "read_file",
+            r#"{"path":"src/a.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn a() {}"),
+        ),
+        call(
+            "read_file",
+            r#"{"path":"src/b.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn b() {}"),
+        ),
+    ];
+    for (index, call) in calls.iter_mut().enumerate() {
+        call.id = format!("call-{index}");
+    }
+    let fold = HashMap::from([
+        (run_key(&calls, 0), ToolDisplayMode::Expanded),
+        (tool_fold_key(&calls[1], 1), ToolDisplayMode::Expanded),
+    ]);
+    let (commands, _) = paint_tool_calls_with_fold_map(calls, fold);
+
+    let strokes = bracket_strokes(&commands, &app);
+    assert_eq!(
+        strokes.len(),
+        4,
+        "the run keeps a pair of its own and the opened member gets one, got {strokes:?}"
+    );
+    let (run_pair, member_pair) = (&strokes[..2], &strokes[2..]);
+    assert_eq!(
+        run_pair[0].min_y(),
+        run_pair[1].min_y(),
+        "the run's pair starts together: {strokes:?}"
+    );
+    assert_eq!(
+        member_pair[0].min_y(),
+        member_pair[1].min_y(),
+        "the member's pair starts together: {strokes:?}"
+    );
+    assert!(
+        run_pair[0].max_y() < member_pair[0].min_y(),
+        "the run's strokes stop above the member's own block, got {strokes:?}"
+    );
+    // The member's pair starts on its own row and carries on under it, into the
+    // body the row opened: that is the block the rail is drawn around now.
+    let member_row = run_origin(&commands, "src/b.rs");
+    assert!(
+        run_pair[0].max_y() <= member_row.y,
+        "the run's pair ends at or above the member's row, got {strokes:?} against {member_row:?}"
+    );
+    assert!(
+        member_pair[0].min_y() <= member_row.y,
+        "the member's pair starts on its own row, got {strokes:?} against {member_row:?}"
+    );
+    assert!(
+        member_pair[0].max_y() > member_row.y + 1.0,
+        "the member's pair runs on past its header into its body, got {strokes:?} against {member_row:?}"
+    );
+    for pair in strokes.chunks(2) {
+        assert!(
+            (pair[0].min_x() - strokes[0].min_x()).abs() < 0.5
+                && (pair[1].max_x() - strokes[1].max_x()).abs() < 0.5,
+            "every stroke sits in the same gutter, got {strokes:?}"
+        );
+    }
+}
+
+/// A double click inside an opened section closes it again. The two clicks the
+/// gesture is made of still advance the fold as they always do; the double click
+/// that lands after them puts it back to `Collapsed`.
+#[test]
+fn a_double_click_on_an_opened_section_collapses_it() {
+    let app = AppContext::default();
+    let read = call(
+        "read_file",
+        r#"{"path":"src/lib.rs"}"#,
+        ToolCallStatus::Finished,
+        Some("fn main() {}"),
+    );
+    let key = tool_fold_key(&read, 0);
+    let fold = Rc::new(RefCell::new(HashMap::from([(
+        key.clone(),
+        ToolDisplayMode::Expanded,
+    )])));
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![read])
+        .with_tool_fold(fold.clone())
+        .with_tool_hover(Rc::new(RefCell::new(None)));
+
+    let commands = paint_bubble(&mut bubble, &app);
+    // A point in the section's body: the rows there carry no gesture of their
+    // own, so the block the rail frames is what answers the double click.
+    let section = bracket_strokes(&commands, &app)
+        .into_iter()
+        .next()
+        .expect("the opened section keeps its rail");
+    let body = vec2f(section.min_x() + 10.0, section.max_y() - 4.0);
+    double_click_at(&mut bubble, &app, body);
+    assert_eq!(
+        fold.borrow().get(&key),
+        Some(&ToolDisplayMode::Collapsed),
+        "a double click in the open section closes it"
+    );
+}
+
+/// A double click on an opened run's header folds the run back to its header.
+#[test]
+fn a_double_click_on_an_open_run_closes_it_to_its_header() {
+    let app = AppContext::default();
+    let read = call(
+        "read_file",
+        r#"{"path":"src/lib.rs"}"#,
+        ToolCallStatus::Finished,
+        Some("fn main() {}"),
+    );
+    let group = run_key(std::slice::from_ref(&read), 0);
+    let fold = Rc::new(RefCell::new(HashMap::from([(
+        group.clone(),
+        ToolDisplayMode::Expanded,
+    )])));
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![read])
+        .with_tool_fold(fold.clone())
+        .with_tool_hover(Rc::new(RefCell::new(None)));
+
+    let commands = paint_bubble(&mut bubble, &app);
+    let header = run_origin(&commands, "Read 1 file");
+    double_click_at(&mut bubble, &app, header + vec2f(2.0, 4.0));
+    assert_eq!(
+        fold.borrow().get(&group),
+        Some(&ToolDisplayMode::Collapsed),
+        "a double click on the run's header folds the run"
+    );
+}
+
+/// A double click on a row that is already closed leaves it closed: the clicks
+/// of the gesture step it open, and the double click puts it back rather than
+/// leaving it on the state the presses walked to.
+#[test]
+fn a_double_click_on_a_closed_row_leaves_it_closed() {
+    let app = AppContext::default();
+    // A spawn ends a chain and keeps its own row, so it is the shape a closed
+    // row can be double clicked on without a run's header in the way.
+    let spawn = call(
+        "run_agent",
+        r#"{"description":"map the call sites"}"#,
+        ToolCallStatus::Finished,
+        Some("done"),
+    );
+    let key = tool_fold_key(&spawn, 0);
+    let fold = Rc::new(RefCell::new(HashMap::new()));
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![spawn])
+        .with_tool_fold(fold.clone())
+        .with_tool_hover(Rc::new(RefCell::new(None)));
+
+    let commands = paint_bubble(&mut bubble, &app);
+    let row = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text.starts_with("◆ ") => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the closed row draws its diamond: {:?}",
+                drawn_texts(&commands)
+            )
+        });
+    double_click_at(&mut bubble, &app, row + vec2f(2.0, 4.0));
+    assert_eq!(
+        fold.borrow().get(&key),
+        Some(&ToolDisplayMode::Collapsed),
+        "the double click closes the row the presses opened"
+    );
+}
+
+/// A double click inside an opened member closes that member and leaves the run
+/// around it open: the innermost block the rail frames answers first.
+#[test]
+fn a_double_click_inside_an_opened_member_closes_that_member() {
+    let app = AppContext::default();
+    let mut calls = vec![
+        call(
+            "read_file",
+            r#"{"path":"src/a.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn a() {}"),
+        ),
+        call(
+            "read_file",
+            r#"{"path":"src/b.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("fn b() {}"),
+        ),
+    ];
+    for (index, call) in calls.iter_mut().enumerate() {
+        call.id = format!("call-{index}");
+    }
+    let group = run_key(&calls, 0);
+    let member_key = tool_fold_key(&calls[1], 1);
+    let fold = Rc::new(RefCell::new(HashMap::from([
+        (group.clone(), ToolDisplayMode::Expanded),
+        (member_key.clone(), ToolDisplayMode::Expanded),
+    ])));
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(calls)
+        .with_tool_fold(fold.clone())
+        .with_tool_hover(Rc::new(RefCell::new(None)));
+
+    let commands = paint_bubble(&mut bubble, &app);
+    // The member's own pair is the second block the rail draws; a point near
+    // its bottom is in the member's body.
+    let strokes = bracket_strokes(&commands, &app);
+    assert_eq!(
+        strokes.len(),
+        4,
+        "the run and the opened member are each framed, got {strokes:?}"
+    );
+    let member = strokes[2];
+    double_click_at(&mut bubble, &app, vec2f(member.min_x() + 10.0, member.max_y() - 4.0));
+    assert_eq!(
+        fold.borrow().get(&member_key),
+        Some(&ToolDisplayMode::Collapsed),
+        "the double click closes the member it landed in"
+    );
+    assert_eq!(
+        fold.borrow().get(&group),
+        Some(&ToolDisplayMode::Expanded),
+        "and leaves the run it sits in open"
+    );
+}

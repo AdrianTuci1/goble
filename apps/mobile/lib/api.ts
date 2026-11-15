@@ -8,6 +8,8 @@ const SERVER_KEY = "goble.server_url";
 const DEVICE_KEY = "goble.device_token";
 const SERVERS_KEY = "goble.known_servers";
 const AUTH_KEY = "goble.auth_mode";
+const SESSION_KEY = "goble.gateway_session";
+const WORKER_KEY = "goble.worker_id";
 const PROBE_TIMEOUT_MS = 5_000;
 const FETCH_TIMEOUT_MS = 8_000;
 
@@ -89,6 +91,48 @@ export async function saveDeviceToken(token: string): Promise<void> {
 
 export async function clearDeviceToken(): Promise<void> {
   await safeDelete(DEVICE_KEY);
+}
+
+/** The relay session this phone paired with: a bearer token, or the cookie. */
+export interface StoredGatewaySession {
+  token: string | null;
+  mode: "token" | "cookie";
+  expiresAt: number;
+}
+
+export async function loadGatewaySession(): Promise<StoredGatewaySession | null> {
+  const raw = await safeGet(SESSION_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredGatewaySession>;
+    if (parsed.mode !== "token" && parsed.mode !== "cookie") return null;
+    return {
+      token: typeof parsed.token === "string" ? parsed.token : null,
+      mode: parsed.mode,
+      expiresAt: typeof parsed.expiresAt === "number" ? parsed.expiresAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveGatewaySession(
+  session: StoredGatewaySession,
+): Promise<void> {
+  await safeSet(SESSION_KEY, JSON.stringify(session));
+}
+
+export async function clearGatewaySession(): Promise<void> {
+  await safeDelete(SESSION_KEY);
+  await safeDelete(WORKER_KEY);
+}
+
+export async function loadWorkerId(): Promise<string | null> {
+  return safeGet(WORKER_KEY);
+}
+
+export async function saveWorkerId(id: string): Promise<void> {
+  await safeSet(WORKER_KEY, id);
 }
 
 export type NormalizedServer =
@@ -215,6 +259,7 @@ export async function saveAuthMode(mode: AuthMode): Promise<void> {
 export async function signOut(): Promise<void> {
   await clearServerUrl();
   await clearDeviceToken();
+  await clearGatewaySession();
   await safeDelete(AUTH_KEY);
 }
 

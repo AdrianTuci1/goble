@@ -1248,7 +1248,7 @@ pub(crate) fn build_file_view(
         state,
         actions,
         pane_id,
-        false,
+        None,
         chat::HeaderSlots {
             leading: Some(title),
             ..chat::HeaderSlots::default()

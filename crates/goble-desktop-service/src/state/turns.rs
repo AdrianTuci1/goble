@@ -121,7 +121,14 @@ impl DesktopState {
                     .with_llm(llm)
                     .with_provider(provider)
                     .with_model(&model_name)
-                    .with_reasoning(true)
+                    // The composer's thinking level, held per conversation: the
+                    // harness plans the turn in explicit steps unless the user
+                    // turned it off in the model tray.
+                    .with_reasoning(self.get_chat_reasoning(chat_id))
+                    // What this harness advertises to a composer: its commands,
+                    // its skills and the models the configuration declares, so
+                    // the picker reads the harness instead of a table in the UI.
+                    .with_catalog(self.composer_catalog(provider))
                     .with_auto_approve(auto_approve)
                     .with_web_search(web_search)
                     .with_context_window(self.model_context_window(&model_name))

@@ -188,6 +188,28 @@ impl UiState {
         acked
     }
 
+    /// Settle the prompt reports a pane no longer waits on: an approval or a
+    /// question that has been answered stays in the Inbox, acknowledged, so
+    /// the dashboard stops naming a turn that has moved on. `kinds` names the
+    /// reports that are settled; matching is by pane or by conversation,
+    /// because a report is raised from the event's chat id and the pane may
+    /// have been bound to it after the fact.
+    pub fn settle_inbox_prompts(
+        &mut self,
+        pane_id: u64,
+        conversation_id: &str,
+        kinds: &[InboxKind],
+    ) {
+        for item in &mut self.inbox {
+            if !item.acknowledged
+                && kinds.contains(&item.kind)
+                && (item.pane_id == pane_id || item.conversation_id == conversation_id)
+            {
+                item.acknowledged = true;
+            }
+        }
+    }
+
     /// How many items have not been acknowledged.
     pub fn unread_inbox_count(&self) -> usize {
         self.inbox.iter().filter(|item| !item.acknowledged).count()
@@ -481,6 +503,63 @@ mod tests {
         assert!(rt.pending_ask.is_none(), "the skipped card is gone");
         assert!(rt.busy, "the resumed turn is running");
         assert_eq!(rt.agent_state, PaneAgentState::Working);
+    }
+
+    /// The dashboard groups a conversation under "Awaiting your input" from
+    /// its unread question, so a question the user has already settled must
+    /// stop being unread the moment the card goes. It stays in the Inbox,
+    /// marked read: nothing about it is still waiting.
+    #[test]
+    fn a_settled_question_stops_being_unread() {
+        let mut state = UiState::mock();
+        state.apply_ask_user("c1", "Deploy?", Vec::new());
+        assert_eq!(state.unread_inbox_count(), 1);
+
+        state.skip_pending_ask(1);
+
+        assert_eq!(
+            state.unread_inbox_count(),
+            0,
+            "the answered question is read, so the row is not awaiting"
+        );
+        assert_eq!(state.inbox.len(), 1, "the report stays in the list");
+    }
+
+    /// The same for an approval: once the command is decided, the report is
+    /// settled even though the card and the turn have moved on.
+    #[test]
+    fn a_settled_approval_stops_being_unread() {
+        let mut state = UiState::mock();
+        state.begin_turn(1);
+        state.apply_command_proposed(&proposal("c1", "call-1", "git status"));
+        assert_eq!(state.unread_inbox_count(), 1);
+
+        state.resume_command_decision(1, "call-1");
+
+        assert_eq!(state.unread_inbox_count(), 0);
+        assert_eq!(state.inbox.len(), 1);
+    }
+
+    /// A turn that ends with nothing pending settles whatever prompt report the
+    /// pane still holds, which is the case the dashboard showed stuck.
+    #[test]
+    fn a_finished_turn_settles_a_stale_prompt_report() {
+        let mut state = UiState::mock();
+        state.apply_ask_user("c1", "Deploy?", Vec::new());
+        // The card was dismissed outside the two settle paths the app owns
+        // (here: the pane's runtime cleared by a rebind), leaving the report.
+        state.pane_runtime.get_mut(&1).unwrap().pending_ask = None;
+
+        state.finish_turn(1, TurnOutcome::Success);
+
+        assert!(
+            state
+                .inbox
+                .iter()
+                .filter(|item| item.kind == InboxKind::Question)
+                .all(|item| item.acknowledged),
+            "the finished turn settles the question report"
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::harness::{
 };
 use crate::llm::{
     CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role,
+    ToolDefinition,
 };
 use crate::mcp_manager::McpManager;
 use crate::protocol::DesktopMessage;
@@ -28,7 +29,9 @@ use super::persist::{
 };
 use super::prompts::{build_execution_prompt, build_reasoning_prompt};
 use super::tools::build_reasoning_tools;
-use super::types::{ReasoningDecision, ReasoningStep, MAX_EXECUTION_STEPS, MAX_REASONING_STEPS};
+use super::types::{
+    MissionState, ReasoningDecision, ReasoningStep, MAX_EXECUTION_STEPS, MAX_REASONING_STEPS,
+};
 
 fn parse_reasoning_tool_calls(
     tool_calls: &[LlmToolCall],
@@ -199,22 +202,28 @@ pub(crate) fn run_mission(
         // The window is watched across the whole turn. A restored conversation
         // can already be near it before its first call, so the stored rows are
         // estimated up front; each provider-reported prompt then replaces the
-        // estimate. After a compaction the conversation must grow by a tenth of
-        // the window before it is compacted again, so a summary that is still
-        // large does not cause a second summarisation in the same breath.
-        let mut last_input_tokens = match context_window.filter(|window| *window > 0) {
-            Some(_) => store
-                .list_chat_messages(&chat_id)
-                .map(|rows| compaction::stored_rows_tokens(&rows))
-                .unwrap_or(0),
-            None => 0,
-        };
+        // estimate. The estimate is kept even without a configured window: the
+        // provider's body cap is the other ceiling, and the growth rule below
+        // needs a size to grow from.
+        let mut last_input_tokens = store
+            .list_chat_messages(&chat_id)
+            .map(|rows| compaction::stored_rows_tokens(&rows))
+            .unwrap_or(0);
         let mut compact_again_above = 0u64;
         let mut compaction_failed = false;
-        if let Some(window) = context_window.filter(|window| *window > 0) {
+        let window = context_window.filter(|window| *window > 0);
+        if let Some(window) = window {
             if last_input_tokens.saturating_mul(100) / window >= COMPACT_AT_PERCENT {
                 let run = compaction::compact(
-                    &store, &chat_id, &*llm, &provider, &model, window, last_input_tokens,
+                    &store,
+                    &chat_id,
+                    &*llm,
+                    &provider,
+                    &model,
+                    compaction::CompactionTrigger::Window {
+                        window,
+                        used: last_input_tokens,
+                    },
                 )
                 .await;
                 let after = run.after_tokens;
@@ -222,10 +231,12 @@ pub(crate) fn run_mission(
                     yield event;
                 }
                 match after {
-                    Some(after) => {
-                        last_input_tokens = after;
-                        compact_again_above = after.saturating_add(window / 10);
-                    }
+                    Some(after) => note_compaction(
+                        after,
+                        Some(window),
+                        &mut last_input_tokens,
+                        &mut compact_again_above,
+                    ),
                     None => compaction_failed = true,
                 }
             }
@@ -241,19 +252,80 @@ pub(crate) fn run_mission(
                     return;
                 }
 
-                let history = build_history(&store, &chat_id, &mission, &reasoning_tools, &tools, mode).await;
-                let request = CompletionRequest::new(provider.clone(), model.clone())
-                    .with_system(harness_system_prompt())
-                    .with_system(build_reasoning_prompt(mode, &mission.goal, &mission.reasoning_steps))
-                    .with_messages(history)
-                    .with_tools(reasoning_tools.clone());
+                let shape = TurnRequest {
+                    store: &store,
+                    chat_id: &chat_id,
+                    mission: &mission,
+                    provider: &provider,
+                    model: &model,
+                    reasoning_tools: &reasoning_tools,
+                    tools: &tools,
+                    mode,
+                    stationarity_nudge: false,
+                };
+                let mut request = shape.reasoning().await;
+
+                // The endpoint's body cap is not the token window: a
+                // conversation carrying a couple of large tool results is
+                // refused with 413 while its token count is still low, so the
+                // body is measured before it is sent and the same compaction
+                // runs on its size.
+                if !compaction_failed && last_input_tokens > compact_again_above {
+                    if let Some(trigger) = compaction::payload_trigger(&request) {
+                        let (events, after) = shape.compact_for(&*llm, trigger).await;
+                        for event in events {
+                            yield event;
+                        }
+                        match after {
+                            Some(after) => {
+                                note_compaction(
+                                    after,
+                                    window,
+                                    &mut last_input_tokens,
+                                    &mut compact_again_above,
+                                );
+                                request = shape.reasoning().await;
+                            }
+                            None => compaction_failed = true,
+                        }
+                    }
+                }
 
                 yield HarnessEvent::ReasoningStarted {
                     step: reasoning_step,
                     mode: mode.as_str().to_string(),
                 };
 
-                let mut stream = match llm.complete_stream(request).await {
+                // One retry, after compacting, when the endpoint refuses the
+                // body's size: its own cap can be below ours. A second refusal
+                // is the turn's error, as before.
+                let mut attempt = llm.complete_stream(request.clone()).await;
+                let refused = matches!(
+                    &attempt,
+                    Err(e) if crate::llm::is_payload_too_large(&e.to_string())
+                );
+                if refused {
+                    let trigger = compaction::CompactionTrigger::Payload {
+                        bytes: compaction::request_bytes(&request),
+                        cap: compaction::MAX_REQUEST_BYTES,
+                    };
+                    let (events, after) = shape.compact_for(&*llm, trigger).await;
+                    for event in events {
+                        yield event;
+                    }
+                    if let Some(after) = after {
+                        note_compaction(
+                            after,
+                            window,
+                            &mut last_input_tokens,
+                            &mut compact_again_above,
+                        );
+                        request = shape.reasoning().await;
+                    }
+                    attempt = llm.complete_stream(request).await;
+                }
+
+                let mut stream = match attempt {
                     Ok(s) => s,
                     Err(e) => {
                         yield HarnessEvent::Error(e.to_string());
@@ -392,11 +464,19 @@ pub(crate) fn run_mission(
             }
             execution_iteration += 1;
 
-            if let Some(window) = context_window.filter(|window| *window > 0) {
+            if let Some(window) = window {
                 let full = last_input_tokens.saturating_mul(100) / window >= COMPACT_AT_PERCENT;
                 if full && !compaction_failed && last_input_tokens > compact_again_above {
                     let run = compaction::compact(
-                        &store, &chat_id, &*llm, &provider, &model, window, last_input_tokens,
+                        &store,
+                        &chat_id,
+                        &*llm,
+                        &provider,
+                        &model,
+                        compaction::CompactionTrigger::Window {
+                            window,
+                            used: last_input_tokens,
+                        },
                     )
                     .await;
                     let after = run.after_tokens;
@@ -404,41 +484,81 @@ pub(crate) fn run_mission(
                         yield event;
                     }
                     match after {
+                        Some(after) => note_compaction(
+                            after,
+                            Some(window),
+                            &mut last_input_tokens,
+                            &mut compact_again_above,
+                        ),
+                        None => compaction_failed = true,
+                    }
+                }
+            }
+
+            let shape = TurnRequest {
+                store: &store,
+                chat_id: &chat_id,
+                mission: &mission,
+                provider: &provider,
+                model: &model,
+                reasoning_tools: &reasoning_tools,
+                tools: &tools,
+                mode,
+                stationarity_nudge: identical_tool_rounds >= NUDGE_AFTER_IDENTICAL_TOOL_ROUNDS,
+            };
+            let mut request = shape.execution().await;
+
+            // The same body cap the reasoning loop watches. A tool result the
+            // turn just stored can be the row that tips a conversation over
+            // it, so every request is measured, not only the first.
+            if !compaction_failed && last_input_tokens > compact_again_above {
+                if let Some(trigger) = compaction::payload_trigger(&request) {
+                    let (events, after) = shape.compact_for(&*llm, trigger).await;
+                    for event in events {
+                        yield event;
+                    }
+                    match after {
                         Some(after) => {
-                            last_input_tokens = after;
-                            compact_again_above = after.saturating_add(window / 10);
+                            note_compaction(
+                                after,
+                                window,
+                                &mut last_input_tokens,
+                                &mut compact_again_above,
+                            );
+                            request = shape.execution().await;
                         }
                         None => compaction_failed = true,
                     }
                 }
             }
 
-            let mut history = build_history(&store, &chat_id, &mission, &reasoning_tools, &tools, mode).await;
-            history.push(Message {
-                role: Role::System,
-                content: build_execution_prompt(&mission.goal, &mission.reasoning_steps),
-                tool_calls: None,
-                tool_call_id: None,
-                tool_status: None,
-                reasoning_content: None,
-            });
-            if identical_tool_rounds >= NUDGE_AFTER_IDENTICAL_TOOL_ROUNDS {
-                history.push(Message {
-                    role: Role::System,
-                    content: STATIONARITY_NUDGE.to_string(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    tool_status: None,
-                    reasoning_content: None,
-                });
+            let mut attempt = llm.complete_stream(request.clone()).await;
+            let refused = matches!(
+                &attempt,
+                Err(e) if crate::llm::is_payload_too_large(&e.to_string())
+            );
+            if refused {
+                let trigger = compaction::CompactionTrigger::Payload {
+                    bytes: compaction::request_bytes(&request),
+                    cap: compaction::MAX_REQUEST_BYTES,
+                };
+                let (events, after) = shape.compact_for(&*llm, trigger).await;
+                for event in events {
+                    yield event;
+                }
+                if let Some(after) = after {
+                    note_compaction(
+                        after,
+                        window,
+                        &mut last_input_tokens,
+                        &mut compact_again_above,
+                    );
+                    request = shape.execution().await;
+                }
+                attempt = llm.complete_stream(request).await;
             }
 
-            let request = CompletionRequest::new(provider.clone(), model.clone())
-                .with_system(harness_system_prompt())
-                .with_messages(history)
-                .with_tools(tools.clone());
-
-            let mut stream = match llm.complete_stream(request).await {
+            let mut stream = match attempt {
                 Ok(s) => s,
                 Err(e) => {
                     yield HarnessEvent::Error(e.to_string());
@@ -767,6 +887,118 @@ pub(crate) fn run_mission(
         };
         yield HarnessEvent::Done;
     })
+}
+
+/// The request a turn is about to send, and what a compaction rebuilds it
+/// from. A compacted conversation replaces the turns a request carried with
+/// the model's summary of them, so the request is built from the history as it
+/// stands at that moment: the same shape, read again.
+struct TurnRequest<'a> {
+    store: &'a Store,
+    chat_id: &'a str,
+    mission: &'a MissionState,
+    provider: &'a str,
+    model: &'a str,
+    reasoning_tools: &'a [ToolDefinition],
+    tools: &'a [ToolDefinition],
+    mode: ThinkingMode,
+    /// Whether the execution prompt carries the stationarity reminder.
+    stationarity_nudge: bool,
+}
+
+impl TurnRequest<'_> {
+    /// The planning request: the planner's prompts and its own tool set.
+    async fn reasoning(&self) -> CompletionRequest {
+        let history = build_history(
+            self.store,
+            self.chat_id,
+            self.mission,
+            self.reasoning_tools,
+            self.tools,
+            self.mode,
+        )
+        .await;
+        CompletionRequest::new(self.provider, self.model)
+            .with_system(harness_system_prompt())
+            .with_system(build_reasoning_prompt(
+                self.mode,
+                &self.mission.goal,
+                &self.mission.reasoning_steps,
+            ))
+            .with_messages(history)
+            .with_tools(self.reasoning_tools.to_vec())
+    }
+
+    /// The execution request: the execution prompt and the harness tools.
+    async fn execution(&self) -> CompletionRequest {
+        let mut history = build_history(
+            self.store,
+            self.chat_id,
+            self.mission,
+            self.reasoning_tools,
+            self.tools,
+            self.mode,
+        )
+        .await;
+        history.push(Message {
+            role: Role::System,
+            content: build_execution_prompt(&self.mission.goal, &self.mission.reasoning_steps),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_status: None,
+            reasoning_content: None,
+        });
+        if self.stationarity_nudge {
+            history.push(Message {
+                role: Role::System,
+                content: STATIONARITY_NUDGE.to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_status: None,
+                reasoning_content: None,
+            });
+        }
+        CompletionRequest::new(self.provider, self.model)
+            .with_system(harness_system_prompt())
+            .with_messages(history)
+            .with_tools(self.tools.to_vec())
+    }
+
+    /// Compact the conversation for `trigger`, as the events the caller
+    /// streams and the token count the next request continues from. `None`
+    /// means the compaction failed, so the request goes out as it stands.
+    async fn compact_for(
+        &self,
+        llm: &dyn LlmProvider,
+        trigger: compaction::CompactionTrigger,
+    ) -> (Vec<HarnessEvent>, Option<u64>) {
+        let run = compaction::compact(
+            self.store,
+            self.chat_id,
+            llm,
+            self.provider,
+            self.model,
+            trigger,
+        )
+        .await;
+        (run.events, run.after_tokens)
+    }
+}
+
+/// Record what a compaction left behind: the token count the conversation now
+/// continues from, and the size it has to grow back to before another summary.
+/// A tenth of the window (a tenth of the count itself when no window is
+/// configured) keeps a summary that is still large from being compacted again
+/// in the same breath.
+fn note_compaction(
+    after: u64,
+    window: Option<u64>,
+    last_input_tokens: &mut u64,
+    compact_again_above: &mut u64,
+) {
+    *last_input_tokens = after;
+    let growth = window.map_or(after / 10, |window| window / 10);
+    *compact_again_above = after.saturating_add(growth);
 }
 
 /// How many rounds in a row may ask for the same batch before the model is

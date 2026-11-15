@@ -220,3 +220,77 @@ async fn test_harness_git_status_and_run_agent() {
         .iter()
         .any(|r| r.contains("ran agent") && r.contains("say hello")));
 }
+
+/// A codebase search reads the workspace, not what its builds left in it: the
+/// build and dependency trees hold more files than everything the user cares
+/// about put together, and reading them is what made the scan take longer than
+/// the turn that asked for it.
+#[test]
+fn a_codebase_search_skips_build_and_dependency_trees() {
+    let workspace = tempfile::TempDir::new().expect("temp workspace");
+    let root = workspace.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "fn needle() {}\n").unwrap();
+    std::fs::write(root.join("README.md"), "the needle is not here\n").unwrap();
+    for skipped in ["target/debug", "node_modules/pkg", "dist", ".git"] {
+        std::fs::create_dir_all(root.join(skipped)).unwrap();
+        std::fs::write(root.join(skipped).join("generated.rs"), "needle in a build tree\n").unwrap();
+    }
+
+    let args = serde_json::json!({ "pattern": "needle" });
+    let result = crate::harness::files::codebase_search(&args, root).expect("search");
+
+    assert!(
+        result.contains("src/lib.rs:1: fn needle"),
+        "the workspace's own source is searched, got {result:?}"
+    );
+    for skipped in ["target/", "node_modules/", "dist/", ".git/"] {
+        assert!(
+            !result.contains(skipped),
+            "{skipped} is skipped, got {result:?}"
+        );
+    }
+}
+
+/// The result is bounded the way a pane draws it: a match line is capped, and
+/// the whole answer stops at the byte cap with a row saying it was cut, so a
+/// common pattern does not answer with the tree's megabytes.
+#[test]
+fn a_codebase_search_caps_its_result() {
+    // 300 files of 20 long lines each is far past both caps, the shape a
+    // generated tree takes.
+    let workspace = tempfile::TempDir::new().expect("temp workspace");
+    let root = workspace.path();
+    let long_line = format!("needle {}", "x".repeat(4_000));
+    for file in 0..300 {
+        let body: String = (0..20).map(|_| format!("{long_line}\n")).collect();
+        std::fs::write(root.join(format!("generated_{file}.rs")), body).unwrap();
+    }
+
+    let args = serde_json::json!({ "pattern": "needle" });
+    let result = crate::harness::files::codebase_search(&args, root).expect("search");
+
+    // The byte cap, the header row and the trailer, with room for both.
+    assert!(
+        result.len() <= 8 * 1024 + 128,
+        "the result stops at the byte cap, is {} bytes",
+        result.len()
+    );
+    let header = result.lines().next().unwrap_or_default();
+    let found: usize = header
+        .split_whitespace()
+        .next()
+        .and_then(|count| count.parse().ok())
+        .expect("the header counts the matches");
+    assert!(found > 0 && found <= 50, "the match cap holds, got {found}");
+    assert!(
+        result.contains("… more matches not shown"),
+        "the result says it was cut"
+    );
+    for line in result.lines().skip(1) {
+        assert!(
+            line.chars().count() <= 240 + 96,
+            "a match line keeps its path and a capped line: {line:?}"
+        );
+    }
+}

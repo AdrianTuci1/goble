@@ -5,56 +5,56 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { tapFeedback } from "../lib/haptics";
 import { palette, space, typography } from "../lib/theme";
 import type { Model } from "../lib/types";
-import { Avatar } from "./avatar";
 import { MenuButton } from "./menu-button";
 
 export function TopBar({
   model,
   onMenu,
   onModel,
-  onAvatar,
+  title,
   right,
 }: {
   model: Model;
   onMenu: () => void;
   onModel: () => void;
-  onAvatar?: () => void;
+  /**
+   * What the bar names instead of the model. A terminal has no model to pick,
+   * so it passes its own word and the chevron goes away.
+   */
+  title?: string;
+  /** The actions on the right of the bar, owned by the screen that draws it. */
   right?: ReactNode;
 }) {
+  const label = title ?? model.name;
+
   return (
     <View style={styles.bar}>
       <View style={styles.side}>
         <MenuButton onPress={onMenu} />
       </View>
 
-      <Pressable
-        accessibilityLabel={`Model: ${model.name}`}
-        accessibilityRole="button"
-        onPress={() => {
-          tapFeedback();
-          onModel();
-        }}
-        style={({ pressed }) => [styles.center, pressed && styles.pressed]}
-      >
-        <Text style={styles.model} numberOfLines={1}>
-          {model.name}
+      {title ? (
+        <Text numberOfLines={1} style={styles.title}>
+          {label}
         </Text>
-        <Ionicons name="chevron-down" size={13} color={palette.subtle} />
-      </Pressable>
+      ) : (
+        <Pressable
+          accessibilityLabel={`Model: ${label}`}
+          accessibilityRole="button"
+          onPress={() => {
+            tapFeedback();
+            onModel();
+          }}
+          style={({ pressed }) => [styles.center, pressed && styles.pressed]}
+        >
+          <Text style={styles.model} numberOfLines={1}>
+            {label}
+          </Text>
+          <Ionicons name="chevron-down" size={13} color={palette.subtle} />
+        </Pressable>
+      )}
 
-      <View style={[styles.side, styles.sideEnd]}>
-        {right ?? (
-          <Pressable
-            accessibilityLabel="Account"
-            accessibilityRole="button"
-            hitSlop={8}
-            onPress={onAvatar}
-            style={({ pressed }) => pressed && styles.pressed}
-          >
-            <Avatar />
-          </Pressable>
-        )}
-      </View>
+      <View style={[styles.side, styles.sideEnd]}>{right}</View>
     </View>
   );
 }
@@ -81,6 +81,13 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   model: {
+    ...typography.callout,
+    color: palette.text,
+    fontSize: 16,
+    fontWeight: "500",
+    letterSpacing: -0.2,
+  },
+  title: {
     ...typography.callout,
     color: palette.text,
     fontSize: 16,

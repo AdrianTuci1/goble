@@ -130,6 +130,10 @@ impl DesktopState {
                 state.daemon_state.set_checkpoint_sink(Some(
                     Arc::clone(&store) as Arc<dyn goble_replay::CheckpointSink>,
                 ));
+                // The same file holds the durable projects and the sandbox a
+                // project's remote work runs in, so a deploy reads and writes
+                // the store the checkpoints already open.
+                state.set_sandbox_store(Arc::clone(&store));
                 // Seed the durable Project/Session/Task entities alongside the
                 // checkpoints so a restart rehydrates the workspace metadata.
                 for p in store.list_projects().unwrap_or_default() {
@@ -221,6 +225,20 @@ impl DesktopState {
         *self.worktrees_root.lock() = Some(root.into());
     }
 
+    /// Point the durable projects and the sandbox bindings at `store`. The
+    /// running app pins the same store its checkpoints live in; a state with no
+    /// store cannot record a deploy.
+    pub fn set_sandbox_store(&self, store: Arc<goble_persistence::CheckpointStore>) {
+        *self.sandbox_store.lock() = Some(store);
+    }
+
+    /// The persistence store projects and sandbox bindings are read from and
+    /// written to, or `None` when this state has no home of its own (a test
+    /// that did not pin one).
+    pub fn sandbox_store(&self) -> Option<Arc<goble_persistence::CheckpointStore>> {
+        self.sandbox_store.lock().clone()
+    }
+
     /// The managed agent-run workspace root, or `None` when this state has no
     /// home of its own (a test).
     pub fn worktrees_root(&self) -> Option<PathBuf> {
@@ -275,6 +293,7 @@ impl DesktopState {
             thread_store: Arc::new(thread_store),
             config: parking_lot::Mutex::new(goble_core::config::GobleConfig::default()),
             config_path: Mutex::new(None),
+            sandbox_store: Mutex::new(None),
             worktrees_root: Mutex::new(None),
             environment: Mutex::new(super::environment::EnvironmentCache::default()),
             daemon_state,

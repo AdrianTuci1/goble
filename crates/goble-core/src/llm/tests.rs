@@ -9,6 +9,27 @@ use crate::llm::openai::{
     OpenAiStreamToolCall,
 };
 
+/// A prompt set on the builder survives the history appended after it. The
+/// reasoning and execution loops both name a system prompt and then the turns;
+/// a history that replaced the list dropped the prompt from every request.
+#[test]
+fn a_system_prompt_stays_in_front_of_the_history() {
+    let request = CompletionRequest::new("provider", "model")
+        .with_system("be brief")
+        .with_messages(vec![Message {
+            role: Role::User,
+            content: "hello".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_status: None,
+            reasoning_content: None,
+        }]);
+    assert_eq!(request.messages.len(), 2);
+    assert_eq!(request.messages[0].role, Role::System);
+    assert_eq!(request.messages[0].content, "be brief");
+    assert_eq!(request.messages[1].role, Role::User);
+}
+
 #[tokio::test]
 async fn test_mock_provider() {
     let provider = MockProvider::new(
@@ -184,6 +205,44 @@ fn a_successful_tool_message_is_sent_as_its_body() {
     assert_eq!(wire[0].content.as_deref(), Some("ok"));
 }
 
+/// DeepSeek's request deserializer answers a null `content` with 422
+/// "content should be a string or a list". A tool that printed nothing, or an
+/// assistant turn that carried only calls, must send the empty string.
+#[test]
+fn an_empty_message_is_sent_as_an_empty_string_not_null() {
+    let silent_tool = Message {
+        role: Role::Tool,
+        content: String::new(),
+        tool_calls: None,
+        tool_call_id: Some("call_1".to_string()),
+        tool_status: Some(ToolCallStatus::Finished),
+        reasoning_content: None,
+    };
+    let calls_only = Message {
+        role: Role::Assistant,
+        content: String::new(),
+        tool_calls: Some(vec![LlmToolCall {
+            id: "call_2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "src/lib.rs"}),
+        }]),
+        tool_call_id: None,
+        tool_status: None,
+        reasoning_content: None,
+    };
+
+    let wire = into_openai_messages(vec![silent_tool, calls_only], false);
+    assert_eq!(wire[0].content.as_deref(), Some(""));
+    assert_eq!(wire[1].content.as_deref(), Some(""));
+
+    let body = serde_json::to_value(&wire).expect("the messages serialize");
+    assert_eq!(
+        body[0]["content"],
+        serde_json::json!(""),
+        "a null content is the 422 the endpoint answers"
+    );
+}
+
 /// DeepSeek's thinking mode checks the field on every replayed assistant
 /// message: a tool-call turn carries the empty string, and a reply that ended
 /// the turn carries the chain of thought it streamed. Without it the next
@@ -351,4 +410,27 @@ fn spend_clamps_a_cached_share_larger_than_the_prompt() {
         output: 10,
     };
     assert_eq!(usage.spend(), 10);
+}
+
+/// The 413 that ended a turn is a body cap, not a token overflow: the status is
+/// recognised, and the endpoint's own words are recognised with it. Any other
+/// failure is left to the turn as it was.
+#[test]
+fn a_body_cap_rejection_is_recognised() {
+    assert!(is_payload_too_large(
+        "LLM request failed: 413 Payload Too Large <html><head><title>413 Request Entity Too Large</title></head></html>"
+    ));
+    assert!(is_payload_too_large(
+        "LLM request failed: 412 Precondition Failed: Request Entity Too Large"
+    ));
+    assert!(is_payload_too_large("upstream said PAYLOAD TOO LARGE"));
+    assert!(!is_payload_too_large(
+        "LLM request failed: 429 Too Many Requests"
+    ));
+    assert!(!is_payload_too_large(
+        "LLM request failed: 400 Bad Request: messages: content should be a string"
+    ));
+    assert!(!is_payload_too_large(
+        "failed to POST to https://example.test"
+    ));
 }

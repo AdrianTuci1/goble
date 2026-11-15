@@ -143,6 +143,14 @@
     min-width: 0;
   }
 
+  .tab-mark {
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1;
+    flex: 0 0 auto;
+  }
+  .tab.active .tab-mark { color: var(--accent); }
+
   .tab-close {
     display: inline-flex;
     align-items: center;
@@ -170,6 +178,15 @@
     font-size: 15px;
   }
   .new-tab:hover { color: var(--accent); border-color: var(--accent); }
+
+  .new-viewer {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-style: solid;
+    border-color: var(--border);
+  }
+  .new-viewer svg { display: block; }
 
   .top-right {
     display: flex;
@@ -374,6 +391,148 @@
     pointer-events: none;
     font-family: var(--mono);
   }
+
+  /* --------------------------------------------------------------- viewer */
+
+  .viewer {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    background: var(--bg);
+  }
+
+  .viewer-scroll {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+
+  .viewer-landing {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    padding: 32px 24px 64px;
+    text-align: center;
+  }
+
+  .cloud-mark { color: var(--muted); }
+
+  .viewer-landing h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .viewer-landing p {
+    margin: 0;
+    max-width: 420px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.6;
+  }
+
+  .transcript {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 20px 18px 10px;
+  }
+
+  .row {
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .row.user {
+    align-self: flex-end;
+    max-width: min(80%, 560px);
+    padding: 7px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    color: var(--fg);
+  }
+
+  .row.assistant { color: var(--fg); }
+
+  .row.tool {
+    padding-left: 9px;
+    border-left: 1px solid var(--border-strong);
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .row.error { color: var(--red); font-size: 11px; }
+  .row.notice { color: var(--muted); font-size: 11px; }
+
+  .composer {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    flex: 0 0 auto;
+    padding: 8px 12px 10px;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  .composer-worker {
+    flex: 0 0 auto;
+    max-width: 150px;
+    padding-bottom: 9px;
+    color: var(--muted);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .composer-input {
+    flex: 1 1 auto;
+    min-height: 34px;
+    max-height: 132px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
+    resize: none;
+    outline: none;
+    overflow-y: auto;
+  }
+  .composer-input:focus { border-color: var(--border-strong); }
+  .composer-input::placeholder { color: var(--muted); }
+
+  .send {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--panel-2);
+    color: var(--fg);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1.2;
+  }
+  .send:hover { border-color: var(--accent); color: var(--accent); }
+  .send.stop { color: var(--muted); }
+  .send.stop:hover { border-color: var(--border-strong); color: var(--fg); }
 
   /* ------------------------------------------------------------- overlay */
 
@@ -668,6 +827,15 @@
 
     .status-worker { max-width: 92px; }
     .statusbar { gap: 6px; padding: 0 8px; }
+
+    /* The composer stays above the status bar; it is the last child of the
+       column, so a drawer over the sidebar never covers it. */
+    .composer { gap: 6px; padding: 7px 8px 8px; }
+    .composer-worker { max-width: 84px; }
+    .composer-input { font-size: 16px; }
+    .send { padding: 8px 10px; }
+    .transcript { padding: 14px 12px 8px; }
+    .row.user { max-width: 88%; }
   }
 
   @media (max-width: 460px) {

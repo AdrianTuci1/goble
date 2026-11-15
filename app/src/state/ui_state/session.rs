@@ -607,6 +607,21 @@ impl UiState {
         self.composer_draft = draft;
     }
 
+    /// Take a skill or a path the band offered: the trigger token that picked
+    /// it is replaced by the text, so `$pen` becomes `$penpot ` and `@src` the
+    /// path behind it. The caret sits after what was inserted and the band
+    /// stays closed until the draft asks for it again.
+    pub fn insert_active_pane_trigger_text(&mut self, text: String) {
+        let pane_id = self.active_pane_id;
+        // The trigger is read at the start of the draft, so the token the band
+        // was narrowing on is the whole draft; what the row carries replaces it.
+        self.set_active_pane_draft(text.clone());
+        let controls = self.pane_controls_mut(pane_id);
+        *controls.caret.borrow_mut() = text.chars().count();
+        *controls.slash_index.borrow_mut() = 0;
+        *controls.slash_dismissed.borrow_mut() = true;
+    }
+
     /// Set the active pane's working directory label and the global active view.
     ///
     /// A deliberate write of the pane's directory, like [`Self::set_pane_path`]:

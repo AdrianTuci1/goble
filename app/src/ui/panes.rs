@@ -73,7 +73,7 @@ pub fn build_active_space(
         }
         None => {
             let id = 0u64;
-            let chat = chat::build_agent_chat(app, state, actions, id, true, None);
+            let chat = chat::build_agent_chat(app, state, actions, id, true, false, None);
             // The chat's own agent header is the single topbar; do not stack the
             // generic pane header above it.
             let column = Flex::column()
@@ -1235,7 +1235,17 @@ fn build_leaf_column(
     let content = match workflow_view {
         Some(view) => chat::build_workflow_view(app, state, actions, id, active, &view),
         None => match kind {
-            PaneKind::Chat => chat::build_agent_chat(app, state, actions, id, active, None),
+            PaneKind::Chat => {
+                // Esc at the agent view of a pane with no shell behind it: the
+                // bar's `esc for terminal` hint and the key give the pane a
+                // terminal of its own, in place — the conversation stays bound,
+                // so Cmd+Enter opens its agent view over that shell again.
+                let on_show_terminal = actions.on_show_pane_terminal.clone();
+                let leave: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+                    (on_show_terminal.borrow_mut())(id);
+                }));
+                chat::build_agent_chat(app, state, actions, id, active, false, Some(leave))
+            }
             // A viewer session: the conversation runs on a worker, so the pane is
             // the conversation's own surface with no shell behind it. It is never
             // given the shell builder below, which is the only thing that mounts a
@@ -1295,7 +1305,9 @@ fn build_leaf_column(
 
 /// While the harness is active on a pane, its topbar shows `esc for terminal`:
 /// the way back to the plain pty, spelled out and clickable, so the surface can
-/// be switched with the pointer as well as with the key.
+/// be switched with the pointer as well as with the key. A chat pane shows the
+/// same hint over the terminal Esc gives it, since the pane has no pty behind
+/// its agent view yet.
 pub(crate) fn build_esc_hint<F: FnMut() + 'static>(
     app: &AppContext,
     hover: Rc<RefCell<bool>>,

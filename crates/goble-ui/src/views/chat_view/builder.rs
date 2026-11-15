@@ -12,7 +12,7 @@ use goble_core::harness::CommandDecision;
 use goble_core::llm::TokenUsage;
 use goble_core::ssh_command::SshSession;
 
-use super::ChatView;
+use super::{ChatView, ComposerModelTray};
 
 impl ChatView {
     /// Attach the app-owned transcript drag selection, which turns the
@@ -208,6 +208,21 @@ impl ChatView {
     ) -> Self {
         self.empty_title = Some(title.into());
         self.empty_subtitle = Some(subtitle.into());
+        self
+    }
+
+    /// Put a glyph over the empty state's title, so the pane that starts here
+    /// says what kind of work it starts (the cloud for a cloud agent).
+    pub fn with_empty_state_icon(mut self, icon: &'static str) -> Self {
+        self.empty_icon = Some(icon);
+        self
+    }
+
+    /// Say what the composer is for while it is empty, instead of the default
+    /// `Ask anything...`. The text is the pane's, so a cloud agent's input can
+    /// invite the run it opens.
+    pub fn with_composer_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.composer_placeholder = Some(placeholder.into());
         self
     }
 
@@ -427,6 +442,15 @@ impl ChatView {
         self.composer_dir_menu_highlight = highlight;
         self
     }
+    /// Set the composer's model control to the column tray: the harnesses the
+    /// pane can run on, the models inside each and the thinking levels of the
+    /// highlighted one. The band is drawn over the input, in the slot the
+    /// draft's command list holds while the draft is a command.
+    pub fn with_composer_model_tray(mut self, tray: ComposerModelTray) -> Self {
+        self.composer_model_tray = Some(tray);
+        self
+    }
+
     /// Set the composer's git-branch dropdown.
     pub fn with_composer_branch_menu<F: FnMut(usize) + 'static>(
         mut self,

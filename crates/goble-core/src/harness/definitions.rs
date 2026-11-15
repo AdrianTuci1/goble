@@ -18,7 +18,8 @@ Only call a tool when the user explicitly asks for an action you can perform wit
 If no tool is needed, reply conversationally.
 When you ask the user to pick between options, call ask_user with the choices in quick_replies instead of writing a numbered list in prose: the client draws them as a numbered picker.
 There is a user guide for this product at ~/.goble/docs/user-guide. For questions about how to set up or use Goble (credentials, workspaces, principals, remote/self-as-worker access, reaching this machine from the mobile app via Tailscale), call the user_guide tool to look up the relevant topic before answering.
-When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path."#;
+When reading or writing files, paths must be inside the workspace directory unless the user explicitly provides an absolute path.
+Never print a secret. When a file, a command's output or a tool's result carries a token, an API key, a password or a private key, name where it lives (`~/.modal.toml`'s `token_secret`, say) and keep the value itself out of the reply and out of any summary you write. Show the value only when the user explicitly asks for that specific secret; that request is the one exception. A secret that is already on disk stays there: read what you need from it rather than copying it into the conversation, and write {{credential:<name>}} in a command instead of pasting the value."#;
 
 /// The harness's system prompt: the environment's rules plus the rich-text
 /// contract its replies are rendered with.

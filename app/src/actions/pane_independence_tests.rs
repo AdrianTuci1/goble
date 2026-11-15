@@ -775,6 +775,68 @@ fn add_space_with_medium_sets_medium_and_workspace_routing() {
     );
 }
 
+/// The topbar's cloud control opens the surface a run on a worker starts on:
+/// a tab on Remote whose pane is a viewer (there is no local shell behind it)
+/// and whose label says what it is about to do.
+#[test]
+fn the_cloud_agent_opens_a_viewer_pane_on_remote() {
+    let (desktop, dir) = desktop_state();
+    configure_remote(&desktop, &dir);
+    let (state, actions, media) = build(&desktop);
+    let before = state.borrow().spaces.len();
+
+    (actions.on_new_cloud_agent.borrow_mut())();
+
+    let s = state.borrow();
+    assert_eq!(s.spaces.len(), before + 1, "a tab opened");
+    let last = s.spaces.last().expect("the new tab");
+    assert_eq!(last.medium, "remote", "the tab runs on the worker");
+    assert_eq!(
+        s.workspace_routing,
+        Some(WorkspaceRouting::Remote),
+        "its turns route to the worker"
+    );
+    assert_eq!(
+        last.leaf_kind(s.active_pane_id).cloned(),
+        Some(PaneKind::Worker),
+        "its pane is a viewer, never a local shell"
+    );
+    assert_eq!(
+        s.space_label(s.active_space),
+        crate::state::NEW_CLOUD_AGENT_TITLE,
+        "the tab reads what it is about to start"
+    );
+    drop(s);
+    assert_eq!(
+        media.borrow().selected_medium_id(),
+        "remote",
+        "and the environment follows the tab"
+    );
+}
+
+/// A cloud agent with no Remote configuration asks for it first, in Settings,
+/// and leaves the strip as it was.
+#[test]
+fn the_cloud_agent_asks_for_remote_before_opening_a_tab() {
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, media) = build(&desktop);
+    let before = state.borrow().spaces.len();
+
+    (actions.on_new_cloud_agent.borrow_mut())();
+
+    assert_eq!(state.borrow().spaces.len(), before, "no tab opened");
+    assert_eq!(
+        state.borrow().settings_page(),
+        SettingsCategory::AgentApproval,
+        "the page that configures Remote"
+    );
+    assert_eq!(
+        media.borrow().selected_medium_id(),
+        "local",
+        "the environment did not move"
+    );
+}
+
 /// The environment selector belongs to the tab on screen: switching tabs
 /// brings that tab's environment (and so its conversations) back, instead of
 /// leaving the previous tab's selection in the sidebar and the topbar.

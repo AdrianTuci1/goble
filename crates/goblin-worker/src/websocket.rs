@@ -5,7 +5,9 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
-use goble_core::protocol::{DesktopMessage, ScheduledTaskSummary, WorkerMessage};
+use goble_core::protocol::{
+    decode_attachment_bytes, DesktopMessage, ScheduledTaskSummary, WorkerMessage,
+};
 use goble_core::worker::WorkerStatus;
 use goble_daemon::DaemonPort;
 use goble_harness_types::SessionId;
@@ -168,15 +170,37 @@ pub(crate) async fn run_connection(
                                     }
                                     continue;
                                 }
+                                let trace_id = desktop_trace_id(&desktop_msg);
                                 if let Err(e) =
                                     handle_desktop_message(&state, &runner, desktop_msg).await
                                 {
-                                    state.emit(WorkerMessage::AgentFinished {
-                                        trace_id: "unknown".to_string(),
-                                        status: goble_core::execution::ExecutionStatus::Failure(
-                                            e.to_string(),
-                                        ),
-                                    });
+                                    // A request whose trace failed says so on
+                                    // that trace, so the client that asked can
+                                    // show the reason instead of waiting for a
+                                    // run that never started.
+                                    if let Some(trace_id) = trace_id {
+                                        state.emit(WorkerMessage::AgentLog {
+                                            trace_id: trace_id.clone(),
+                                            step_id: "worker".to_string(),
+                                            level: goble_core::execution::LogLevel::Error,
+                                            message: e.to_string(),
+                                        });
+                                        state.emit(WorkerMessage::AgentFinished {
+                                            trace_id,
+                                            status:
+                                                goble_core::execution::ExecutionStatus::Failure(
+                                                    e.to_string(),
+                                                ),
+                                        });
+                                    } else {
+                                        state.emit(WorkerMessage::AgentFinished {
+                                            trace_id: "unknown".to_string(),
+                                            status:
+                                                goble_core::execution::ExecutionStatus::Failure(
+                                                    e.to_string(),
+                                                ),
+                                        });
+                                    }
                                 }
                             }
                             Err(_) => {
@@ -233,6 +257,78 @@ pub fn handle_pty_desktop_message(
         _ => return None,
     };
     Some(events)
+}
+
+/// The run a message belongs to, when it names one. A failure is reported on
+/// that trace so the client that asked is the one that hears about it.
+fn desktop_trace_id(msg: &DesktopMessage) -> Option<String> {
+    match msg {
+        DesktopMessage::RunAgent { trace_id, .. }
+        | DesktopMessage::RunAgentForThreadReply { trace_id, .. }
+        | DesktopMessage::AnswerUser { trace_id, .. }
+        | DesktopMessage::AnswerCommand { trace_id, .. } => Some(trace_id.clone()),
+        _ => None,
+    }
+}
+
+/// goble-core's command decision and the daemon protocol's name the same three
+/// answers in separate enums; the worker is where one becomes the other.
+fn command_decision_to_daemon(
+    decision: goble_core::harness::CommandDecision,
+) -> goble_harness_types::CommandDecision {
+    use goble_core::harness::CommandDecision as Core;
+    match decision {
+        Core::Approve(text) => goble_harness_types::CommandDecision::Approve(text),
+        Core::Edit(text) => goble_harness_types::CommandDecision::Edit(text),
+        Core::Reject(reason) => goble_harness_types::CommandDecision::Reject(reason),
+    }
+}
+
+/// Largest attachment the worker accepts, after base64 decoding.
+const MAX_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Write an uploaded file under `<workspace>/attachments` and return its path.
+fn store_attachment(upload_id: &str, name: &str, data: &str) -> anyhow::Result<String> {
+    let bytes = decode_attachment_bytes(data)?;
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        anyhow::bail!(
+            "the attachment is {} bytes; the limit is {}",
+            bytes.len(),
+            MAX_ATTACHMENT_BYTES
+        );
+    }
+    let dir = crate::pty::workspace_root().join("attachments");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}-{}", safe_component(upload_id), safe_component(name)));
+    std::fs::write(&path, &bytes)?;
+    Ok(path.display().to_string())
+}
+
+/// A path component that stays inside the workspace: directories are dropped,
+/// anything awkward becomes `_`, and an empty result is named `attachment`.
+fn safe_component(value: &str) -> String {
+    let base = value
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .trim_start_matches('.');
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches('_').trim_start_matches('.');
+    if cleaned.is_empty() {
+        "attachment".to_string()
+    } else {
+        cleaned.chars().take(80).collect()
+    }
 }
 
 fn pty_pane_id(msg: &DesktopMessage) -> Option<String> {
@@ -362,13 +458,29 @@ async fn handle_desktop_message(
                 state.store_mcp(server);
             }
         }
+        // An agent edited on a client is written to the store as well as the
+        // in-memory map, so `query_entities` lists it after a reconnect and the
+        // next run resolves the same spec a restart would.
         DesktopMessage::UpdateAgent { agent_id, spec } => {
             if spec.id == agent_id {
+                if let Ok(store) = state.store() {
+                    let json = serde_json::to_string(&spec).unwrap_or_default();
+                    let _ = store.insert_agent(
+                        &spec.id.0,
+                        &spec.name,
+                        &json,
+                        &spec.created_at,
+                        &spec.updated_at,
+                    );
+                }
                 state.store_agent(spec);
             }
         }
         DesktopMessage::RemoveAgent { agent_id } => {
             state.agents.lock().remove(&agent_id);
+            if let Ok(store) = state.store() {
+                let _ = store.delete_agent(&agent_id.0);
+            }
         }
         DesktopMessage::RunTeam { trace_id, team_id } => {
             runner.run_team(trace_id, team_id).await?;
@@ -385,10 +497,22 @@ async fn handle_desktop_message(
             for server in mcp_servers.clone() {
                 state.store_mcp(server);
             }
+            {
+                // Remember which conversation the trace belongs to, so an answer
+                // that arrives later continues the same one. The map is only
+                // read for traces that paused on a question; cap it so a worker
+                // running for weeks does not grow without bound.
+                let mut threads = state.threads_by_trace.lock();
+                if threads.len() > 512 {
+                    threads.clear();
+                }
+                threads.insert(trace_id.clone(), thread_id.clone());
+            }
             let secrets = state.secrets.lock().values().cloned().collect();
             let content = runner
                 .run_agent_for_thread_reply(
                     trace_id.clone(),
+                    thread_id.clone(),
                     agent_id,
                     spec,
                     prompt,
@@ -396,11 +520,15 @@ async fn handle_desktop_message(
                     secrets,
                 )
                 .await?;
-            state.emit(WorkerMessage::ThreadAgentReply {
-                trace_id,
-                thread_id,
-                content,
-            });
+            // A turn that paused on a question or a proposal has no answer
+            // yet; the reply is posted when the client's answer settles it.
+            if let Some(content) = content {
+                state.emit(WorkerMessage::ThreadAgentReply {
+                    trace_id,
+                    thread_id,
+                    content,
+                });
+            }
         }
         DesktopMessage::Ping => {
             state.emit(WorkerMessage::Pong);
@@ -450,6 +578,86 @@ async fn handle_desktop_message(
         DesktopMessage::GetTrace { trace_id } => {
             let trace = state.get_trace(&trace_id);
             state.emit(WorkerMessage::Trace { trace_id, trace });
+        }
+        // A client answered an `AskUser`; the daemon resumes the suspended run
+        // with that answer, and its remaining events arrive on the normal
+        // stream under the same trace id.
+        DesktopMessage::AnswerUser { trace_id, answer } => {
+            let thread_id = state.threads_by_trace.lock().get(&trace_id).cloned();
+            let daemon = state.daemon();
+            let session = SessionId::new(trace_id.clone());
+            // Subscribe before resuming, or the first frames of the
+            // continuation land between the resume and the subscription.
+            let mut rx = daemon.subscribe();
+            daemon.resume(&session, &answer, None)?;
+            let runner = Runner::new(state.clone());
+            tokio::spawn(async move {
+                runner.settle_resumed(trace_id, thread_id, &mut rx).await;
+            });
+        }
+        // A client decided the command a run proposed. The resume runs the
+        // approved line (or fails the call on a refusal) and the rest of the
+        // turn arrives on the normal stream under the same trace id.
+        DesktopMessage::AnswerCommand { trace_id, decision } => {
+            let thread_id = state.threads_by_trace.lock().get(&trace_id).cloned();
+            let daemon = state.daemon();
+            let session = SessionId::new(trace_id.clone());
+            let mut rx = daemon.subscribe();
+            daemon.resume_command(&session, command_decision_to_daemon(decision))?;
+            let runner = Runner::new(state.clone());
+            tokio::spawn(async move {
+                runner.settle_resumed(trace_id, thread_id, &mut rx).await;
+            });
+        }
+        // A file from the phone lands in the worker's workspace, so the agent
+        // reads it like any other file there and the path the answer carries
+        // is real on the machine that runs the turn.
+        DesktopMessage::UploadAttachment {
+            upload_id,
+            name,
+            data,
+        } => match store_attachment(&upload_id, &name, &data) {
+            Ok(path) => state.emit(WorkerMessage::AttachmentStored {
+                upload_id,
+                path: Some(path),
+                error: None,
+            }),
+            Err(error) => state.emit(WorkerMessage::AttachmentStored {
+                upload_id,
+                path: None,
+                error: Some(error.to_string()),
+            }),
+        },
+        // The phone's dictation segments. The provider call runs off the socket
+        // loop, so a slow transcription never holds up the connection's other
+        // frames, and the answer lands under the request it belongs to.
+        DesktopMessage::TranscribeAudio {
+            request_id,
+            provider,
+            model,
+            mime,
+            data,
+        } => {
+            let state = Arc::clone(state);
+            tokio::spawn(async move {
+                let secrets = state.secrets.lock().clone();
+                let result = match decode_attachment_bytes(&data) {
+                    Ok(bytes) => {
+                        crate::transcribe::transcribe(&secrets, &provider, &model, &mime, bytes)
+                            .await
+                    }
+                    Err(error) => Err(anyhow::anyhow!("the recording is not base64: {error}")),
+                };
+                let (text, error) = match result {
+                    Ok(text) => (Some(text), None),
+                    Err(error) => (None, Some(error.to_string())),
+                };
+                state.emit(WorkerMessage::TranscriptionResult {
+                    request_id,
+                    text,
+                    error,
+                });
+            });
         }
         DesktopMessage::QueryEntities {
             entity_type,
@@ -681,6 +889,35 @@ fn query_store_entities(
                 .collect();
             Ok(items)
         }
+        // The conversations the worker has stored, newest first, each with its
+        // transcript. A phone lists them to show history that outlives its own
+        // process; the cap keeps one frame small enough to cross the relay.
+        "chats" => {
+            let rows = store.list_chats()?;
+            let mut items = Vec::new();
+            for (id, title, _provider, _model, created_at, updated_at) in rows.into_iter().take(50) {
+                let messages = store
+                    .list_chat_messages(&id)?
+                    .into_iter()
+                    .map(|(message_id, role, content, _tool_calls, created_at)| {
+                        serde_json::json!({
+                            "id": message_id,
+                            "role": role,
+                            "content": content,
+                            "created_at": created_at,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                items.push(serde_json::json!({
+                    "id": id,
+                    "title": title,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "messages": messages,
+                }));
+            }
+            Ok(items)
+        }
         "mcp_servers" => {
             let rows = store.list_mcp_servers()?;
             let items = rows
@@ -907,5 +1144,17 @@ mod tests {
             vec![b"sk-first".to_vec()],
             "the value the worker holds stays the one it resolves"
         );
+    }
+
+    /// An upload name cannot walk out of the attachments directory, and an
+    /// empty one still produces a file.
+    #[test]
+    fn attachment_names_stay_inside_the_workspace() {
+        assert_eq!(safe_component("../../etc/passwd"), "passwd");
+        assert_eq!(safe_component("a b.png"), "a_b.png");
+        assert_eq!(safe_component("../.hidden"), "hidden");
+        assert_eq!(safe_component(""), "attachment");
+        assert_eq!(safe_component(".."), "attachment");
+        assert_eq!(safe_component("shot-1.jpeg"), "shot-1.jpeg");
     }
 }

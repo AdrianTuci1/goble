@@ -53,17 +53,21 @@ export function ConversationMenu({
     >
       {view === "actions" ? (
         <View>
-          <MenuRow
-            icon={conversation.starred ? "star" : "star-outline"}
-            label={
-              conversation.starred ? "Remove from starred" : "Add to starred"
-            }
-            onPress={() => {
-              tapFeedback();
-              onToggleStar();
-              onClose();
-            }}
-          />
+          {/* A temporary chat never reaches the sidebar, so starring it would
+              promise something this session cannot keep. */}
+          {conversation.temporary ? null : (
+            <MenuRow
+              icon={conversation.starred ? "star" : "star-outline"}
+              label={
+                conversation.starred ? "Remove from starred" : "Add to starred"
+              }
+              onPress={() => {
+                tapFeedback();
+                onToggleStar();
+                onClose();
+              }}
+            />
+          )}
           <MenuRow
             icon="pencil-outline"
             label="Rename"

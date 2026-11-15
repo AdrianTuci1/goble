@@ -22,6 +22,7 @@ mod interaction;
 mod markdown;
 mod pill;
 mod sub_agent;
+mod tool_body;
 mod tool_call;
 
 /// A fence draws no horizontal scroll, so a line longer than the pane must
@@ -879,6 +880,47 @@ fn click_at(
     };
     bubble.dispatch_event(&down, &mut event_ctx, app);
     bubble.dispatch_event(&up, &mut event_ctx, app);
+}
+
+/// Double click `bubble` at an absolute position: the two presses a click is
+/// made of, then the gesture the window reports once the second release lands.
+/// The order is the platform's own (`platform::window` dispatches the
+/// `MouseDoubleClick` after the `MouseUp`), so the row under the pointer has
+/// already run its click when the double click arrives.
+fn double_click_at(
+    bubble: &mut ChatMessageBubble,
+    app: &AppContext,
+    position: crate::geometry::Vector2F,
+) {
+    click_at(bubble, app, position);
+    click_at(bubble, app, position);
+    let mut event_ctx = crate::elements::EventContext::default();
+    let double = DispatchedEvent::MouseDoubleClick {
+        position,
+        button: 0,
+    };
+    bubble.dispatch_event(&double, &mut event_ctx, app);
+}
+
+/// The strokes a tool block's rail is drawn with, in paint order: one pair per
+/// bracketed block, the left stroke before the right one.
+fn bracket_strokes(
+    commands: &[RenderCommand],
+    app: &AppContext,
+) -> Vec<crate::geometry::RectF> {
+    commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Muted)
+                    && rect.size.width <= 2.5
+                    && rect.size.height > 0.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Paint a Markdown message and return the style of every text run it draws.

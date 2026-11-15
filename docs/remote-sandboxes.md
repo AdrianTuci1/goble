@@ -43,6 +43,7 @@ opening the project from a different machine does not create a second sandbox.
 | `modal` | `token_id`, `token_secret` | Python SDK bridge | `scripts/modal_sandbox.py`; set `GOBLE_MODAL_PYTHON` to choose the interpreter |
 | `daytona` | `api_key` (`DAYTONA_API_KEY`) | REST | Snapshot or Dockerfile image; `region` becomes `target` |
 | `box` | `api_key` (`BOX_API_KEY`) | REST | Box is now Boat; uses `https://boat.dev/api/v1/sandboxes` |
+| `cloud_run` | `environment` = GCP project, `region` = location | REST (Admin API v2) | One job per workspace name, one execution per create; non-interactive |
 | `docker` | none | Docker CLI | Local development; `--name`, labels, env, `rm -f` |
 | `ssh` | none; `api_url` is the destination | `ssh` / `scp` | Installs or starts `goblin` on an existing host |
 
@@ -51,9 +52,130 @@ All adapters implement `SandboxProvider::{create,destroy,status}` and return a
 an injected `CommandRunner`, so no test touches the network.
 
 `api_url` overrides the provider endpoint. `image` names the worker image
-(for SSH: an install directory, a local binary, or an `http(s)` URL). `region`
-and `environment` are provider-specific; `environment` is the named Boat
-environment.
+(see [Worker image](#worker-image); for SSH: an install directory, a local
+binary, or an `http(s)` URL). `region` and `environment` are provider-specific:
+on `box`, `environment` is the named Boat environment; on `cloud_run`,
+`environment` is the GCP project id.
+
+## Worker image
+
+A remote agent runs `goblin` inside a container the provider pulls, so the
+image its table names has to carry the worker. This repository publishes that
+image; there is nothing to build before a first deploy.
+
+| Registry reference | Tags | Built from |
+|---|---|---|
+| `ghcr.io/adriantuci1/goble-worker` | `latest` and `main` (the `main` branch), `0.1.0` and `0.1` (a `v0.1.0` release tag), `sha-<short>` | `deploy/worker/Dockerfile`, by `.github/workflows/worker-image.yml` |
+
+It is `linux/amd64` only. The runtime is `debian:bookworm-slim` with `git`,
+`ripgrep`, `curl`, `ca-certificates` and a shell, because the agent inside the
+sandbox has to clone, search and run commands — which the distroless
+`deploy/goblin/Dockerfile` (the Kubernetes image, `--mode=cluster`) cannot do.
+The worker runs as the non-root user `goble` (uid 10001) with
+`HOME=/home/goble`, and the project's files live under `/workspace`. Its task
+store, vault, pid file and log file are moved under that home, so the binary's
+`/var/goblin` and `/var/run` defaults — unwritable for a non-root user — never
+apply.
+
+The entrypoint is `goblin --mode=local --bind=0.0.0.0:8787`. `local` is the
+mode a sandbox wants: `cluster` moves the databases under a PVC, elects a
+leader through a Kubernetes `Lease` and snapshots to a mounted volume
+(`crates/goblin-worker/src/main.rs`). Connecting to a gateway is not a mode —
+the provisioner passes `GOBLE_GATEWAY_URL` and `GOBLE_WORKER_TOKEN` as sandbox
+env and the worker dials out. `GET /health` on port 8787 is the readiness
+report the image's `HEALTHCHECK` reads.
+
+What a table puts in `image`:
+
+```toml
+[remote_agents.builder]
+provider = "modal"
+token_id = "..."
+token_secret = "..."
+image = "ghcr.io/adriantuci1/goble-worker:latest"
+```
+
+`goble-cli setup remote` writes exactly that when `--image` is omitted
+(`DEFAULT_WORKER_IMAGE` in `goble_core::config`), so a container provider costs
+only its credentials. Pass `--image` for a build of your own: a fork's own
+package, a registry inside the provider's cloud, or `:main` to track the
+branch. SSH is the one exception — its `image` is a remote install directory or
+a binary URL, never a container.
+
+The GitHub Container Registry makes a package private when it is first pushed,
+and every provider here pulls anonymously, so `goble-worker` has to be set
+public in the package's settings once (Actions → the pushed package → Package
+settings → Change visibility). A private package only works where the puller
+has registry credentials.
+
+## Google Cloud Run
+
+`CloudRunProvider` (`crates/goble-remote/src/cloud_run.rs`) drives the Cloud
+Run Admin API v2 at `https://run.googleapis.com`. Cloud Run is request-scoped:
+a job runs one container task and exits, with no attachable PTY and no
+pause/resume. That matches a one-shot worker run, which is what the adapter
+provisions. An interactive workspace on GCP is a GCE VM or a GKE pod running
+`goblin-worker` over the `ssh` adapter or the relay.
+
+```toml
+[remote_agents.ci]
+provider = "cloud_run"
+environment = "my-gcp-project"   # the GCP project id
+region = "europe-west1"          # the Cloud Run location
+image = "europe-west1-docker.pkg.dev/my-gcp-project/goble/worker:latest"
+# api_key = "ya29.…"             # optional bearer token
+```
+
+- **One job per workspace.** `job_id` derives a deterministic job id from the
+  workspace's sandbox name, truncated to Cloud Run's 49 characters while
+  keeping the `goble-` prefix and the name's key. `create` reads the job,
+  creates it on a 404 and replaces it on a hit, then runs it.
+- **Sandbox id is the execution name.** `create` returns the Cloud Run
+  execution name (`projects/…/jobs/<job>/executions/<exec>`), so the handle
+  names that one execution and `status` reads it. `destroy` deletes the job
+  that owns it (`DELETE {job_url}?force=true` on
+  `job_id(&handle.sandbox_name)`); a 404 counts as already gone.
+- **Token.** `api_key` is used as the bearer token when it is set. Otherwise
+  the adapter mints one with `gcloud auth print-access-token` from the
+  machine's existing session and reuses it for fifty minutes. Being logged in
+  with `gcloud auth login` is enough; the key never has to be pasted.
+- **Limits.** A job task timeout caps at 86 400 seconds (one day), retries are
+  pinned to 0, and the worker image has to sit in a registry Cloud Run can
+  pull from: Artifact Registry or a public one, which includes the published
+  `ghcr.io/adriantuci1/goble-worker`.
+
+## Agent-led setup
+
+A fresh machine has no `[remote]` section and no hub settings, so the app and
+`goble-cli` share one path for collecting them: the agent asks the questions,
+and every write goes through `goble-cli setup`.
+
+| Command | Writes |
+|---|---|
+| `goble-cli setup status [--json]` | Read-only report: config path, hub path, Remote mode, the gateway URL and whether a worker token is set, each `[remote_agents.*]` table with its status, the hub's settings, and the credential environment keys that are set |
+| `goble-cli setup remote --name … --provider …` | One `[remote_agents.<name>]` table (`--api-key`, `--token-id`, `--token-secret`, `--api-url`, `--image`, `--region`, `--environment`, `--disabled`) |
+| `goble-cli setup gateway --url … --token …` | `[remote]` pointed at a gateway (`mode = "gateway"`); `--platform` returns it to `mode = "platform"`; a value the file already holds need not be repeated, and the command fails only when neither the flag nor the file supplies a URL and a token |
+| `goble-cli setup hub --database … --relay-url … --token … --workflows …` | `~/.goble/hub.toml` |
+| `goble-cli setup brief --target remote\|hub` | Prints the brief a setup conversation starts from |
+
+Every write keeps the file's `CONFIG_HEADER` and the sections it does not
+touch, so a table added by the agent sits next to the user's models and theme.
+The status and the brief are built together in
+`goble_core::config::setup::SetupStatus`, so `goble-cli setup status` and the
+app's Settings page agree on what is missing.
+
+In the app, Settings → Agent & Approval has **Set up Remote with the agent**
+and **Set up the hub with the agent**. Either one opens a new conversation
+titled `Remote setup` or `Hub setup` and sends the brief as its first turn.
+The Remote brief tells the agent to ask one question at a time, never to
+invent a credential, project id, image reference or URL, to write only through
+`goble-cli setup …`, and to read `goble-cli setup status` back to the user
+after each write. The hub brief asks one question at a time, tells the agent to
+write only what the user gave it, through `goble-cli setup hub …`, and then to
+run `goble-cli setup status` and say what is ready.
+The agent finds `goble-cli` next to the running binary
+(`goble_core::binaries::goble_cli`), so it works from a `cargo run` checkout
+as well as from an installed app.
 
 ```toml
 # ~/.goble/config.toml
@@ -61,12 +183,12 @@ environment.
 provider = "modal"
 token_id = "..."
 token_secret = "..."
-image = "ubuntu:24.04"
+image = "ghcr.io/adriantuci1/goble-worker:latest"
 
 [remote_agents.reviewer]
 provider = "daytona"
 api_key = "..."
-image = "ghcr.io/example/goble-worker:latest"
+image = "ghcr.io/adriantuci1/goble-worker:main"
 region = "us"
 ```
 
@@ -123,6 +245,12 @@ development and is refused on a non-loopback bind.
 
 ## Browser client
 
+> **Stale.** As of 2026-11-15 the browser and desktop surface is built from the
+> Expo app in `apps/mobile`, which shares the phone's UI and is being optimized
+> for desktop widths. The Rust/wasm client below is kept for reference; new
+> browser work goes into `apps/mobile`, and `/app/` is meant to serve the Expo
+> web export.
+
 `crates/goble-web` is a Rust WASM client (wasm-bindgen + web-sys) with its own
 canvas terminal renderer and a `vt100` screen model. It provides:
 
@@ -150,6 +278,30 @@ cargo install wasm-bindgen-cli --version 0.2.126 --locked
 The gateway serves the bundle from `--web-dir`, then `<exe>/web`, then the
 crate's `web/` directory. If the bundle is absent, `/app/` returns a build page.
 
+## Cloud agents in the desktop app
+
+A conversation routed to Remote is a viewer pane: the transcript and the
+composer, with the worker connection's state over them (`app/src/ui/worker.rs`).
+The ways in:
+
+- the "▾" environment menu's **Cloud agent** row (after "New terminal" and "New
+  Agent") opens a fresh cloud agent;
+- the environment menu's **Remote (worker)** row opens the same surface instead
+  of a local shell, since a run there has no shell on this machine;
+- a conversation routed to Remote in its composer becomes one as it runs.
+
+A cloud agent with no messages is a landing rather than an empty transcript: the
+cloud glyph and "New cloud agent" over the pane, the tab reading
+"New cloud agent", and the composer inviting "Kick off a cloud agent"
+(`ChatView::with_empty_state_icon` and `with_composer_placeholder`). The first
+prompt replaces the landing with the conversation. Until Remote is configured
+the surface opens Settings → Agent & Approval instead of a tab.
+
+Sidebar cards say where a conversation runs: a remote one marks its directory
+row with the cloud after the path (`ConversationListItem::with_workspace_routing`),
+so a starred card in another section reads the same as the folders filtered by
+the environment selector.
+
 ## Security notes
 
 - Browser access requires the PIN session; the worker endpoint requires a
@@ -169,7 +321,10 @@ crate's `web/` directory. If the bundle is absent, `/app/` returns a build page.
 ## Verification
 
 ```bash
-cargo test -p goble-remote
+cargo test -p goble-remote        # every provider, Cloud Run included
+cargo test -p goble-core config   # config schema, hub.toml, setup status and briefs
+cargo test -p goble-cli setup     # the write surface
+cargo test -p goble-app --test setup_flow
 cargo test -p goble-gateway
 cargo test -p goble-web
 cargo test -p goblin-worker

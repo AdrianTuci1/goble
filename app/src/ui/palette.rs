@@ -73,13 +73,24 @@ fn filter_commands(commands: &[PaletteCommand], query: &str) -> Vec<usize> {
         .collect()
 }
 
-/// One command a rich input offers when its draft starts with `/`: the name as
-/// it is typed after the slash, what it does, and what running it calls.
+/// What taking a row of the input's band does. A command runs something in the
+/// app, on the pane's behalf; a skill or a path is part of the draft, because
+/// that is where the harness reads it from.
+#[derive(Clone)]
+pub enum CommandEffect {
+    Run(Rc<RefCell<dyn FnMut()>>),
+    Insert(String),
+}
+
+/// One entry a rich input offers when its draft starts with a trigger prefix:
+/// the name as it is typed after it, what taking it does, and the prefix it is
+/// typed with (`/` a command, `$` a skill, `@` a path).
 #[derive(Clone)]
 pub struct SlashCommand {
     pub name: String,
     pub description: String,
-    pub action: Rc<RefCell<dyn FnMut()>>,
+    pub prefix: char,
+    pub effect: CommandEffect,
 }
 
 impl SlashCommand {
@@ -91,114 +102,193 @@ impl SlashCommand {
         Self {
             name: name.into(),
             description: description.into(),
-            action: Rc::new(RefCell::new(action)),
+            prefix: '/',
+            effect: CommandEffect::Run(Rc::new(RefCell::new(action))),
+        }
+    }
+
+    /// A row that puts its token in the draft instead of running something: a
+    /// skill or a path the next prompt carries.
+    fn insert(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        prefix: char,
+        text: String,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            prefix,
+            effect: CommandEffect::Insert(text),
         }
     }
 }
 
-/// The commands a rich input offers when its draft starts with `/`, in the
-/// shape grok-build lists them: a name the draft runs, and what it does. The
-/// list is the session and workspace gestures this input can actually reach —
-/// nothing is offered here that would go nowhere — and one entry per configured
-/// model, written the way grok-build writes `/model <name>`.
+/// The list the draft's own trigger asks for: the harness's commands for `/`,
+/// the skills it advertises for `$`, the working directory's paths for `@`.
 ///
-/// The chord that runs a command is deliberately not repeated here: the
-/// instruction strip under the input carries the gestures, and a command is run
-/// from the list itself.
-pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashCommand> {
+/// The trigger is read from the draft the same way the band's open predicate
+/// reads it, so the list the view draws and the list it filters can never
+/// disagree.
+pub fn draft_commands(state: &UiSnapshot, actions: &UiActions, draft: &str) -> Vec<SlashCommand> {
+    match goble_ui::elements::DraftTrigger::from_draft(draft) {
+        Some(goble_ui::elements::DraftTrigger::Command) => slash_commands(state, actions),
+        Some(goble_ui::elements::DraftTrigger::Skill) => skill_commands(state),
+        Some(goble_ui::elements::DraftTrigger::Mention) => mention_commands(state),
+        None => Vec::new(),
+    }
+}
+
+/// The app's own gestures, by the id the harness advertises a command under.
+/// The harness owns the names and the descriptions; this table owns what they
+/// do, so a command the app has no gesture for draws no row.
+fn command_actions(
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> std::collections::HashMap<String, Rc<RefCell<dyn FnMut()>>> {
     let run = |action: &Rc<RefCell<dyn FnMut()>>| {
         let act = action.clone();
         move || (act.borrow_mut())()
     };
     let pane_id = state.active_pane_id;
-    let mut commands = vec![
-        SlashCommand::new(
-            "new",
-            "Start a fresh conversation",
-            run(&actions.on_create_submit),
-        ),
-        SlashCommand::new(
-            "clear",
-            "Clear this conversation's transcript",
-            run(&actions.on_clear_transcript),
-        ),
-        SlashCommand::new("fork", "Branch this conversation into a new one", {
-            let act = actions.on_fork_conversation.clone();
-            move || (act.borrow_mut())(pane_id)
-        }),
-        SlashCommand::new("stop", "Stop the running turn", run(&actions.on_stop)),
-        SlashCommand::new("shortcuts", "Show every keyboard shortcut", {
-            run(&actions.on_toggle_shortcuts_help)
-        }),
-        SlashCommand::new("settings", "Open settings", run(&actions.on_settings)),
-        SlashCommand::new("space", "Open a new space", run(&actions.on_add_space)),
-        SlashCommand::new("split", "Split this pane to the right", {
-            run(&actions.on_split_right)
-        }),
-        SlashCommand::new("terminal", "Open a new terminal pane", {
-            run(&actions.on_new_terminal)
-        }),
-        SlashCommand::new("close", "Close this pane", run(&actions.on_close_pane)),
-        SlashCommand::new("sidebar", "Toggle the right sidebar", {
-            run(&actions.on_toggle_right_sidebar)
-        }),
-        SlashCommand::new("fullscreen", "Toggle full screen", {
-            run(&actions.on_toggle_fullscreen)
-        }),
-        SlashCommand::new("maximize", "Expand this pane over the panes space", {
-            let act = actions.on_toggle_pane_maximized.clone();
-            move || (act.borrow_mut())(pane_id)
-        }),
-        SlashCommand::new(
-            "projects",
-            "Open the project list",
-            run(&actions.on_projects),
-        ),
-        SlashCommand::new("scheduled", "Open the scheduled tasks", {
-            run(&actions.on_open_crons)
-        }),
-        SlashCommand::new("tasks", "Open the workflow runs in this pane", {
-            run(&actions.on_toggle_workflow_view)
-        }),
-        SlashCommand::new("workflows", "Open the workflow catalog", {
-            run(&actions.on_workflows)
-        }),
-        SlashCommand::new("mcps", "Open the MCP servers", run(&actions.on_mcps)),
-    ];
+    let mut table: std::collections::HashMap<String, Rc<RefCell<dyn FnMut()>>> =
+        std::collections::HashMap::new();
+    let mut push = |id: &str, action: Rc<RefCell<dyn FnMut()>>| {
+        table.insert(id.to_string(), action);
+    };
+    push("new", Rc::new(RefCell::new(run(&actions.on_create_submit))));
+    push(
+        "clear",
+        Rc::new(RefCell::new(run(&actions.on_clear_transcript))),
+    );
+    {
+        let act = actions.on_fork_conversation.clone();
+        push(
+            "fork",
+            Rc::new(RefCell::new(move || (act.borrow_mut())(pane_id))),
+        );
+    }
+    push("stop", Rc::new(RefCell::new(run(&actions.on_stop))));
+    push(
+        "shortcuts",
+        Rc::new(RefCell::new(run(&actions.on_toggle_shortcuts_help))),
+    );
+    push("settings", Rc::new(RefCell::new(run(&actions.on_settings))));
+    push("space", Rc::new(RefCell::new(run(&actions.on_add_space))));
+    push(
+        "split",
+        Rc::new(RefCell::new(run(&actions.on_split_right))),
+    );
+    push(
+        "terminal",
+        Rc::new(RefCell::new(run(&actions.on_new_terminal))),
+    );
+    push("close", Rc::new(RefCell::new(run(&actions.on_close_pane))));
+    push(
+        "sidebar",
+        Rc::new(RefCell::new(run(&actions.on_toggle_right_sidebar))),
+    );
+    push(
+        "fullscreen",
+        Rc::new(RefCell::new(run(&actions.on_toggle_fullscreen))),
+    );
+    {
+        let act = actions.on_toggle_pane_maximized.clone();
+        push(
+            "maximize",
+            Rc::new(RefCell::new(move || (act.borrow_mut())(pane_id))),
+        );
+    }
+    push(
+        "projects",
+        Rc::new(RefCell::new(run(&actions.on_projects))),
+    );
+    push(
+        "scheduled",
+        Rc::new(RefCell::new(run(&actions.on_open_crons))),
+    );
+    push(
+        "tasks",
+        Rc::new(RefCell::new(run(&actions.on_toggle_workflow_view))),
+    );
+    push(
+        "workflows",
+        Rc::new(RefCell::new(run(&actions.on_workflows))),
+    );
+    push("mcps", Rc::new(RefCell::new(run(&actions.on_mcps))));
     {
         // The same toggles Settings carries; either surface flips them, and the
         // choice persists.
         let toggle_dark = actions.on_toggle_dark_mode.clone();
         let dark_mode = state.settings_dark_mode;
-        commands.push(SlashCommand::new(
+        push(
             "theme",
-            "Switch between the dark and light theme",
-            move || (toggle_dark.borrow_mut())(!dark_mode),
-        ));
+            Rc::new(RefCell::new(move || {
+                (toggle_dark.borrow_mut())(!dark_mode)
+            })),
+        );
         let toggle_vim = actions.on_toggle_vim_mode.clone();
         let vim_mode = state.vim_mode;
-        commands.push(SlashCommand::new(
+        push(
             "vim-mode",
-            "Toggle vim-style editing",
-            move || (toggle_vim.borrow_mut())(!vim_mode),
-        ));
+            Rc::new(RefCell::new(move || (toggle_vim.borrow_mut())(!vim_mode))),
+        );
         // grok-build's permission-mode command. The mode is app-wide, so the
         // command writes the same policy the composer menu and Settings do.
         let select_mode = actions.on_select_approval_mode.clone();
         let current_mode = state.approval_mode;
-        commands.push(SlashCommand::new(
+        push(
             "always-approve",
-            "Stop asking before running commands",
-            move || {
+            Rc::new(RefCell::new(move || {
                 let next = if current_mode == goble_ui::ApprovalMode::AlwaysApprove {
                     goble_ui::ApprovalMode::Manual
                 } else {
                     goble_ui::ApprovalMode::AlwaysApprove
                 };
                 (select_mode.borrow_mut())(pane_id, next);
-            },
-        ));
+            })),
+        );
     }
+    table
+}
+
+/// The commands a rich input offers when its draft starts with `/`: the list the
+/// harness advertises, with each entry mapped to the app gesture that runs it.
+/// One entry per configured model comes from the same catalog (`/model <id>`),
+/// so a model the configuration dropped stops being offered.
+///
+/// The chord that runs a command is deliberately not repeated here: the
+/// instruction strip under the input carries the gestures, and a command is run
+/// from the list itself.
+pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashCommand> {
+    let table = command_actions(state, actions);
+    let pane_id = state.active_pane_id;
+    let mut commands: Vec<SlashCommand> = state
+        .composer_catalog
+        .commands
+        .iter()
+        .filter(|command| command.trigger == goble_harness_types::ComposerTrigger::Slash)
+        .filter_map(|command| {
+            let effect = if let Some(model) = command.action.strip_prefix("model:") {
+                // `/model <id>` is one entry per configured model: the catalog
+                // names the model, the press applies it to the pane.
+                let model = model.to_string();
+                let act = actions.on_model_select.clone();
+                let pane_id = pane_id;
+                CommandEffect::Run(Rc::new(RefCell::new(move || {
+                    (act.borrow_mut())(pane_id, model.clone())
+                })))
+            } else {
+                CommandEffect::Run(table.get(&command.action)?.clone())
+            };
+            Some(SlashCommand {
+                name: command.name.clone(),
+                description: command.description.clone(),
+                prefix: '/',
+                effect,
+            })
+        })
+        .collect();
     if cfg!(debug_assertions) {
         // Dev builds can re-enter onboarding from the slash menu, beside the
         // `GOBLE_ONBOARDING=1` startup switch, so the flow can be iterated on.
@@ -207,17 +297,6 @@ pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashComma
             "onboarding",
             "Replay the first-run setup (dev build)",
             move || (replay.borrow_mut())(crate::ui::OnboardingAction::Replay),
-        ));
-    }
-    // One entry per configured model: `/model <name>`, so `/` lists them and
-    // the name filters them. A pick applies to the pane that typed it.
-    for name in &state.models {
-        let act = actions.on_model_select.clone();
-        let model = name.clone();
-        commands.push(SlashCommand::new(
-            format!("model {model}"),
-            "Run this pane on another model",
-            move || (act.borrow_mut())(pane_id, model.clone()),
         ));
     }
     // A CLI harness owns its own model and approval policy, so the app's
@@ -229,6 +308,43 @@ pub fn slash_commands(state: &UiSnapshot, actions: &UiActions) -> Vec<SlashComma
         });
     }
     commands
+}
+
+/// The skills the harness advertises, as rows a `$` draft lists. Taking one
+/// writes its token into the draft: the skill is part of the next prompt, and
+/// the harness reads it from what the user typed.
+pub fn skill_commands(state: &UiSnapshot) -> Vec<SlashCommand> {
+    state
+        .composer_catalog
+        .commands
+        .iter()
+        .filter(|command| command.trigger == goble_harness_types::ComposerTrigger::Skill)
+        .map(|command| {
+            SlashCommand::insert(
+                command.name.clone(),
+                command.description.clone(),
+                '$',
+                format!("${} ", command.name),
+            )
+        })
+        .collect()
+}
+
+/// The paths a `@` draft lists: what sits in the pane's working directory, read
+/// while the draft asks for it. Taking one writes `@<path>` into the draft.
+pub fn mention_commands(state: &UiSnapshot) -> Vec<SlashCommand> {
+    state
+        .mention_paths
+        .iter()
+        .map(|path| {
+            SlashCommand::insert(
+                path.clone(),
+                "Add this path to the prompt",
+                '@',
+                format!("@{path} "),
+            )
+        })
+        .collect()
 }
 
 /// The CLI harness the active pane's conversation belongs to, when it belongs
@@ -260,34 +376,78 @@ pub fn matching_slash_commands(commands: &[SlashCommand], query: &str) -> Vec<Sl
         .collect()
 }
 
-/// A command list as the menu draws it: the name and what it does.
+/// A command list as the menu draws it: the name under its own prefix, and what
+/// it does.
 pub fn slash_items(commands: &[SlashCommand]) -> Vec<SlashMenuItem> {
     commands
         .iter()
-        .map(|command| SlashMenuItem::new(command.name.clone(), command.description.clone()))
+        .map(|command| {
+            SlashMenuItem::new(command.name.clone(), command.description.clone())
+                .with_prefix(command.prefix)
+        })
         .collect()
 }
 
-/// Run the command at `index` of `commands` and put the menu away. The index is
-/// the row the menu reported, which is a position in the list it was handed.
+/// Take the row at `index` of `commands`. A command runs and the bar it was
+/// typed in is spent, so the menu closes with the draft cleared; a skill or a
+/// path is written into the draft by `insert`, because it is part of the next
+/// prompt and the menu's query was only how it was picked.
 pub fn slash_accept(
     commands: Vec<SlashCommand>,
     close: Rc<RefCell<dyn FnMut()>>,
+    insert: Rc<RefCell<dyn FnMut(String)>>,
 ) -> impl FnMut(usize) + 'static {
     move |index: usize| {
-        if let Some(command) = commands.get(index) {
-            (command.action.borrow_mut())();
+        let Some(command) = commands.get(index) else {
+            (close.borrow_mut())();
+            return;
+        };
+        match command.effect.clone() {
+            CommandEffect::Run(action) => {
+                (action.borrow_mut())();
+                (close.borrow_mut())();
+            }
+            CommandEffect::Insert(text) => (insert.borrow_mut())(text),
         }
-        (close.borrow_mut())();
     }
 }
 
-/// The query a slash draft carries: what was typed after the `/`, up to the
+/// The query a trigger draft carries: what was typed after its prefix, up to the
 /// first word. The rest of the line is the command's own text, not its name.
-pub fn slash_query(draft: &str) -> Option<String> {
-    let trimmed = draft.trim_start();
-    let rest = trimmed.strip_prefix('/')?;
-    Some(rest.split_whitespace().next().unwrap_or("").to_string())
+pub fn draft_query(draft: &str) -> Option<String> {
+    goble_ui::elements::DraftTrigger::from_draft(draft).map(|trigger| trigger.query(draft))
+}
+
+/// The paths a `@` draft lists: one level under `dir`, directories first and
+/// then files, both alphabetical. Dot entries are left out — they are noise in a
+/// prompt — and a directory that cannot be read lists nothing, so a pane that
+/// lost its shell never breaks the band.
+pub fn mention_paths(dir: &str, limit: usize) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut directories: Vec<String> = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            // The slash says the row is a directory and invites the next
+            // segment, the way a shell completes one.
+            directories.push(format!("{name}/"));
+        } else {
+            files.push(name);
+        }
+    }
+    directories.sort();
+    files.sort();
+    directories
+        .into_iter()
+        .chain(files)
+        .take(limit)
+        .collect()
 }
 
 /// Build the Cmd+K command palette overlay. When `open` is false the overlay

@@ -69,6 +69,14 @@ pub struct ToolOutcome {
 /// to read: the row falls back to the tool's own confirmation.
 pub const MAX_RECORDED_DIFF: usize = 256 * 1024;
 
+/// The largest output a tool hands back, head and tail kept with a note between
+/// them. One call can print a whole tree (`ls` of a repository root) or a
+/// generated file, and that row is replayed in every request that follows: a
+/// body past the provider's own limit is refused with 413 whatever the token
+/// window allows, so the output is cut here, once, rather than in the request.
+/// Two of these still sit well under the request cap the compaction watches.
+pub const MAX_TOOL_OUTPUT_BYTES: usize = 256 * 1024;
+
 impl ToolOutcome {
     /// An outcome with nothing to show beyond its text.
     pub fn text(output: impl Into<String>) -> Self {
@@ -87,6 +95,40 @@ impl ToolOutcome {
             diff: diff.filter(|diff| !diff.is_empty() && diff.len() <= MAX_RECORDED_DIFF),
         }
     }
+
+    /// The outcome with its output cut to [`MAX_TOOL_OUTPUT_BYTES`]: the head and
+    /// the tail, the bytes between them named. A cut lands on a character
+    /// boundary, so the text stays valid UTF-8.
+    pub fn capped(mut self) -> Self {
+        if self.output.len() > MAX_TOOL_OUTPUT_BYTES {
+            let head = MAX_TOOL_OUTPUT_BYTES * 3 / 4;
+            let tail = MAX_TOOL_OUTPUT_BYTES - head;
+            let cut = self.output.len() - head - tail;
+            let head_end = floor_boundary(&self.output, head);
+            let tail_start = ceil_boundary(&self.output, self.output.len() - tail);
+            let mut output = String::with_capacity(MAX_TOOL_OUTPUT_BYTES + 96);
+            output.push_str(&self.output[..head_end]);
+            output.push_str(&format!("\n… {cut} bytes cut …\n"));
+            output.push_str(&self.output[tail_start..]);
+            self.output = output;
+        }
+        self
+    }
+}
+
+/// The largest character boundary at or below `index`.
+fn floor_boundary(text: &str, index: usize) -> usize {
+    (0..=index)
+        .rev()
+        .find(|index| text.is_char_boundary(*index))
+        .unwrap_or(0)
+}
+
+/// The smallest character boundary at or above `index`.
+fn ceil_boundary(text: &str, index: usize) -> usize {
+    (index..=text.len())
+        .find(|index| text.is_char_boundary(*index))
+        .unwrap_or(text.len())
 }
 
 /// An event emitted by the harness while processing a user turn.
@@ -197,7 +239,7 @@ pub enum HarnessEvent {
 }
 
 /// The user's decision on a command the harness proposed (A6).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum CommandDecision {
     /// Run the chosen candidate text verbatim.

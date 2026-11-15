@@ -9,7 +9,8 @@ pub use ssh_installer::{PlatformInfo, SshCredentials, WorkerInstallResult};
 
 pub use state::{
     AgentInfo, AttachedSession, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, DesktopState,
-    ExecutionInfo, Intent, IntentParams, LlmSetting, LogEntry, ReasoningEvent, ReasoningPhase,
+    ExecutionInfo, Intent, IntentParams, LlmSetting, LogEntry, ModelGroup, ReasoningEvent,
+    ReasoningPhase,
     SessionAttach,
     SubAgentFinishedEvent, SubAgentProgressEvent, SubAgentSpawnedEvent, TeamInfo,
     ThreadMessageSummary, ThreadReactionSummary, ThreadSummary, TokenUsageEvent, ToolCallEvent,

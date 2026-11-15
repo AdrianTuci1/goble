@@ -45,6 +45,11 @@ pub const NEW_CONVERSATION_TITLE: &str = "New conversation";
 /// reads the subject instead (see [`UiState::space_label`]).
 pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
 
+/// The name a fresh cloud agent draws while its conversation has no subject
+/// yet: a viewer pane starts on the worker, and the surface that opens for it
+/// says what it is about to do.
+pub const NEW_CLOUD_AGENT_TITLE: &str = "New cloud agent";
+
 /// What the composer's model control reads while no model is configured: the
 /// pane's own model value stays empty — [`UiState::pane_agent_model`] reports
 /// nothing chosen, which is what [`UiState::can_run_agent_turn`] decides on —
@@ -102,6 +107,16 @@ pub struct UiState {
     pub composer_focused: bool,
     /// Model choices shown in the composer's model dropdown.
     pub models: Vec<String>,
+    /// The same models grouped the way the model tray lists them: one column
+    /// per provider the configuration declares models for, each with the
+    /// thinking levels its harness runs them at. Read from the desktop's
+    /// catalog, so the tray shows what a turn can actually run.
+    pub model_groups: Vec<goble_desktop_service::ModelGroup>,
+    /// The harness's own composer catalog: the commands and skills a draft can
+    /// list, and the models it runs with their thinking levels. Read from the
+    /// desktop, so the composer lists what the harness advertises instead of a
+    /// table kept here.
+    pub composer_catalog: goble_harness_types::HarnessCatalog,
     /// Currently selected model (shown as the composer's model label).
     pub selected_model: String,
     /// Harnesses the composer can route a turn to (native only in this build).
@@ -338,6 +353,9 @@ pub struct UiState {
     /// and `[remote_agents.*]`, named on the page so the configuration has a
     /// visible home.
     pub remote_config_path: String,
+    /// What the last cloud-agent deploy reported: the row above says a worker
+    /// is being shipped, or names the sandbox it landed in, or why it stopped.
+    pub remote_deploy: RemoteDeploy,
     /// First-run: whether the model-provider dialog is open over the chat.
     pub llm_dialog_open: bool,
     /// Editable model-provider form values + focus, held here so text/focus

@@ -86,10 +86,41 @@ impl Runner {
         mcp_servers: Vec<McpServer>,
         secrets: Vec<Secret>,
     ) -> anyhow::Result<()> {
+        let chat_id = trace_id.clone();
+        self.run_agent_turn(
+            trace_id,
+            agent_id,
+            spec,
+            mcp_servers,
+            secrets,
+            None,
+            chat_id,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Run one turn and hand back its status, the text the harness streamed and
+    /// whether it paused on a decision. A paused turn stays open on its trace,
+    /// so the caller persists nothing until that decision settles it.
+    ///
+    /// `chat_id` names the conversation the memory, the injected tail and the
+    /// compaction pass read and write. A phone turn keys it on the thread id so
+    /// the next turn on that thread sees this one.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_agent_turn(
+        &self,
+        trace_id: String,
+        agent_id: AgentId,
+        spec: AgentSpec,
+        mcp_servers: Vec<McpServer>,
+        secrets: Vec<Secret>,
+        user_prompt: Option<String>,
+        chat_id: String,
+    ) -> anyhow::Result<(ExecutionStatus, String, bool)> {
         let provider = (self.provider_factory)()?;
         let model_name = self.model_name();
         let store = self.state.store()?;
-        let chat_id = trace_id.clone();
         let (_harness_id, turn) = self
             .prepare_run(
                 &store,
@@ -100,6 +131,8 @@ impl Runner {
                 &secrets,
                 provider.clone(),
                 &model_name,
+                &chat_id,
+                user_prompt,
             )
             .await?;
         let session_id = turn.session_id.clone();
@@ -108,26 +141,132 @@ impl Runner {
         let client = self.state.daemon();
         let mut rx = client.subscribe();
         client.run(turn)?;
-        let status = await_turn(&mut rx, &session_id).await;
+        let (status, text, suspended) = await_turn(&mut rx, &session_id).await;
+        if suspended {
+            // The turn paused on a question or a command proposal. The client
+            // answers on this trace and the next wait settles it, so the trace
+            // stays open and no compaction runs ahead of the continuation.
+            return Ok((status, text, true));
+        }
         self.finish_trace(&trace_id, status.clone());
 
         self.maybe_compact(&provider, &model_name, &store, &chat_id, &agent_id)
             .await;
-        Ok(())
+        Ok((status, text, false))
     }
 
+    /// Follow a run a client resumed after answering a question or a command
+    /// proposal.
+    ///
+    /// The first wait ended on the suspension, so nothing is left to report the
+    /// rest of the turn: this second wait settles it, stores the continuation in
+    /// the conversation and tells every client the run is over. A continuation
+    /// that suspends again leaves the run open for the next decision.
+    pub async fn settle_resumed(
+        &self,
+        trace_id: String,
+        thread_id: Option<String>,
+        rx: &mut broadcast::Receiver<DaemonEvent>,
+    ) {
+        let session_id = SessionId::new(trace_id.clone());
+        let (status, text, suspended) = await_turn(rx, &session_id).await;
+        if suspended {
+            return;
+        }
+        self.finish_trace(&trace_id, status);
+
+        let Some(thread_id) = thread_id else {
+            return;
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Ok(store) = self.state.store() {
+            let _ = store.insert_chat_message(
+                &uuid::Uuid::new_v4().to_string(),
+                &thread_id,
+                "assistant",
+                &text,
+                None,
+                &chrono::Utc::now().to_rfc3339(),
+            );
+        }
+        self.state.emit(WorkerMessage::ThreadAgentReply {
+            trace_id,
+            thread_id,
+            content: text,
+        });
+    }
+
+    /// A thread reply from a client: persist what the user said, run the turn
+    /// with that message in the prompt, persist the answer and return it.
+    ///
+    /// The conversation is stored under `thread_id`, so a phone that rejoins
+    /// the gateway sees the history it produced and the next turn on the same
+    /// thread is sent with the earlier messages in front of it.
     pub async fn run_agent_for_thread_reply(
         &self,
         trace_id: String,
+        thread_id: String,
         agent_id: AgentId,
         spec: AgentSpec,
-        _prompt: String,
+        prompt: String,
         mcp_servers: Vec<McpServer>,
         secrets: Vec<Secret>,
-    ) -> anyhow::Result<String> {
-        self.run_agent(trace_id, agent_id, spec, mcp_servers, secrets)
+    ) -> anyhow::Result<Option<String>> {
+        let store = self.state.store()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        if store.get_chat_title(&thread_id)?.is_none() {
+            // The first message names the conversation, so a client that lists
+            // threads can draw a card without a second round trip.
+            let title: String = prompt.trim().chars().take(54).collect();
+            let title = if title.is_empty() {
+                "Phone session".to_string()
+            } else {
+                title
+            };
+            store.insert_chat(&thread_id, &title, None, None, &now, &now)?;
+        }
+        store.insert_chat_message(
+            &uuid::Uuid::new_v4().to_string(),
+            &thread_id,
+            "user",
+            &prompt,
+            None,
+            &now,
+        )?;
+
+        let (_status, text, suspended) = self
+            .run_agent_turn(
+                trace_id,
+                agent_id,
+                spec,
+                mcp_servers,
+                secrets,
+                Some(prompt),
+                thread_id.clone(),
+            )
             .await?;
-        Ok("reply submitted".to_string())
+        if suspended {
+            // The phone answers the question or the proposal on this trace;
+            // the continuation is stored when that answer settles.
+            return Ok(None);
+        }
+
+        let answer = if text.trim().is_empty() {
+            "The run finished without text.".to_string()
+        } else {
+            text
+        };
+        store.insert_chat_message(
+            &uuid::Uuid::new_v4().to_string(),
+            &thread_id,
+            "assistant",
+            &answer,
+            None,
+            &chrono::Utc::now().to_rfc3339(),
+        )?;
+        Ok(Some(answer))
     }
 
     pub async fn run_team(&self, trace_id: String, team_id: String) -> anyhow::Result<()> {
@@ -217,6 +356,7 @@ impl Runner {
     /// prompt (identity + memory + transcript tail), materialize the per-run
     /// agent workspace, and register a fresh [`InternalHarness`] in the daemon.
     /// Returns the registered harness id and the [`HarnessTurn`] to drive.
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_run(
         &self,
         store: &Store,
@@ -227,6 +367,8 @@ impl Runner {
         secrets: &[Secret],
         provider: Arc<dyn LlmProvider>,
         model_name: &str,
+        chat_id: &str,
+        user_prompt: Option<String>,
     ) -> anyhow::Result<(HarnessId, HarnessTurn)> {
         // Persist secrets so harness tools (e.g. MCP auth) resolve them.
         for secret in secrets {
@@ -263,10 +405,16 @@ impl Runner {
                 .await;
         }
 
-        // Build the prompt as identity + memory + transcript tail.
+        // Build the prompt as identity + memory + transcript tail, then the
+        // message this turn is answering. A scheduled or manual run has no
+        // message of its own, so the spec prompt stands alone.
         let memory = loader::load_or_create(store, agent_id, &spec.prompt)?;
-        let tail = injector::transcript_tail(store, trace_id, TRANSCRIPT_TAIL_MESSAGES)?;
-        let prompt = injector::build_context(&spec.prompt, &memory, &tail);
+        let tail = injector::transcript_tail(store, chat_id, TRANSCRIPT_TAIL_MESSAGES)?;
+        let mut prompt = injector::build_context(&spec.prompt, &memory, &tail);
+        if let Some(user_prompt) = user_prompt {
+            prompt.push_str("\n\n## The user's message\n");
+            prompt.push_str(&user_prompt);
+        }
 
         let workspace_dir = self
             .state
@@ -346,29 +494,50 @@ impl Runner {
     }
 }
 
-/// Wait for a daemon turn to settle, returning the worker-side `ExecutionStatus`.
+/// Wait for a daemon turn to settle, returning the worker-side
+/// `ExecutionStatus` and the text the harness streamed.
 ///
-/// A turn settles on `TraceFinished`; a turn that paused on an `AskUser` reports
-/// success (matching the harness-runner, which paused and finished on an ask).
-async fn await_turn(rx: &mut broadcast::Receiver<DaemonEvent>, sid: &SessionId) -> ExecutionStatus {
+/// A turn settles on `TraceFinished`; a turn that paused on an `AskUser` or a
+/// `CommandProposed` reports success (matching the harness-runner, which paused
+/// and finished on the suspension). The deltas are collected on the way so the
+/// caller can store the reply without a second subscription racing the first.
+async fn await_turn(
+    rx: &mut broadcast::Receiver<DaemonEvent>,
+    sid: &SessionId,
+) -> (ExecutionStatus, String, bool) {
+    let mut text = String::new();
     while let Ok(event) = rx.recv().await {
         match &event {
+            DaemonEvent::AssistantDelta {
+                session_id, delta, ..
+            } if session_id == sid => text.push_str(delta),
             DaemonEvent::TraceFinished {
                 session_id, status, ..
             } if session_id == sid => {
-                return if status == "success" {
+                let status = if status == "success" {
                     ExecutionStatus::Success
                 } else {
                     ExecutionStatus::Failure("harness did not finish".to_string())
                 };
+                return (status, text, false);
             }
             DaemonEvent::AskUser { session_id, .. } if session_id == sid => {
-                return ExecutionStatus::Success;
+                return (ExecutionStatus::Success, text, true);
+            }
+            // The command gate suspends the turn the same way: the client
+            // decides the proposal and the rest of the turn arrives on this
+            // stream. Waiting here would leave the run open for good.
+            DaemonEvent::CommandProposed { session_id, .. } if session_id == sid => {
+                return (ExecutionStatus::Success, text, true);
             }
             _ => {}
         }
     }
-    ExecutionStatus::Failure("event stream closed".to_string())
+    (
+        ExecutionStatus::Failure("event stream closed".to_string()),
+        text,
+        false,
+    )
 }
 
 /// Run a single non-streaming compaction turn against the full transcript and

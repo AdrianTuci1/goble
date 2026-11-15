@@ -345,6 +345,32 @@ impl PopupMenu {
         ))
     }
 
+    /// The gap between `row` and its tray, while the tray sits beside it: the
+    /// corridor the pointer crosses on its way from the row to the tray. A row
+    /// stays hovered across it, so the tray can be reached — without it the
+    /// tray would vanish the moment the pointer left the row, and a tray this
+    /// far from its row could never be clicked.
+    fn tray_corridor(&self, row: RectF) -> Option<RectF> {
+        let tray = self.tray_bounds()?;
+        let (left, right) = if tray.min_x() >= row.max_x() {
+            (row.max_x(), tray.min_x())
+        } else if tray.max_x() <= row.min_x() {
+            (tray.max_x(), row.min_x())
+        } else {
+            // The tray overlaps the row horizontally: there is no gap to cross.
+            return None;
+        };
+        // The corridor spans both heights: the tray is taller than a row (a
+        // title and its button), and a diagonal path to the button must not
+        // leave the row before it is over the tray.
+        let top = row.min_y().min(tray.min_y());
+        let bottom = row.max_y().max(tray.max_y());
+        Some(RectF::new(
+            PointF::new(left, top),
+            Size2F::new((right - left).max(0.0), (bottom - top).max(0.0)),
+        ))
+    }
+
     /// The panel's scroll offset: zero for a panel with no cap, which draws
     /// every row from the top.
     fn scroll_offset(&self) -> f32 {
@@ -444,7 +470,10 @@ impl PopupMenu {
 
     /// Re-read which row the pointer is over from the paint-time cursor, which
     /// is where hover lives in this framework. The pointer over the tray itself
-    /// keeps the tray open, so it can be moved onto and clicked.
+    /// keeps the tray open, so it can be moved onto and clicked, and so does a
+    /// pointer in the gap between the row and the tray (see
+    /// [`Self::tray_corridor`]): the two are four points apart, and a pointer
+    /// crossing that gap would otherwise drop the row and the tray with it.
     fn track_hover(&mut self, ctx: &PaintContext, app: &AppContext) {
         let over_row = (0..self.items.len())
             .find(|i| self.row_bounds(*i, app).is_some_and(|row| ctx.hovered(row)));
@@ -453,7 +482,12 @@ impl PopupMenu {
             return;
         }
         let over_tray = self.tray_bounds().is_some_and(|tray| ctx.hovered(tray));
-        if !over_tray {
+        let hovered = *self.hover_index.borrow();
+        let in_corridor = hovered
+            .and_then(|index| self.row_bounds(index, app))
+            .and_then(|row| self.tray_corridor(row))
+            .is_some_and(|corridor| ctx.hovered(corridor));
+        if !over_tray && !in_corridor {
             *self.hover_index.borrow_mut() = None;
         }
     }
@@ -1275,6 +1309,28 @@ mod tests {
         menu.paint(origin, &mut PaintContext::default(), app);
     }
 
+    /// Move the paint-time cursor to `point` and rebuild the tree, the way a
+    /// frame with the pointer there does: what the pointer holds open is what
+    /// the next layout builds.
+    fn move_pointer(
+        menu: &mut PopupMenu,
+        point: Vector2F,
+        app: &AppContext,
+        width: f32,
+        origin: Vector2F,
+    ) {
+        let mut paint_ctx = PaintContext::default();
+        paint_ctx.cursor_position = point;
+        paint_ctx.cursor_inside = true;
+        menu.paint(origin, &mut paint_ctx, app);
+        menu.layout(
+            SizeConstraint::loose(vec2f(width, 400.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        menu.paint(origin, &mut paint_ctx, app);
+    }
+
     #[test]
     fn hovering_a_row_shows_its_tray_beside_it() {
         let clicked = Rc::new(RefCell::new(usize::MAX));
@@ -1323,6 +1379,55 @@ mod tests {
             menu.tray.is_none(),
             "the first item carries no tray, so none is drawn for it"
         );
+    }
+
+    /// The tray is four points past the panel, so the pointer crosses a gap to
+    /// reach it: the row stays hovered while the pointer is in that gap, and
+    /// the tray survives the crossing.
+    #[test]
+    fn the_pointer_can_cross_from_the_row_to_its_tray() {
+        let clicked = Rc::new(RefCell::new(usize::MAX));
+        let (mut menu, _open) = menu_with_a_tray(Rc::clone(&clicked));
+        let app = AppContext::default();
+        let at = vec2f(0.0, 0.0);
+        lay_out_open(&mut menu, &app, 600.0, at);
+        hover_item(&mut menu, 1, &app, 600.0, at);
+
+        let row = menu.row_bounds(1, &app).expect("the hovered row");
+        let tray = menu.tray_bounds().expect("the tray beside it");
+        assert!(
+            tray.min_x() > row.max_x(),
+            "the tray sits to the right of its row: {tray:?} after {row:?}"
+        );
+
+        // In the gap, level with the row: still the row's tray.
+        let gap = vec2f(
+            (row.max_x() + tray.min_x()) / 2.0,
+            row.min_y() + POPUP_ITEM_HEIGHT / 2.0,
+        );
+        move_pointer(&mut menu, gap, &app, 600.0, at);
+        assert_eq!(
+            *menu.hover_index.borrow(),
+            Some(1),
+            "the row stays hovered while the pointer crosses the gap"
+        );
+        assert!(
+            menu.tray.is_some(),
+            "and its tray is still drawn on the next frame"
+        );
+
+        // Onto the tray's own top-left: the pointer over the tray keeps it.
+        let on_tray = vec2f(tray.min_x() + 4.0, tray.min_y() + 4.0);
+        move_pointer(&mut menu, on_tray, &app, 600.0, at);
+        assert!(
+            menu.tray.is_some(),
+            "the tray stays while the pointer is on it"
+        );
+
+        // Away from both: the tray closes.
+        move_pointer(&mut menu, vec2f(0.0, 380.0), &app, 600.0, at);
+        assert_eq!(*menu.hover_index.borrow(), None, "the row is left");
+        assert!(menu.tray.is_none(), "and the tray goes with it");
     }
 
     #[test]

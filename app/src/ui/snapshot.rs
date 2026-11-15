@@ -231,6 +231,16 @@ pub struct UiSnapshot {
     pub composer_focused: bool,
     /// Model choices shown in the composer's model dropdown.
     pub models: Vec<String>,
+    /// The same models grouped for the composer's model tray: one column per
+    /// provider the configuration declares models for, each with the thinking
+    /// levels its harness runs them at.
+    pub model_groups: Vec<goble_desktop_service::ModelGroup>,
+    /// The harness's own composer catalog: what a draft can list behind `/` and
+    /// `$`, and the models the tray shows.
+    pub composer_catalog: goble_harness_types::HarnessCatalog,
+    /// The paths a `@` draft lists, read from the active pane's working
+    /// directory while that draft asks for them. Empty otherwise.
+    pub mention_paths: Vec<String>,
     /// Currently selected model (shown as the composer's model label).
     pub selected_model: String,
     /// Harnesses the composer can route a turn to (native + registered BYOH).

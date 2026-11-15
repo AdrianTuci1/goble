@@ -35,6 +35,7 @@ use crate::worker_manager::WorkerClient;
 mod agents;
 mod attach;
 mod bootstrap;
+mod catalog;
 mod chats;
 mod cluster;
 mod environment;
@@ -57,9 +58,11 @@ mod workers;
 mod tests;
 
 pub use attach::{AttachedSession, SessionAttach};
+pub use catalog::ModelGroup;
 pub use remote::{
-    deploy, sandbox_request, RemoteDeploy, GATEWAY_URL_ENV, PROJECT_ID_ENV, REPO_BRANCH_ENV,
-    REPO_URL_ENV, WORKER_ID_ENV, WORKER_TOKEN_ENV, WORKSPACE_PATH_ENV,
+    deploy, sandbox_request, RemoteDeploy, RemoteSandbox, GATEWAY_URL_ENV, PROJECT_ID_ENV,
+    REMOTE_DEPLOY_EVENT, REPO_BRANCH_ENV, REPO_URL_ENV, WORKER_ID_ENV, WORKER_TOKEN_ENV,
+    WORKSPACE_PATH_ENV,
 };
 pub use sandboxes::{binding_for_local_project, binding_for_project};
 pub use workflow_scheduler::start_workflow_scheduler;
@@ -99,6 +102,11 @@ pub struct DesktopState {
     /// the located home, tests pin a temp file. Nothing resolves the user's real
     /// home on its own, so a state over a temp store cannot write into it.
     config_path: Mutex<Option<PathBuf>>,
+    /// The persistence store the durable projects and the sandbox bindings live
+    /// in. `None` on a state built with [`DesktopState::new`], which has no home:
+    /// a deploy there has nowhere to resolve a project from or record the
+    /// binding in, and says so.
+    sandbox_store: Mutex<Option<Arc<goble_persistence::CheckpointStore>>>,
     /// The managed agent-run workspace root, `~/.goble/worktrees`. A run that
     /// has no project workspace of its own — a workflow's turns, a chat with no
     /// pane directory — works here, so its files never land in the directory the

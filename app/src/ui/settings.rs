@@ -144,6 +144,8 @@ pub fn pane_controls(
             DefaultModel,
             AutoApprove,
             VimMode,
+            SetupRemoteWithAgent,
+            SetupHubWithAgent,
             OpenConfigFile,
             ReloadRemoteAgents,
         ],
@@ -709,6 +711,25 @@ fn action_row(app: &AppContext, button: Box<dyn Element>, focused: bool) -> Box<
     )
     .with_padding(EdgeInsets::uniform(sm))
     .finish()
+}
+
+/// A row whose button opens a setup conversation with the agent. The same
+/// outlined control as the config-file row, so the page's actions read alike.
+fn setup_agent_row(
+    app: &AppContext,
+    label: &str,
+    on_click: Rc<RefCell<dyn FnMut()>>,
+    focused: bool,
+) -> Box<dyn Element> {
+    let button = Button::new(
+        Text::new(label)
+            .with_theme_color(ColorToken::Text, app)
+            .finish(),
+    )
+    .with_variant(ButtonVariant::Outline)
+    .with_on_click(move || (on_click.borrow_mut())())
+    .finish();
+    action_row(app, button, focused)
 }
 
 /// The row that opens `~/.goble/config.toml` in a file pane. Every page that
@@ -1332,8 +1353,24 @@ fn build_agent(
     ));
     col = col.with_child(note(
         app,
-        "Edit [remote] or [remote_agents.<name>] in this file, then reload. Its header \
-         lists every option.",
+        "Set it up with the agent, which asks for the values that are missing, or edit the \
+         file yourself and reload. Its header lists every option.",
+    ));
+    let setup_remote_focused = order.take(SettingsControl::SetupRemoteWithAgent);
+    col = col.with_child(rule());
+    col = col.with_child(setup_agent_row(
+        app,
+        "Set up Remote with the agent",
+        actions.on_setup_remote_with_agent.clone(),
+        setup_remote_focused,
+    ));
+    let setup_hub_focused = order.take(SettingsControl::SetupHubWithAgent);
+    col = col.with_child(rule());
+    col = col.with_child(setup_agent_row(
+        app,
+        "Set up the hub with the agent",
+        actions.on_setup_hub_with_agent.clone(),
+        setup_hub_focused,
     ));
     let open_focused = order.take(SettingsControl::OpenConfigFile);
     col = col.with_child(rule());

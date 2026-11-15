@@ -17,7 +17,8 @@ use std::sync::{Arc, RwLock};
 use futures::Stream;
 use goble_harness_protocol::HarnessServerEvent;
 use goble_harness_types::{
-    CommandDecision, HarnessCapabilities, HarnessId, HarnessSnapshot, HarnessTurn, SessionId,
+    CommandDecision, HarnessCapabilities, HarnessCatalog, HarnessId, HarnessSnapshot, HarnessTurn,
+    SessionId,
 };
 
 /// A stream of events a harness produces for one run.
@@ -36,6 +37,15 @@ pub trait HarnessRuntime: Send + Sync {
     fn id(&self) -> HarnessId;
     fn capabilities(&self) -> HarnessCapabilities;
     fn run(&self, turn: HarnessTurn, cancel: Arc<AtomicBool>) -> HarnessRun;
+
+    /// What this harness offers a composer: the commands and skills it answers
+    /// and the models it runs, with the thinking levels each accepts. The host
+    /// lists these instead of keeping a catalogue of its own, so a harness that
+    /// brings its own commands is understood without the host learning it. The
+    /// default is an empty catalogue: a harness that advertises nothing.
+    fn catalog(&self) -> HarnessCatalog {
+        HarnessCatalog::empty()
+    }
 
     /// Cancel a running turn. The default is a no-op; a harness that drives its
     /// own cancellation flag should override it.
@@ -118,6 +128,15 @@ impl HarnessRegistry {
 
     pub fn resolve(&self, id: &HarnessId) -> Option<Arc<dyn HarnessRuntime>> {
         self.inner.read().unwrap().get(id).cloned()
+    }
+
+    /// What the harness registered as `id` advertises to a composer. A harness
+    /// that is not registered advertises nothing, so a host can ask before the
+    /// first turn has built it.
+    pub fn catalog(&self, id: &HarnessId) -> HarnessCatalog {
+        self.resolve(id)
+            .map(|harness| harness.catalog())
+            .unwrap_or_else(HarnessCatalog::empty)
     }
 
     pub fn list(&self) -> Vec<HarnessId> {

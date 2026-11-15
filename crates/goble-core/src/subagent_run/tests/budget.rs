@@ -13,7 +13,7 @@ use super::{
 
 #[test]
 fn a_child_gets_two_hundred_steps_unless_the_spawn_names_a_budget() {
-    let default = default_child_budget();
+    let default = child_budget(None);
     assert_eq!(default.max_turns, 200);
     assert_eq!(default.max_tool_calls, 400);
     assert_eq!(default.max_tokens, 2_000_000);
@@ -181,7 +181,7 @@ async fn a_spawn_carries_its_step_budget_into_the_child() {
     .await
     .expect("a background child");
     let default_child = host.registry.records()[0].spec.budget;
-    assert_eq!(default_child.max_turns, default_child_budget().max_turns);
+    assert_eq!(default_child.max_turns, child_budget(None).max_turns);
     assert_eq!(default_child.max_turns, 200);
     host.registry
         .cancel(&host.registry.records()[0].spec.id, "test done");

@@ -7,7 +7,7 @@ use crate::elements::{Container, CrossAxisAlignment, Element, Fill, Flex, Inline
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::ToolCallStatus;
-use super::tool_body::READ_TRUNCATION;
+use super::tool_body::{elide_line, elided_len, MAX_BODY_BYTES, READ_TRUNCATION};
 
 /// Lines an expanded read draws before the rest is elided. The element tree is
 /// rebuilt on every frame, so the body has to cost what is on screen and not
@@ -16,8 +16,9 @@ use super::tool_body::READ_TRUNCATION;
 pub(super) const EXPANDED_LINE_CAP: usize = 200;
 
 /// The blocks this thread's highlight memo keeps, and the largest block it
-/// keeps. A drawn block is at most [`EXPANDED_LINE_CAP`] lines, so the memo
-/// holds drawn excerpts and never a whole file.
+/// keeps. A drawn block is at most [`EXPANDED_LINE_CAP`] lines and
+/// [`MAX_BODY_BYTES`] bytes, so the memo holds drawn excerpts and never a whole
+/// file.
 const MEMO_ENTRIES: usize = 4;
 
 const MEMO_MAX_BYTES: usize = 64 * 1024;
@@ -40,9 +41,14 @@ pub(crate) struct ReadExcerpt<'a> {
 
 impl ReadExcerpt<'_> {
     /// The text of `range`'s lines, joined so the highlighter's per-line state
-    /// carries across them. Only a block the fold draws is ever joined.
+    /// carries across them, each line elided to the drawn line's own cap. Only a
+    /// block the fold draws is ever joined.
     fn range_text(&self, range: Range<usize>) -> String {
-        self.lines[range].join("\n")
+        self.lines[range]
+            .iter()
+            .map(|line| elide_line(line))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -165,7 +171,8 @@ pub(super) struct DrawnLines {
 
 /// The excerpt lines a fold draws. Truncated draws [`READ_TRUNCATION`]'s head
 /// and tail; open, it draws the head up to [`EXPANDED_LINE_CAP`] lines and
-/// elides the rest, so neither fold's cost follows the file's length.
+/// [`MAX_BODY_BYTES`] bytes and elides the rest, so neither the fold's cost nor
+/// the joined block follows the file's length.
 pub(super) fn drawn_lines(excerpt: &ReadExcerpt<'_>, mode: ToolDisplayMode) -> DrawnLines {
     let total = excerpt.lines.len();
     let (first, last) = READ_TRUNCATION;
@@ -181,7 +188,16 @@ pub(super) fn drawn_lines(excerpt: &ReadExcerpt<'_>, mode: ToolDisplayMode) -> D
         };
     }
 
-    let drawn = total.min(EXPANDED_LINE_CAP);
+    let mut drawn = 0usize;
+    let mut bytes = 0usize;
+    for line in excerpt.lines.iter().take(total.min(EXPANDED_LINE_CAP)) {
+        let line_bytes = elided_len(line) + 1;
+        if drawn > 0 && bytes + line_bytes > MAX_BODY_BYTES {
+            break;
+        }
+        bytes += line_bytes;
+        drawn += 1;
+    }
     let head = 0..drawn;
     let elided = total - drawn;
     DrawnLines {
@@ -298,7 +314,7 @@ pub(super) fn read_excerpt_line(
     match runs {
         Some(runs) if !runs.is_empty() => spans.extend(runs.iter().cloned()),
         _ => spans.push(
-            TextSpan::plain(text.to_string())
+            TextSpan::plain(elide_line(text).into_owned())
                 .with_family(FontFamily::Mono)
                 .with_color(app.theme.color(ColorToken::Text)),
         ),

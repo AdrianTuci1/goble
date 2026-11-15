@@ -268,3 +268,33 @@ async fn sandboxed_runner_degrades_when_backend_unavailable() {
     let out = runner.run("echo", &["degraded".to_string()]).await.unwrap();
     assert!(out.contains("degraded"));
 }
+
+/// A tool that printed a whole tree, or a read of a generated file, is cut
+/// before its row is written: that row is replayed in every request after it,
+/// and a body past the provider's own limit is refused with 413 whatever the
+/// token window allows.
+#[test]
+fn a_tool_output_past_its_cap_keeps_its_head_and_tail() {
+    let mut output = String::from("head ");
+    output.push_str(&"x".repeat(MAX_TOOL_OUTPUT_BYTES));
+    output.push_str(" tail");
+    let capped = ToolOutcome::text(output.clone()).capped();
+    assert!(capped.output.len() <= MAX_TOOL_OUTPUT_BYTES + 96);
+    assert!(capped.output.starts_with("head "));
+    assert!(capped.output.ends_with(" tail"));
+    assert!(
+        capped.output.contains("bytes cut"),
+        "the cut names what it dropped"
+    );
+
+    // A multi-byte character straddling the cut is not split: the text stays
+    // valid UTF-8 and the note still lands.
+    let wide = "ă".repeat(MAX_TOOL_OUTPUT_BYTES);
+    let capped = ToolOutcome::text(wide).capped();
+    assert!(capped.output.len() <= MAX_TOOL_OUTPUT_BYTES + 96);
+    assert!(capped.output.contains("bytes cut"));
+
+    // Under the cap an output is untouched.
+    let small = ToolOutcome::text("a small result");
+    assert_eq!(small.capped().output, "a small result");
+}

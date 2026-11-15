@@ -64,7 +64,7 @@ pub(crate) async fn execute_tool_call(
     web_search_config: &WebSearchConfig,
     turn: &ToolTurnContext<'_>,
 ) -> Result<ToolOutcome> {
-    match call.name.as_str() {
+    let outcome = match call.name.as_str() {
         "create_agent" => text(create_agent(store, &call.arguments)),
         "update_agent" => text(update_agent(store, &call.arguments)),
         "create_workflow" => text(create_workflow(store, &call.arguments)),
@@ -91,7 +91,19 @@ pub(crate) async fn execute_tool_call(
         "git_status" => text(git_status(runner, &call.arguments).await),
         "git_diff" => text(git_diff(runner, &call.arguments).await),
         "git_commit" => text(git_commit(runner, &call.arguments).await),
-        "codebase_search" => text(codebase_search(&call.arguments, workspace_dir)),
+        // A codebase search walks and reads the workspace, which is blocking
+        // work: the turn runs on a runtime worker, so the scan is handed to the
+        // blocking pool rather than occupying that worker for the whole walk.
+        "codebase_search" => {
+            let arguments = call.arguments.clone();
+            let workspace_dir = workspace_dir.to_path_buf();
+            let output = tokio::task::spawn_blocking(move || {
+                codebase_search(&arguments, &workspace_dir)
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("codebase_search task failed: {error}"))?;
+            text(output)
+        }
         "install_mcp_server" => text(install_mcp_server(mcp_manager, store, &call.arguments).await),
         "list_mcp_servers" => text(list_mcp_servers(mcp_manager, store)),
         "discover_mcp_tools" => text(discover_mcp_tools(mcp_manager, &call.arguments)),
@@ -119,7 +131,11 @@ pub(crate) async fn execute_tool_call(
                 anyhow::bail!("unknown tool {}", call.name)
             }
         }
-    }
+    }?;
+    // Every tool's output leaves through here, so the one place that bounds what
+    // a request replays is this one: a command that printed a whole tree or a
+    // read of a generated file is cut before it becomes a row.
+    Ok(outcome.capped())
 }
 
 /// A handler's text as an outcome: every tool but a file mutation has nothing

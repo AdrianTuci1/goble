@@ -141,6 +141,51 @@ pub(super) async fn git_commit(
         .await
 }
 
+/// Matches a codebase search keeps. The result is read in a pane, so a search
+/// answers with the first few hits rather than the whole tree's.
+const MAX_MATCHES: usize = 50;
+
+/// How many characters of a matched line the result carries. A minified line is
+/// one line of tens of kilobytes, and the transcript draws what the tool
+/// returns on every frame.
+const MAX_MATCH_CHARS: usize = 240;
+
+/// How many bytes of matches the result carries. Past this the walk stops and
+/// the result says it was cut, so a common pattern's answer stays what a pane
+/// can draw rather than what the tree holds.
+const MAX_RESULT_BYTES: usize = 8 * 1024;
+
+/// The largest file a search reads. A source file is far under this; a bundle, a
+/// database or a build product is far over it and has nothing to show.
+const MAX_FILE_BYTES: u64 = 1 << 20;
+
+/// Directories a search never descends into: build output and dependencies. A
+/// Rust workspace's `target/` alone runs to hundreds of gigabytes and hundreds
+/// of thousands of files, and reading it per search is what made a scan take
+/// longer than the turn that asked for it.
+const SKIPPED_DIRS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    "target",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".cache",
+    ".gradle",
+    ".terraform",
+    ".idea",
+    ".vscode",
+    "coverage",
+];
+
 pub(super) fn codebase_search(
     args: &serde_json::Value,
     workspace_dir: &std::path::Path,
@@ -165,31 +210,83 @@ pub(super) fn codebase_search(
         anyhow::bail!("search path escapes workspace directory");
     }
     let regex = regex_lite::Regex::new(pattern).context("invalid regex")?;
-    let mut matches = Vec::new();
+    let mut matches: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    let mut cut = false;
     for entry in walkdir::WalkDir::new(&canonical_search)
         .into_iter()
+        .filter_entry(keeps_scanning)
         .filter_map(|e| e.ok())
     {
-        let path = entry.path();
-        if !path.is_file() {
+        if !entry.file_type().is_file() {
             continue;
         }
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for (i, line) in content.lines().enumerate() {
-                if regex.is_match(line) {
-                    matches.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
-                    if matches.len() >= 50 {
-                        break;
-                    }
-                }
+        let Some(content) = read_text_file(entry.path()) else {
+            continue;
+        };
+        for (i, line) in content.lines().enumerate() {
+            if !regex.is_match(line) {
+                continue;
             }
+            let row = format!("{}:{}: {}", entry.path().display(), i + 1, cap_line(line));
+            // The cap is checked before the row is kept, so the result never
+            // runs past what a pane draws.
+            if matches.len() == MAX_MATCHES || bytes + row.len() + 1 > MAX_RESULT_BYTES {
+                cut = true;
+                break;
+            }
+            bytes += row.len() + 1;
+            matches.push(row);
         }
-        if matches.len() >= 50 {
+        if cut {
             break;
         }
     }
-    Ok(format!("{} matches\n{}", matches.len(), matches.join("\n")))
+    let mut result = format!("{} matches\n{}", matches.len(), matches.join("\n"));
+    if cut {
+        result.push_str("\n… more matches not shown");
+    }
+    Ok(result)
 }
+
+/// Whether the walk descends into `entry`: the named build and dependency trees
+/// are skipped, but a search pointed at one of them reads it as asked.
+fn keeps_scanning(entry: &walkdir::DirEntry) -> bool {
+    if entry.depth() == 0 || !entry.file_type().is_dir() {
+        return true;
+    }
+    let name = entry.file_name().to_string_lossy();
+    !SKIPPED_DIRS.contains(&name.as_ref())
+}
+
+/// `path`'s text when it is a file a search reads: a product larger than
+/// [`MAX_FILE_BYTES`] or one with a NUL byte in its head is no source, and is
+/// skipped before it is read whole.
+fn read_text_file(path: &std::path::Path) -> Option<String> {
+    use std::io::Read as _;
+
+    if std::fs::metadata(path).ok()?.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    let mut head = [0u8; 1024];
+    let mut file = std::fs::File::open(path).ok()?;
+    let read = file.read(&mut head).ok()?;
+    if head[..read].contains(&0) {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+/// A matched line as the result carries it: trimmed, and cut at
+/// [`MAX_MATCH_CHARS`] with `…` where it was cut.
+fn cap_line(line: &str) -> String {
+    let line = line.trim();
+    match line.char_indices().nth(MAX_MATCH_CHARS) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_string(),
+    }
+}
+
 pub(super) fn resolve_path(path: &str, workspace_dir: &std::path::Path) -> Result<PathBuf> {
     let p = PathBuf::from(path);
     let resolved = if p.is_absolute() {

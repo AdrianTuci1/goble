@@ -646,10 +646,10 @@ mod tests {
 
     #[test]
     fn a_subagent_row_names_the_child() {
-        let row = row("spawn_subagent", r#"{"description":"check the tests"}"#);
-        assert_eq!(row.kind, ToolKind::SubAgent);
-        assert_eq!(row.verb, "Agent ");
-        assert_eq!(row.subject, "\u{201C}check the tests\u{201D}");
+        let subagent = row("spawn_subagent", r#"{"description":"check the tests"}"#);
+        assert_eq!(subagent.kind, ToolKind::SubAgent);
+        assert_eq!(subagent.verb, "Agent ");
+        assert_eq!(subagent.subject, "\u{201C}check the tests\u{201D}");
 
         // The product's own agent calls are rows in words, never the tool
         // identifier the model called: `create_agent` names its name, and

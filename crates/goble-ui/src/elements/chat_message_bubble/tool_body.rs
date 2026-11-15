@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::elements::chat_content::{SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
 use crate::elements::{
     parse_unified_diff, Diff, DiffLine, DiffLineKind, Element, Hunk, InlineText, TerminalData,
@@ -15,18 +17,53 @@ pub(super) const READ_TRUNCATION: (usize, usize) = (5, 3);
 
 pub(super) const COMMAND_TRUNCATION: (usize, usize) = (2, 3);
 
+/// The characters one drawn body line may carry before it is elided. A minified
+/// bundle, a one-line JSON dump or a generated lock file is one line of tens of
+/// kilobytes, and the wrapper shapes it again on every frame: the line is what
+/// the pane draws, so the line is what is bounded.
+pub(super) const MAX_LINE_CHARS: usize = 2_000;
+
+/// The bytes one expanded body draws, its elision row aside. A result is drawn
+/// so it can be read; past this many bytes the rest is elided and named, so a
+/// frame's cost stops following the result's length.
+pub(super) const MAX_BODY_BYTES: usize = 16 * 1024;
+
+/// `line` cut to [`MAX_LINE_CHARS`] characters, with `…` where it was cut.
+pub(super) fn elide_line(line: &str) -> Cow<'_, str> {
+    match line.char_indices().nth(MAX_LINE_CHARS) {
+        Some((cut, _)) => Cow::Owned(format!("{}…", &line[..cut])),
+        None => Cow::Borrowed(line),
+    }
+}
+
+/// The bytes [`elide_line`] yields for `line`: what a body's byte cap has to
+/// count, without building the elided string to measure it.
+pub(super) fn elided_len(line: &str) -> usize {
+    match line.char_indices().nth(MAX_LINE_CHARS) {
+        Some((cut, _)) => cut + '…'.len_utf8(),
+        None => line.len(),
+    }
+}
+
 /// The head and tail of `text`'s lines with an ellipsis between them, or all of
-/// them when there are no more than `first + last`.
+/// them when there are no more than `first + last`. Each line is elided to
+/// [`MAX_LINE_CHARS`]: the head a fold draws is bounded whatever the file holds.
 pub(super) fn truncate_lines(text: &str, truncation: (usize, usize)) -> Vec<String> {
     let (first, last) = truncation;
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= first + last {
-        return lines.into_iter().map(str::to_string).collect();
+        return lines
+            .into_iter()
+            .map(|line| elide_line(line).into_owned())
+            .collect();
     }
-    let mut truncated: Vec<String> = lines[..first].iter().map(|line| line.to_string()).collect();
+    let mut truncated: Vec<String> = lines[..first]
+        .iter()
+        .map(|line| elide_line(line).into_owned())
+        .collect();
     truncated.push("…".to_string());
     for line in &lines[lines.len() - last..] {
-        truncated.push(line.to_string());
+        truncated.push(elide_line(line).into_owned());
     }
     truncated
 }
@@ -62,9 +99,10 @@ pub(super) fn result_rows(
 /// truncated, the head as one row expanded. The sub-agent record's own outcome
 /// folds the same way a tool result does.
 ///
-/// Expanded is bounded by [`EXPANDED_LINE_CAP`] like a read's excerpt: the row
-/// is a whole block of text, and laying out a file's worth of it again on each
-/// frame is what makes a large result cost the transcript.
+/// Expanded is bounded by [`EXPANDED_LINE_CAP`] lines and [`MAX_BODY_BYTES`]
+/// bytes, and truncated elides each line to [`MAX_LINE_CHARS`]: the row is a
+/// whole block of text, and laying out a file's worth of it again on each frame
+/// is what makes a large result cost the transcript.
 pub(super) fn folded_text_rows(
     text: &str,
     mode: ToolDisplayMode,
@@ -80,22 +118,44 @@ pub(super) fn folded_text_rows(
             .into_iter()
             .map(|line| tool_body_row(line, ColorToken::Muted, app))
             .collect(),
-        ToolDisplayMode::Expanded => {
-            let total = text.lines().count();
-            if total <= EXPANDED_LINE_CAP {
-                return vec![tool_body_row(text.to_string(), ColorToken::Muted, app)];
-            }
-            let head: Vec<&str> = text.lines().take(EXPANDED_LINE_CAP).collect();
-            vec![
-                tool_body_row(head.join("\n"), ColorToken::Muted, app),
-                tool_body_row(
-                    format!("… {} more lines", total - EXPANDED_LINE_CAP),
-                    ColorToken::Muted,
-                    app,
-                ),
-            ]
-        }
+        ToolDisplayMode::Expanded => expanded_text_rows(text, app),
     }
+}
+
+/// One block of text as the rows an expanded body draws: whole lines while the
+/// line and byte caps hold, each line elided to [`MAX_LINE_CHARS`], then one row
+/// naming the bytes left out.
+fn expanded_text_rows(text: &str, app: &crate::elements::AppContext) -> Vec<Box<dyn Element>> {
+    let mut drawn = String::new();
+    let mut drawn_lines = 0usize;
+    let mut consumed = 0usize;
+    for line in text.lines() {
+        let cut = elide_line(line);
+        if drawn_lines == EXPANDED_LINE_CAP
+            || (!drawn.is_empty() && drawn.len() + 1 + cut.len() > MAX_BODY_BYTES)
+        {
+            break;
+        }
+        if drawn_lines > 0 {
+            drawn.push('\n');
+        }
+        drawn.push_str(&cut);
+        drawn_lines += 1;
+        consumed += line.len() + 1;
+    }
+    let remaining = text.len().saturating_sub(consumed);
+    let mut rows = Vec::with_capacity(2);
+    if !drawn.is_empty() {
+        rows.push(tool_body_row(drawn, ColorToken::Muted, app));
+    }
+    if remaining > 0 {
+        rows.push(tool_body_row(
+            format!("… {remaining} more bytes"),
+            ColorToken::Muted,
+            app,
+        ));
+    }
+    rows
 }
 
 /// The body a tool call shows, shaped by the family its name parses into. The
@@ -161,6 +221,8 @@ pub(super) fn command_body(
     let (first, last) = COMMAND_TRUNCATION;
     let elided = mode == ToolDisplayMode::Truncated && lines.len() > first + last;
     let mut rows: Vec<Box<dyn Element>> = Vec::with_capacity(lines.len() + 1);
+    let mut drawn_bytes = 0usize;
+    let mut drawn_rows = 0usize;
     for (index, line) in lines.iter().enumerate() {
         let hidden = elided && index >= first && index < lines.len() - last;
         if hidden {
@@ -174,9 +236,47 @@ pub(super) fn command_body(
             }
             continue;
         }
+        // Each output line is its own row, so both the line and the body are
+        // bounded: a minified line or a megabyte of output would otherwise be
+        // shaped on every frame.
+        if drawn_rows == EXPANDED_LINE_CAP
+            || (drawn_rows > 0 && drawn_bytes + line.text.len() > MAX_BODY_BYTES)
+        {
+            let rest: usize = lines[index..].iter().map(|line| line.text.len() + 1).sum();
+            rows.push(tool_body_row(
+                format!("… {rest} more bytes"),
+                ColorToken::Muted,
+                app,
+            ));
+            break;
+        }
+        drawn_bytes += line.text.len() + 1;
+        drawn_rows += 1;
         rows.push(output_row(line, call.status, app));
     }
     rows
+}
+
+/// One output line's runs cut to [`MAX_LINE_CHARS`] characters: the colours the
+/// terminal resolved are kept, the tail of a minified line is not.
+fn elide_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
+    let mut budget = MAX_LINE_CHARS;
+    let mut out = Vec::with_capacity(spans.len());
+    for mut span in spans {
+        if budget == 0 {
+            break;
+        }
+        let chars = span.text.chars().count();
+        if chars > budget {
+            span.text = span.text.chars().take(budget).collect();
+            span.text.push('…');
+            budget = 0;
+        } else {
+            budget -= chars;
+        }
+        out.push(span);
+    }
+    out
 }
 
 /// One line of a command's output as the runs it is drawn in: the runs the
@@ -224,7 +324,7 @@ fn output_row(
     status: ToolCallStatus,
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
-    tool_body_span_row(output_spans(line, status, app), app)
+    tool_body_span_row(elide_spans(output_spans(line, status, app)), app)
 }
 
 /// The block's state, read from the call's persisted status. A call that has
@@ -459,7 +559,11 @@ pub(super) fn search_body(
                 sources
             };
             for source in sources {
-                rows.push(tool_body_row(source, ColorToken::Accent, app));
+                rows.push(tool_body_row(
+                    elide_line(&source).into_owned(),
+                    ColorToken::Accent,
+                    app,
+                ));
             }
         }
     }
@@ -547,7 +651,11 @@ pub(super) fn sub_agent_argument_rows(
     if let Some(input) =
         argument_str(arguments, "input").or_else(|| argument_str(arguments, "prompt"))
     {
-        rows.push(tool_body_row(input.to_string(), ColorToken::Muted, app));
+        rows.push(tool_body_row(
+            elide_line(&one_line(input)).into_owned(),
+            ColorToken::Muted,
+            app,
+        ));
     }
     rows.extend(result_rows(call, mode, READ_TRUNCATION, app));
     rows
@@ -615,7 +723,9 @@ fn argument_rows(
 /// belongs in the tool's own output, printed there if the tool chose to.
 fn argument_value(value: &serde_json::Value) -> String {
     match value {
-        serde_json::Value::String(text) => one_line(text),
+        // A string argument can be a whole file's contents (a `write_file`), so
+        // the row draws its head rather than the payload on every frame.
+        serde_json::Value::String(text) => elide_line(&one_line(text)).into_owned(),
         serde_json::Value::Null => "null".to_string(),
         other if other.is_boolean() || other.is_number() => other.to_string(),
         serde_json::Value::Array(items) => count_of(items.len(), "item"),

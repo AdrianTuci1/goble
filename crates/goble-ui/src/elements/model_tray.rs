@@ -926,6 +926,7 @@ impl Element for ModelTray {
 mod tests {
     use super::*;
     use crate::event::ModifiersState;
+    use crate::geometry::vec2f;
 
     fn key(name: &str) -> DispatchedEvent {
         DispatchedEvent::KeyDown {

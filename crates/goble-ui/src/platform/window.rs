@@ -148,9 +148,69 @@ pub fn run_with_root(
         modifiers: winit::event::Modifiers::default(),
         scroll_momentum: ScrollMomentum::default(),
         next_frame: std::time::Instant::now(),
+        press_run: None,
     };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// A run of presses on one point, the way the app's workspace tabs count one:
+/// the count is read on the press, so holding a press does not eat the window
+/// between two of them, and the gesture is reported when the button comes back
+/// up.
+#[derive(Clone, Copy)]
+struct PressRun {
+    at: std::time::Instant,
+    position: Vector2F,
+    count: u32,
+}
+
+/// Whether two points are close enough to be one press: the slop a double click
+/// tolerates between its two presses.
+fn near(a: Vector2F, b: Vector2F) -> bool {
+    (a.x - b.x).abs() <= crate::event::MULTI_CLICK_SLOP
+        && (a.y - b.y).abs() <= crate::event::MULTI_CLICK_SLOP
+}
+
+/// Count `position` as a press and note how many presses in a row this is. The
+/// point is part of the run, so two presses on different rows are not a double
+/// click.
+fn count_press(run: &mut Option<PressRun>, position: Vector2F, button: u32) {
+    if button != crate::event::BUTTON_PRIMARY {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let count = run
+        .filter(|run| {
+            near(run.position, position)
+                && now.saturating_duration_since(run.at) <= crate::event::MULTI_CLICK_INTERVAL
+        })
+        .map_or(1, |run| (run.count + 1).min(2));
+    *run = Some(PressRun {
+        at: now,
+        position,
+        count,
+    });
+}
+
+/// The double click a release completes, if it completes one: the second press
+/// of a run, released on the point it was pressed at. The run is spent once the
+/// gesture is reported, so a third press starts a new one, and a drag away from
+/// the press is no double click.
+fn end_press(
+    run: &mut Option<PressRun>,
+    position: Vector2F,
+    button: u32,
+) -> Option<DispatchedEvent> {
+    if button != crate::event::BUTTON_PRIMARY {
+        return None;
+    }
+    let press = (*run)?;
+    if press.count < 2 || !near(press.position, position) {
+        return None;
+    }
+    *run = None;
+    Some(DispatchedEvent::MouseDoubleClick { position, button })
 }
 
 struct App {
@@ -168,6 +228,10 @@ struct App {
     /// When the next frame is due. Input requests its own frames; this is the
     /// animation clock, and it also caps how long the window sleeps while idle.
     next_frame: std::time::Instant,
+    /// The presses in a row on one point, for the double click a row answers.
+    /// The element tree is rebuilt every frame, so the count lives here, where
+    /// the whole press stream — and both presses of the gesture — is visible.
+    press_run: Option<PressRun>,
 }
 
 impl App {
@@ -404,21 +468,40 @@ impl ApplicationHandler for App {
                     _ => 2,
                 };
                 let position = self.cursor_position;
-                let event = match state {
-                    winit::event::ElementState::Pressed => DispatchedEvent::MouseDown {
-                        position,
-                        button: button_id,
-                    },
-                    winit::event::ElementState::Released => DispatchedEvent::MouseUp {
-                        position,
-                        button: button_id,
-                    },
+                // The press is counted here and the gesture reported on the
+                // release that ends it: a row's own click has run by then, so a
+                // section that opens on a click closes on the double click that
+                // follows it. Both events land in this one handler, so no frame
+                // draws the state between them.
+                let (event, double_click) = match state {
+                    winit::event::ElementState::Pressed => {
+                        count_press(&mut self.press_run, position, button_id);
+                        (
+                            DispatchedEvent::MouseDown {
+                                position,
+                                button: button_id,
+                            },
+                            None,
+                        )
+                    }
+                    winit::event::ElementState::Released => (
+                        DispatchedEvent::MouseUp {
+                            position,
+                            button: button_id,
+                        },
+                        end_press(&mut self.press_run, position, button_id),
+                    ),
                 };
                 let mut event_ctx = crate::elements::EventContext::default();
                 let app_context = self.app_context.borrow().clone();
                 let _ = self
                     .root
                     .dispatch_event(&event, &mut event_ctx, &app_context);
+                if let Some(double_click) = double_click {
+                    let _ = self
+                        .root
+                        .dispatch_event(&double_click, &mut event_ctx, &app_context);
+                }
                 drop(app_context);
                 window.request_redraw();
             }

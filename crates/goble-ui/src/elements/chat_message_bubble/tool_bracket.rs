@@ -35,6 +35,9 @@ pub(super) struct ToolBracket {
     /// chain every member, so the pair frames the run while any of it is under
     /// the pointer.
     hover_keys: Vec<String>,
+    /// The block's answer to a double click anywhere inside it: the whole
+    /// section the rail frames closes, not only the row the pointer landed on.
+    on_double_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -51,9 +54,19 @@ impl ToolBracket {
             open,
             hover,
             hover_keys,
+            on_double_click: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Answer a double click over the block's own rows — its header, its body,
+    /// or the free margin the strokes are painted in — with this callback. The
+    /// rows answer a double click of their own first, so a block nested in this
+    /// one keeps its own gesture.
+    pub(super) fn with_on_double_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_double_click = Some(Rc::new(RefCell::new(callback)));
+        self
     }
 
     /// Whether the block is under the pointer this frame. Read after the child
@@ -117,6 +130,34 @@ impl Element for ToolBracket {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
-        self.child.dispatch_event(event, ctx, app)
+        if self.child.dispatch_event(event, ctx, app) {
+            return true;
+        }
+        // A double click the rows did not take is the block's: the section the
+        // strokes frame is the section this gesture closes, wherever in it the
+        // pointer landed — including the margin the strokes are painted in.
+        let Some(callback) = self.on_double_click.as_ref() else {
+            return false;
+        };
+        let DispatchedEvent::MouseDoubleClick { position, button } = event else {
+            return false;
+        };
+        if *button != crate::event::BUTTON_PRIMARY {
+            return false;
+        }
+        let (Some(size), Some(origin)) = (self.size.as_ref(), self.origin.as_ref()) else {
+            return false;
+        };
+        let bounds = rectf(
+            origin.x() - BRACKET_GAP,
+            origin.y(),
+            size.x + 2.0 * BRACKET_GAP,
+            size.y,
+        );
+        if !crate::elements::interactive::contains(bounds, *position) {
+            return false;
+        }
+        (callback.borrow_mut())();
+        true
     }
 }

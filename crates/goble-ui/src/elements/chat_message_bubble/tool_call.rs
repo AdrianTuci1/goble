@@ -419,6 +419,21 @@ fn verb_group_open(fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>, key: &s
     fold.borrow().get(key).copied() == Some(ToolDisplayMode::Expanded)
 }
 
+/// The callback a double click on a block runs: the fold goes back to
+/// `Collapsed`, never on to the next state. The two presses of the gesture run
+/// the block's own click first, so what this closes is the section the presses
+/// left open.
+fn collapse_on_double_click(
+    fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
+    key: String,
+) -> impl FnMut() + 'static {
+    let fold = fold.clone();
+    move || {
+        fold.borrow_mut()
+            .insert(key.clone(), ToolDisplayMode::Collapsed);
+    }
+}
+
 /// One foldable row of a tool sequence, in display order: a whole verb run
 /// under its aggregated header, or a call that stands on its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -543,6 +558,7 @@ fn verb_group_header(
 
     let toggle = fold.clone();
     let key = key.to_string();
+    let close_key = key.clone();
     HoverRow::new(
         InlineText::new(spans)
             .with_font_size(TOOL_ROW_FONT_SIZE)
@@ -563,6 +579,9 @@ fn verb_group_header(
             },
         );
     })
+    // A double click folds the chain back to its header however the two presses
+    // before it left the fold: the run closes, it does not walk on.
+    .with_on_double_click(collapse_on_double_click(fold, close_key))
     .finish()
 }
 
@@ -694,8 +713,10 @@ pub(super) fn build_tool_call_rows(
             );
             // A call with its body open reads as selected, so it keeps the rail
             // the group's members get; a collapsed one is framed by hover only.
-            let element =
-                ToolBracket::new(element, !collapsed, hover.clone(), vec![key]).finish();
+            // A double click anywhere in the section it frames closes it again.
+            let element = ToolBracket::new(element, !collapsed, hover.clone(), vec![key.clone()])
+                .with_on_double_click(collapse_on_double_click(fold, key))
+                .finish();
             column = push(column, element, collapsed);
             index += 1;
             continue;
@@ -737,7 +758,14 @@ pub(super) fn build_tool_call_rows(
                 .any(|key| hovered == Some(key.as_str()))
         };
         let (label, _running, failed) = verb_group_label(&tool_calls[start..end], start, fold);
-        let mut group = Flex::column()
+        // The run's rail is drawn per segment rather than around the whole run:
+        // a member the user opened is a block of its own, so the run's strokes
+        // stop where that block begins instead of continuing through its body.
+        // `segment` gathers the piece being drawn — the header and the folded
+        // members beside it — and is flushed into `brackets` whenever an opened
+        // member interrupts it.
+        let mut brackets: Vec<Box<dyn Element>> = Vec::new();
+        let mut segment = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0)
             .with_child(verb_group_header(
@@ -749,6 +777,11 @@ pub(super) fn build_tool_call_rows(
                 member_hovered,
                 app,
             ));
+        // The header is what the first segment always holds, so it is never
+        // empty; a segment started after an opened member is, until a folded
+        // member lands in it.
+        let mut segment_keys = vec![group_key.clone()];
+        let mut segment_empty = false;
         // Folded, a run shows only its header — except for a member the user
         // already opened, which grok-build keeps on screen and transparent.
         // Opened, every member is drawn, its own fold deciding its body.
@@ -762,7 +795,7 @@ pub(super) fn build_tool_call_rows(
             if !open && member_mode == ToolDisplayMode::Collapsed {
                 continue;
             }
-            let (element, _) = single_call_column(
+            let (element, collapsed) = single_call_column(
                 &tool_calls[member],
                 member,
                 open,
@@ -774,15 +807,54 @@ pub(super) fn build_tool_call_rows(
                 on_action,
                 app,
             );
-            group = group.with_child(element);
+            if collapsed {
+                segment = segment.with_child(element);
+                segment_keys.push(member_key);
+                segment_empty = false;
+                continue;
+            }
+            // An opened member is bracketed on its own: the run's strokes end
+            // above it, its pair frames its header and its body alone, and the
+            // next piece of the run starts a segment of its own.
+            if !segment_empty {
+                brackets.push(
+                    ToolBracket::new(
+                        segment.finish(),
+                        open,
+                        hover.clone(),
+                        std::mem::take(&mut segment_keys),
+                    )
+                    .with_on_double_click(collapse_on_double_click(fold, group_key.clone()))
+                    .finish(),
+                );
+            }
+            segment = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(2.0);
+            segment_empty = true;
+            brackets.push(
+                ToolBracket::new(element, true, hover.clone(), vec![member_key.clone()])
+                    .with_on_double_click(collapse_on_double_click(fold, member_key))
+                    .finish(),
+            );
+        }
+        if !segment_empty {
+            brackets.push(
+                ToolBracket::new(segment.finish(), open, hover.clone(), segment_keys)
+                    .with_on_double_click(collapse_on_double_click(fold, group_key.clone()))
+                    .finish(),
+            );
         }
         // The block is bracketed in the free margin beside the text — both
         // strokes, no inset — while the group is open or the pointer is on any
         // of its rows. The label carries no punctuation of its own.
-        let mut hover_keys = vec![group_key.clone()];
-        hover_keys.extend(member_keys);
-        let group = ToolBracket::new(group.finish(), open, hover.clone(), hover_keys).finish();
-        column = push(column, group, !open);
+        let mut group = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(2.0);
+        for bracket in brackets {
+            group = group.with_child(bracket);
+        }
+        column = push(column, group.finish(), !open);
         index = end.max(start + 1);
     }
     column.finish()
@@ -949,6 +1021,9 @@ pub(super) fn tool_call_header(
         let current = folds.get(&toggle_key).copied().unwrap_or(fallback);
         folds.insert(toggle_key.clone(), current.next());
     })
+    // A double click closes the call the row opened, without stepping it on
+    // through `Truncated` and `Expanded` a third time.
+    .with_on_double_click(collapse_on_double_click(fold, key.to_string()))
     .finish()
 }
 

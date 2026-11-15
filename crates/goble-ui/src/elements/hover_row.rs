@@ -36,6 +36,9 @@ pub struct HoverRow {
     /// and the key it writes there. See [`Self::with_hover_key`].
     hover_key: Option<(Rc<RefCell<Option<String>>>, String)>,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// The row's own answer to a double click, when it has one: a row that opens
+    /// on a click closes again on the second one.
+    on_double_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     state: InteractiveState,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -51,6 +54,7 @@ impl HoverRow {
             hover_highlight: true,
             hover_key: None,
             on_click: None,
+            on_double_click: None,
             state: InteractiveState::default(),
             size: None,
             origin: None,
@@ -87,6 +91,13 @@ impl HoverRow {
 
     pub fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_click = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Answer a double click over the row, for the rows whose click opens
+    /// something that the second press closes again.
+    pub fn with_on_double_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_double_click = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -204,6 +215,20 @@ impl Element for HoverRow {
             Some(bounds) => bounds,
             None => return false,
         };
+        // The double click is the row's own gesture and is answered before the
+        // click cycle: the release that completed the second press already ran
+        // `on_click`, so a row whose click opened something closes here. A row
+        // with no gesture of its own leaves it to the block it sits in.
+        if let DispatchedEvent::MouseDoubleClick { position, button } = event {
+            if *button == crate::event::BUTTON_PRIMARY
+                && crate::elements::interactive::contains(bounds, *position)
+            {
+                if let Some(cb) = self.on_double_click.as_ref() {
+                    (cb.borrow_mut())();
+                    return true;
+                }
+            }
+        }
         let cb = self.on_click.clone();
         let mut on_click = move || {
             if let Some(cb) = cb.as_ref() {

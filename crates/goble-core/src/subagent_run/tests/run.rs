@@ -1,13 +1,17 @@
 use std::sync::Arc;
 
 use crate::harness::{ChatToolCall, ToolCallStatus, SPAWN_SUBAGENT_TOOL};
+use crate::llm::{
+    CompletionRequest, CompletionResponse, CompletionStreamEvent, LlmProvider, Message,
+};
 use crate::store::Store;
 use crate::subagent::{SubAgentBudget, SubAgentStatus};
 use futures::StreamExt;
+use std::pin::Pin;
 
 use super::{
     background_args, child_of, completion, harness_on, host_for, parent_chat, roles, run_direct,
-    spec_for, spawn_args, spawn_through_tool, tool_call, wait_until_terminal, PanickingProvider,
+    spawn_args, spawn_through_tool, spec_for, tool_call, wait_until_terminal, PanickingProvider,
     ScriptedProvider,
 };
 
@@ -177,4 +181,124 @@ async fn a_panicking_child_becomes_failed_and_never_hangs() {
         other => panic!("a panicking child must be Failed, got {other:?}"),
     }
     assert!(done.finished_at.is_some());
+}
+
+/// The endpoint's body cap as a child meets it: the summariser's call is
+/// answered with a summary, the child's third model call is refused for the
+/// size of its conversation, and the call after the retry answers. Every
+/// request is kept so a test can read what the retry carried.
+struct BodyCapOnce {
+    calls: std::sync::atomic::AtomicUsize,
+    seen: std::sync::Mutex<Vec<Vec<Message>>>,
+}
+
+impl BodyCapOnce {
+    fn new() -> Self {
+        Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn model_calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for BodyCapOnce {
+    fn name(&self) -> &str {
+        "body-cap"
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+        // The compaction prompt is the one call whose text is a transcript.
+        if request
+            .messages
+            .iter()
+            .any(|message| message.content.starts_with("Conversation so far:"))
+        {
+            return Ok(CompletionResponse::new(
+                r#"{"session_id":"c","summary":"The earlier turns.","facts":[],"decisions":[],"goals_completed":[],"new_goals":[],"milestones_completed":[],"next_steps":[],"message_count":2}"#,
+                Vec::new(),
+            ));
+        }
+        self.seen.lock().unwrap().push(request.messages.clone());
+        match self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        {
+            0 => Ok(completion(
+                "",
+                vec![tool_call("tc1", "credentials", serde_json::json!({}))],
+            )),
+            1 => Ok(completion(
+                "",
+                vec![tool_call("tc2", "credentials", serde_json::json!({}))],
+            )),
+            2 => anyhow::bail!(
+                "LLM request failed: 413 Request Entity Too Large <html><center><h1>413 Request Entity Too Large</h1></center><hr><center>openresty</center></html>"
+            ),
+            _ => Ok(completion("done: read both", vec![])),
+        }
+    }
+
+    async fn complete_stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> anyhow::Result<Pin<Box<dyn futures::Stream<Item = CompletionStreamEvent> + Send>>> {
+        Err(anyhow::anyhow!("this stub only answers a child's call"))
+    }
+}
+
+/// A child has no compaction of its own until it is refused: its conversation
+/// is compacted through the same path a parent turn uses, rebuilt from its own
+/// stored rows, and the refused call retried exactly once.
+#[tokio::test]
+async fn a_child_refused_for_its_body_size_compacts_and_retries_once() {
+    let store = Store::open_in_memory().unwrap();
+    let workspace = tempfile::TempDir::new().unwrap();
+    let cwd = workspace.path().join("child-cap");
+    let spec = spec_for("child-cap", &cwd, SubAgentBudget::new(10, 10, 100_000));
+    let llm = Arc::new(BodyCapOnce::new());
+    let record = run_direct(&store, workspace.path(), llm.clone(), spec).await;
+
+    match &record.status {
+        SubAgentStatus::Completed { output, .. } => assert_eq!(output, "done: read both"),
+        other => panic!("the retried child completes, got {other:?}"),
+    }
+    assert_eq!(
+        llm.model_calls(),
+        4,
+        "the refused call is retried exactly once"
+    );
+
+    // The retry's history came back from the child's own store: the summary
+    // and the last exchange, not the turns the summary replaced.
+    let requests = llm.seen.lock().unwrap().clone();
+    let retry = requests.last().expect("the retry is recorded");
+    assert!(
+        retry[0].content.contains("You are a sub-agent"),
+        "the child's system prompt stays: {:?}",
+        retry[0].content
+    );
+    assert!(
+        retry[1].content.contains("Summary of the earlier turns"),
+        "the retry reads the compaction's summary: {:?}",
+        retry[1].content
+    );
+    assert!(
+        !retry
+            .iter()
+            .any(|message| message.tool_call_id.as_deref() == Some("tc1")),
+        "the summarised exchange left the request: {retry:?}"
+    );
+
+    // The child's own transcript says what happened.
+    let rows = roles(&store, "child-cap");
+    assert!(
+        rows.iter()
+            .any(|(role, content)| role == "notice" && content.contains("Context compacted:")),
+        "the child's transcript carries the compaction notice: {rows:?}"
+    );
 }

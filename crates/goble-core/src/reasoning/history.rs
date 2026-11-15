@@ -14,6 +14,14 @@ pub(super) async fn build_history(
     _execution_tools: &[ToolDefinition],
     _mode: ThinkingMode,
 ) -> Vec<Message> {
+    stored_history(store, chat_id).await
+}
+
+/// The request rows a chat's stored messages make, with the latest compaction
+/// in front. A sub-agent keeps its own history in memory and rebuilds it
+/// through this after a compaction, so its retry reads the same summary a
+/// parent's request would.
+pub(crate) async fn stored_history(store: &Store, chat_id: &str) -> Vec<Message> {
     let Ok(all_rows) = store.list_chat_messages(chat_id) else {
         return Vec::new();
     };

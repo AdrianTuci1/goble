@@ -2,13 +2,14 @@ use super::history::build_history;
 use super::*;
 use crate::harness::Harness;
 use crate::llm::{CompletionResponse, MockProvider};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::Utc;
 
 use crate::harness::{ChatToolCall, CommandDecision, HarnessEvent, ThinkingMode, ToolCallStatus};
-use crate::llm::{CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Role};
+use crate::llm::{CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role};
 use crate::store::Store;
 
 fn chat(store: &Store) -> String {
@@ -1252,4 +1253,279 @@ async fn an_empty_assistant_row_is_not_sent_back() {
         history.iter().any(|message| message.content == "hi"),
         "the reply that has text is kept"
     );
+}
+
+/// The summary the caps below return, as the compaction prompt's JSON.
+const CAP_SUMMARY: &str = r#"{"session_id":"c","summary":"The earlier turns.","facts":[],"decisions":[],"goals_completed":[],"new_goals":[],"milestones_completed":[],"next_steps":[],"message_count":2}"#;
+
+/// A provider for the body cap: the summariser's plain call gets a summary,
+/// every streamed request is kept so a test can read what was sent, and the
+/// first `refusals` streamed calls fail the way the endpoint refused the real
+/// conversation — 413 with openresty's own page.
+struct CapProvider {
+    refusals: std::sync::Mutex<usize>,
+    seen: std::sync::Mutex<Vec<Vec<Message>>>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl CapProvider {
+    fn new(refusals: usize) -> Self {
+        Self {
+            refusals: std::sync::Mutex::new(refusals),
+            seen: std::sync::Mutex::new(Vec::new()),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn stream_calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn requests(&self) -> Vec<Vec<Message>> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for CapProvider {
+    fn name(&self) -> &str {
+        "cap"
+    }
+
+    async fn complete(&self, _request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+        Ok(CompletionResponse::new(CAP_SUMMARY, Vec::new()))
+    }
+
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = CompletionStreamEvent> + Send>>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.seen.lock().unwrap().push(request.messages.clone());
+        let mut refusals = self.refusals.lock().unwrap();
+        if *refusals > 0 {
+            *refusals -= 1;
+            anyhow::bail!(
+                "LLM request failed: 413 Request Entity Too Large <html>\n<head><title>413 Request Entity Too Large</title></head>\n<body><center><h1>413 Request Entity Too Large</h1></center>\n<hr><center>openresty</center></body>\n</html>"
+            );
+        }
+        drop(refusals);
+        Ok(Box::pin(futures::stream::iter(vec![
+            CompletionStreamEvent::AssistantDelta("The answer.".to_string()),
+            CompletionStreamEvent::Done,
+        ])))
+    }
+}
+
+/// Two turns before the prompt, together well past the request cap while the
+/// token count stays low: the shape a conversation with a couple of large tool
+/// results has.
+fn seed_turns_before_the_prompt(store: &Store, chat_id: &str) {
+    let now = Utc::now().to_rfc3339();
+    let big = "x".repeat(500_000);
+    for (role, content) in [
+        ("user", "the first goal".to_string()),
+        ("assistant", big.clone()),
+        ("user", format!("an older prompt {big}")),
+    ] {
+        store
+            .insert_chat_message(
+                &uuid::Uuid::new_v4().to_string(),
+                chat_id,
+                role,
+                &content,
+                None,
+                &now,
+            )
+            .unwrap();
+    }
+}
+
+/// The request a turn sends has a body cap of its own, below the token window
+/// the compaction trigger watches: the provider refuses the whole request with
+/// 413 long before its tokens fill the window. The body is measured before it
+/// is sent, and the following request carries the summary instead of the oldest
+/// rows.
+#[tokio::test]
+async fn a_request_over_the_body_cap_is_compacted_before_it_is_sent() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    seed_turns_before_the_prompt(&store, &chat_id);
+
+    let provider = Arc::new(CapProvider::new(0));
+    let harness = Harness::new(store.clone()).with_llm(provider.clone());
+    let events: Vec<_> = harness
+        .run_turn(&chat_id, "the current prompt", "mock", "mock")
+        .collect()
+        .await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            HarnessEvent::ContextCompaction { phase, .. } if phase == "completed"
+        )),
+        "the body's size compacted the conversation: {events:?}"
+    );
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1, "one request, sent after the compaction");
+    let messages = &requests[0];
+    // The harness's own prompt comes first, then the summary of the turns the
+    // compaction replaced; both stand in front of what the conversation still
+    // carries.
+    let summary_at = messages
+        .iter()
+        .position(|message| message.content.contains("The earlier turns."))
+        .unwrap_or_else(|| panic!("the request carries the summary: {messages:?}"));
+    assert!(
+        messages[..summary_at]
+            .iter()
+            .all(|message| message.role == Role::System),
+        "the summary stands in front of the turns: {messages:?}"
+    );
+    assert!(messages.iter().any(|m| m.content == "the current prompt"));
+    assert!(
+        !messages
+            .iter()
+            .any(|m| m.content.contains("the first goal")),
+        "the oldest rows left the request: {messages:?}"
+    );
+
+    // The transcript keeps every row and says what happened, in place.
+    let rows = store.list_chat_messages(&chat_id).unwrap();
+    let notice = rows
+        .iter()
+        .find(|(_, role, ..)| role == "notice")
+        .expect("the compaction leaves its notice row");
+    assert!(
+        notice.2.contains("Context compacted:") && notice.2.contains("against the 900 KB cap"),
+        "the notice names the cap it passed and its outcome: {:?}",
+        notice.2
+    );
+}
+
+/// A provider that refuses by size once is recovered from: the conversation is
+/// compacted, the request rebuilt from the shortened history, and sent again
+/// exactly once. The turn finishes, and the transcript carries the notice.
+#[tokio::test]
+async fn a_refused_body_is_compacted_and_the_request_retried_once() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let now = Utc::now().to_rfc3339();
+    for (role, content) in [("user", "the first goal"), ("assistant", "the first reply")] {
+        store
+            .insert_chat_message(
+                &uuid::Uuid::new_v4().to_string(),
+                &chat_id,
+                role,
+                content,
+                None,
+                &now,
+            )
+            .unwrap();
+    }
+
+    let provider = Arc::new(CapProvider::new(1));
+    let harness = Harness::new(store.clone()).with_llm(provider.clone());
+    let events: Vec<_> = harness
+        .run_turn(&chat_id, "the current prompt", "mock", "mock")
+        .collect()
+        .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, HarnessEvent::Done)),
+        "the retried turn finishes: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, HarnessEvent::Error(_))),
+        "the refusal is recovered from, not reported: {events:?}"
+    );
+    assert_eq!(
+        provider.stream_calls(),
+        2,
+        "the request is sent again exactly once"
+    );
+    let requests = provider.requests();
+    let retry = requests.last().expect("the retry is recorded");
+    let summary_at = retry
+        .iter()
+        .position(|message| message.content.contains("The earlier turns."))
+        .unwrap_or_else(|| panic!("the retry carries the summary: {retry:?}"));
+    assert!(
+        retry[..summary_at]
+            .iter()
+            .all(|message| message.role == Role::System),
+        "the retry stands its summary in front of the turns: {retry:?}"
+    );
+    assert!(
+        !retry.iter().any(|m| m.content == "the first goal"),
+        "the retry carries the shortened history: {retry:?}"
+    );
+
+    let rows = store.list_chat_messages(&chat_id).unwrap();
+    assert!(
+        rows.iter().any(
+            |(_, role, content, ..)| role == "notice" && content.contains("Context compacted:")
+        ),
+        "the transcript says what happened: {rows:?}"
+    );
+}
+
+/// A provider that refuses twice is not retried in a loop: the turn ends with
+/// that one error, as it did before the recovery existed.
+#[tokio::test]
+async fn a_second_refusal_ends_the_turn_without_looping() {
+    let store = Store::open_in_memory().unwrap();
+    let chat_id = chat(&store);
+    let now = Utc::now().to_rfc3339();
+    for (role, content) in [("user", "the first goal"), ("assistant", "the first reply")] {
+        store
+            .insert_chat_message(
+                &uuid::Uuid::new_v4().to_string(),
+                &chat_id,
+                role,
+                content,
+                None,
+                &now,
+            )
+            .unwrap();
+    }
+
+    let provider = Arc::new(CapProvider::new(usize::MAX));
+    let harness = Harness::new(store.clone()).with_llm(provider.clone());
+    let events: Vec<_> = harness
+        .run_turn(&chat_id, "the current prompt", "mock", "mock")
+        .collect()
+        .await;
+
+    let errors: Vec<&String> = events
+        .iter()
+        .filter_map(|event| match event {
+            HarnessEvent::Error(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "the turn fails once, with one error: {events:?}"
+    );
+    assert!(errors[0].contains("413"), "{:?}", errors[0]);
+    assert_eq!(
+        provider.stream_calls(),
+        2,
+        "the request is retried exactly once, never in a loop"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, HarnessEvent::Done)),
+        "the turn does not finish on a refused body"
+    );
+    let rows = store.list_chat_messages(&chat_id).unwrap();
+    let notices = rows.iter().filter(|(_, role, ..)| role == "notice").count();
+    assert_eq!(notices, 1, "one compaction attempt, not one per retry");
 }

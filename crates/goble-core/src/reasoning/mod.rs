@@ -15,7 +15,7 @@
 //! persisted state rather than from memory.
 
 mod classify;
-mod compaction;
+pub(crate) mod compaction;
 mod history;
 mod mission;
 mod persist;
@@ -30,5 +30,6 @@ mod tests;
 pub use tools::build_reasoning_tools;
 pub use types::{MissionState, PendingAsk, ReasoningDecision, ReasoningStep};
 
+pub(crate) use history::stored_history;
 pub(crate) use mission::run_mission_turn;
 pub(crate) use resume::{resume_command_turn, resume_mission_turn};

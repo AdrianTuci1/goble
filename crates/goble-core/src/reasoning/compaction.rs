@@ -20,6 +20,71 @@ use crate::store::Store;
 /// and the turn's tool calls.
 pub(super) const COMPACT_AT_PERCENT: u64 = 80;
 
+/// The most bytes one request may carry before the turn compacts its history.
+///
+/// The endpoint's own body cap is not the model's context window: DeepSeek
+/// answered 413 Request Entity Too Large (an openresty page, so the cap is the
+/// endpoint's, not this adapter's) to a `deepseek-flash` conversation whose
+/// window is 256k tokens and which one 56 MB tool result had put far past any
+/// body cap. The token trigger only sees what the provider priced, so a
+/// request can be refused long before it reaches 80% of the window. The
+/// serialized request is measured as well; 900 KB leaves the reply and a tool
+/// call room under a hard 1 MB cap.
+pub(crate) const MAX_REQUEST_BYTES: usize = 900 * 1024;
+
+/// What a compaction can know about why it runs.
+///
+/// The token trigger knows how full the window is. The payload trigger only
+/// knows the request outgrew the provider's body cap, which happens long
+/// before the window fills: its percentage is of the cap, and the notice says
+/// so rather than reporting a window fullness nobody measured.
+pub(crate) enum CompactionTrigger {
+    /// The prompt filled this share of the model's window.
+    Window { window: u64, used: u64 },
+    /// The endpoint refused the request's body for its size, or the body as
+    /// serialized here passed the cap this adapter measures it against.
+    Payload { bytes: usize, cap: usize },
+}
+
+/// The bytes a request puts on the wire, near enough to measure the
+/// provider's body cap: the messages and tool definitions serialized as the
+/// OpenAI adapter builds them, so content with its JSON escaping, tool calls
+/// with their arguments and a replayed chain of thought are all counted.
+pub(crate) fn request_bytes(request: &CompletionRequest) -> usize {
+    serialized_bytes(&request.messages) + serialized_bytes(&request.tools)
+}
+
+/// How many bytes `value` takes as JSON, counted without building the string:
+/// a request near the cap is megabytes long, and measuring it must not copy
+/// them.
+fn serialized_bytes(value: &impl serde::Serialize) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => counter.0,
+        Err(_) => 0,
+    }
+}
+
+/// The payload trigger for a request that passes the provider's body cap,
+/// `None` for one that fits.
+pub(crate) fn payload_trigger(request: &CompletionRequest) -> Option<CompactionTrigger> {
+    let bytes = request_bytes(request);
+    (bytes > MAX_REQUEST_BYTES).then_some(CompactionTrigger::Payload {
+        bytes,
+        cap: MAX_REQUEST_BYTES,
+    })
+}
+
 /// The most transcript text one summarisation call is given. A conversation
 /// near its window is larger than the compaction prompt budget, so the oldest
 /// turns are dropped from the input: the summary is of what the model can still
@@ -40,35 +105,57 @@ pub(super) struct CompactionOutcome {
 /// transcript's notice and the app's refresh read, and the token count the
 /// conversation continues from. `after_tokens` stays `None` when the attempt
 /// failed, so the turn does not try again in the same state.
-pub(super) struct CompactionRun {
+pub(crate) struct CompactionRun {
     pub events: Vec<HarnessEvent>,
     pub after_tokens: Option<u64>,
 }
 
-/// Compact once if the window is full enough. The transcript gets a notice row
-/// that is rewritten from "Compacting…" to the outcome, so the user sees the
-/// work where it happened; a failure leaves the turn running, with the row
-/// saying so instead of an error ending the reply.
-pub(super) async fn compact(
+/// Compact once. The transcript gets a notice row that is rewritten from
+/// "Compacting…" to the outcome, so the user sees the work where it happened;
+/// a failure leaves the turn running, with the row saying so instead of an
+/// error ending the reply. `trigger` is what the notice and the events say the
+/// conversation outgrew: the window, or the provider's body cap.
+pub(crate) async fn compact(
     store: &Store,
     chat_id: &str,
     llm: &dyn LlmProvider,
     provider: &str,
     model: &str,
-    window: u64,
-    used: u64,
+    trigger: CompactionTrigger,
 ) -> CompactionRun {
-    let percentage = used.saturating_mul(100).checked_div(window).unwrap_or(100).min(100) as u8;
+    // What the notice says while it runs, and the reason it adds to the
+    // outcome: the token counts bracket every compaction, but only the payload
+    // trigger has a body cap to name.
+    let (percentage, used, started, reason) = match trigger {
+        CompactionTrigger::Window { window, used } => {
+            let percentage = percentage_of(used, window);
+            (
+                percentage,
+                used,
+                format!("Context {percentage}% full. Compacting…"),
+                None,
+            )
+        }
+        CompactionTrigger::Payload { bytes, cap } => {
+            let percentage = percentage_of(bytes as u64, cap as u64);
+            // The provider never priced a request it refused, so the token
+            // count this compaction starts from is the stored rows' estimate.
+            let used = store
+                .list_chat_messages(chat_id)
+                .map(|rows| stored_rows_tokens(&rows))
+                .unwrap_or(0);
+            let quoted = format!("{} against the {} cap", kilobytes(bytes), kilobytes(cap));
+            (
+                percentage,
+                used,
+                format!("Request body {quoted}. Compacting…"),
+                Some(format!("request body: {quoted}")),
+            )
+        }
+    };
     let notice_id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    if let Err(e) = store.insert_chat_message(
-        &notice_id,
-        chat_id,
-        "notice",
-        &format!("Context {percentage}% full. Compacting…"),
-        None,
-        &now,
-    ) {
+    if let Err(e) = store.insert_chat_message(&notice_id, chat_id, "notice", &started, None, &now) {
         log::warn!("could not write the compaction notice: {e}");
         return CompactionRun {
             events: Vec::new(),
@@ -104,14 +191,15 @@ pub(super) async fn compact(
                 before: outcome.before_tokens,
                 after: outcome.after_tokens,
             });
-            let _ = store.set_chat_message_content(
-                &notice_id,
-                &format!(
-                    "Context compacted: {} → {} tokens",
-                    thousands(outcome.before_tokens),
-                    thousands(outcome.after_tokens)
-                ),
+            let mut outcome_note = format!(
+                "Context compacted: {} → {} tokens",
+                thousands(outcome.before_tokens),
+                thousands(outcome.after_tokens)
             );
+            if let Some(reason) = &reason {
+                outcome_note.push_str(&format!(" ({reason})"));
+            }
+            let _ = store.set_chat_message_content(&notice_id, &outcome_note);
             CompactionRun {
                 events,
                 after_tokens: Some(outcome.after_tokens),
@@ -148,6 +236,24 @@ fn thousands(n: u64) -> String {
     out
 }
 
+/// `part` as a percentage of `whole`, capped at 100. A zero `whole` has no
+/// percentage to report, so it reads as 0 instead of being divided by.
+fn percentage_of(part: u64, whole: u64) -> u8 {
+    if whole == 0 {
+        return 0;
+    }
+    part.saturating_mul(100)
+        .checked_div(whole)
+        .unwrap_or(100)
+        .min(100) as u8
+}
+
+/// Bytes as the notice reads them, in whole kilobytes: the unit the model's
+/// configuration quotes the cap in.
+fn kilobytes(bytes: usize) -> String {
+    format!("{} KB", (bytes as u64).div_ceil(1024))
+}
+
 /// A rough token count for text the provider never priced: four characters per
 /// token is the usual English and source-code ratio, and a compaction only
 /// needs to be right about whether it crossed the window, not to the token.
@@ -156,10 +262,10 @@ pub(super) fn estimate_tokens(text: &str) -> u64 {
 }
 
 /// How many tokens a conversation's stored rows occupy, approximated the same
-/// way. Used before a turn's first call, when no provider count exists yet.
-pub(super) fn stored_rows_tokens(
-    rows: &[(String, String, String, Option<String>, String)],
-) -> u64 {
+/// way. Used before a turn's first call, when no provider count exists yet, and
+/// by a child's loop to know how far its own conversation has grown since the
+/// last compaction.
+pub(crate) fn stored_rows_tokens(rows: &[(String, String, String, Option<String>, String)]) -> u64 {
     rows.iter()
         .map(|(_, _, content, tool_calls, _)| {
             let calls = tool_calls.as_deref().map(str::len).unwrap_or(0) as u64;
@@ -170,6 +276,12 @@ pub(super) fn stored_rows_tokens(
 
 /// Summarise everything before the conversation's current prompt. The prompt
 /// itself, and any tool rows the current turn produced, stay in the request.
+///
+/// A sub-agent's conversation has exactly one prompt, the row it was spawned
+/// with, and no later one to keep: its transcript keeps the last exchange
+/// instead — the assistant turn and the tool results that answer it — which is
+/// what the child's next request replays. A parent turn that outgrew the cap
+/// before its second prompt is compacted the same way.
 pub(super) async fn summarize(
     store: &Store,
     chat_id: &str,
@@ -179,15 +291,20 @@ pub(super) async fn summarize(
     before_tokens: u64,
 ) -> Result<CompactionOutcome> {
     let rows = store.list_chat_messages(chat_id)?;
-    let last_user = rows
+    let keep_from = rows
         .iter()
         .rposition(|(_, role, ..)| role == "user")
-        .ok_or_else(|| anyhow::anyhow!("no user prompt to keep"))?;
-    if last_user == 0 {
-        bail!("nothing before the current prompt to compact");
+        .filter(|index| *index > 0)
+        .or_else(|| {
+            rows.iter()
+                .rposition(|(_, role, ..)| role == "assistant" || role == "tool_calls")
+        })
+        .ok_or_else(|| anyhow::anyhow!("nothing to compact yet"))?;
+    if keep_from == 0 {
+        bail!("nothing before the current turn to compact");
     }
-    let boundary_message_id = rows[last_user - 1].0.clone();
-    let older = &rows[..last_user];
+    let boundary_message_id = rows[keep_from - 1].0.clone();
+    let older = &rows[..keep_from];
     let mut transcript = String::new();
     for (_, role, content, _, _) in older {
         transcript.push_str(role);
@@ -211,8 +328,8 @@ pub(super) async fn summarize(
     if summary.trim().is_empty() {
         bail!("the summariser returned nothing");
     }
-    let after_tokens = estimate_tokens(&summary)
-        + stored_rows_tokens(rows.get(last_user..).unwrap_or_default());
+    let after_tokens =
+        estimate_tokens(&summary) + stored_rows_tokens(rows.get(keep_from..).unwrap_or_default());
     Ok(CompactionOutcome {
         boundary_message_id,
         summary,
@@ -321,7 +438,18 @@ mod tests {
     async fn a_full_window_summarises_the_turns_before_the_prompt() {
         let store = seeded_store();
         let llm = summariser();
-        let run = compact(&store, "c", &llm, "mock", "mock", 1000, 900).await;
+        let run = compact(
+            &store,
+            "c",
+            &llm,
+            "mock",
+            "mock",
+            CompactionTrigger::Window {
+                window: 1000,
+                used: 900,
+            },
+        )
+        .await;
         assert!(run.after_tokens.is_some(), "a good summary completes");
         assert_eq!(run.events.len(), 2);
         assert!(matches!(
@@ -356,7 +484,18 @@ mod tests {
     async fn a_compacted_history_keeps_only_the_current_prompt_and_the_summary() {
         let store = seeded_store();
         let llm = summariser();
-        let _ = compact(&store, "c", &llm, "mock", "mock", 1000, 900).await;
+        let _ = compact(
+            &store,
+            "c",
+            &llm,
+            "mock",
+            "mock",
+            CompactionTrigger::Window {
+                window: 1000,
+                used: 900,
+            },
+        )
+        .await;
         let mission = crate::reasoning::MissionState {
             id: "m".to_string(),
             chat_id: "c".to_string(),
@@ -401,7 +540,18 @@ mod tests {
             "mock",
             crate::llm::CompletionResponse::new("", Vec::new()),
         );
-        let run = compact(&store, "c", &llm, "mock", "mock", 1000, 900).await;
+        let run = compact(
+            &store,
+            "c",
+            &llm,
+            "mock",
+            "mock",
+            CompactionTrigger::Window {
+                window: 1000,
+                used: 900,
+            },
+        )
+        .await;
         assert_eq!(run.after_tokens, None);
         assert!(matches!(
             &run.events[1],
@@ -413,6 +563,145 @@ mod tests {
                 .any(|(_, role, content, ..)| role == "notice" && content == "Compaction failed."),
             "the notice states the failure instead of ending the turn"
         );
+        assert!(store.latest_chat_compaction("c").unwrap().is_none());
+    }
+
+    #[test]
+    fn the_request_size_counts_content_calls_and_tools() {
+        let request = CompletionRequest::new("mock", "mock")
+            .with_messages(vec![Message {
+                role: Role::Tool,
+                content: "x".repeat(100),
+                tool_calls: Some(vec![crate::llm::LlmToolCall {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "/tmp/a"}),
+                }]),
+                tool_call_id: Some("call_1".to_string()),
+                tool_status: None,
+                reasoning_content: None,
+            }])
+            .with_tools(vec![crate::llm::ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read a file.".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }]);
+        let bytes = request_bytes(&request);
+        assert_eq!(
+            bytes,
+            serde_json::to_string(&request.messages).unwrap().len()
+                + serde_json::to_string(&request.tools).unwrap().len(),
+            "the count is the serialized shape, line for line"
+        );
+        assert!(bytes > 100, "the content is counted: {bytes}");
+        assert!(
+            bytes > request.messages[0].content.len() + 40,
+            "the call, its arguments and the tool definition are counted too: {bytes}"
+        );
+        // A small request is nowhere near the cap, so no compaction is asked for.
+        assert!(payload_trigger(&request).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_payload_triggered_compaction_says_the_body_passed_the_cap() {
+        let store = seeded_store();
+        let llm = summariser();
+        let run = compact(
+            &store,
+            "c",
+            &llm,
+            "mock",
+            "mock",
+            CompactionTrigger::Payload {
+                bytes: MAX_REQUEST_BYTES + 1024,
+                cap: MAX_REQUEST_BYTES,
+            },
+        )
+        .await;
+        assert!(run.after_tokens.is_some(), "the summary completes");
+        assert!(matches!(
+            &run.events[0],
+            HarnessEvent::ContextCompaction { phase, percentage, before, .. }
+                if phase == "started" && *percentage == 100 && *before > 0
+        ));
+        let rows = store.list_chat_messages("c").unwrap();
+        let notice = rows
+            .iter()
+            .find(|(_, role, ..)| role == "notice")
+            .expect("the notice row is written");
+        assert!(
+            notice.2.contains("against the 900 KB cap"),
+            "the notice names the body cap, not a window fullness: {:?}",
+            notice.2
+        );
+        // The outcome row still reports the token counts on either side.
+        assert!(notice.2.contains("Context compacted:"), "{:?}", notice.2);
+    }
+
+    /// A sub-agent's chat holds one prompt, the row it was spawned with: there
+    /// is no later prompt to keep, so the compaction keeps the last exchange.
+    #[tokio::test]
+    async fn a_conversation_with_one_prompt_keeps_its_last_exchange() {
+        let store = Store::open_in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+        store
+            .insert_chat("child", "t", None, None, &now, &now)
+            .unwrap();
+        for (id, role, content) in [
+            ("m1", "user", "review it"),
+            ("m2", "assistant", "read the diff"),
+            ("m3", "assistant", "writing notes"),
+        ] {
+            store
+                .insert_chat_message(id, "child", role, content, None, &now)
+                .unwrap();
+        }
+        let run = compact(
+            &store,
+            "child",
+            &summariser(),
+            "mock",
+            "mock",
+            CompactionTrigger::Payload {
+                bytes: MAX_REQUEST_BYTES + 1,
+                cap: MAX_REQUEST_BYTES,
+            },
+        )
+        .await;
+        assert!(run.after_tokens.is_some());
+        let compaction = store.latest_chat_compaction("child").unwrap().unwrap();
+        assert_eq!(
+            compaction.boundary_message_id, "m2",
+            "the last exchange stays in the request, the turns before it do not"
+        );
+        assert_eq!(compaction.message_count, 2);
+    }
+
+    #[tokio::test]
+    async fn a_conversation_with_nothing_before_the_turn_is_not_compacted() {
+        let store = Store::open_in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+        store.insert_chat("c", "t", None, None, &now, &now).unwrap();
+        store
+            .insert_chat_message("m1", "c", "user", "the first prompt", None, &now)
+            .unwrap();
+        let run = compact(
+            &store,
+            "c",
+            &summariser(),
+            "mock",
+            "mock",
+            CompactionTrigger::Payload {
+                bytes: MAX_REQUEST_BYTES + 1,
+                cap: MAX_REQUEST_BYTES,
+            },
+        )
+        .await;
+        assert_eq!(run.after_tokens, None);
+        assert!(matches!(
+            &run.events[1],
+            HarnessEvent::ContextCompaction { phase, .. } if phase == "failed"
+        ));
         assert!(store.latest_chat_compaction("c").unwrap().is_none());
     }
 }

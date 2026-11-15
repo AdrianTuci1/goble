@@ -26,6 +26,11 @@ use super::super::{
 /// The width of the environment menu's hover tray.
 const ENV_TRAY_WIDTH: f32 = 220.0;
 
+/// The rows the environment menu puts above its environment list: "New
+/// terminal", "New Agent", "Cloud agent". The environment rows start here, and
+/// the trailing "New environment…" row follows the last of them.
+const ENV_MENU_LEADING_ROWS: usize = 3;
+
 /// The widest the ghost card of a lifted pane grows before its title is
 /// squeezed, and how far its corner sits below/right of the pointer so it never
 /// covers the point the drop is resolved at.
@@ -199,26 +204,6 @@ pub fn build_topbar(
     .with_position(TooltipPosition::Below)
     .finish();
 
-    // Cloud agents: the one control that opens a run on a worker. The panel it
-    // opens is a fresh conversation on the Remote environment, whose landing
-    // invites the first prompt ("Kick off a cloud agent"). The environment
-    // menu's Remote row opens the same surface.
-    let on_new_cloud_agent = actions.on_new_cloud_agent.clone();
-    let cloud_agent_button = Tooltip::new(
-        TopbarButton::new(
-            Icon::new("cloud")
-                .with_size(16.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .with_size(TOPBAR_ICON_BUTTON_SIZE)
-        .with_on_click(move || (on_new_cloud_agent.borrow_mut())())
-        .finish(),
-        "Cloud agents",
-    )
-    .with_position(TooltipPosition::Below)
-    .finish();
-
     // A hairline on each long edge of the tab strip, flush against the first
     // and the last tab: the workspaces read as a column between the bar's own
     // controls, with the bar's control gap on the outside of each rule.
@@ -294,7 +279,7 @@ pub fn build_topbar(
     // Settings leave behind, and the controls keep the positions they had (see
     // [`TopbarRow`]).
     let row = TopbarRow::new(
-        vec![sidebar_button, agent_dashboard_button, cloud_agent_button],
+        vec![sidebar_button, agent_dashboard_button],
         Box::new(workspaces),
         vec![add_workspace],
         vec![live_indicator, inbox_button, settings_button],
@@ -1755,8 +1740,8 @@ impl Element for WorkspaceChip {
 }
 
 /// The "+ ▾" control: "+" opens a new workspace in the active environment, and
-/// "▾" opens the environment menu (a new terminal, a new agent tab, the
-/// environments, plus "New environment…").
+/// "▾" opens the environment menu (a new terminal, a new agent tab, a cloud
+/// agent, the environments, plus "New environment…").
 fn build_add_workspace_control(
     app: &AppContext,
     state: &UiSnapshot,
@@ -1786,14 +1771,16 @@ fn build_add_workspace_control(
     .with_size(20.0)
     .finish();
 
-    // The menu opens with the two kinds of space the workspace can start — a
-    // plain PTY, and an agent pane holding a fresh conversation — and then the
-    // environments themselves: choosing one opens a new space that runs on it
-    // (the check mark still marks the active environment), and the trailing
-    // entry adds a brand-new one.
+    // The menu opens with the kinds of space the workspace can start — a plain
+    // PTY, an agent pane holding a fresh conversation, and the cloud agent
+    // surface that runs on a worker — and then the environments themselves:
+    // choosing one opens a new space that runs on it (the check mark still
+    // marks the active environment), and the trailing entry adds a brand-new
+    // one.
     let mut items = vec![
         PopupMenuItem::new("New terminal").with_icon("terminal"),
         PopupMenuItem::new("New Agent").with_icon("agent"),
+        PopupMenuItem::new("Cloud agent").with_icon("cloud"),
     ];
     // `(medium id, label)` per environment row, in item order.
     let mut envs: Vec<(String, String)> = Vec::new();
@@ -1805,7 +1792,8 @@ fn build_add_workspace_control(
         items.push(item);
         envs.push((m.id.clone(), m.label.clone()));
     }
-    // The trailing "New environment…" entry; its index is `2 + envs.len()`.
+    // The trailing "New environment…" entry; its index is
+    // `ENV_MENU_LEADING_ROWS + envs.len()`.
     items.push(PopupMenuItem::new("New environment…").with_icon("plus"));
 
     // The tray warp-new shows beside the row under the pointer: the
@@ -1826,10 +1814,12 @@ fn build_add_workspace_control(
         .with_open(state.env_selector_open.clone())
         .with_hover_index(state.env_selector_hover.clone())
         .with_hover_tray(ENV_TRAY_WIDTH, move |index, app| {
-            // Items 0 and 1 start a space (a terminal, an agent pane) and the
-            // trailing item adds an environment: only the rows in between are
-            // environments, and only they carry a tray.
-            let (id, label) = tray_envs.get(index.checked_sub(2)?)?.clone();
+            // The leading rows start a space (a terminal, an agent pane, a
+            // cloud agent) and the trailing row adds an environment: only the
+            // rows in between are environments, and only they carry a tray.
+            let (id, label) = tray_envs
+                .get(index.checked_sub(ENV_MENU_LEADING_ROWS)?)?
+                .clone();
             let is_default = id == tray_default;
             let select = on_select_medium.clone();
             let open = tray_open.clone();
@@ -1846,13 +1836,17 @@ fn build_add_workspace_control(
                 // A fresh conversation: an agent pane in a space of its own,
                 // opened in the same environment "+" would use.
                 (on_add_agent.borrow_mut())();
-            } else if index <= envs.len() + 1 {
+            } else if index == 2 {
+                // The cloud agent's own surface: a fresh conversation whose
+                // pane starts as a viewer, because it runs on a worker.
+                (on_new_cloud_agent.borrow_mut())();
+            } else if index <= envs.len() + ENV_MENU_LEADING_ROWS - 1 {
                 // An environment row opens a space running on that environment
                 // (the tab lands at the end of the strip, as "+" does) instead
                 // of only switching which environment is active. Remote opens
                 // the cloud agent's own surface: its conversations run on a
                 // worker, so the tab starts as a viewer rather than a shell.
-                let (id, _) = &envs[index - 2];
+                let (id, _) = &envs[index - ENV_MENU_LEADING_ROWS];
                 if id == "remote" {
                     (on_new_cloud_agent.borrow_mut())();
                 } else {
@@ -2601,14 +2595,13 @@ mod tests {
 
         let tools = topbar_icon(&commands, "menu-01").expect("the tools toggle");
         let agents = topbar_icon(&commands, "robot").expect("the agent management control");
-        let cloud = topbar_icon(&commands, "cloud").expect("the cloud agents control");
         assert!(
             tools.x < agents.x,
             "the dashboard control follows the tools toggle: {tools:?} against {agents:?}"
         );
         assert!(
-            agents.x < cloud.x,
-            "the cloud agents control follows the dashboard: {agents:?} against {cloud:?}"
+            topbar_icon(&commands, "cloud").is_none(),
+            "the cloud agent entry lives in the environment menu, not in the bar"
         );
         // The dashboard's box is a 16 pt face with 3 pt of padding, and the
         // sidebar's toggle reads as active because its panel is out.
@@ -2633,14 +2626,14 @@ mod tests {
         );
 
         // A hairline separates the bar's own controls from the tab strip, three
-        // points after the last of them (the cloud agents control).
+        // points after the last of them (the dashboard control).
         let rule = commands
             .iter()
             .find_map(|command| match command {
                 RenderCommand::FillRect { rect, .. }
                     if rect.width() == 1.0
                         && (rect.height() - TOPBAR_RULE_HEIGHT).abs() < 0.5
-                        && rect.origin.x > cloud.x =>
+                        && rect.origin.x > agents.x =>
                 {
                     Some(*rect)
                 }
@@ -2648,8 +2641,8 @@ mod tests {
             })
             .expect("the bar rules off the tab strip");
         assert!(
-            (rule.origin.x - (cloud.x + 11.0 + 3.0)).abs() < 0.5,
-            "three points separate the cloud control from the rule: {rule:?}"
+            (rule.origin.x - (agents.x + 11.0 + 3.0)).abs() < 0.5,
+            "three points separate the dashboard control from the rule: {rule:?}"
         );
         assert!(
             rule.min_y() == 0.0 && (rule.height() - TOPBAR_HEIGHT).abs() < 0.5,

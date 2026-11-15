@@ -126,14 +126,15 @@ fn text_positions(cmds: &[RenderCommand], text: &str) -> Vec<(f32, f32)> {
 }
 
 /// The icon drawn on the same line as `label`, to its left: a menu row leads
-/// with its glyph, then the label. The label's own run is taken at its
-/// top-most paint, which is the open popup above the body's same-named text.
+/// with its glyph, then the label. The label's run is taken at its last paint,
+/// because the open popup paints over the window: a pane header or a tab
+/// carrying the same string is drawn earlier in the frame.
 fn icon_before_label(
     cmds: &[RenderCommand],
     icon: &str,
     label: &str,
 ) -> Option<(f32, f32)> {
-    let (label_x, label_y) = topmost_text_position(cmds, label)?;
+    let (label_x, label_y) = text_positions(cmds, label).pop()?;
     cmds.iter().find_map(|command| match command {
         RenderCommand::DrawIcon {
             origin,
@@ -252,7 +253,8 @@ fn topbar_environment_menu_rows_draw_their_icons() {
     let cmds = render(&mut root, &app);
     for (icon, label) in [
         ("terminal", "New terminal"),
-        ("agent", "New Agent"),
+        ("agentmode", "New Agent"),
+        ("cloud", "Cloud agent"),
         ("conversation-local", "Local"),
         ("cloud", "Remote (worker)"),
         ("plus", "New environment…"),
@@ -316,7 +318,11 @@ fn topbar_environment_menu_starts_an_agent() {
 
     let spaces_before = root.state_rc().borrow().spaces.len();
     let cmds = render(&mut root, &app);
-    let item = text_center(&cmds, "New Agent").expect("the menu lists the agent entry");
+    // The open popup paints last, so its row is the last run of the label; the
+    // strip's own tab and the pane header carry the same string earlier.
+    let item = text_positions(&cmds, "New Agent")
+        .pop()
+        .expect("the menu lists the agent entry");
     click(&mut root, &app, item);
 
     let state_rc = root.state_rc();
@@ -343,7 +349,9 @@ fn topbar_environment_menu_starts_an_agent() {
 
 /// Choosing an environment in the same menu opens a new space that runs on it
 /// (rather than only switching the active environment): the tab lands at the
-/// end of the top strip, exactly where "+" puts one.
+/// end of the top strip, exactly where "+" puts one. Remote has no shell on
+/// this machine, so its row opens the cloud agent's surface instead: a viewer
+/// pane holding a conversation routed to the worker.
 #[test]
 fn topbar_environment_menu_opens_a_space_in_that_environment() {
     let (mut root, _desktop, _dir) = build_root();
@@ -381,9 +389,11 @@ fn topbar_environment_menu_opens_a_space_in_that_environment() {
             "the new space is the active one"
         );
         match &space.root {
-            goble_app::ui::Pane::Leaf { kind, .. } => {
-                assert_eq!(*kind, goble_app::ui::PaneKind::Terminal, "the new space is a plain PTY")
-            }
+            goble_app::ui::Pane::Leaf { kind, .. } => assert_eq!(
+                *kind,
+                goble_app::ui::PaneKind::Worker,
+                "a run on the worker has no shell here: the row opens its viewer"
+            ),
             other => panic!("the new space's root should be one leaf, got {other:?}"),
         }
         assert!(
@@ -399,17 +409,70 @@ fn topbar_environment_menu_opens_a_space_in_that_environment() {
     );
 
     // The tab is drawn in the top strip, above the body, next to the old ones.
-    // The new tab is named after the directory its pane opens in, so the same
-    // string is also drawn by the composer's working-directory pill lower down
-    // (the full name there, elided in the strip when it does not fit): the
-    // top-most run, whole or elided, is the tab.
+    // The conversation has no subject yet, so the worker pane's tab reads the
+    // cloud placeholder rather than the directory the pane opens in.
     let cmds = render(&mut root, &app);
     let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
-    let (_, tab_y) =
-        topmost_label_position(&cmds, &new_name).expect("the new space's tab is drawn");
+    let (_, tab_y) = topmost_label_position(&cmds, goble_app::state::NEW_CLOUD_AGENT_TITLE)
+        .expect("the new space's tab is drawn");
     assert!(
         tab_y < topbar_height,
         "the new space's tab sits in the top strip (y={tab_y}, bar is {topbar_height} tall)"
+    );
+}
+
+/// The menu's "Cloud agent" row is the entry the topbar used to carry as an
+/// icon: choosing it opens a fresh cloud agent — a viewer pane over a
+/// conversation routed to Remote, tabbed "New cloud agent" — instead of a
+/// local shell or a local agent pane.
+#[test]
+fn topbar_environment_menu_starts_a_cloud_agent() {
+    let (mut root, _desktop, _dir) = build_root();
+    let app = AppContext::default();
+    let _ = render(&mut root, &app);
+    let cmds = render(&mut root, &app);
+    let pos = topmost_icon_center(&cmds, "chevron-down").expect("topbar environment menu trigger");
+    click(&mut root, &app, pos);
+
+    let spaces_before = root.state_rc().borrow().spaces.len();
+    let cmds = render(&mut root, &app);
+    let item = text_center(&cmds, "Cloud agent").expect("the menu lists the cloud agent entry");
+    click(&mut root, &app, item);
+
+    let state_rc = root.state_rc();
+    let state = state_rc.borrow();
+    assert_eq!(
+        state.spaces.len(),
+        spaces_before + 1,
+        "choosing the entry opens a new space"
+    );
+    let space = state.spaces.last().expect("the new space");
+    assert_eq!(
+        space.medium, "remote",
+        "the cloud agent runs on the Remote environment"
+    );
+    match &space.root {
+        goble_app::ui::Pane::Leaf { kind, .. } => assert_eq!(
+            *kind,
+            goble_app::ui::PaneKind::Worker,
+            "the cloud agent's pane is a viewer over the worker"
+        ),
+        other => panic!("the new space's root should be one leaf, got {other:?}"),
+    }
+    assert!(
+        !*state_rc.borrow().env_selector_open.borrow(),
+        "choosing an entry closes the menu"
+    );
+    drop(state);
+
+    // The tab names the surface: the pane has no conversation subject yet.
+    let cmds = render(&mut root, &app);
+    let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
+    let (_, tab_y) = topmost_label_position(&cmds, goble_app::state::NEW_CLOUD_AGENT_TITLE)
+        .expect("the cloud agent's tab is drawn");
+    assert!(
+        tab_y < topbar_height,
+        "the cloud agent's tab sits in the top strip (y={tab_y}, bar is {topbar_height} tall)"
     );
 }
 

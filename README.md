@@ -1,4 +1,6 @@
 <p align="center">
+  <img src="packaging/icons/goble.svg" alt="Goble" width="88" height="88">
+  <br>
   <img src="assets/header.jpg" alt="The Goble app: terminal panes beside an agent transcript and a review diff" width="1200">
   <br>
   A reversible execution substrate for agentic work.

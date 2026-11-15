@@ -493,7 +493,9 @@ mod tests {
         cmds.iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawIcon { origin, name, .. }
-                    if name == "x-close" && in_header_band(origin.y, bar_y) =>
+                    if name == "x-close"
+                        && origin.x >= crate::ui::SIDEBAR_WIDTH
+                        && in_header_band(origin.y, bar_y) =>
                 {
                     Some(*origin)
                 }
@@ -505,12 +507,15 @@ mod tests {
     /// The y the pane bars' close X are drawn on — the pane-header band. Read
     /// from the close X rather than from the expand control, because the control
     /// the pane draws depends on whether it is the expanded one. The app
-    /// topbar's own tab closes draw above it and are excluded by that.
+    /// topbar's own tab closes draw above it, and the sidebar's close control
+    /// sits left of the panes; both are excluded here.
     fn pane_bar_y(cmds: &[RenderCommand]) -> f32 {
         cmds.iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawIcon { origin, name, .. }
-                    if name == "x-close" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                    if name == "x-close"
+                        && origin.x >= crate::ui::SIDEBAR_WIDTH
+                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
                 {
                     Some(origin.y)
                 }

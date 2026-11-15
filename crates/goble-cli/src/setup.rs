@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use goble_core::app_home::GobleHome;
 use goble_core::config::{
-    GobleConfig, HubConfig, RemoteAgentConfig, RemoteMode, SetupStatus, SetupTarget,
+    GobleConfig, HubConfig, RemoteAgentConfig, RemoteAgentProvider, RemoteMode, SetupStatus,
+    SetupTarget,
 };
 
 use crate::cli::{SetupAction, SetupTargetArg};
@@ -50,20 +51,26 @@ pub fn run(config_override: Option<PathBuf>, action: SetupAction) -> Result<()> 
             if name.is_empty() {
                 bail!("the agent needs a name: pass --name <builder|reviewer|…>");
             }
+            let provider: RemoteAgentProvider = provider.into();
             let agent = RemoteAgentConfig {
-                provider: provider.into(),
+                provider,
                 enabled: !disabled,
                 api_key: clean(api_key),
                 token_id: clean(token_id),
                 token_secret: clean(token_secret),
                 api_url: clean(api_url),
-                image: clean(image),
+                // A container provider with no `--image` gets the image this
+                // repository publishes, so the table costs credentials only.
+                // SSH's `image` is an install directory or a binary URL, so it
+                // keeps its own answer and the note below.
+                image: clean(image).or_else(|| provider.default_image().map(str::to_string)),
                 region: clean(region),
                 environment: clean(environment),
             };
             if agent.image.is_none() {
                 eprintln!(
-                    "note: no --image yet; deploying needs the image that carries goblin-worker"
+                    "note: no --image yet; ssh needs the remote install directory (or a \
+                     binary URL) in `image`"
                 );
             }
             let label = upsert_remote(&config_path, &name, agent)?;

@@ -227,11 +227,14 @@ impl SetupStatus {
                daytona    a Daytona API key\n\
                box        a Boat API key\n\
                cloud_run  the Google Cloud project id, the Cloud Run region (for example \
-             europe-west1), a worker image in Artifact Registry, and either a bearer token or a \
-             gcloud session on this machine (`gcloud auth login`)\n\
-               docker     nothing; the image is built locally\n\
+             europe-west1), and either a bearer token or a gcloud session on this machine \
+             (`gcloud auth login`)\n\
+               docker     nothing; the published worker image runs locally, or pass --image \
+for a build of your own\n\
                ssh        the destination as user@host, and a login that works\n\
-             Every platform also needs `image`: the image that carries goblin-worker. Then run:\n\
+             A container provider needs no `image`: `setup remote` writes the published \
+`ghcr.io/adriantuci1/goble-worker:latest`, and `--image` overrides it. Only ssh names one, its \
+remote install directory or a binary URL. Then run:\n\
                {cli} setup remote --name <name> --provider <provider> [--api-key …] \
              [--token-id …] [--token-secret …] [--image …] [--region …] [--environment …] \
              [--api-url …]\n\

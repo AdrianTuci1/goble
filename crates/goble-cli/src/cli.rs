@@ -491,7 +491,9 @@ pub enum SetupAction {
         /// A provider endpoint override.
         #[arg(long)]
         api_url: Option<String>,
-        /// The image that carries goblin-worker.
+        /// The image that carries goblin-worker. A container provider defaults
+        /// to the published ghcr image; ssh reads an install directory or a
+        /// binary URL here.
         #[arg(long)]
         image: Option<String>,
         /// The provider region (Cloud Run: the location).

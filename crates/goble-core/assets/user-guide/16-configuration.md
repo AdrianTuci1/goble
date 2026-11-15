@@ -77,7 +77,7 @@ worker_token = "…"        # the token goble-gateway was started with
 [remote_agents.builder]
 provider = "e2b"
 api_key = "…"
-image = "ghcr.io/example/goble-worker:latest"
+image = "ghcr.io/adriantuci1/goble-worker:latest"
 ```
 
 `[remote_agents.<name>]` is one sandbox table per agent; Settings → Agent &

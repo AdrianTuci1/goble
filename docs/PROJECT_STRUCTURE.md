@@ -132,6 +132,9 @@ deploy/goblin/
    ├─ Chart.yaml
    ├─ values.yaml
    └─ templates/ (_helpers.tpl, secrets.yaml, service.yaml, serviceaccount.yaml, statefulset.yaml)
+
+deploy/worker/
+└─ Dockerfile   (the image a remote agent runs in; published as ghcr.io/<owner>/goble-worker)
 ```
 
 ## `scripts/`

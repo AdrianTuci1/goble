@@ -98,14 +98,16 @@ pub const CONFIG_HEADER: &str = "\
 # `api_key`; cloud_run reads the GCP project from `environment`, the location
 # from `region`, and authenticates with `api_key` or the machine's own gcloud
 # session; docker and ssh need no credentials. `api_url`, `image`, `region`
-# and `environment` are optional. `goble-remote` provisions the platform
-# through its provider API and passes the worker the gateway URL and token.
+# and `environment` are optional. `goble-cli setup remote` writes the published
+# worker image (`ghcr.io/adriantuci1/goble-worker`) when a container provider is
+# given no `--image`. `goble-remote` provisions the platform through its
+# provider API and passes the worker the gateway URL and token.
 #
 #   [remote_agents.builder]
 #   provider = \"modal\"
 #   token_id = \"...\"
 #   token_secret = \"...\"
-#   image = \"ubuntu:24.04\"
+#   image = \"ghcr.io/adriantuci1/goble-worker:latest\"
 #
 #   [remote_agents.reviewer]
 #   provider = \"e2b\"
@@ -233,6 +235,14 @@ impl ModelConfig {
     }
 }
 
+/// The worker image this repository publishes for remote agents
+/// (`deploy/worker/Dockerfile`, built by `.github/workflows/worker-image.yml`,
+/// which derives the same `ghcr.io/<owner>/goble-worker` name from the
+/// repository owner). `goble-cli setup remote` writes it when a container
+/// provider is given no `--image`, so a table costs credentials and nothing
+/// else. A fork publishing its own image passes `--image`.
+pub const DEFAULT_WORKER_IMAGE: &str = "ghcr.io/adriantuci1/goble-worker:latest";
+
 /// A sandbox provider a remote agent can run on. The serialized names are the
 /// ones written in `config.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -307,6 +317,22 @@ impl RemoteAgentProvider {
             RemoteAgentProvider::CloudRun => "cloud_run",
             RemoteAgentProvider::Docker => "docker",
             RemoteAgentProvider::Ssh => "ssh",
+        }
+    }
+
+    /// The image this provider runs a container from when the table does not
+    /// name one: the published worker image, for every provider that pulls a
+    /// container. SSH is the exception — its `image` is an install directory or
+    /// a binary URL, so there is nothing to default it to.
+    pub fn default_image(self) -> Option<&'static str> {
+        match self {
+            RemoteAgentProvider::Ssh => None,
+            RemoteAgentProvider::Modal
+            | RemoteAgentProvider::E2b
+            | RemoteAgentProvider::Daytona
+            | RemoteAgentProvider::Box
+            | RemoteAgentProvider::CloudRun
+            | RemoteAgentProvider::Docker => Some(DEFAULT_WORKER_IMAGE),
         }
     }
 

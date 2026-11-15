@@ -1,0 +1,33 @@
+# Build context for `deploy/worker/Dockerfile` (the image remote agents run in).
+#
+# That Dockerfile copies the whole workspace, because cargo loads every
+# member's manifest before it builds one package, and it needs
+# `vendor/alacritty_terminal` for the same reason. So the context has to carry
+# Cargo.toml, Cargo.lock (when a lock file exists; the repository does not track
+# one), crates/, app/ (a workspace member) and vendor/.
+#
+# Everything below is local-only or belongs to another surface, and a local
+# `target/` alone is larger than the image — this keeps a CI checkout and a
+# developer's machine from sending gigabytes. `deploy/` stays in the context
+# because the Dockerfile that a build reads lives in it.
+
+.git
+.github
+.agents
+.config
+.grok
+.modal
+
+# Local build output and scratch files.
+target
+**/node_modules
+.DS_Store
+*.swp
+*.swo
+*.sqlite
+*.sqlite.bak
+*.log
+
+# The phone app and the landing site: neither is a cargo workspace member.
+apps
+landing

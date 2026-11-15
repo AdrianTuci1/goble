@@ -52,9 +52,61 @@ All adapters implement `SandboxProvider::{create,destroy,status}` and return a
 an injected `CommandRunner`, so no test touches the network.
 
 `api_url` overrides the provider endpoint. `image` names the worker image
-(for SSH: an install directory, a local binary, or an `http(s)` URL). `region`
-and `environment` are provider-specific: on `box`, `environment` is the named
-Boat environment; on `cloud_run`, `environment` is the GCP project id.
+(see [Worker image](#worker-image); for SSH: an install directory, a local
+binary, or an `http(s)` URL). `region` and `environment` are provider-specific:
+on `box`, `environment` is the named Boat environment; on `cloud_run`,
+`environment` is the GCP project id.
+
+## Worker image
+
+A remote agent runs `goblin` inside a container the provider pulls, so the
+image its table names has to carry the worker. This repository publishes that
+image; there is nothing to build before a first deploy.
+
+| Registry reference | Tags | Built from |
+|---|---|---|
+| `ghcr.io/adriantuci1/goble-worker` | `latest` and `main` (the `main` branch), `0.1.0` and `0.1` (a `v0.1.0` release tag), `sha-<short>` | `deploy/worker/Dockerfile`, by `.github/workflows/worker-image.yml` |
+
+It is `linux/amd64` only. The runtime is `debian:bookworm-slim` with `git`,
+`ripgrep`, `curl`, `ca-certificates` and a shell, because the agent inside the
+sandbox has to clone, search and run commands — which the distroless
+`deploy/goblin/Dockerfile` (the Kubernetes image, `--mode=cluster`) cannot do.
+The worker runs as the non-root user `goble` (uid 10001) with
+`HOME=/home/goble`, and the project's files live under `/workspace`. Its task
+store, vault, pid file and log file are moved under that home, so the binary's
+`/var/goblin` and `/var/run` defaults — unwritable for a non-root user — never
+apply.
+
+The entrypoint is `goblin --mode=local --bind=0.0.0.0:8787`. `local` is the
+mode a sandbox wants: `cluster` moves the databases under a PVC, elects a
+leader through a Kubernetes `Lease` and snapshots to a mounted volume
+(`crates/goblin-worker/src/main.rs`). Connecting to a gateway is not a mode —
+the provisioner passes `GOBLE_GATEWAY_URL` and `GOBLE_WORKER_TOKEN` as sandbox
+env and the worker dials out. `GET /health` on port 8787 is the readiness
+report the image's `HEALTHCHECK` reads.
+
+What a table puts in `image`:
+
+```toml
+[remote_agents.builder]
+provider = "modal"
+token_id = "..."
+token_secret = "..."
+image = "ghcr.io/adriantuci1/goble-worker:latest"
+```
+
+`goble-cli setup remote` writes exactly that when `--image` is omitted
+(`DEFAULT_WORKER_IMAGE` in `goble_core::config`), so a container provider costs
+only its credentials. Pass `--image` for a build of your own: a fork's own
+package, a registry inside the provider's cloud, or `:main` to track the
+branch. SSH is the one exception — its `image` is a remote install directory or
+a binary URL, never a container.
+
+The GitHub Container Registry makes a package private when it is first pushed,
+and every provider here pulls anonymously, so `goble-worker` has to be set
+public in the package's settings once (Actions → the pushed package → Package
+settings → Change visibility). A private package only works where the puller
+has registry credentials.
 
 ## Google Cloud Run
 
@@ -89,7 +141,8 @@ image = "europe-west1-docker.pkg.dev/my-gcp-project/goble/worker:latest"
   with `gcloud auth login` is enough; the key never has to be pasted.
 - **Limits.** A job task timeout caps at 86 400 seconds (one day), retries are
   pinned to 0, and the worker image has to sit in a registry Cloud Run can
-  pull from (Artifact Registry or GCR).
+  pull from: Artifact Registry or a public one, which includes the published
+  `ghcr.io/adriantuci1/goble-worker`.
 
 ## Agent-led setup
 
@@ -130,12 +183,12 @@ as well as from an installed app.
 provider = "modal"
 token_id = "..."
 token_secret = "..."
-image = "ubuntu:24.04"
+image = "ghcr.io/adriantuci1/goble-worker:latest"
 
 [remote_agents.reviewer]
 provider = "daytona"
 api_key = "..."
-image = "ghcr.io/example/goble-worker:latest"
+image = "ghcr.io/adriantuci1/goble-worker:main"
 region = "us"
 ```
 
@@ -231,8 +284,8 @@ A conversation routed to Remote is a viewer pane: the transcript and the
 composer, with the worker connection's state over them (`app/src/ui/worker.rs`).
 The ways in:
 
-- the topbar's cloud control (between agent management and the tab strip) opens
-  a fresh cloud agent;
+- the "▾" environment menu's **Cloud agent** row (after "New terminal" and "New
+  Agent") opens a fresh cloud agent;
 - the environment menu's **Remote (worker)** row opens the same surface instead
   of a local shell, since a run there has no shell on this machine;
 - a conversation routed to Remote in its composer becomes one as it runs.

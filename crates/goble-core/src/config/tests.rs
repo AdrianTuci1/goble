@@ -560,6 +560,28 @@ fn an_empty_remote_agent_map_is_not_written() {
 }
 
 #[test]
+fn the_published_worker_image_is_the_default_for_every_container_provider() {
+    // `goble-cli setup remote` writes this, so a table costs only credentials.
+    assert_eq!(
+        DEFAULT_WORKER_IMAGE,
+        "ghcr.io/adriantuci1/goble-worker:latest"
+    );
+    for provider in [
+        RemoteAgentProvider::Modal,
+        RemoteAgentProvider::E2b,
+        RemoteAgentProvider::Daytona,
+        RemoteAgentProvider::Box,
+        RemoteAgentProvider::CloudRun,
+        RemoteAgentProvider::Docker,
+    ] {
+        assert_eq!(provider.default_image(), Some(DEFAULT_WORKER_IMAGE));
+    }
+
+    // SSH's `image` is an install directory or a binary URL, so it has none.
+    assert_eq!(RemoteAgentProvider::Ssh.default_image(), None);
+}
+
+#[test]
 fn a_partial_remote_agent_table_keeps_its_defaults() {
     let agent = one_agent(r#"provider = "ssh""#);
 

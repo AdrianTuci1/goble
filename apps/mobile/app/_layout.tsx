@@ -11,12 +11,14 @@ import { AuthGate } from "../components/auth-gate";
 import { setHapticsEnabled } from "../lib/haptics";
 import { syncPushRegistration } from "../lib/notifications";
 import { loadHapticsPreference } from "../lib/preferences";
+import { connection } from "../lib/remote/connection";
 import { palette } from "../lib/theme";
 
 export default function RootLayout() {
   useEffect(() => {
     void syncPushRegistration();
     void loadHapticsPreference().then(setHapticsEnabled);
+    void connection.hydrate();
   }, []);
 
   return (

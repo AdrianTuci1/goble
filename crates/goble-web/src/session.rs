@@ -222,6 +222,16 @@ impl Session {
                 vec![SessionEvent::Failed(message.clone())]
             }
             ServerFrame::Pong => vec![SessionEvent::Pong],
+            // Agent frames belong to a viewer pane's turn, never to a shell.
+            ServerFrame::AgentStarted { .. }
+            | ServerFrame::AssistantDelta { .. }
+            | ServerFrame::AgentFinished { .. }
+            | ServerFrame::AgentLog { .. }
+            | ServerFrame::ToolCallStarted { .. }
+            | ServerFrame::ToolCallFinished { .. }
+            | ServerFrame::ToolCallError { .. }
+            | ServerFrame::AskUser { .. }
+            | ServerFrame::ThreadAgentReply { .. } => Vec::new(),
             ServerFrame::Unknown => Vec::new(),
         }
     }

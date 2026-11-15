@@ -1,3 +1,5 @@
+import { useRouter } from "expo-router";
+
 import { SettingsPage } from "../../../components/settings/settings-page";
 import { SettingsRow } from "../../../components/settings/settings-row";
 import { SettingsSection } from "../../../components/settings/settings-section";
@@ -7,23 +9,12 @@ import { saveModelPreferences } from "../../../lib/preferences";
 import { useModelChoices } from "../../../lib/use-models";
 
 export default function ModelsSettingsScreen() {
-  const { allModels, models, preferences } = useModelChoices();
+  const { allModels, defaultModel, models, preferences } = useModelChoices();
+  const router = useRouter();
   const catalog = demoModels();
-  const defaultModelId =
-    preferences.defaultModelId ?? models[0]?.id ?? catalog[0]?.id ?? null;
 
-  function update(next: {
-    defaultModelId?: string | null;
-    disabled?: string[];
-  }) {
+  function update(next: { defaultModelId?: string | null; disabled?: string[] }) {
     void saveModelPreferences({ ...preferences, ...next });
-  }
-
-  function makeDefault(id: string) {
-    update({
-      defaultModelId: id,
-      disabled: preferences.disabled.filter((entry) => entry !== id),
-    });
   }
 
   function toggle(id: string, enabled: boolean) {
@@ -42,22 +33,19 @@ export default function ModelsSettingsScreen() {
   return (
     <SettingsPage title="Models">
       <SettingsSection
-        footer="New sessions start on the default model. The composer can pick another one for a turn."
+        footer="New sessions start on this model. The composer can pick another one for a turn."
         title="Default model"
       >
-        {models.map((model) => (
-          <SettingsRow
-            description={`${model.vendor} · ${model.detail}`}
-            key={model.id}
-            label={model.name}
-            onPress={() => makeDefault(model.id)}
-            selected={defaultModelId === model.id}
-          />
-        ))}
+        <SettingsRow
+          chevron
+          description={`${defaultModel.vendor} · ${defaultModel.detail}`}
+          label={defaultModel.name}
+          onPress={() => router.push("/settings/default-model")}
+        />
       </SettingsSection>
 
       <SettingsSection
-        footer="Hidden models keep their place in the gateway catalog. They only leave this phone's menus."
+        footer="A model switched off leaves the menus on this phone; the gateway keeps it in the catalog."
         title="Available on this phone"
       >
         {catalog.map((model) => {

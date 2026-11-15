@@ -227,8 +227,9 @@ transcript, so reversibility still works.
 
 - `docs/` holds the architecture documents: the reversible substrate
   ([`docs/substrate-architecture.md`](docs/substrate-architecture.md)), the security and deployment
-  model ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)), and the file layout
-  ([`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md)).
+  model ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)), the file layout
+  ([`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md)), and what the phone does against a
+  gateway ([`docs/mobile-remote.md`](docs/mobile-remote.md)).
 - `.agents/` is the design-docs tree: a numbered subsystem map where each folder's `README.md` is a
   short surface document and the leaf documents carry the detail.
   [`.agents/00-README.md`](.agents/00-README.md) is the index, [`.agents/TRACKER.md`](.agents/TRACKER.md)

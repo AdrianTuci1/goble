@@ -278,9 +278,21 @@ impl ChatView {
             .clone()
             .unwrap_or_else(|| "Ask anything to get started.".to_string());
 
-        let content = Flex::column()
+        let mut content = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
+            .with_spacing(spacing);
+        // A pane that opens on a kind of work leads with its mark: the cloud
+        // over a fresh cloud agent, so the surface names what it starts before
+        // the first word.
+        if let Some(icon) = self.empty_icon {
+            content = content.with_child(
+                Icon::new(icon)
+                    .with_size(28.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        }
+        let content = content
             .with_child(
                 Text::new(title)
                     .with_theme_color(ColorToken::Text, app)
@@ -633,12 +645,25 @@ impl ChatView {
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
             && self.composer_proposal.is_none()
-            && self.notice.is_none()
             && self.turn_error.is_none()
+            // A notice replaces the plain welcome box (the pane's state is the
+            // thing to read). A landing is the pane's own surface, so it keeps
+            // the box and the notice leads it — the cloud agent says where it
+            // will run and what it is about to start.
+            && (self.notice.is_none() || self.empty_icon.is_some())
         {
             // The empty state claims the remaining height itself, so the
             // composer stays pinned to the bottom of the window.
-            self.build_empty_state(app)
+            let landing = self.build_empty_state(app);
+            match self.notice.take() {
+                Some(notice) => Flex::column()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                    .with_child(notice)
+                    .with_child(Expanded::new(landing).finish())
+                    .finish(),
+                None => landing,
+            }
         } else {
             let mut message_column = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -917,6 +942,9 @@ impl ChatView {
                     (cb.borrow_mut())(text);
                 }
             });
+        if let Some(placeholder) = self.composer_placeholder.clone() {
+            composer = composer.with_placeholder(placeholder);
+        }
         if let Some(label) = self.composer_model_label.clone() {
             composer = composer.with_model_label(label);
         }

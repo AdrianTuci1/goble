@@ -91,6 +91,12 @@ pub struct ChatView {
     on_copy_terminal: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     empty_title: Option<String>,
     empty_subtitle: Option<String>,
+    /// The glyph the empty state leads with, above its title: a pane that
+    /// starts on a kind of work (a cloud agent) names that with a mark.
+    empty_icon: Option<&'static str>,
+    /// What the composer's editor says while it is empty. `None` keeps the
+    /// composer's own `Ask anything...`.
+    composer_placeholder: Option<String>,
     composer_value: Rc<RefCell<String>>,
     /// The composer editor's insertion point. Shared with the host because the
     /// view is rebuilt every frame, like the draft itself.
@@ -274,6 +280,8 @@ impl ChatView {
             on_copy_terminal: None,
             empty_title: None,
             empty_subtitle: None,
+            empty_icon: None,
+            composer_placeholder: None,
             composer_value: Rc::new(RefCell::new(String::new())),
             composer_caret: Rc::new(RefCell::new(0)),
             composer_vim: None,

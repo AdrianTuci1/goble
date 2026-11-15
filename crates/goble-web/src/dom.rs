@@ -1,9 +1,10 @@
-//! Browser shell: boot, worker list, tabs, terminal canvas, input and chrome.
+//! Browser shell: boot, worker list, tabs, terminal canvas, viewer, input and
+//! chrome.
 //!
-//! All DOM work lives here so the protocol/session/terminal logic stays
+//! All DOM work lives here so the protocol/session/viewer/terminal logic stays
 //! native-testable. The shell is built from one trusted markup string; worker
-//! ids and terminal titles are always inserted with `textContent`, never as
-//! HTML.
+//! ids, transcript text and terminal titles are always inserted with
+//! `textContent`, never as HTML.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,17 +16,18 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{
     ClipboardEvent, CloseEvent, CompositionEvent, Document, DomRect, Element, Event,
-    HtmlCanvasElement, HtmlElement, HtmlTextAreaElement, KeyboardEvent, MessageEvent, MouseEvent,
-    Request, RequestCredentials, RequestInit, RequestMode, ResizeObserver, Response, WebSocket,
-    WheelEvent, Window,
+    HtmlButtonElement, HtmlCanvasElement, HtmlElement, HtmlTextAreaElement, KeyboardEvent,
+    MessageEvent, MouseEvent, Request, RequestCredentials, RequestInit, RequestMode,
+    ResizeObserver, Response, WebSocket, WheelEvent, Window,
 };
 
 use crate::input::{self, KeyEvent};
-use crate::layout::Tabs;
+use crate::layout::{Pane, Tabs};
 use crate::protocol::{self, ClientFrame};
 use crate::render::{DrawOptions, RenderLoop, Renderer};
-use crate::session::{Plan, Session, SessionEvent, SessionState};
+use crate::session::{backoff_ms, Plan, Session, SessionEvent, SessionState};
 use crate::theme::Theme;
+use crate::viewer::{RowKind, Viewer};
 use crate::vt::{CellPos, Selection, Terminal};
 
 const TIMER_MS: i32 = 250;
@@ -33,6 +35,10 @@ const WORKER_REFRESH_MS: f64 = 5_000.0;
 const PING_INTERVAL_MS: f64 = 5_000.0;
 const BLINK_MS: f64 = 500.0;
 const BELL_FLASH_MS: f64 = 140.0;
+/// The title a fresh viewer tab carries, and the landing it opens on.
+const VIEWER_TITLE: &str = "New cloud agent";
+/// The composer grows with its draft up to this many pixels.
+const COMPOSER_MAX_HEIGHT: f64 = 132.0;
 
 /// Trusted shell markup. Every id referenced by [`App::new`] lives here.
 const SHELL: &str = r##"
@@ -43,7 +49,10 @@ const SHELL: &str = r##"
       <span class="brand-name">goble</span>
     </div>
     <button class="icon drawer-toggle" type="button" data-action="toggle-drawer" aria-label="Show workers" title="Workers">☰</button>
-    <div class="tabstrip" id="tabstrip" role="tablist" aria-label="Terminal tabs"></div>
+    <div class="tabstrip" id="tabstrip" role="tablist" aria-label="Tabs"></div>
+    <button class="new-tab new-viewer" type="button" data-action="new-viewer" aria-label="New cloud agent" title="New cloud agent">
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6.6 18h10.9a3.6 3.6 0 0 0 .3-7.2 5.1 5.1 0 0 0-9.7-1.6A4.1 4.1 0 0 0 6.6 18Z"/></svg>
+    </button>
     <button class="new-tab" type="button" data-action="new-tab" aria-label="New terminal" title="New tab (Ctrl/Cmd+Shift+T)">+</button>
     <div class="top-right">
       <span class="dot off" id="conn-dot" aria-hidden="true"></span>
@@ -76,11 +85,27 @@ const SHELL: &str = r##"
         </div>
         <div class="empty-state" id="empty-state">
           <div class="empty-mark" aria-hidden="true"></div>
-          <h2 id="empty-title">No terminal open</h2>
-          <p id="empty-hint">Pick a connected worker in the sidebar, or press Ctrl/Cmd + Shift + T.</p>
+          <h2 id="empty-title">No pane open</h2>
+          <p id="empty-hint">Pick a connected worker in the sidebar to start a cloud agent, or press Ctrl/Cmd + Shift + T for a terminal.</p>
           <button class="primary" type="button" data-action="new-tab">Open a terminal</button>
         </div>
       </div>
+      <section class="viewer" id="viewer" aria-label="Cloud agent" hidden>
+        <div class="viewer-scroll" id="viewer-scroll">
+          <div class="viewer-landing" id="viewer-landing">
+            <svg class="cloud-mark" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.6 18h10.9a3.6 3.6 0 0 0 .3-7.2 5.1 5.1 0 0 0-9.7-1.6A4.1 4.1 0 0 0 6.6 18Z"/></svg>
+            <h2>New cloud agent</h2>
+            <p>It runs on the worker, so the work keeps going after you close the laptop.</p>
+          </div>
+          <div class="transcript" id="transcript" aria-live="polite"></div>
+        </div>
+        <div class="composer">
+          <span class="composer-worker" id="composer-worker" title="Worker">worker —</span>
+          <textarea id="composer-input" class="composer-input" rows="1" placeholder="Kick off a cloud agent"
+            aria-label="Message the cloud agent" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+          <button class="send" type="button" id="composer-send" data-action="send-turn">Send</button>
+        </div>
+      </section>
       <footer class="statusbar">
         <span class="status-state" id="status-state">idle</span>
         <span class="sep" aria-hidden="true"></span>
@@ -129,17 +154,57 @@ struct WorkersResponse {
     workers: Vec<WorkerInfo>,
 }
 
+/// One pane's transport: a socket to the worker, plus whatever the pane draws.
+///
+/// A tab is either a terminal or a viewer, and only one of the two payloads is
+/// ever set; the socket, its queued frames and the keepalive are shared.
 struct TabData {
-    session: Session,
-    terminal: Terminal,
+    pane: Pane,
     socket: Option<WebSocket>,
     listeners: Vec<Closure<dyn FnMut(Event)>>,
     pending: Vec<ClientFrame>,
-    selection: Option<Selection>,
     failure: Option<String>,
+    /// A viewer's socket reached `OPEN` at least once since it was created.
+    opened: bool,
+    /// A viewer's next reconnect deadline, in `performance.now()` terms.
+    reconnect_at: Option<f64>,
+    reconnect_attempt: u32,
     last_ping_at: f64,
     last_ping_sent: f64,
     latency_ms: Option<f64>,
+    terminal: Option<TerminalPane>,
+    viewer: Option<ViewerPane>,
+}
+
+struct TerminalPane {
+    session: Session,
+    terminal: Terminal,
+    selection: Option<Selection>,
+}
+
+struct ViewerPane {
+    viewer: Viewer,
+    /// The worker's conversation key: every turn in this pane keeps it, so the
+    /// worker sends the earlier messages along with the next one.
+    thread_id: String,
+}
+
+impl TabData {
+    fn session(&self) -> Option<&Session> {
+        self.terminal.as_ref().map(|terminal| &terminal.session)
+    }
+
+    fn session_mut(&mut self) -> Option<&mut Session> {
+        self.terminal.as_mut().map(|terminal| &mut terminal.session)
+    }
+
+    fn terminal_ref(&self) -> Option<&Terminal> {
+        self.terminal.as_ref().map(|terminal| &terminal.terminal)
+    }
+
+    fn viewer(&self) -> Option<&Viewer> {
+        self.viewer.as_ref().map(|viewer| &viewer.viewer)
+    }
 }
 
 enum FetchOutcome {
@@ -166,6 +231,13 @@ struct App {
     input: HtmlTextAreaElement,
     viewport: HtmlElement,
     app_el: HtmlElement,
+    viewer: HtmlElement,
+    viewer_scroll: HtmlElement,
+    viewer_landing: HtmlElement,
+    transcript: Element,
+    composer: HtmlTextAreaElement,
+    composer_worker: HtmlElement,
+    composer_send: HtmlButtonElement,
     tabstrip: Element,
     worker_list: Element,
     workers_updated_el: HtmlElement,
@@ -247,6 +319,7 @@ pub fn start() {
         app.render_tabs();
         app.update_chrome();
         app.update_empty();
+        app.update_surface();
         app.update_overlay();
         app.update_status();
         app.render_drawer();
@@ -285,6 +358,13 @@ impl App {
             input,
             viewport,
             app_el: by_id(&document, "goble-app")?,
+            viewer: by_id(&document, "viewer")?,
+            viewer_scroll: by_id(&document, "viewer-scroll")?,
+            viewer_landing: by_id(&document, "viewer-landing")?,
+            transcript: by_id(&document, "transcript")?,
+            composer: by_id(&document, "composer-input")?,
+            composer_worker: by_id(&document, "composer-worker")?,
+            composer_send: by_id(&document, "composer-send")?,
             tabstrip: by_id(&document, "tabstrip")?,
             worker_list: by_id(&document, "worker-list")?,
             workers_updated_el: by_id(&document, "workers-updated")?,
@@ -332,7 +412,18 @@ impl App {
 
     // ----------------------------------------------------------------- tabs
 
+    /// The `+` button and `Ctrl/Cmd+Shift+T`: a new terminal on the worker the
+    /// active tab (or the selection) names.
     fn new_tab(&mut self) {
+        self.open_on_worker(Pane::Terminal);
+    }
+
+    /// The cloud button: a new viewer on the same worker.
+    fn new_viewer_tab(&mut self) {
+        self.open_on_worker(Pane::Viewer);
+    }
+
+    fn open_on_worker(&mut self, pane: Pane) {
         let worker = self
             .tabs
             .active()
@@ -340,19 +431,25 @@ impl App {
             .or_else(|| self.selected_worker.clone())
             .or_else(|| self.workers.first().map(|worker| worker.id.clone()));
         match worker {
-            Some(worker) => self.open_worker(&worker, true),
+            Some(worker) => self.open_pane(&worker, pane, true),
             None => self.toast("No workers connected. Start a worker, then refresh."),
         }
     }
 
+    /// Select the worker in the sidebar: its viewer if it has one, a fresh
+    /// cloud agent otherwise.
     fn open_worker(&mut self, worker_id: &str, force_new: bool) {
+        self.open_pane(worker_id, Pane::Viewer, force_new);
+    }
+
+    fn open_pane(&mut self, worker_id: &str, pane: Pane, force_new: bool) {
         if !self.workers.iter().any(|worker| worker.id == worker_id) {
             self.toast("That worker is no longer connected.");
             return;
         }
         self.selected_worker = Some(worker_id.to_string());
         if !force_new {
-            if let Some(existing) = self.tabs.for_worker(worker_id).first().copied() {
+            if let Some(existing) = self.tabs.first_for_worker(worker_id, pane) {
                 self.select_tab(existing);
                 self.drawer_open = false;
                 self.render_drawer();
@@ -360,8 +457,22 @@ impl App {
             }
         }
 
+        let id = match pane {
+            Pane::Terminal => self.open_terminal(worker_id),
+            Pane::Viewer => self.open_viewer(worker_id),
+        };
+        self.connect_socket(id);
+        self.drawer_open = false;
+        self.render_drawer();
+        self.after_change();
+        self.focus_input();
+    }
+
+    fn open_terminal(&mut self, worker_id: &str) -> u64 {
         let grid = self.renderer.grid();
-        let id = self.tabs.open(worker_id.to_string(), worker_id.to_string());
+        let id = self
+            .tabs
+            .open_pane(worker_id.to_string(), worker_id.to_string(), Pane::Terminal);
         let tag = format!("tab{id}");
         let mut session = Session::new(worker_id, tag, terminal_cwd(), grid.cols, grid.rows);
         let plans = session.start();
@@ -369,24 +480,58 @@ impl App {
         self.tab_data.insert(
             id,
             TabData {
-                session,
-                terminal,
+                pane: Pane::Terminal,
                 socket: None,
                 listeners: Vec::new(),
                 pending: Vec::new(),
-                selection: None,
                 failure: None,
+                opened: false,
+                reconnect_at: None,
+                reconnect_attempt: 0,
                 last_ping_at: 0.0,
                 last_ping_sent: 0.0,
                 latency_ms: None,
+                terminal: Some(TerminalPane {
+                    session,
+                    terminal,
+                    selection: None,
+                }),
+                viewer: None,
             },
         );
         self.apply_plans(id, plans);
-        self.connect_socket(id);
-        self.drawer_open = false;
-        self.render_drawer();
-        self.after_change();
-        self.focus_input();
+        id
+    }
+
+    fn open_viewer(&mut self, worker_id: &str) -> u64 {
+        let id = self.tabs.open_pane(
+            worker_id.to_string(),
+            VIEWER_TITLE.to_string(),
+            Pane::Viewer,
+        );
+        let thread_id = format!("web-{:.0}-{id}", now_epoch_ms());
+        self.tab_data.insert(
+            id,
+            TabData {
+                pane: Pane::Viewer,
+                socket: None,
+                listeners: Vec::new(),
+                pending: Vec::new(),
+                failure: None,
+                opened: false,
+                reconnect_at: None,
+                reconnect_attempt: 0,
+                last_ping_at: 0.0,
+                last_ping_sent: 0.0,
+                latency_ms: None,
+                terminal: None,
+                viewer: Some(ViewerPane {
+                    viewer: Viewer::new(),
+                    thread_id,
+                }),
+            },
+        );
+        id
     }
 
     fn select_tab(&mut self, id: u64) {
@@ -402,7 +547,8 @@ impl App {
         let plans = self
             .tab_data
             .get_mut(&id)
-            .and_then(|tab| tab.session.close());
+            .and_then(|tab| tab.session_mut())
+            .and_then(Session::close);
         if let Some(plan) = plans {
             self.apply_plans(id, vec![plan]);
         }
@@ -415,13 +561,27 @@ impl App {
 
     fn retry_active(&mut self) {
         let Some(id) = self.tabs.active_id() else {
-            self.toast("No terminal to reconnect.");
+            self.toast("Nothing to reconnect.");
             return;
         };
+        let pane = self.tabs.get(id).map(|tab| tab.pane);
+        if pane == Some(Pane::Viewer) {
+            if let Some(tab) = self.tab_data.get_mut(&id) {
+                tab.failure = None;
+                tab.reconnect_at = None;
+                tab.reconnect_attempt = 0;
+            }
+            self.connect_socket(id);
+            self.after_change();
+            self.focus_input();
+            return;
+        }
         let plans = match self.tab_data.get_mut(&id) {
             Some(tab) => {
                 tab.failure = None;
-                tab.session.retry_now()
+                tab.session_mut()
+                    .map(Session::retry_now)
+                    .unwrap_or_default()
             }
             None => return,
         };
@@ -629,13 +789,15 @@ impl App {
 
     fn fail_tab(&mut self, id: u64, message: String) {
         if let Some(tab) = self.tab_data.get_mut(&id) {
-            let events = tab.session.socket_failed(message.clone());
-            tab.failure = Some(message);
-            for event in events {
-                if let SessionEvent::Failed(message) = event {
-                    tab.failure = Some(message);
+            let mut failure = Some(message.clone());
+            if let Some(session) = tab.session_mut() {
+                for event in session.socket_failed(message) {
+                    if let SessionEvent::Failed(message) = event {
+                        failure = Some(message);
+                    }
                 }
             }
+            tab.failure = failure;
         }
         self.after_change();
     }
@@ -644,8 +806,13 @@ impl App {
         let Some(tab) = self.tab_data.get_mut(&id) else {
             return;
         };
-        tab.session.socket_opened();
+        tab.opened = true;
         tab.failure = None;
+        tab.reconnect_at = None;
+        tab.reconnect_attempt = 0;
+        if let Some(session) = tab.session_mut() {
+            session.socket_opened();
+        }
         if let Some(socket) = tab.socket.as_ref() {
             if socket.ready_state() == WebSocket::OPEN {
                 for frame in std::mem::take(&mut tab.pending) {
@@ -664,6 +831,10 @@ impl App {
             return;
         };
         let now = self.now();
+        if self.tabs.get(id).map(|tab| tab.pane) == Some(Pane::Viewer) {
+            self.on_viewer_frame(id, &frame, now);
+            return;
+        }
         let mut title = None;
         let mut dirty = false;
         let bell;
@@ -672,10 +843,13 @@ impl App {
             let Some(tab) = self.tab_data.get_mut(&id) else {
                 return;
             };
-            for event in tab.session.on_frame(&frame) {
+            let Some(terminal) = tab.terminal.as_mut() else {
+                return;
+            };
+            for event in terminal.session.on_frame(&frame) {
                 match event {
                     SessionEvent::Output(bytes) => {
-                        tab.terminal.process(&bytes);
+                        terminal.terminal.process(&bytes);
                         dirty = true;
                     }
                     SessionEvent::Opened => {
@@ -701,11 +875,11 @@ impl App {
                     }
                 }
             }
-            let terminal_title = tab.terminal.title().to_string();
+            let terminal_title = terminal.terminal.title().to_string();
             if !terminal_title.is_empty() {
                 title = Some(terminal_title);
             }
-            bell = tab.terminal.take_bell();
+            bell = terminal.terminal.take_bell();
         }
 
         let mut redraw_chrome = false;
@@ -729,8 +903,32 @@ impl App {
         }
     }
 
+    /// One relayed frame for a viewer pane: keepalives update the latency, every
+    /// other kind feeds the transcript, and frames for another turn are dropped
+    /// by the viewer itself.
+    fn on_viewer_frame(&mut self, id: u64, frame: &protocol::ServerFrame, now: f64) {
+        let Some(tab) = self.tab_data.get_mut(&id) else {
+            return;
+        };
+        if matches!(frame, protocol::ServerFrame::Pong) {
+            if tab.last_ping_sent > 0.0 {
+                tab.latency_ms = Some((now - tab.last_ping_sent).max(0.0));
+            }
+            self.update_status();
+            return;
+        }
+        let changed = tab
+            .viewer
+            .as_mut()
+            .is_some_and(|viewer| viewer.viewer.on_frame(frame, now));
+        if changed {
+            self.render_viewer(id);
+            self.update_status();
+        }
+    }
+
     fn on_socket_close(&mut self, id: u64, code: u16, reason: &str) {
-        let now_ms = self.now() as u64;
+        let now = self.now();
         let Some(tab) = self.tab_data.get_mut(&id) else {
             return;
         };
@@ -738,7 +936,29 @@ impl App {
         if tab.failure.is_none() && !reason.is_empty() {
             tab.failure = Some(format!("Connection closed ({code}): {reason}"));
         }
-        let plans = tab.session.socket_lost(now_ms);
+        if tab.pane == Pane::Viewer {
+            // A viewer has no pty to resurrect, so it only reconnects its
+            // socket; the transcript it already has stays on screen.
+            let closed = tab.failure.take();
+            let ms = backoff_ms(tab.reconnect_attempt);
+            tab.reconnect_attempt = tab.reconnect_attempt.saturating_add(1);
+            tab.reconnect_at = Some(now + ms as f64);
+            if let Some(viewer) = tab.viewer.as_mut() {
+                if viewer.viewer.running() {
+                    let message = closed.unwrap_or_else(|| {
+                        "The connection to the worker dropped before the turn answered.".to_string()
+                    });
+                    viewer.viewer.fail(&message);
+                }
+            }
+            self.render_viewer(id);
+            self.after_change();
+            return;
+        }
+        let plans = tab
+            .session_mut()
+            .map(|session| session.socket_lost(now as u64));
+        let plans = plans.unwrap_or_default();
         if !plans.is_empty() {
             tab.failure = None;
         }
@@ -801,9 +1021,11 @@ impl App {
                     Plan::Reconnected { pane_id } => {
                         let marker =
                             format!("\r\n\x1b[38;5;245m── reconnected · {pane_id} ──\x1b[0m\r\n");
-                        tab.terminal.process(marker.as_bytes());
-                        tab.terminal.scroll_to_bottom();
-                        tab.selection = None;
+                        if let Some(terminal) = tab.terminal.as_mut() {
+                            terminal.terminal.process(marker.as_bytes());
+                            terminal.terminal.scroll_to_bottom();
+                            terminal.selection = None;
+                        }
                         dirty = true;
                         continue;
                     }
@@ -827,7 +1049,8 @@ impl App {
         let plan = self
             .tab_data
             .get_mut(&id)
-            .and_then(|tab| tab.session.input(bytes));
+            .and_then(|tab| tab.session_mut())
+            .and_then(|session| session.input(bytes));
         if let Some(plan) = plan {
             self.apply_plans(id, vec![plan]);
         }
@@ -840,7 +1063,8 @@ impl App {
         let bracketed = self
             .tab_data
             .get(&id)
-            .map(|tab| tab.terminal.bracketed_paste())
+            .and_then(|tab| tab.terminal_ref())
+            .map(Terminal::bracketed_paste)
             .unwrap_or(false);
         let bytes = input::paste_bytes(text, bracketed);
         self.send_bytes(&bytes);
@@ -870,10 +1094,14 @@ impl App {
         let Some(id) = self.tabs.active_id() else {
             return;
         };
-        let plan = match self.tab_data.get_mut(&id) {
-            Some(tab) => {
-                tab.terminal.resize(grid.cols, grid.rows);
-                tab.session.resize(grid.cols, grid.rows)
+        let plan = match self
+            .tab_data
+            .get_mut(&id)
+            .and_then(|tab| tab.terminal.as_mut())
+        {
+            Some(terminal) => {
+                terminal.terminal.resize(grid.cols, grid.rows);
+                terminal.session.resize(grid.cols, grid.rows)
             }
             None => None,
         };
@@ -899,18 +1127,30 @@ impl App {
     fn draw(&mut self) {
         let now = self.now();
         let bell_flash = now < self.bell_until;
-        let active = self.tabs.active_id();
-        if let Some(tab) = active.and_then(|id| self.tab_data.get(&id)) {
-            let options = DrawOptions {
-                terminal: &tab.terminal,
-                theme: &self.theme,
-                selection: tab.selection,
-                cursor_visible: self.blink_on,
-                bell_flash,
-            };
-            self.renderer.draw(options);
-        } else {
-            self.renderer.clear(&self.theme);
+        let Self {
+            renderer,
+            theme,
+            tabs,
+            tab_data,
+            blink_on,
+            ..
+        } = self;
+        let options = tabs
+            .active_id()
+            .and_then(|id| tab_data.get(&id))
+            .and_then(|tab| {
+                let terminal = tab.terminal.as_ref()?;
+                Some(DrawOptions {
+                    terminal: &terminal.terminal,
+                    theme,
+                    selection: terminal.selection,
+                    cursor_visible: *blink_on,
+                    bell_flash,
+                })
+            });
+        match options {
+            Some(options) => renderer.draw(options),
+            None => renderer.clear(theme),
         }
         self.update_status();
     }
@@ -921,9 +1161,30 @@ impl App {
         self.render_tabs();
         self.update_chrome();
         self.update_empty();
+        self.update_surface();
         self.update_overlay();
         self.update_status();
         self.schedule_draw();
+    }
+
+    /// Show the pane the active tab draws: the terminal canvas, or the viewer
+    /// (landing or transcript, composer underneath).
+    fn update_surface(&mut self) {
+        let pane = self.tabs.active().map(|tab| tab.pane);
+        let viewer_open = pane == Some(Pane::Viewer);
+        self.viewer.set_hidden(!viewer_open);
+        self.viewport.set_hidden(viewer_open);
+        if viewer_open {
+            if let Some(id) = self.tabs.active_id() {
+                self.render_viewer(id);
+            }
+            return;
+        }
+        // The canvas was hidden while the viewer was up; measure it again so
+        // the pty is the size the screen shows.
+        if pane == Some(Pane::Terminal) {
+            self.resize_to_viewport();
+        }
     }
 
     fn render_tabs(&mut self) {
@@ -955,6 +1216,15 @@ impl App {
             let _ =
                 element.set_attribute("title", &format!("{} · pane {}", tab.worker_id, tab.title));
 
+            if tab.pane == Pane::Viewer {
+                if let Ok(mark) = self.document.create_element("span") {
+                    mark.set_class_name("tab-mark");
+                    let _ = mark.set_attribute("aria-hidden", "true");
+                    mark.set_text_content(Some("☁"));
+                    let _ = element.append_child(&mark);
+                }
+            }
+
             if let Ok(label) = self.document.create_element("span") {
                 label.set_class_name("tab-label");
                 label.set_text_content(Some(&short_id(&tab.title)));
@@ -972,6 +1242,140 @@ impl App {
             }
             let _ = self.tabstrip.append_child(&element);
         }
+    }
+
+    // --------------------------------------------------------------- viewer
+
+    /// Draw a viewer tab: the landing while it has no rows, the transcript once
+    /// it has some, and the composer's worker label with its Send/Stop state.
+    fn render_viewer(&mut self, id: u64) {
+        let Some((worker, rows, running)) = self.tab_data.get(&id).and_then(|tab| {
+            let viewer = tab.viewer.as_ref()?;
+            let meta = self.tabs.get(id)?;
+            Some((
+                meta.worker_id.clone(),
+                viewer.viewer.rows().to_vec(),
+                viewer.viewer.running(),
+            ))
+        }) else {
+            return;
+        };
+        self.viewer_landing.set_hidden(!rows.is_empty());
+        self.composer_worker
+            .set_text_content(Some(&short_id(&worker)));
+        self.composer_worker.set_title(&worker);
+        self.composer_send
+            .set_text_content(Some(if running { "Stop" } else { "Send" }));
+        self.composer_send
+            .set_class_name(if running { "send stop" } else { "send" });
+        let _ = self.composer_send.set_attribute(
+            "title",
+            if running {
+                "Stop watching this turn; the worker keeps running"
+            } else {
+                "Send (Enter)"
+            },
+        );
+        self.render_transcript(&rows);
+    }
+
+    /// Rebuild the transcript rows. The scroll position follows the newest text
+    /// while the reader is at the bottom and is left alone when they scrolled up.
+    fn render_transcript(&mut self, rows: &[crate::viewer::Row]) {
+        let scroll = &self.viewer_scroll;
+        let at_bottom = scroll.scroll_height() - scroll.scroll_top() - scroll.client_height() <= 32;
+        let previous = scroll.scroll_top();
+        self.transcript.set_inner_html("");
+        for row in rows {
+            let Ok(element) = self.document.create_element("div") else {
+                continue;
+            };
+            element.set_class_name(match row.kind {
+                RowKind::User => "row user",
+                RowKind::Assistant => "row assistant",
+                RowKind::Tool => "row tool",
+                RowKind::Error => "row error",
+                RowKind::Notice => "row notice",
+            });
+            element.set_text_content(Some(&row.text));
+            let _ = self.transcript.append_child(&element);
+        }
+        let target = if at_bottom {
+            self.viewer_scroll.scroll_height()
+        } else {
+            previous
+        };
+        self.viewer_scroll.set_scroll_top(target);
+    }
+
+    /// Enter or the Send control: one turn on the worker, streamed into the
+    /// active viewer.
+    fn send_turn(&mut self) {
+        let Some(id) = self.tabs.active_id() else {
+            return;
+        };
+        if self.tabs.get(id).map(|tab| tab.pane) != Some(Pane::Viewer) {
+            return;
+        }
+        let prompt = self.composer.value().trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        let now = self.now();
+        let epoch = now_epoch_ms();
+        let trace_id = format!("trace-web-{epoch:.0}-{id}");
+        let (thread_id, started) = match self.tab_data.get_mut(&id) {
+            Some(tab) => match tab.viewer.as_mut() {
+                Some(viewer) => (
+                    viewer.thread_id.clone(),
+                    viewer.viewer.begin(&trace_id, &prompt, now),
+                ),
+                None => return,
+            },
+            None => return,
+        };
+        if !started {
+            self.toast("The worker is still answering. Stop it first.");
+            return;
+        }
+        let frame = protocol::run_agent_for_thread_reply(
+            &trace_id,
+            &thread_id,
+            &prompt,
+            &format!("{epoch:.0}"),
+            &now_rfc3339(),
+        );
+        if let Some(tab) = self.tab_data.get_mut(&id) {
+            queue_or_send(tab, frame);
+        }
+        self.composer.set_value("");
+        self.autosize_composer();
+        self.render_viewer(id);
+        self.update_status();
+    }
+
+    /// Stop listening to the turn in flight. The worker keeps running.
+    fn stop_turn(&mut self) {
+        let Some(id) = self.tabs.active_id() else {
+            return;
+        };
+        let stopped = self
+            .tab_data
+            .get_mut(&id)
+            .and_then(|tab| tab.viewer.as_mut())
+            .is_some_and(|viewer| viewer.viewer.stop());
+        if stopped {
+            self.render_viewer(id);
+            self.update_status();
+        }
+    }
+
+    /// Grow the composer with its draft, up to a fixed ceiling.
+    fn autosize_composer(&mut self) {
+        let style = self.composer.style();
+        let _ = style.set_property("height", "auto");
+        let height = f64::from(self.composer.scroll_height()).clamp(34.0, COMPOSER_MAX_HEIGHT);
+        let _ = style.set_property("height", &format!("{height}px"));
     }
 
     fn render_sidebar(&mut self) {
@@ -1079,14 +1483,25 @@ impl App {
         match active {
             Some(tab) => {
                 let tab_data = self.tab_data.get(&tab.id);
-                let (class, label) = match tab_data.map(|tab| tab.session.state()) {
-                    Some(SessionState::Live) => ("dot online", "live"),
-                    Some(SessionState::Connecting | SessionState::Open) => {
-                        ("dot warn", "connecting")
-                    }
-                    Some(SessionState::Closed) => ("dot off", "closed"),
-                    Some(SessionState::Failed) => ("dot error", "failed"),
-                    None => ("dot off", "idle"),
+                let (class, label) = match tab.pane {
+                    Pane::Viewer => match tab_data.map(viewer_state) {
+                        Some(ViewerState::Live) => ("dot online", "live"),
+                        Some(ViewerState::Connecting) => ("dot warn", "connecting"),
+                        Some(ViewerState::Reconnecting) => ("dot warn", "reconnecting"),
+                        Some(ViewerState::Closed) => ("dot off", "closed"),
+                        Some(ViewerState::Failed) => ("dot error", "failed"),
+                        None => ("dot off", "idle"),
+                    },
+                    Pane::Terminal => match tab_data.and_then(TabData::session).map(Session::state)
+                    {
+                        Some(SessionState::Live) => ("dot online", "live"),
+                        Some(SessionState::Connecting | SessionState::Open) => {
+                            ("dot warn", "connecting")
+                        }
+                        Some(SessionState::Closed) => ("dot off", "closed"),
+                        Some(SessionState::Failed) => ("dot error", "failed"),
+                        None => ("dot off", "idle"),
+                    },
                 };
                 self.conn_dot.set_class_name(class);
                 self.active_worker_label
@@ -1117,8 +1532,8 @@ impl App {
             )
         } else {
             (
-                "No terminal open",
-                "Pick a connected worker in the sidebar, or press Ctrl/Cmd + Shift + T."
+                "No pane open",
+                "Pick a connected worker in the sidebar to start a cloud agent, or press Ctrl/Cmd + Shift + T for a terminal."
                     .to_string(),
             )
         };
@@ -1133,12 +1548,19 @@ impl App {
             self.overlay.set_hidden(true);
             return;
         };
-        if tab.session.state() == SessionState::Live {
+        // The viewer reports its own state in the status bar and the transcript,
+        // and the landing is the surface a fresh one deserves.
+        let Some(terminal) = tab.terminal.as_ref() else {
+            self.overlay.set_hidden(true);
+            return;
+        };
+        let session = &terminal.session;
+        if session.state() == SessionState::Live {
             self.overlay.set_hidden(true);
             return;
         }
-        let worker = short_id(tab.session.worker_id());
-        let (title, detail) = match tab.session.state() {
+        let worker = short_id(session.worker_id());
+        let (title, detail) = match session.state() {
             SessionState::Connecting => (
                 "Connecting…".to_string(),
                 format!("Opening a terminal on {worker}."),
@@ -1147,7 +1569,7 @@ impl App {
                 "Opening terminal…".to_string(),
                 format!("Waiting for {worker} to start the shell."),
             ),
-            SessionState::Closed => match tab.session.reconnect_at() {
+            SessionState::Closed => match session.reconnect_at() {
                 Some(deadline) => {
                     let remaining = ((deadline as f64 - now) / 1000.0).max(0.0);
                     (
@@ -1179,48 +1601,88 @@ impl App {
     fn update_status(&mut self) {
         let active = self.tabs.active_id().and_then(|id| self.tab_data.get(&id));
         let (state, size, pane, scroll, worker, latency, sr) = match active {
-            Some(tab) => {
-                let state = match tab.session.state() {
-                    SessionState::Live => "live",
-                    SessionState::Connecting => "connecting",
-                    SessionState::Open => "opening",
-                    SessionState::Closed => {
-                        if tab.session.reconnect_at().is_some() {
-                            "reconnecting"
-                        } else {
-                            "closed"
-                        }
-                    }
-                    SessionState::Failed => "failed",
+            Some(tab) if tab.pane == Pane::Viewer => {
+                let state = match viewer_state(tab) {
+                    ViewerState::Live => "live",
+                    ViewerState::Connecting => "connecting",
+                    ViewerState::Reconnecting => "reconnecting",
+                    ViewerState::Closed => "closed",
+                    ViewerState::Failed => "failed",
                 };
-                let (cols, rows) = tab.terminal.size();
-                let pane = tab
-                    .session
-                    .pane_id()
-                    .map(|pane| format!("pane {pane}"))
-                    .unwrap_or_else(|| "pane —".to_string());
+                let worker_id = self
+                    .tabs
+                    .active()
+                    .map(|tab| tab.worker_id.clone())
+                    .unwrap_or_default();
+                let messages = tab.viewer().map_or(0, |viewer| viewer.rows().len());
                 let latency = tab
                     .latency_ms
                     .map(|ms| format!("{ms:.0} ms"))
                     .unwrap_or_else(|| "—".to_string());
-                let sr = format!(
-                    "{} on {} at {} by {}, scrollback {}",
-                    state,
-                    tab.session.worker_id(),
-                    cols,
-                    rows,
-                    tab.terminal.scroll_offset()
-                );
+                let sr = format!("{state} cloud agent on {worker_id}, {messages} rows");
                 (
                     state,
-                    format!("{cols}×{rows}"),
-                    pane,
-                    format!("-{}", tab.terminal.scroll_offset()),
-                    tab.session.worker_id().to_string(),
+                    "—".to_string(),
+                    "cloud agent".to_string(),
+                    format!("{messages} rows"),
+                    worker_id,
                     latency,
                     sr,
                 )
             }
+            Some(tab) => match tab.terminal.as_ref() {
+                Some(terminal) => {
+                    let state = match terminal.session.state() {
+                        SessionState::Live => "live",
+                        SessionState::Connecting => "connecting",
+                        SessionState::Open => "opening",
+                        SessionState::Closed => {
+                            if terminal.session.reconnect_at().is_some() {
+                                "reconnecting"
+                            } else {
+                                "closed"
+                            }
+                        }
+                        SessionState::Failed => "failed",
+                    };
+                    let (cols, rows) = terminal.terminal.size();
+                    let pane = terminal
+                        .session
+                        .pane_id()
+                        .map(|pane| format!("pane {pane}"))
+                        .unwrap_or_else(|| "pane —".to_string());
+                    let latency = tab
+                        .latency_ms
+                        .map(|ms| format!("{ms:.0} ms"))
+                        .unwrap_or_else(|| "—".to_string());
+                    let sr = format!(
+                        "{} on {} at {} by {}, scrollback {}",
+                        state,
+                        terminal.session.worker_id(),
+                        cols,
+                        rows,
+                        terminal.terminal.scroll_offset()
+                    );
+                    (
+                        state,
+                        format!("{cols}×{rows}"),
+                        pane,
+                        format!("-{}", terminal.terminal.scroll_offset()),
+                        terminal.session.worker_id().to_string(),
+                        latency,
+                        sr,
+                    )
+                }
+                None => (
+                    "idle",
+                    "—".to_string(),
+                    "pane —".to_string(),
+                    "-0".to_string(),
+                    "no worker".to_string(),
+                    "—".to_string(),
+                    String::new(),
+                ),
+            },
             None => {
                 let grid = self.renderer.grid();
                 (
@@ -1230,7 +1692,7 @@ impl App {
                     "-0".to_string(),
                     "no worker".to_string(),
                     "—".to_string(),
-                    "No terminal open".to_string(),
+                    "No pane open".to_string(),
                 )
             }
         };
@@ -1275,7 +1737,14 @@ impl App {
     }
 
     fn focus_input(&mut self) {
-        let _ = self.input.focus();
+        match self.tabs.active().map(|tab| tab.pane) {
+            Some(Pane::Viewer) => {
+                let _ = self.composer.focus();
+            }
+            _ => {
+                let _ = self.input.focus();
+            }
+        }
     }
 
     // --------------------------------------------------------------- events
@@ -1310,6 +1779,20 @@ impl App {
             .and_then(|value| value.parse::<u64>().ok());
         match action.as_str() {
             "new-tab" => self.new_tab(),
+            "new-viewer" => self.new_viewer_tab(),
+            "send-turn" => {
+                let running = self
+                    .tabs
+                    .active_id()
+                    .and_then(|id| self.tab_data.get(&id))
+                    .and_then(TabData::viewer)
+                    .is_some_and(Viewer::running);
+                if running {
+                    self.stop_turn();
+                } else {
+                    self.send_turn();
+                }
+            }
             "select-tab" => {
                 if let Some(id) = tab_id {
                     self.select_tab(id);
@@ -1358,6 +1841,12 @@ impl App {
         let shift = event.shift_key();
         let alt = event.alt_key();
         let command = ctrl || meta;
+        // The composer is a text field: its keys belong to it, never to a pty.
+        // Only the shell-wide shortcuts above still apply.
+        let in_composer = event
+            .target()
+            .and_then(|target| target.dyn_into::<Element>().ok())
+            .is_some_and(|element| element.id() == "composer-input");
 
         if command && shift {
             match key.to_ascii_lowercase().as_str() {
@@ -1424,12 +1913,13 @@ impl App {
             event.prevent_default();
             let page = i32::from(self.renderer.grid().rows.saturating_sub(1)).max(1);
             let delta = if key == "PageUp" { page } else { -page };
-            if let Some(tab) = self
+            if let Some(terminal) = self
                 .tabs
                 .active_id()
                 .and_then(|id| self.tab_data.get_mut(&id))
+                .and_then(|tab| tab.terminal.as_mut())
             {
-                tab.terminal.scroll(delta);
+                terminal.terminal.scroll(delta);
             }
             self.schedule_draw();
             self.update_status();
@@ -1442,6 +1932,15 @@ impl App {
             self.drawer_open = false;
             self.render_help();
             self.render_drawer();
+            return;
+        }
+
+        if in_composer {
+            // Enter sends, Shift+Enter is a newline, everything else is text.
+            if key == "Enter" && !shift {
+                event.prevent_default();
+                self.send_turn();
+            }
             return;
         }
 
@@ -1533,12 +2032,9 @@ impl App {
         let text = self
             .tab_data
             .get(&id)
-            .and_then(|tab| tab.selection)
-            .map(|selection| {
-                self.tab_data
-                    .get(&id)
-                    .map(|tab| tab.terminal.selection_text(selection))
-                    .unwrap_or_default()
+            .and_then(|tab| {
+                let terminal = tab.terminal.as_ref()?;
+                Some(terminal.terminal.selection_text(terminal.selection?))
             })
             .unwrap_or_default();
         if text.is_empty() {
@@ -1572,8 +2068,9 @@ impl App {
         };
         if event.ctrl_key() || event.meta_key() {
             if let Some(id) = self.tabs.active_id() {
-                if let Some(tab) = self.tab_data.get(&id) {
-                    if let Some(url) = tab.terminal.link_at(cell.0, cell.1) {
+                if let Some(terminal) = self.tab_data.get(&id).and_then(|tab| tab.terminal.as_ref())
+                {
+                    if let Some(url) = terminal.terminal.link_at(cell.0, cell.1) {
                         let _ = self.window.open_with_url_and_target(&url, "_blank");
                         event.prevent_default();
                         return;
@@ -1582,12 +2079,13 @@ impl App {
             }
         }
         event.prevent_default();
-        if let Some(tab) = self
+        if let Some(terminal) = self
             .tabs
             .active_id()
             .and_then(|id| self.tab_data.get_mut(&id))
+            .and_then(|tab| tab.terminal.as_mut())
         {
-            tab.selection = Some(Selection::new(cell, cell));
+            terminal.selection = Some(Selection::new(cell, cell));
         }
         self.dragging = true;
         self.drag_moved = false;
@@ -1605,12 +2103,13 @@ impl App {
         if cell != self.drag_anchor {
             self.drag_moved = true;
         }
-        if let Some(tab) = self
+        if let Some(terminal) = self
             .tabs
             .active_id()
             .and_then(|id| self.tab_data.get_mut(&id))
+            .and_then(|tab| tab.terminal.as_mut())
         {
-            tab.selection = Some(Selection::new(self.drag_anchor, cell));
+            terminal.selection = Some(Selection::new(self.drag_anchor, cell));
         }
         self.schedule_draw();
     }
@@ -1622,12 +2121,13 @@ impl App {
         self.dragging = false;
         if self.drag_moved {
             self.copy_active_selection();
-        } else if let Some(tab) = self
+        } else if let Some(terminal) = self
             .tabs
             .active_id()
             .and_then(|id| self.tab_data.get_mut(&id))
+            .and_then(|tab| tab.terminal.as_mut())
         {
-            tab.selection = None;
+            terminal.selection = None;
         }
         self.drag_moved = false;
         self.schedule_draw();
@@ -1643,9 +2143,16 @@ impl App {
         let Some(tab) = self.tab_data.get(&id) else {
             return;
         };
-        let (start, end) = word_bounds(&tab.terminal, cell.0, cell.1);
-        if let Some(tab) = self.tab_data.get_mut(&id) {
-            tab.selection = Some(Selection::new(start, end));
+        let Some(terminal) = tab.terminal.as_ref() else {
+            return;
+        };
+        let (start, end) = word_bounds(&terminal.terminal, cell.0, cell.1);
+        if let Some(terminal) = self
+            .tab_data
+            .get_mut(&id)
+            .and_then(|tab| tab.terminal.as_mut())
+        {
+            terminal.selection = Some(Selection::new(start, end));
         }
         event.prevent_default();
         self.copy_active_selection();
@@ -1665,8 +2172,12 @@ impl App {
         if lines == 0 {
             return;
         }
-        if let Some(tab) = self.tab_data.get_mut(&id) {
-            tab.terminal.scroll(-lines);
+        if let Some(terminal) = self
+            .tab_data
+            .get_mut(&id)
+            .and_then(|tab| tab.terminal.as_mut())
+        {
+            terminal.terminal.scroll(-lines);
         }
         event.prevent_default();
         self.update_status();
@@ -1709,10 +2220,17 @@ impl App {
 
         let ids: Vec<u64> = self.tab_data.keys().copied().collect();
         for id in ids {
+            if self.tabs.get(id).map(|tab| tab.pane) == Some(Pane::Viewer) {
+                if self.tick_viewer(id, now) {
+                    dirty = true;
+                }
+                continue;
+            }
             let plans = self
                 .tab_data
                 .get_mut(&id)
-                .map(|tab| tab.session.tick(now_ms))
+                .and_then(|tab| tab.session_mut())
+                .map(|session| session.tick(now_ms))
                 .unwrap_or_default();
             if !plans.is_empty() {
                 let opens = plans
@@ -1726,18 +2244,11 @@ impl App {
             }
 
             let ping_due = self.tab_data.get(&id).is_some_and(|tab| {
-                tab.session.state() == SessionState::Live
+                tab.session().map(Session::state) == Some(SessionState::Live)
                     && now - tab.last_ping_at >= PING_INTERVAL_MS
             });
             if ping_due {
-                let plan = self.tab_data.get(&id).and_then(|tab| tab.session.ping());
-                if let Some(plan) = plan {
-                    self.apply_plans(id, vec![plan]);
-                    if let Some(tab) = self.tab_data.get_mut(&id) {
-                        tab.last_ping_at = now;
-                        tab.last_ping_sent = now;
-                    }
-                }
+                self.ping_tab(id, now);
             }
         }
 
@@ -1750,6 +2261,58 @@ impl App {
         self.update_status();
         if dirty {
             self.schedule_draw();
+        }
+    }
+
+    /// One clock tick for a viewer tab: settle or expire its turn, reconnect a
+    /// dropped socket, and keep the relay alive with a ping.
+    fn tick_viewer(&mut self, id: u64, now: f64) -> bool {
+        let mut changed = false;
+        let mut reconnect = false;
+        let Some(tab) = self.tab_data.get_mut(&id) else {
+            return false;
+        };
+        if let Some(viewer) = tab.viewer.as_mut() {
+            changed = viewer.viewer.tick(now);
+        }
+        let socket_open = tab
+            .socket
+            .as_ref()
+            .is_some_and(|socket| socket.ready_state() == WebSocket::OPEN);
+        if !socket_open && tab.reconnect_at.is_some_and(|at| now >= at) {
+            tab.reconnect_at = None;
+            reconnect = true;
+        }
+        if socket_open && now - tab.last_ping_at >= PING_INTERVAL_MS {
+            tab.last_ping_at = now;
+            tab.last_ping_sent = now;
+            if let (Some(socket), Ok(json)) =
+                (tab.socket.as_ref(), protocol::encode(&ClientFrame::Ping))
+            {
+                let _ = socket.send_with_str(&json);
+            }
+        }
+        if reconnect {
+            self.connect_socket(id);
+        }
+        if changed && self.tabs.active_id() == Some(id) {
+            self.render_viewer(id);
+        }
+        changed
+    }
+
+    fn ping_tab(&mut self, id: u64, now: f64) {
+        let plan = self
+            .tab_data
+            .get(&id)
+            .and_then(TabData::session)
+            .and_then(Session::ping);
+        if let Some(plan) = plan {
+            self.apply_plans(id, vec![plan]);
+            if let Some(tab) = self.tab_data.get_mut(&id) {
+                tab.last_ping_at = now;
+                tab.last_ping_sent = now;
+            }
         }
     }
 }
@@ -1783,9 +2346,50 @@ fn queue_or_send(tab: &mut TabData, frame: ClientFrame) {
                 .retain(|queued| !matches!(queued, ClientFrame::PtyResize { .. }));
             tab.pending.push(frame);
         }
-        ClientFrame::PtyInput { .. } | ClientFrame::OpenPty { .. } => tab.pending.push(frame),
+        ClientFrame::PtyInput { .. }
+        | ClientFrame::OpenPty { .. }
+        | ClientFrame::RunAgentForThreadReply { .. } => tab.pending.push(frame),
         ClientFrame::ClosePty { .. } | ClientFrame::Ping => {}
     }
+}
+
+/// Where a viewer's socket is, for the dot in the top bar and the status bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewerState {
+    Connecting,
+    Live,
+    Reconnecting,
+    Closed,
+    Failed,
+}
+
+fn viewer_state(tab: &TabData) -> ViewerState {
+    if tab.failure.is_some() {
+        return ViewerState::Failed;
+    }
+    if tab.reconnect_at.is_some() {
+        return ViewerState::Reconnecting;
+    }
+    match tab.socket.as_ref().map(|socket| socket.ready_state()) {
+        Some(WebSocket::OPEN) => ViewerState::Live,
+        Some(WebSocket::CONNECTING) => ViewerState::Connecting,
+        Some(_) => ViewerState::Closed,
+        None if tab.opened => ViewerState::Closed,
+        None => ViewerState::Connecting,
+    }
+}
+
+/// Epoch milliseconds, the stamp ids are made from.
+fn now_epoch_ms() -> f64 {
+    js_sys::Date::now()
+}
+
+/// `2026-11-15T05:00:00.000Z`, the RFC3339 form `agent.created_at` wants.
+fn now_rfc3339() -> String {
+    js_sys::Date::new_0()
+        .to_iso_string()
+        .as_string()
+        .unwrap_or_default()
 }
 
 fn short_id(id: &str) -> String {
@@ -2055,9 +2659,9 @@ fn install_handlers(app: &Rc<RefCell<App>>) {
         }) as Box<dyn FnMut(Event)>)
     });
 
-    let (canvas, input) = {
+    let (canvas, input, composer) = {
         let app = app.borrow();
-        (app.canvas.clone(), app.input.clone())
+        (app.canvas.clone(), app.input.clone(), app.composer.clone())
     };
 
     listen!(canvas, "mousedown", {
@@ -2131,6 +2735,16 @@ fn install_handlers(app: &Rc<RefCell<App>>) {
         Closure::wrap(Box::new(move |event: Event| {
             if let Some(app) = weak.upgrade() {
                 app.borrow_mut().on_paste(event);
+            }
+        }) as Box<dyn FnMut(Event)>)
+    });
+
+    // The composer only grows with its draft; its text is read on send.
+    listen!(composer, "input", {
+        let weak = Rc::downgrade(app);
+        Closure::wrap(Box::new(move |_event: Event| {
+            if let Some(app) = weak.upgrade() {
+                app.borrow_mut().autosize_composer();
             }
         }) as Box<dyn FnMut(Event)>)
     });

@@ -394,6 +394,7 @@ pub fn make_actions(
     let on_add_space = Rc::clone(&state);
     let on_add_space_with_medium = Rc::clone(&state);
     let on_add_agent_space = Rc::clone(&state);
+    let on_new_cloud_agent = Rc::clone(&state);
     let on_open_add_medium = Rc::clone(&state);
     let on_add_medium_draft_change = Rc::clone(&state);
     let on_add_medium_focus_change = Rc::clone(&state);
@@ -574,6 +575,7 @@ pub fn make_actions(
     let desktop_add_space = desktop.clone();
     let desktop_add_space_with_medium = desktop.clone();
     let desktop_add_agent = desktop.clone();
+    let desktop_new_cloud_agent = desktop.clone();
     let desktop_space_reorder = desktop.clone();
     let desktop_workspace_click = desktop.clone();
     let desktop_space_menu_action = desktop.clone();
@@ -594,6 +596,7 @@ pub fn make_actions(
     let media_add_space = Rc::clone(&media);
     let media_add_space_with_medium = Rc::clone(&media);
     let media_add_agent = Rc::clone(&media);
+    let media_new_cloud_agent = Rc::clone(&media);
     let media_select_space = Rc::clone(&media);
     let media_switch_space = Rc::clone(&media);
     let media_close_space = Rc::clone(&media);
@@ -1061,6 +1064,7 @@ pub fn make_actions(
                 &on_create_medium,
                 desktop_create.as_ref(),
                 &title,
+                None,
             );
             state.new_conversation_draft.clear();
         })),
@@ -3340,6 +3344,25 @@ pub fn make_actions(
                 &media_add_agent,
                 desktop_add_agent.as_ref(),
                 NEW_CONVERSATION_TITLE,
+                None,
+            );
+        })),
+        // "Cloud agent": the surface a run on a worker starts on. The tab holds
+        // an agent pane over a fresh conversation routed to Remote, so the
+        // pane opens as a viewer and its landing invites the run. Remote asks
+        // for its configuration first, exactly as the environment rows do.
+        on_new_cloud_agent: Rc::new(RefCell::new(move || {
+            let mut state = on_new_cloud_agent.borrow_mut();
+            if !state.remote_configured() {
+                state.open_remote_settings_tab(desktop_new_cloud_agent.as_deref());
+                return;
+            }
+            create_conversation_space(
+                &mut state,
+                &media_new_cloud_agent,
+                desktop_new_cloud_agent.as_ref(),
+                NEW_CONVERSATION_TITLE,
+                Some("remote"),
             );
         })),
         // The topbar "+" menu's "Add new medium…" item opens the add-medium dialog.
@@ -3894,7 +3917,7 @@ fn open_setup_conversation(
         goble_core::config::SetupTarget::Remote => "Remote setup",
         goble_core::config::SetupTarget::Hub => "Hub setup",
     };
-    create_conversation_space(state, media, Some(desktop), title);
+    create_conversation_space(state, media, Some(desktop), title, None);
     let pane_id = state.active_pane_id;
     if !send_agent_prompt(state, Some(desktop), media, &brief, pane_id) {
         log::warn!("the setup conversation could not start a turn");
@@ -3902,7 +3925,8 @@ fn open_setup_conversation(
 }
 
 /// Open a new space holding one agent pane over a conversation of its own,
-/// titled `title`, in the environment currently selected.
+/// titled `title`, in `medium` (or the environment currently selected when
+/// none is named).
 ///
 /// The tab is left unnamed — its label derives from the conversation it holds —
 /// and the conversation belongs to the selected environment, so its card lands
@@ -3914,10 +3938,17 @@ fn create_conversation_space(
     media: &Rc<RefCell<MediaState>>,
     desktop: Option<&Arc<DesktopState>>,
     title: &str,
+    medium: Option<&str>,
 ) {
     let desktop_state: Option<&DesktopState> = desktop.map(|desktop| &**desktop);
-    let medium_id = media.borrow().selected_medium_id().to_string();
+    let medium_id = match medium {
+        Some(medium_id) => medium_id.to_string(),
+        None => media.borrow().selected_medium_id().to_string(),
+    };
     let routing = crate::media::medium_routing(&medium_id);
+    // A space opened on a named environment brings that environment with it,
+    // so the sidebar lists the conversations that belong to the new tab.
+    let _ = media.borrow_mut().select_medium(&medium_id);
     let id = state.next_pane_id;
     state.next_pane_id += 1;
     // An unnamed space: its tab derives its label from what it holds — here the

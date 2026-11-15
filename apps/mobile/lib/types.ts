@@ -19,8 +19,12 @@ export interface Conversation {
   preview: string;
   projectName: string;
   mode: SessionMode;
+  /** The harness the conversation runs on: a catalog id, `goble` for the app's own. */
+  harness: string;
   status: SessionStatus;
   starred: boolean;
+  /** A chat that leaves nothing behind: it never reaches the sidebar. */
+  temporary?: boolean;
   updatedAt: string;
 }
 
@@ -40,7 +44,8 @@ export interface ChatMessage {
   at: string;
   command?: string;
   output?: string;
-  status?: "done" | "running" | "waiting_approval" | "error";
+  /** `skipped` marks a proposed command the user refused to run. */
+  status?: "done" | "running" | "waiting_approval" | "skipped" | "error";
   /** A local image attached to the turn. */
   image?: string;
   /** Terminal block context, drawn above the command. */

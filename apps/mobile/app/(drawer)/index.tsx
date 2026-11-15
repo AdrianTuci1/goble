@@ -1,7 +1,7 @@
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -17,10 +17,16 @@ import { Composer } from "../../components/composer";
 import { ComposerSheet } from "../../components/composer-sheet";
 import { ModelMenu } from "../../components/model-menu";
 import { TopBar } from "../../components/top-bar";
-import { CallCard } from "../../components/call-card";
-import { pickAttachment, type AttachmentSource } from "../../lib/attachments";
+import {
+  pickAttachment,
+  type AttachmentSource,
+  type PickedAttachment,
+} from "../../lib/attachments";
+import { startDictation, type Dictation } from "../../lib/dictation";
 import { greeting } from "../../lib/format";
+import { tapFeedback } from "../../lib/haptics";
 import { useOpenDrawer } from "../../lib/navigation";
+import { holdAttachment } from "../../lib/pending-attachment";
 import {
   loadPreferences,
   subscribeDefaultMode,
@@ -28,6 +34,8 @@ import {
 import { palette, radius, space, typography, withAlpha } from "../../lib/theme";
 import type { SessionMode, ThinkingLevel } from "../../lib/types";
 import { useModelChoices } from "../../lib/use-models";
+import { useVoicePreferences } from "../../lib/use-voice";
+import { voiceProvider } from "../../lib/voice";
 
 const suggestions = [
   {
@@ -53,10 +61,18 @@ export default function HomeScreen() {
   );
   const [mode, setMode] = useState<SessionMode>("agent");
   const [prompt, setPrompt] = useState("");
-  const [attachment, setAttachment] = useState<string | null>(null);
+  const [temporary, setTemporary] = useState(false);
+  const [attachment, setAttachment] = useState<PickedAttachment | null>(null);
   const [attachSheet, setAttachSheet] = useState(false);
   const [modelMenu, setModelMenu] = useState(false);
-  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [dictation, setDictation] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const dictationRef = useRef<Dictation | null>(null);
+  const { preferences: voice } = useVoicePreferences();
+  const canDictate = voiceProvider(voice.provider).transcribe;
+
+  useEffect(() => () => void dictationRef.current?.stop(), []);
 
   useEffect(() => {
     void loadPreferences().then((preferences) => setMode(preferences.mode));
@@ -74,20 +90,23 @@ export default function HomeScreen() {
   function send(text = prompt) {
     const value = text.trim();
     if (!value && !attachment) return;
-    const image = attachment;
+    // The session uploads the bytes; the route only has room for the preview.
+    if (attachment) holdAttachment(attachment);
+    const image = attachment?.uri;
     const id = `session-${Date.now().toString(36)}`;
     setPrompt("");
     setAttachment(null);
     const query = `prompt=${encodeURIComponent(value)}&mode=${mode}${
       image ? `&image=${encodeURIComponent(image)}` : ""
-    }`;
+    }${temporary ? "&temporary=1" : ""}`;
+    setTemporary(false);
     router.push(`/session/${id}?${query}`);
   }
 
   async function attach(source: AttachmentSource) {
     setAttachSheet(false);
-    const uri = await pickAttachment(source);
-    if (uri) setAttachment(uri);
+    const picked = await pickAttachment(source);
+    if (picked) setAttachment(picked);
   }
 
   function pickSuggestion(label: string, value: string) {
@@ -99,14 +118,82 @@ export default function HomeScreen() {
     setPrompt(value);
   }
 
+  /**
+   * The home screen has no transcript to stream into, so the words land in the
+   * composer as they are heard and the dictation bar shows them.
+   */
+  function toggleDictation() {
+    if (dictationRef.current) {
+      void stopDictation();
+      return;
+    }
+    if (!canDictate) return;
+    setMuted(false);
+    setVoiceError(null);
+    setDictation(true);
+    dictationRef.current = startDictation({
+      provider: voice.provider,
+      model: voice.sttModel,
+      onPartial: (heard) => setPrompt(heard),
+      onError: (message) => {
+        setVoiceError(message);
+        setDictation(false);
+        setMuted(false);
+        dictationRef.current = null;
+      },
+    });
+  }
+
+  /** Stop listening; the last segment is transcribed before the bar closes. */
+  async function stopDictation() {
+    const dictation = dictationRef.current;
+    dictationRef.current = null;
+    setDictation(false);
+    setMuted(false);
+    if (!dictation) return;
+    const heard = (await dictation.stop()).trim();
+    if (heard) setPrompt(heard);
+  }
+
+  function toggleMute() {
+    const next = !muted;
+    setMuted(next);
+    dictationRef.current?.setMuted(next);
+  }
+
   return (
     <View style={styles.root}>
       <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <TopBar
         model={model}
-        onAvatar={() => router.push("/settings")}
         onMenu={openDrawer}
         onModel={() => setModelMenu(true)}
+        right={
+          <Pressable
+            accessibilityLabel={
+              temporary ? "Turn off temporary chat" : "Start a temporary chat"
+            }
+            accessibilityRole="button"
+            accessibilityState={{ selected: temporary }}
+            hitSlop={8}
+            onPress={() => {
+              tapFeedback();
+              setTemporary(!temporary);
+            }}
+            style={({ pressed }) => [
+              styles.tempButton,
+              temporary && styles.tempButtonActive,
+              pressed && styles.pressed,
+            ]}
+            testID="temporary-chat"
+          >
+            <MaterialCommunityIcons
+              color={temporary ? palette.accent : palette.text}
+              name="incognito"
+              size={20}
+            />
+          </Pressable>
+        }
       />
 
       <KeyboardAvoidingView
@@ -119,13 +206,18 @@ export default function HomeScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.center}>
-
-            <Text style={styles.greeting}>{greeting()}</Text>
-            <Text style={styles.title}>What are we building?</Text>
-            <Text style={styles.subtitle}>
-              Ask the agent, run a command, or pick up a session from the
-              sidebar.
-            </Text>
+            {/* Dictation clears the screen: the gradient is the only thing
+                moving while the phone listens. */}
+            {dictation ? null : (
+              <>
+                <Text style={styles.greeting}>{greeting()}</Text>
+                <Text style={styles.title}>What are we building?</Text>
+                <Text style={styles.subtitle}>
+                  Ask the agent, run a command, or pick up a session from the
+                  sidebar.
+                </Text>
+              </>
+            )}
           </View>
 
           <View style={styles.suggestions}>
@@ -173,20 +265,41 @@ export default function HomeScreen() {
         />
 
         <View style={{ paddingBottom: Math.max(insets.bottom, 4) }}>
+          {temporary ? (
+            <View style={styles.tempNote}>
+              <Ionicons
+                color={palette.accent}
+                name="eye-off-outline"
+                size={13}
+              />
+              <Text style={styles.tempNoteText}>
+                Temporary · this chat stays out of the sidebar
+              </Text>
+            </View>
+          ) : null}
           <Composer
-            attachment={attachment}
+            attachment={attachment?.uri ?? null}
+            dictationText={dictation ? prompt : ""}
+            listening={dictation}
             mode={mode}
+            muted={muted}
             onChangeText={setPrompt}
+            onClose={stopDictation}
+            onMute={toggleMute}
             onOpenAttach={() => setAttachSheet(true)}
             onRemoveAttachment={() => setAttachment(null)}
             onSend={() => send()}
-            onVoice={() => setVoiceOpen(true)}
+            onVoice={toggleDictation}
             value={prompt}
+            voiceDisabled={!canDictate}
           />
-          <Text style={styles.modeHint}>
-            {mode === "agent"
-              ? `Agent · ${model.name} · Return to send`
-              : "Terminal · goble · Return to run"}
+          <Text
+            style={[styles.modeHint, voiceError ? styles.voiceError : null]}
+          >
+            {voiceError ??
+              (mode === "agent"
+                ? `Agent · ${model.name} · Return to send`
+                : "Terminal · goble · Return to run")}
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -208,10 +321,6 @@ export default function HomeScreen() {
         visible={modelMenu}
       />
       </SafeAreaView>
-      <CallCard
-        onClose={() => setVoiceOpen(false)}
-        visible={voiceOpen}
-      />
     </View>
   );
 }
@@ -298,12 +407,45 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 0,
   },
+  tempButton: {
+    alignItems: "center",
+    backgroundColor: palette.surface,
+    borderColor: palette.border,
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 36,
+    justifyContent: "center",
+    width: 36,
+  },
+  tempButtonActive: {
+    backgroundColor: withAlpha(palette.accent, 0.16),
+    borderColor: withAlpha(palette.accent, 0.55),
+  },
+  tempNote: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space.sm,
+    justifyContent: "center",
+    paddingBottom: space.sm,
+    paddingHorizontal: space.lg,
+  },
+  tempNoteText: {
+    ...typography.caption,
+    color: palette.muted,
+    fontSize: 12,
+  },
   modeHint: {
     ...typography.mono,
     color: palette.subtle,
     fontSize: 9,
     paddingBottom: 2,
     textAlign: "center",
+  },
+  voiceError: {
+    color: palette.warning,
+    fontFamily: undefined,
+    fontSize: 11,
+    paddingBottom: 2,
   },
   pressed: {
     opacity: 0.6,

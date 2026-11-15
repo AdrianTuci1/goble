@@ -1,7 +1,13 @@
-//! Browser terminal client for the Goble gateway.
+//! Browser client for the Goble gateway.
 //!
-//! The pure half — wire protocol, key encoding, the `vt100` wrapper, theme,
-//! tabs and the session state machine — compiles and is tested natively. The
+//! **Stale as of 2026-11-15.** The browser and desktop surface is built from
+//! the Expo app in `apps/mobile`; this crate is kept for reference and receives
+//! no new work. See the crate's README.
+//!
+//! The main area draws one of two panes: a terminal on the worker, or the
+//! cloud agent viewer (a transcript and a composer). The pure half — wire
+//! protocol, key encoding, the `vt100` wrapper, theme, tabs, the session state
+//! machine and the viewer's transcript — compiles and is tested natively. The
 //! `wasm32` target adds the canvas renderer and the DOM shell.
 //!
 //! The gateway serves the wasm-bindgen `--target web` glue from `/app/`; that
@@ -12,6 +18,7 @@ pub mod layout;
 pub mod protocol;
 pub mod session;
 pub mod theme;
+pub mod viewer;
 pub mod vt;
 
 #[cfg(target_arch = "wasm32")]

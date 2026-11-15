@@ -67,6 +67,38 @@ pub enum DesktopMessage {
     GetTrace {
         trace_id: String,
     },
+    /// Answer a run that paused on `AskUser`, so the same turn continues from
+    /// where it stopped. `trace_id` is the run's session id.
+    AnswerUser {
+        trace_id: String,
+        answer: String,
+    },
+    /// Decide the command a run paused on (`CommandProposed`): run the proposed
+    /// line, run an edited one, or refuse it, so the same turn continues.
+    AnswerCommand {
+        trace_id: String,
+        decision: crate::harness::CommandDecision,
+    },
+    /// A file the client attached to a message. `data` is base64 of the raw
+    /// bytes; the worker writes them under its workspace and answers with
+    /// `AttachmentStored`.
+    UploadAttachment {
+        upload_id: String,
+        name: String,
+        data: String,
+    },
+    /// Speech the phone recorded for the composer, which the worker hands to
+    /// the provider the client names. `data` is base64 of the audio bytes and
+    /// `mime` says what container they are in (`audio/webm`, `audio/m4a`);
+    /// the answer is `TranscriptionResult` under the same `request_id`.
+    TranscribeAudio {
+        request_id: String,
+        provider: String,
+        model: String,
+        #[serde(default)]
+        mime: String,
+        data: String,
+    },
     QueryEntities {
         entity_type: String,
         query: Option<String>,
@@ -222,6 +254,15 @@ pub enum WorkerMessage {
         question: String,
         quick_replies: Vec<String>,
     },
+    /// The harness suspended a command tool before running it: `id` is the
+    /// suspended call, `candidates` the proposed command lines and `cwd` where
+    /// they would run. The client answers with `AnswerCommand`.
+    CommandProposed {
+        trace_id: String,
+        id: String,
+        candidates: Vec<String>,
+        cwd: String,
+    },
     MissionUpdated {
         trace_id: String,
         mission_id: String,
@@ -237,6 +278,25 @@ pub enum WorkerMessage {
     EntityList {
         entity_type: String,
         items: Vec<serde_json::Value>,
+    },
+    /// Where an uploaded file landed, or why it did not. `path` is inside the
+    /// worker's workspace, so the agent can read it with the tools it has.
+    AttachmentStored {
+        upload_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// What the provider heard in the audio a `TranscribeAudio` carried, or why
+    /// it could not ask: no key for the provider, an unreachable endpoint, a
+    /// refusal. `text` is the transcript, empty only when nothing was heard.
+    TranscriptionResult {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     // --- daemon reversibility / workflow results ---
     RewindResult {
@@ -312,6 +372,16 @@ pub fn decode_pty_bytes(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     base64::engine::general_purpose::STANDARD.decode(data)
 }
 
+/// Encode a file's bytes for `UploadAttachment::data`.
+pub fn encode_attachment_bytes(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Decode `UploadAttachment::data` back to the file's bytes.
+pub fn decode_attachment_bytes(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    base64::engine::general_purpose::STANDARD.decode(data)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledTaskSummary {
     pub id: String,
@@ -380,6 +450,109 @@ mod tests {
         let bytes = serde_json::to_vec(&msg).unwrap();
         let decoded: DesktopMessage = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    /// The command gate travels as its own pair of frames: the worker proposes
+    /// a line and the client answers with a decision, so both sides name the
+    /// same shape.
+    #[test]
+    fn a_command_proposal_and_its_decision_roundtrip() {
+        let proposed = WorkerMessage::CommandProposed {
+            trace_id: "t1".to_string(),
+            id: "call-1".to_string(),
+            candidates: vec!["git status".to_string(), "git diff".to_string()],
+            cwd: "/workspace".to_string(),
+        };
+        let json = serde_json::to_value(&proposed).unwrap();
+        assert_eq!(json["kind"], "command_proposed");
+        assert_eq!(json["candidates"][0], "git status");
+        assert_eq!(
+            serde_json::from_value::<WorkerMessage>(json).unwrap(),
+            proposed
+        );
+
+        let decision = DesktopMessage::AnswerCommand {
+            trace_id: "t1".to_string(),
+            decision: crate::harness::CommandDecision::Approve("git status".to_string()),
+        };
+        let json = serde_json::to_value(&decision).unwrap();
+        assert_eq!(json["kind"], "answer_command");
+        assert_eq!(json["decision"]["type"], "approve");
+        assert_eq!(json["decision"]["payload"], "git status");
+        assert_eq!(
+            serde_json::from_value::<DesktopMessage>(json).unwrap(),
+            decision
+        );
+    }
+
+    /// An upload names the file it carries and the worker answers with where
+    /// it landed, so the client can put that path in the turn.
+    #[test]
+    fn an_upload_and_its_stored_path_roundtrip() {
+        let bytes = b"hello";
+        let upload = DesktopMessage::UploadAttachment {
+            upload_id: "u1".to_string(),
+            name: "shot.png".to_string(),
+            data: encode_attachment_bytes(bytes),
+        };
+        let json = serde_json::to_value(&upload).unwrap();
+        assert_eq!(json["kind"], "upload_attachment");
+        assert_eq!(decode_attachment_bytes(json["data"].as_str().unwrap()).unwrap(), bytes);
+
+        let stored = WorkerMessage::AttachmentStored {
+            upload_id: "u1".to_string(),
+            path: Some("/workspace/attachments/u1-shot.png".to_string()),
+            error: None,
+        };
+        let json = serde_json::to_value(&stored).unwrap();
+        assert_eq!(json["kind"], "attachment_stored");
+        assert!(json.get("error").is_none());
+        assert_eq!(serde_json::from_value::<WorkerMessage>(json).unwrap(), stored);
+    }
+
+    /// A dictation segment names the provider and model to ask, carries the
+    /// audio, and comes back as words under the same request id.
+    #[test]
+    fn a_transcription_request_and_its_answer_roundtrip() {
+        let bytes = b"audio bytes";
+        let request = DesktopMessage::TranscribeAudio {
+            request_id: "r1".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-4o-mini-transcribe".to_string(),
+            mime: "audio/webm".to_string(),
+            data: encode_attachment_bytes(bytes),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["kind"], "transcribe_audio");
+        assert_eq!(json["provider"], "openai");
+        assert_eq!(
+            decode_attachment_bytes(json["data"].as_str().unwrap()).unwrap(),
+            bytes
+        );
+
+        let answer = WorkerMessage::TranscriptionResult {
+            request_id: "r1".to_string(),
+            text: Some("walk me through the pairing flow".to_string()),
+            error: None,
+        };
+        let json = serde_json::to_value(&answer).unwrap();
+        assert_eq!(json["kind"], "transcription_result");
+        assert!(json.get("error").is_none());
+        assert_eq!(serde_json::from_value::<WorkerMessage>(json).unwrap(), answer);
+    }
+
+    /// A failed transcription carries only the reason, and a client that does
+    /// not know the frames yet is not sent fields it would have to understand.
+    #[test]
+    fn a_failed_transcription_carries_only_its_reason() {
+        let answer = WorkerMessage::TranscriptionResult {
+            request_id: "r2".to_string(),
+            text: None,
+            error: Some("no openai key on this worker".to_string()),
+        };
+        let json = serde_json::to_value(&answer).unwrap();
+        assert!(json.get("text").is_none());
+        assert_eq!(json["error"], "no openai key on this worker");
     }
 
     /// The telemetry link rides the pairing handshake, and a build that does

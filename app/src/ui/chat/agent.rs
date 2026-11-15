@@ -219,12 +219,15 @@ pub fn build_agent_chat(
     }
 
     // The bar names the conversation this pane talks to, or the placeholder
-    // while it has no subject yet.
-    let heading = state
-        .pane_titles
-        .get(&pane_id)
-        .cloned()
-        .unwrap_or_else(|| crate::state::NEW_AGENT_TAB_LABEL.to_string());
+    // while it has no subject yet: a pane on a worker starts as a cloud agent,
+    // so its placeholder says that instead of the native agent's label.
+    let heading = state.pane_titles.get(&pane_id).cloned().unwrap_or_else(|| {
+        if session.worker.is_some() {
+            crate::state::NEW_CLOUD_AGENT_TITLE.to_string()
+        } else {
+            crate::state::NEW_AGENT_TAB_LABEL.to_string()
+        }
+    });
     // The bar names the harness this surface works with: the CLI agent in the
     // pane's pty when one runs (the chip asks the registry first), else the
     // conversation's own harness, else the native one this view runs.
@@ -535,6 +538,21 @@ pub fn build_agent_chat(
         .with_composer_on_cmd_enter(move |text| (on_cmd_enter.borrow_mut())(text))
         // `⌘⌥↵`: the same submit, routed to the cloud medium.
         .with_composer_on_send_to_cloud(move |text| (on_send_to_cloud.borrow_mut())(text));
+
+    // A viewer pane that has not run yet is a cloud agent waiting for its
+    // first prompt. The surface names what it starts — the cloud over the
+    // landing, and an input that invites the run — the way the reference
+    // tool's "Kick off a cloud agent" page does. Once the conversation has a
+    // message the landing is gone and the transcript is the surface.
+    if session.worker.is_some() && session.messages.is_empty() {
+        chat = chat
+            .with_empty_state(
+                crate::state::NEW_CLOUD_AGENT_TITLE,
+                "It runs on the worker, so the work keeps going after you close the laptop.",
+            )
+            .with_empty_state_icon("cloud")
+            .with_composer_placeholder("Kick off a cloud agent");
+    }
 
     // The model control is the client's own choice, so it is drawn only where
     // the client's choice is the one the turn runs on. A viewer pane's

@@ -199,6 +199,26 @@ pub fn build_topbar(
     .with_position(TooltipPosition::Below)
     .finish();
 
+    // Cloud agents: the one control that opens a run on a worker. The panel it
+    // opens is a fresh conversation on the Remote environment, whose landing
+    // invites the first prompt ("Kick off a cloud agent"). The environment
+    // menu's Remote row opens the same surface.
+    let on_new_cloud_agent = actions.on_new_cloud_agent.clone();
+    let cloud_agent_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("cloud")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(TOPBAR_ICON_BUTTON_SIZE)
+        .with_on_click(move || (on_new_cloud_agent.borrow_mut())())
+        .finish(),
+        "Cloud agents",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+
     // A hairline on each long edge of the tab strip, flush against the first
     // and the last tab: the workspaces read as a column between the bar's own
     // controls, with the bar's control gap on the outside of each rule.
@@ -274,7 +294,7 @@ pub fn build_topbar(
     // Settings leave behind, and the controls keep the positions they had (see
     // [`TopbarRow`]).
     let row = TopbarRow::new(
-        vec![sidebar_button, agent_dashboard_button],
+        vec![sidebar_button, agent_dashboard_button, cloud_agent_button],
         Box::new(workspaces),
         vec![add_workspace],
         vec![live_indicator, inbox_button, settings_button],
@@ -1800,6 +1820,7 @@ fn build_add_workspace_control(
     let on_add_space = actions.on_add_space.clone();
     let on_add_agent = actions.on_add_agent_space.clone();
     let on_add_space_with_medium = actions.on_add_space_with_medium.clone();
+    let on_new_cloud_agent = actions.on_new_cloud_agent.clone();
     let on_open_add_medium = actions.on_open_add_medium.clone();
     let menu = PopupMenu::new(trigger, items)
         .with_open(state.env_selector_open.clone())
@@ -1828,8 +1849,15 @@ fn build_add_workspace_control(
             } else if index <= envs.len() + 1 {
                 // An environment row opens a space running on that environment
                 // (the tab lands at the end of the strip, as "+" does) instead
-                // of only switching which environment is active.
-                (on_add_space_with_medium.borrow_mut())(envs[index - 2].0.clone());
+                // of only switching which environment is active. Remote opens
+                // the cloud agent's own surface: its conversations run on a
+                // worker, so the tab starts as a viewer rather than a shell.
+                let (id, _) = &envs[index - 2];
+                if id == "remote" {
+                    (on_new_cloud_agent.borrow_mut())();
+                } else {
+                    (on_add_space_with_medium.borrow_mut())(id.clone());
+                }
             } else {
                 (on_open_add_medium.borrow_mut())();
             }
@@ -2573,9 +2601,14 @@ mod tests {
 
         let tools = topbar_icon(&commands, "menu-01").expect("the tools toggle");
         let agents = topbar_icon(&commands, "robot").expect("the agent management control");
+        let cloud = topbar_icon(&commands, "cloud").expect("the cloud agents control");
         assert!(
             tools.x < agents.x,
             "the dashboard control follows the tools toggle: {tools:?} against {agents:?}"
+        );
+        assert!(
+            agents.x < cloud.x,
+            "the cloud agents control follows the dashboard: {agents:?} against {cloud:?}"
         );
         // The dashboard's box is a 16 pt face with 3 pt of padding, and the
         // sidebar's toggle reads as active because its panel is out.
@@ -2599,15 +2632,15 @@ mod tests {
             "the icon sits centered in its 22 pt box: {tools_box:?} around {tools:?}"
         );
 
-        // A hairline separates the dashboard control from the tab strip, three
-        // points after the control.
+        // A hairline separates the bar's own controls from the tab strip, three
+        // points after the last of them (the cloud agents control).
         let rule = commands
             .iter()
             .find_map(|command| match command {
                 RenderCommand::FillRect { rect, .. }
                     if rect.width() == 1.0
                         && (rect.height() - TOPBAR_RULE_HEIGHT).abs() < 0.5
-                        && rect.origin.x > agents.x =>
+                        && rect.origin.x > cloud.x =>
                 {
                     Some(*rect)
                 }
@@ -2615,8 +2648,8 @@ mod tests {
             })
             .expect("the bar rules off the tab strip");
         assert!(
-            (rule.origin.x - (agents.x + 11.0 + 3.0)).abs() < 0.5,
-            "three points separate the dashboard control from the rule: {rule:?}"
+            (rule.origin.x - (cloud.x + 11.0 + 3.0)).abs() < 0.5,
+            "three points separate the cloud control from the rule: {rule:?}"
         );
         assert!(
             rule.min_y() == 0.0 && (rule.height() - TOPBAR_HEIGHT).abs() < 0.5,

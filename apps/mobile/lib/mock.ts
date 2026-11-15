@@ -1,3 +1,4 @@
+import { nativeHarness } from "./harness";
 import type {
   Agent,
   ChatMessage,
@@ -106,6 +107,7 @@ const conversations: Conversation[] = [
     preview: "Add device pairing and per-sandbox tokens…",
     projectName: "goble",
     mode: "agent",
+    harness: "goble",
     status: "live",
     starred: true,
     updatedAt: minutesAgo(4),
@@ -116,6 +118,7 @@ const conversations: Conversation[] = [
     preview: "The empty session, sidebar and composer are in…",
     projectName: "goble",
     mode: "agent",
+    harness: "claude",
     status: "waiting",
     starred: true,
     updatedAt: minutesAgo(28),
@@ -126,6 +129,7 @@ const conversations: Conversation[] = [
     preview: "The worker replays the last window size after…",
     projectName: "goble",
     mode: "terminal",
+    harness: "codex",
     status: "done",
     starred: false,
     updatedAt: minutesAgo(61),
@@ -136,6 +140,7 @@ const conversations: Conversation[] = [
     preview: "Shorter headline and one call to action…",
     projectName: "octomus",
     mode: "agent",
+    harness: "gemini",
     status: "done",
     starred: false,
     updatedAt: minutesAgo(180),
@@ -146,6 +151,7 @@ const conversations: Conversation[] = [
     preview: "The release job could not find the signing identity…",
     projectName: "rakazo",
     mode: "terminal",
+    harness: "goble",
     status: "done",
     starred: false,
     updatedAt: minutesAgo(232),
@@ -352,8 +358,18 @@ export function storeConversationMessages(
   messages[id] = transcript;
 }
 
+/** Drop a temporary session for good: it never reaches the sidebar. */
+export function forgetConversation(id: string): void {
+  const index = extraConversations.findIndex((item) => item.id === id);
+  if (index >= 0) extraConversations.splice(index, 1);
+  delete messages[id];
+  conversationPatches.delete(id);
+  notifyConversations();
+}
+
 export function demoConversations(): Conversation[] {
   return allConversations()
+    .filter((conversation) => !conversation.temporary)
     .filter((conversation) => !conversationPatches.get(conversation.id)?.deleted)
     .map(patched);
 }
@@ -363,6 +379,7 @@ export function demoConversation(
   prompt?: string,
   mode: "agent" | "terminal" = "agent",
   image?: string,
+  temporary = false,
 ): ConversationDetail {
   const existing = allConversations().find((item) => item.id === id);
   if (existing) {
@@ -378,8 +395,10 @@ export function demoConversation(
     preview: prompt || (image ? "Attached image" : "Empty session"),
     projectName: "goble",
     mode,
+    harness: nativeHarness,
     status: "live",
     starred: false,
+    temporary,
     updatedAt: now,
   };
   if (!prompt && !image) {

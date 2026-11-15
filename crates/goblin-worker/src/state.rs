@@ -43,6 +43,10 @@ pub struct AppState {
     pub secrets: Mutex<std::collections::HashMap<String, Secret>>,
     pub file_vault: Mutex<FileVault>,
     pub traces: Mutex<std::collections::HashMap<String, ExecutionTrace>>,
+    /// The conversation each trace belongs to, for the traces that have one.
+    /// A run that pauses on a question is answered by trace id alone, and the
+    /// continuation has to land back in the conversation it came from.
+    pub threads_by_trace: Mutex<std::collections::HashMap<String, String>>,
     pub event_tx: broadcast::Sender<WorkerMessage>,
     /// The child shells behind the WebSocket's `OpenPty` panes.
     pub pty: Arc<PtyManager>,
@@ -98,6 +102,7 @@ impl AppState {
             secrets: Mutex::new(std::collections::HashMap::new()),
             file_vault: Mutex::new(FileVault::new(PathBuf::from("/var/goblin/vault.json"))),
             traces: Mutex::new(std::collections::HashMap::new()),
+            threads_by_trace: Mutex::new(std::collections::HashMap::new()),
             event_tx,
             pty,
             scheduler: Mutex::new(None),
@@ -427,6 +432,20 @@ pub(crate) fn map_daemon_event(event: DaemonEvent) -> Option<WorkerMessage> {
             question,
             quick_replies,
         }),
+        // A command proposal is the harness suspending before it runs
+        // something. The client decides it with `AnswerCommand`; without this
+        // frame a phone turn would wait on a run that is waiting on it.
+        DE::CommandProposed {
+            session_id,
+            id,
+            candidates,
+            cwd,
+        } => Some(WorkerMessage::CommandProposed {
+            trace_id: session_id.0,
+            id,
+            candidates,
+            cwd,
+        }),
         DE::MissionUpdated {
             session_id,
             mission_id,
@@ -448,7 +467,6 @@ pub(crate) fn map_daemon_event(event: DaemonEvent) -> Option<WorkerMessage> {
         | DE::ReasoningStarted { .. }
         | DE::ReasoningDelta { .. }
         | DE::ReasoningDone { .. }
-        | DE::CommandProposed { .. }
         | DE::SubAgentSpawned { .. }
         | DE::SubAgentProgress { .. }
         | DE::SubAgentFinished { .. }

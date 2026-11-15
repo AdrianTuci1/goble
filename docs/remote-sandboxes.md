@@ -192,6 +192,12 @@ development and is refused on a non-loopback bind.
 
 ## Browser client
 
+> **Stale.** As of 2026-11-15 the browser and desktop surface is built from the
+> Expo app in `apps/mobile`, which shares the phone's UI and is being optimized
+> for desktop widths. The Rust/wasm client below is kept for reference; new
+> browser work goes into `apps/mobile`, and `/app/` is meant to serve the Expo
+> web export.
+
 `crates/goble-web` is a Rust WASM client (wasm-bindgen + web-sys) with its own
 canvas terminal renderer and a `vt100` screen model. It provides:
 
@@ -218,6 +224,30 @@ cargo install wasm-bindgen-cli --version 0.2.126 --locked
 
 The gateway serves the bundle from `--web-dir`, then `<exe>/web`, then the
 crate's `web/` directory. If the bundle is absent, `/app/` returns a build page.
+
+## Cloud agents in the desktop app
+
+A conversation routed to Remote is a viewer pane: the transcript and the
+composer, with the worker connection's state over them (`app/src/ui/worker.rs`).
+The ways in:
+
+- the topbar's cloud control (between agent management and the tab strip) opens
+  a fresh cloud agent;
+- the environment menu's **Remote (worker)** row opens the same surface instead
+  of a local shell, since a run there has no shell on this machine;
+- a conversation routed to Remote in its composer becomes one as it runs.
+
+A cloud agent with no messages is a landing rather than an empty transcript: the
+cloud glyph and "New cloud agent" over the pane, the tab reading
+"New cloud agent", and the composer inviting "Kick off a cloud agent"
+(`ChatView::with_empty_state_icon` and `with_composer_placeholder`). The first
+prompt replaces the landing with the conversation. Until Remote is configured
+the surface opens Settings → Agent & Approval instead of a tab.
+
+Sidebar cards say where a conversation runs: a remote one marks its directory
+row with the cloud after the path (`ConversationListItem::with_workspace_routing`),
+so a starred card in another section reads the same as the folders filtered by
+the environment selector.
 
 ## Security notes
 

@@ -45,6 +45,11 @@ pub const NEW_CONVERSATION_TITLE: &str = "New conversation";
 /// reads the subject instead (see [`UiState::space_label`]).
 pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
 
+/// The name a fresh cloud agent draws while its conversation has no subject
+/// yet: a viewer pane starts on the worker, and the surface that opens for it
+/// says what it is about to do.
+pub const NEW_CLOUD_AGENT_TITLE: &str = "New cloud agent";
+
 /// What the composer's model control reads while no model is configured: the
 /// pane's own model value stays empty — [`UiState::pane_agent_model`] reports
 /// nothing chosen, which is what [`UiState::can_run_agent_turn`] decides on —

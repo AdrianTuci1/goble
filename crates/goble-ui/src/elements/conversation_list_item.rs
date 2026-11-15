@@ -203,6 +203,10 @@ pub struct ConversationListItem {
     /// (or empty) draws no row, so a conversation that has not run anywhere yet
     /// keeps the single-line card.
     directory: Option<String>,
+    /// Where the conversation runs: `"remote"` for one on a worker, which the
+    /// directory row marks with the cloud. A local conversation draws nothing
+    /// extra — the machine it runs on is this one.
+    workspace_routing: String,
     selected: bool,
     /// Whether the conversation is starred, which the card marks and the
     /// sidebar's Starred section lists.
@@ -261,6 +265,7 @@ impl ConversationListItem {
             name: name.into(),
             timestamp: timestamp.into(),
             directory: None,
+            workspace_routing: "local".to_string(),
             selected,
             starred: false,
             status: ConversationStatus::Default,
@@ -319,10 +324,12 @@ impl ConversationListItem {
         self
     }
 
-    /// Set the conversation's work environment. The card no longer draws it —
-    /// the environment is chosen in the topbar and only filters the list — so
-    /// the value is accepted for callers that still carry it and not stored.
-    pub fn with_workspace_routing(self, _routing: impl Into<String>) -> Self {
+    /// Set the conversation's work environment. The topbar chooses it and the
+    /// list filters by it; the card's own use is the cloud after the directory,
+    /// so a run on a worker reads as one wherever its card is listed (the
+    /// Starred section included).
+    pub fn with_workspace_routing(mut self, routing: impl Into<String>) -> Self {
+        self.workspace_routing = routing.into();
         self
     }
 
@@ -452,25 +459,35 @@ impl ConversationListItem {
         // keeps the title's inset, so the column reads as one block beside the
         // square's gutter.
         if let Some(directory) = self.directory.clone() {
-            text_column = text_column.with_child(beside_square(
-                Flex::row()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(4.0)
-                    .with_child(
-                        Icon::new("folder")
-                            .with_size(11.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
-                    )
-                    .with_child(
-                        Text::new(directory)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(11.0)
-                            .with_max_lines(1)
-                            .finish(),
-                    )
-                    .finish(),
-            ));
+            let mut row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(4.0)
+                .with_child(
+                    Icon::new("folder")
+                        .with_size(11.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new(directory)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_font_size(11.0)
+                        .with_max_lines(1)
+                        .finish(),
+                );
+            // A conversation that runs on a worker says so right after the
+            // directory it works in: the path is the worker's, and the cloud
+            // is what makes that readable at a glance. A local one adds
+            // nothing.
+            if self.workspace_routing == "remote" {
+                row = row.with_child(
+                    Icon::new("cloud")
+                        .with_size(11.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                );
+            }
+            text_column = text_column.with_child(beside_square(row.finish()));
         }
         let text_column = text_column.finish();
 
@@ -2058,6 +2075,49 @@ mod tests {
             (band.min_x(), band.max_x()),
             (0.0, width),
             "the selected band spans the card too: {band:?}"
+        );
+    }
+
+    /// A conversation that runs on a worker says where it runs right after the
+    /// directory it works in: the path belongs to the worker, and the cloud is
+    /// what tells a card in the Starred section the same thing the environment
+    /// filter told the folders.
+    #[test]
+    fn a_remote_card_marks_its_directory_with_the_cloud() {
+        let app = AppContext::default();
+        let render = |routing: &str| {
+            let item = ConversationListItem::new(
+                "c1",
+                "Ada",
+                "40 min ago",
+                Rc::new(RefCell::new(AgentCardUi::default())),
+                false,
+            )
+            .with_directory("~/workspaces/goble")
+            .with_workspace_routing(routing);
+            let mut element: Box<dyn Element> = Box::new(item);
+            let commands =
+                crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+            (
+                icon_box(&commands, "cloud"),
+                run_box(&commands, "~/workspaces/goble").expect("the card draws its path"),
+            )
+        };
+
+        let (cloud, path) = render("remote");
+        let cloud = cloud.expect("the remote card draws the cloud");
+        assert!(
+            cloud.min_x() >= path.max_x(),
+            "the cloud follows the path: cloud {cloud:?} path {path:?}"
+        );
+        assert!(
+            cloud.min_x() - path.max_x() <= 6.0,
+            "and sits right after it: cloud {cloud:?} path {path:?}"
+        );
+        assert_eq!(cloud.width(), 11.0, "the glyph is the path row's size");
+        assert!(
+            render("local").0.is_none(),
+            "a local card adds nothing: the machine it runs on is this one"
         );
     }
 

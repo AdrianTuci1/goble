@@ -464,7 +464,8 @@ impl UiState {
     }
 
     /// The subject a pane's conversation carries: the title the conversation was
-    /// created with, or [`NEW_AGENT_TAB_LABEL`] while it has none — a
+    /// created with, or the placeholder while it has none — [`NEW_CLOUD_AGENT_TITLE`]
+    /// for a pane on a worker, [`NEW_AGENT_TAB_LABEL`] for a local one. A
     /// conversation nobody named is titled [`NEW_CONVERSATION_TITLE`], which is a
     /// placeholder rather than a subject.
     pub(crate) fn pane_subject(&self, pane_id: u64) -> String {
@@ -474,7 +475,13 @@ impl UiState {
             .map(|c| c.name.trim().to_string())
             .unwrap_or_default();
         if subject.is_empty() || subject == NEW_CONVERSATION_TITLE {
-            NEW_AGENT_TAB_LABEL.to_string()
+            // A pane that runs on a worker is a cloud agent: its placeholder
+            // says so, where a local pane keeps the native agent's label.
+            if self.pane_workers.contains_key(&pane_id) {
+                NEW_CLOUD_AGENT_TITLE.to_string()
+            } else {
+                NEW_AGENT_TAB_LABEL.to_string()
+            }
         } else {
             subject
         }

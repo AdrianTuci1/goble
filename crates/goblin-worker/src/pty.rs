@@ -113,7 +113,7 @@ impl PtyManager {
         }
 
         let cwd = if cwd.trim().is_empty() {
-            default_cwd()
+            workspace_root()
         } else {
             PathBuf::from(cwd)
         };
@@ -467,10 +467,11 @@ impl PtyManager {
     }
 }
 
-/// Where an empty `OpenPty.cwd` lands. A sandbox is provisioned with the
-/// project's shared workspace path, so terminals open there; local development
-/// falls back to the worker's own directory.
-fn default_cwd() -> PathBuf {
+/// Where an empty `OpenPty.cwd` lands, and where attachments are stored. A
+/// sandbox is provisioned with the project's shared workspace path, so
+/// terminals open there; local development falls back to the worker's own
+/// directory.
+pub(crate) fn workspace_root() -> PathBuf {
     ["GOBLE_WORKSPACE_PATH", "GOBLIN_WORKSPACE_ROOT"]
         .iter()
         .filter_map(|name| std::env::var(name).ok())

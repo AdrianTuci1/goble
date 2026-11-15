@@ -153,11 +153,19 @@ async fn test_harness_for_thread_reply_returns_summary() {
     let prompt = "Please summarize your task.".to_string();
 
     let reply = runner
-        .run_agent_for_thread_reply(trace_id.clone(), agent_id, spec, prompt, vec![], vec![])
+        .run_agent_for_thread_reply(
+            trace_id.clone(),
+            "thread-reply".to_string(),
+            agent_id,
+            spec,
+            prompt,
+            vec![],
+            vec![],
+        )
         .await
         .unwrap();
 
-    assert_eq!(reply, "reply submitted");
+    assert_eq!(reply.as_deref(), Some("reply submitted"));
 
     let trace = state.get_trace(&trace_id).unwrap();
     assert_eq!(trace.status, ExecutionStatus::Success);

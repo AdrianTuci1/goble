@@ -526,6 +526,11 @@ pub struct UiActions {
     /// Add a new space holding an agent pane — the surface a fresh conversation
     /// starts on — in the environment "+" would use.
     pub on_add_agent_space: Rc<RefCell<dyn FnMut()>>,
+    /// Open the cloud agent surface: a fresh conversation on the Remote
+    /// (worker) environment, whose pane starts as a viewer and whose landing
+    /// invites the first prompt. The topbar's cloud control and the
+    /// environment menu's Remote row both open it.
+    pub on_new_cloud_agent: Rc<RefCell<dyn FnMut()>>,
     /// Open the "add a new medium" dialog (from the topbar "+" menu).
     pub on_open_add_medium: Rc<RefCell<dyn FnMut()>>,
     /// Update the add-medium dialog's text field.

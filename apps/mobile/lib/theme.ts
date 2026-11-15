@@ -108,6 +108,13 @@ export const sessionStatusColor: Record<SessionStatus, string> = {
   done: palette.accent,
 };
 
+/** What a row's accessible label calls each status. */
+export const sessionStatusLabel: Record<SessionStatus, string> = {
+  live: "running",
+  waiting: "waiting for you",
+  done: "done",
+};
+
 export function withAlpha(hex: string, alpha: number): string {
   const value = hex.replace("#", "");
   if (value.length !== 6) return hex;

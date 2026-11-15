@@ -285,8 +285,11 @@ impl GatewayState {
             .unwrap_or(false)
     }
 
+    /// The session token of a request: the browser cookie, or the bearer token
+    /// a native client sends. Native WebSockets can set headers, so a phone
+    /// pairs once with the PIN and then carries the token on every connection.
     pub(crate) fn session_token(&self, headers: &HeaderMap) -> Option<String> {
-        cookie_value(headers, SESSION_COOKIE)
+        cookie_value(headers, SESSION_COOKIE).or_else(|| bearer_token(headers))
     }
 
     pub(crate) fn create_session(&self) -> String {
@@ -359,6 +362,8 @@ fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Read `Authorization: Bearer <token>`, the header a native client can set on
+/// both plain requests and the WebSocket handshake.
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;

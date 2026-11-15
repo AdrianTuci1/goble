@@ -29,10 +29,10 @@ import {
   probeServer,
   rememberServer,
   saveAuthMode,
-  saveServerUrl,
   signOut,
   type KnownServer,
 } from "../lib/api";
+import { connection } from "../lib/remote/connection";
 import { hostLabel } from "../lib/format";
 import { successFeedback, tapFeedback } from "../lib/haptics";
 import { palette, radius, space } from "../lib/theme";
@@ -48,8 +48,7 @@ export default function SignInScreen() {
   const [servers, setServers] = useState<KnownServer[]>([LOCAL_SERVER]);
   const [url, setUrl] = useState(LOCAL_GATEWAY);
   const [serverName, setServerName] = useState(LOCAL_SERVER.label);
-  const [identity, setIdentity] = useState("");
-  const [password, setPassword] = useState("");
+  const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [picker, setPicker] = useState(false);
@@ -67,20 +66,12 @@ export default function SignInScreen() {
   }, []);
 
   const normalized = normalizeServerUrl(url);
-  const inactive = pending || !normalized.ok || !identity.trim() || !password;
+  const inactive = pending || !normalized.ok;
 
   async function submit() {
     if (pending) return;
     if (!normalized.ok) {
       setError(normalized.error);
-      return;
-    }
-    if (!identity.trim()) {
-      setError("Enter your email or username");
-      return;
-    }
-    if (password.length < 6) {
-      setError("Password needs at least 6 characters");
       return;
     }
     setPending(true);
@@ -91,13 +82,16 @@ export default function SignInScreen() {
         setError(result.message);
         return;
       }
-      await saveServerUrl(normalized.url);
+      const paired = await connection.pair(normalized.url, pin);
+      if (!paired.ok) {
+        setError(paired.message);
+        return;
+      }
       await rememberServer({
         url: normalized.url,
         label: serverName.trim() || hostLabel(normalized.url),
         usedAt: new Date().toISOString(),
       });
-      await saveAuthMode("server");
       successFeedback();
       router.replace("/");
     } finally {
@@ -107,8 +101,7 @@ export default function SignInScreen() {
 
   async function useDemo() {
     tapFeedback();
-    await signOut();
-    await saveAuthMode("demo");
+    await connection.disconnect();
     router.replace("/");
   }
 
@@ -151,43 +144,27 @@ export default function SignInScreen() {
               </SettingsSection>
 
               <View style={styles.form}>
-                <SettingsSectionLabel>Account</SettingsSectionLabel>
+                <SettingsSectionLabel>Pairing</SettingsSectionLabel>
                 <TextInput
-                  accessibilityLabel="Email or username"
-                  autoCapitalize="none"
-                  autoComplete="username"
+                  accessibilityLabel="Gateway PIN"
+                  autoCapitalize="characters"
                   autoCorrect={false}
-                  keyboardType="email-address"
                   onChangeText={(value) => {
-                    setIdentity(value);
+                    setPin(value.toUpperCase());
                     setError(null);
                   }}
                   onSubmitEditing={() => void submit()}
-                  placeholder="Email or username"
-                  placeholderTextColor={palette.subtle}
-                  returnKeyType="next"
-                  selectionColor={palette.accent}
-                  style={styles.input}
-                  textContentType="username"
-                  value={identity}
-                />
-                <TextInput
-                  accessibilityLabel="Password"
-                  autoComplete="current-password"
-                  onChangeText={(value) => {
-                    setPassword(value);
-                    setError(null);
-                  }}
-                  onSubmitEditing={() => void submit()}
-                  placeholder="Password"
+                  placeholder="Gateway PIN"
                   placeholderTextColor={palette.subtle}
                   returnKeyType="go"
-                  secureTextEntry
                   selectionColor={palette.accent}
                   style={styles.input}
-                  textContentType="password"
-                  value={password}
+                  value={pin}
                 />
+                <Text style={styles.hint}>
+                  The PIN is in the gateway panel on the machine that runs the
+                  agents. A gateway without a PIN pairs with the field empty.
+                </Text>
                 {error ? (
                   <Text accessibilityRole="alert" style={styles.error}>
                     {error}
@@ -197,7 +174,7 @@ export default function SignInScreen() {
 
               <SettingsButton
                 disabled={inactive}
-                label="Sign in"
+                label="Pair with the gateway"
                 loading={pending}
                 onPress={() => void submit()}
               />
@@ -292,6 +269,12 @@ const styles = StyleSheet.create({
     color: palette.error,
     fontSize: 13,
     lineHeight: 18,
+    paddingHorizontal: space.sm,
+  },
+  hint: {
+    color: palette.subtle,
+    fontSize: 12,
+    lineHeight: 17,
     paddingHorizontal: space.sm,
   },
   quiet: {

@@ -1,35 +1,50 @@
 import { Ionicons } from "@expo/vector-icons";
 import { usePathname, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { tapFeedback } from "../lib/haptics";
+import { harnessMark } from "../lib/harness";
 import { demoConversations, subscribeConversations } from "../lib/mock";
+import { useConnection } from "../lib/remote/connection";
+import { threadConversation, useWorkerThreads } from "../lib/threads";
 import {
   palette,
   radius,
-  sessionStatusColor,
+  sessionStatusLabel,
   space,
   typography,
 } from "../lib/theme";
 import type { Conversation } from "../lib/types";
 import { Avatar } from "./avatar";
 import { BrandMark } from "./brand-mark";
-import { StatusSquare } from "./status-square";
+import { HarnessMark } from "./harness-mark";
 
 export function Sidebar({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [conversations, setConversations] = useState<Conversation[]>(() =>
-    demoConversations(),
+  const remote = useConnection();
+  const workerThreads = useWorkerThreads();
+  const [localConversations, setLocalConversations] = useState<Conversation[]>(
+    () => demoConversations(),
   );
 
   useEffect(
     () =>
-      subscribeConversations(() => setConversations(demoConversations())),
+      subscribeConversations(() => setLocalConversations(demoConversations())),
     [],
   );
+
+  /**
+   * Behind a gateway the drawer lists the worker's conversations, which are the
+   * ones a session screen opens and the ones that survive the app closing.
+   * Without one it lists the demo workspace, so the layout stays reviewable.
+   */
+  const conversations = useMemo(() => {
+    if (remote.phase === "demo") return localConversations;
+    return workerThreads.map(threadConversation);
+  }, [remote.phase, workerThreads, localConversations]);
 
   const starred = conversations.filter((item) => item.starred);
   const recent = conversations.filter((item) => !item.starred);
@@ -135,30 +150,49 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
           <Text style={styles.actionLabel}>Customize</Text>
         </Pressable>
 
-        <Text style={styles.sectionLabel}>Starred</Text>
-        <View style={styles.rows}>
-          {starred.map((conversation) => (
-            <ConversationRow
-              conversation={conversation}
-              key={conversation.id}
-              onPress={() => go(`/session/${conversation.id}`)}
-              starred
-              active={pathname === `/session/${conversation.id}`}
-            />
-          ))}
-        </View>
+        {conversations.length === 0 ? (
+          <Text style={styles.emptyList}>
+            No conversations on this gateway yet. Ask something in the composer
+            and it will appear here.
+          </Text>
+        ) : null}
 
-        <Text style={styles.sectionLabel}>Recent</Text>
-        <View style={styles.rows}>
-          {recent.map((conversation) => (
-            <ConversationRow
-              conversation={conversation}
-              key={conversation.id}
-              onPress={() => go(`/session/${conversation.id}`)}
-              active={pathname === `/session/${conversation.id}`}
-            />
-          ))}
-        </View>
+        {starred.length > 0 ? (
+          <>
+            <Text style={styles.sectionLabel}>
+              Starred · {starred.length}
+            </Text>
+            <View style={styles.rows}>
+              {starred.map((conversation) => (
+                <ConversationRow
+                  conversation={conversation}
+                  key={conversation.id}
+                  onPress={() => go(`/session/${conversation.id}`)}
+                  starred
+                  active={pathname === `/session/${conversation.id}`}
+                />
+              ))}
+            </View>
+          </>
+        ) : null}
+
+        {recent.length > 0 ? (
+          <>
+            <Text style={styles.sectionLabel}>
+              Recent · {recent.length}
+            </Text>
+            <View style={styles.rows}>
+              {recent.map((conversation) => (
+                <ConversationRow
+                  conversation={conversation}
+                  key={conversation.id}
+                  onPress={() => go(`/session/${conversation.id}`)}
+                  active={pathname === `/session/${conversation.id}`}
+                />
+              ))}
+            </View>
+          </>
+        ) : null}
       </ScrollView>
 
       <View style={styles.footer}>
@@ -199,8 +233,11 @@ function ConversationRow({
   starred?: boolean;
   onPress: () => void;
 }) {
+  const harness = harnessMark(conversation.harness);
+
   return (
     <Pressable
+      accessibilityLabel={`${conversation.title}, ${harness.label}, ${sessionStatusLabel[conversation.status]}`}
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
       onPress={onPress}
@@ -210,7 +247,11 @@ function ConversationRow({
         pressed && styles.pressed,
       ]}
     >
-      <StatusSquare color={sessionStatusColor[conversation.status]} />
+      <HarnessMark
+        harness={conversation.harness}
+        ringColor={active ? palette.raised : palette.bg}
+        status={conversation.status}
+      />
       <View style={styles.rowText}>
         <Text
           numberOfLines={1}
@@ -288,14 +329,23 @@ const styles = StyleSheet.create({
     color: palette.text,
     fontSize: 15,
   },
-  sectionLabel: {
+  emptyList: {
     ...typography.caption,
     color: palette.subtle,
-    fontSize: 12,
-    fontWeight: "600",
+    lineHeight: 18,
+    paddingHorizontal: space.sm,
+    paddingTop: space.xl,
+  },
+  sectionLabel: {
+    ...typography.caption,
+    color: palette.muted,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1,
     marginTop: space.xl,
     paddingHorizontal: space.sm,
     paddingVertical: space.sm,
+    textTransform: "uppercase",
   },
   rows: {
     gap: 2,

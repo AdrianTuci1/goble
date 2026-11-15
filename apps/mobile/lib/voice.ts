@@ -28,7 +28,7 @@ export const VOICE_PROVIDERS: VoiceProviderEntry[] = [
   {
     id: "openai",
     name: "OpenAI",
-    description: "Simple speech plus Whisper-class transcription.",
+    description: "Speech plus Whisper transcription",
     transcribe: true,
     sttModels: ["gpt-4o-mini-transcribe", "whisper-1"],
     ttsModels: ["gpt-4o-mini-tts", "tts-1"],
@@ -42,7 +42,7 @@ export const VOICE_PROVIDERS: VoiceProviderEntry[] = [
   {
     id: "elevenlabs",
     name: "ElevenLabs",
-    description: "Highest quality and cloning. Flash for live calls.",
+    description: "Cloning, Flash for live calls",
     transcribe: true,
     sttModels: ["scribe_v1"],
     ttsModels: [
@@ -60,7 +60,7 @@ export const VOICE_PROVIDERS: VoiceProviderEntry[] = [
   {
     id: "cartesia",
     name: "Cartesia",
-    description: "Lowest-latency Sonic voices for interruptible calls.",
+    description: "Low-latency Sonic voices",
     transcribe: false,
     sttModels: [],
     ttsModels: ["sonic-2", "sonic-turbo"],
@@ -74,7 +74,7 @@ export const VOICE_PROVIDERS: VoiceProviderEntry[] = [
   {
     id: "fish-audio",
     name: "Fish Audio",
-    description: "Voice models, cloning and expressive speech.",
+    description: "Cloning and expressive speech",
     transcribe: true,
     sttModels: ["transcribe-1-pro"],
     ttsModels: ["s2.1-pro", "speech-1.6", "speech-1.5"],

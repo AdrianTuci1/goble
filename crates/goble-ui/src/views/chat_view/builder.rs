@@ -211,6 +211,21 @@ impl ChatView {
         self
     }
 
+    /// Put a glyph over the empty state's title, so the pane that starts here
+    /// says what kind of work it starts (the cloud for a cloud agent).
+    pub fn with_empty_state_icon(mut self, icon: &'static str) -> Self {
+        self.empty_icon = Some(icon);
+        self
+    }
+
+    /// Say what the composer is for while it is empty, instead of the default
+    /// `Ask anything...`. The text is the pane's, so a cloud agent's input can
+    /// invite the run it opens.
+    pub fn with_composer_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.composer_placeholder = Some(placeholder.into());
+        self
+    }
+
     pub fn composer_value(&self) -> String {
         self.composer_value.borrow().clone()
     }

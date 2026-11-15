@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use axum::extract::Request;
 use axum::extract::{Form, Path, State};
+use axum::Json;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -35,6 +36,22 @@ struct WorkersResponse {
     workers: Vec<WorkerSummary>,
 }
 
+#[derive(Deserialize)]
+struct PairForm {
+    pin: String,
+}
+
+#[derive(Serialize)]
+struct PairResponse {
+    token: String,
+    expires_in: u64,
+}
+
+#[derive(Serialize)]
+struct PairError {
+    error: &'static str,
+}
+
 pub(crate) fn router(state: Arc<GatewayState>) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -43,6 +60,7 @@ pub(crate) fn router(state: Arc<GatewayState>) -> Router {
         .route("/logout", post(logout))
         .route("/panel", get(panel))
         .route("/api/workers", get(workers_api))
+        .route("/api/v1/session", post(pair))
         .route("/app", get(app_index))
         .route("/app/", get(app_index))
         .route("/app/{*path}", get(app_asset))
@@ -169,6 +187,45 @@ async fn panel(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Re
 
 /// Machine-readable worker list for the browser client. Sorted by id; no token
 /// or connection id ever appears here.
+/// Exchange the gateway PIN for a bearer session token.
+///
+/// A browser keeps its session in an `HttpOnly` cookie. A native client cannot
+/// read that cookie, so it asks for the token here and sends it as
+/// `Authorization: Bearer <token>` on `/api/v1/workers` and the WebSocket
+/// handshake, both of which accept the same session.
+async fn pair(
+    State(state): State<Arc<GatewayState>>,
+    Json(body): Json<PairForm>,
+) -> Response {
+    if let Some(pin_hash) = state.config().pin_hash {
+        let delay = state.login_delay();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        if !verify_pin(&pin_hash, body.pin.trim()) {
+            state.record_login_failure();
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(PairError {
+                    error: "wrong_pin",
+                }),
+            )
+                .into_response();
+        }
+        state.record_login_success();
+    }
+
+    let token = state.create_session();
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(PairResponse {
+            token,
+            expires_in: state.config().session_ttl.as_secs(),
+        }),
+    )
+        .into_response()
+}
+
 async fn workers_api(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Response {
     if !authenticated(&state, &headers) {
         return json_unauthorized();

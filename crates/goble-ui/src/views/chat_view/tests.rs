@@ -192,6 +192,60 @@ fn chat_view_empty_state_layouts() {
     assert!(size.y > 0.0);
 }
 
+/// A cloud agent's landing leads the empty state with the cloud, keeps the
+/// worker connection's notice above it, and its composer invites the run it
+/// starts. A pane without a landing icon keeps the notice alone, as before.
+#[test]
+fn the_cloud_landing_draws_its_mark_over_the_notice() {
+    use crate::elements::{Container, Text};
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let draw = |landing: bool| {
+        let notice = Container::new(Text::new("Connected to worker dev").finish()).finish();
+        let mut view = ChatView::new()
+            .with_empty_state("New cloud agent", "It runs on the worker.")
+            .with_composer_placeholder("Kick off a cloud agent")
+            .with_notice(Some(notice));
+        if landing {
+            view = view.with_empty_state_icon("cloud");
+        }
+        render_element(&mut view.finish(), vec2f(600.0, 800.0), &AppContext::default())
+    };
+
+    let cloud = draw(true);
+    assert!(
+        cloud.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "cloud"
+        )),
+        "the landing leads with the cloud: {cloud:?}"
+    );
+    assert!(
+        cloud.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, .. } if text == "Connected to worker dev"
+        )),
+        "the worker's state stays above the landing: {cloud:?}"
+    );
+    assert!(
+        cloud.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, .. } if text == "Kick off a cloud agent"
+        )),
+        "the composer invites the run: {cloud:?}"
+    );
+
+    let plain = draw(false);
+    assert!(
+        !plain.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "cloud"
+        )),
+        "a pane without a landing draws no cloud: {plain:?}"
+    );
+}
+
 /// The empty state: "New conversation" and its invitation are centered inside
 /// a rounded bordered frame, the frame is inset from the pane's side edges and
 /// capped in width, and it hangs a third of the free height above the composer

@@ -12,6 +12,7 @@ pub mod scheduler;
 pub mod snapshot_runner;
 pub mod state;
 pub mod task_store;
+pub mod transcribe;
 pub mod websocket;
 
 pub use state::AppState;

@@ -8,8 +8,10 @@ use crate::elements::{
     SizeConstraint, Stack, Text, TextSpan,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
-use crate::geometry::{rectf, PointF, Vector2F};
-use crate::platform::text_atlas::{advance_width, measure_text_family, mono_advance, FontWeight};
+use crate::geometry::{rectf, PointF, RectF, Vector2F};
+use crate::platform::text_atlas::{
+    advance_width, measure_text_family, mono_advance, row_starts, wrapped_lines, FontWeight,
+};
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 use crate::vim::{Clipboard, VimBuffer, VimOutcome, VimState};
@@ -105,6 +107,16 @@ pub struct TextArea {
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_submit: Option<Rc<RefCell<dyn FnMut(ModifiersState) + 'static>>>,
+    /// Whether a one-line field folds its text at its own width instead of
+    /// running past it. Off by default: a search or a rename field is one line
+    /// by definition. The rich input turns it on, so a long draft stays inside
+    /// the bar and its caret stays on the row the index lands in.
+    wrapping: bool,
+    /// The width the line last wrapped at. The single-line drawing places its
+    /// caret over the very rows the drawn `Text` breaks into, and that break
+    /// depends on this width; the field records it in `layout` so `rebuild` can
+    /// read the same rows.
+    wrap_width: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
     root: Option<Box<dyn Element>>,
@@ -134,6 +146,8 @@ impl TextArea {
             on_change: None,
             on_focus_change: None,
             on_submit: None,
+            wrapping: false,
+            wrap_width: f32::INFINITY,
             size: None,
             origin: None,
             root: None,
@@ -230,6 +244,20 @@ impl TextArea {
     /// survives the per-frame rebuild of the element tree.
     pub fn with_anchor(mut self, anchor: Rc<RefCell<Option<usize>>>) -> Self {
         self.anchor = Some(anchor);
+        self
+    }
+
+    /// Fold a one-line field's text at its own width, so a long draft wraps
+    /// inside the field instead of running past it. The caret follows the row
+    /// it lands in.
+    pub fn with_wrapping(mut self, wrapping: bool) -> Self {
+        self.wrapping = wrapping;
+        self
+    }
+
+    /// [`Self::with_anchor`] for a host that already holds an `Option`.
+    pub fn with_anchor_opt(mut self, anchor: Option<Rc<RefCell<Option<usize>>>>) -> Self {
+        self.anchor = anchor;
         self
     }
 
@@ -360,90 +388,179 @@ impl TextArea {
                 .with_child(caret::caret_beam(app))
                 .with_child(Text::new(display).with_theme_color(color, app).finish());
         } else {
-            // The text is drawn whole, and the caret is placed on the line's
-            // own advances, at the very column the index names. Cutting the
+            // The text is drawn whole, and the caret is placed on the wrapped
+            // row the index falls in, on that row's own advances. Cutting the
             // line at the caret re-rasterized the tail as its own run; a tail
             // that started with a glyph carrying a negative left bearing was
             // blitted a pixel to the right, so every character after the caret
-            // jumped as the caret crossed that letter.
+            // jumped as the caret crossed that letter. Reading the wrap the
+            // drawn run makes is what keeps a draft long enough to fold from
+            // leaving its caret at the first row's end, past the field's edge.
             let at = self.caret_index();
             let len = display.chars().count();
             // Modal editing draws the caret in the mode's own shape and paints
-            // the character a visual selection covers.
+            // the character a visual selection covers; the plain field draws
+            // the bar a text input draws, over the shift-selection it keeps.
             let (shape, selection) = match self.vim.as_ref() {
                 Some(vim) => {
                     let vim = vim.borrow();
                     (caret_shape(vim.mode()), vim.selection(at, len))
                 }
-                None => (CaretShape::Block, None),
+                None => (CaretShape::Block, self.selection()),
             };
-            // One pass over the line, once per frame: the selection and the
-            // caret are placed on the same advances the run is drawn with, so
-            // neither can drift inside a word.
-            let advances = char_advances(
+            let lines = wrapped_lines(
                 &display,
+                TEXT_FONT_SIZE,
+                TEXT_LINE_HEIGHT,
+                if self.wrapping {
+                    self.wrap_width
+                } else {
+                    f32::INFINITY
+                },
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            );
+            // Where each wrapped row starts, in characters of the value: the
+            // caret and the selection are placed against the very rows the run
+            // breaks into, so neither drifts past a fold.
+            let starts = row_starts(&lines, &display);
+            // The row and column a character index falls on. An index on a fold
+            // belongs to the row it opens.
+            let row_at = |index: usize| -> (usize, usize) {
+                for (row, start) in starts.iter().enumerate() {
+                    let count = lines[row].text.chars().count();
+                    if index <= start + count {
+                        return (row, index - start);
+                    }
+                }
+                // Past the last row's drawn text: the spaces a draft ends
+                // with belong to that row, so the column is the index's own
+                // distance from the row's start.
+                let last = lines.len().saturating_sub(1);
+                let column = starts
+                    .get(last)
+                    .map_or(0, |start| index.saturating_sub(*start));
+                (last, column)
+            };
+            let (caret_row, caret_column) = row_at(at);
+            // The row's characters as the value holds them: the rendered run
+            // drops the whitespace a soft break folds on and the spaces a
+            // draft ends with, and those still move the beam. Reading only the
+            // drawn text would leave the caret standing still while the user
+            // types spaces.
+            let caret_chars = row_chars(&starts, caret_row, &display);
+            let advances = char_advances(
+                &caret_chars.iter().collect::<String>(),
                 TEXT_FONT_SIZE,
                 FontWeight::Regular,
                 FontFamily::System,
                 false,
             );
-            let column =
-                |index: usize| -> f32 { advances[..index.min(advances.len())].iter().sum() };
-            let mut children: Vec<Box<dyn Element>> = Vec::new();
-            // One line box of room, whether or not the line has ink in it.
-            children.push(
-                Empty::new()
-                    .with_size(vec2f(0.0, caret::CARET_HEIGHT))
-                    .finish(),
-            );
-            if let Some(selected) = &selection {
-                children.push(
-                    SelectionUnderlay::new(
-                        column(selected.start),
-                        column(selected.end),
-                        caret::CARET_HEIGHT,
-                        app.theme.color(ColorToken::Selected),
-                    )
-                    .finish(),
-                );
-            }
-            let cell = caret_cell(shape, &advances, at, caret::CARET_CELL_WIDTH);
-            // The cell's left edge is the sum of the advances before it: the
+            // The caret's left edge is the sum of the advances before it: the
             // very pen the run draws that character at.
-            let x = column(at);
+            let x: f32 = advances[..caret_column.min(advances.len())]
+                .iter()
+                .sum();
+            let caret_top = lines.get(caret_row).map_or(0.0, |line| line.top);
+            let height = lines
+                .iter()
+                .map(|line| line.top + line.height)
+                .fold(caret::CARET_HEIGHT, f32::max);
+            let mut children: Vec<Box<dyn Element>> = Vec::new();
+            // The room the rows take, whether or not they have ink in them.
+            children.push(Empty::new().with_size(vec2f(0.0, height)).finish());
+            if let Some(selected) = &selection {
+                for (row, line) in lines.iter().enumerate() {
+                    let start = starts[row];
+                    // The row's own characters, whitespace the run leaves out
+                    // included: a selection over those spaces is still a
+                    // selection.
+                    let row_text: String =
+                        row_chars(&starts, row, &display).into_iter().collect();
+                    let from = selected.start.max(start);
+                    let to = selected.end.min(start + row_text.chars().count());
+                    if from == to {
+                        continue;
+                    }
+                    let row_advances = char_advances(
+                        &row_text,
+                        TEXT_FONT_SIZE,
+                        FontWeight::Regular,
+                        FontFamily::System,
+                        false,
+                    );
+                    let pen = |index: usize| -> f32 {
+                        row_advances[..index.min(row_advances.len())]
+                            .iter()
+                            .sum()
+                    };
+                    children.push(
+                        SelectionUnderlay::new(
+                            pen(from - start),
+                            pen(to - start),
+                            caret::CARET_HEIGHT,
+                            app.theme.color(ColorToken::Selected),
+                        )
+                        .with_top(line.top)
+                        .finish(),
+                    );
+                }
+            }
+            let cell = caret_cell(shape, &advances, caret_column, caret::CARET_CELL_WIDTH);
             // The character the block covers, in the face this line is drawn
             // in: the run is a plain `Text` at the field's own size, weight and
             // family.
             let glyph = block_glyph(
                 shape,
-                display.chars().nth(at),
+                caret_chars.get(caret_column).copied(),
                 FontFamily::System,
                 FontWeight::Regular,
                 false,
             );
-            let text = Text::new(display).with_theme_color(color, app).finish();
-            // A block's fill goes in before the run, and the character it
-            // covers is redrawn inverted just after it, so the letter under the
-            // caret is the background colour on the caret's own cell. A bar and
-            // a rule go over the run, where nothing hides them.
+            // A block's fill goes in before the run, and the character it covers
+            // is redrawn inverted just after it, so the letter under the caret is
+            // the background colour on the caret's own cell. A bar and a rule go
+            // over the run, where nothing hides them. The fill is placed on the
+            // caret's own wrapped row, like the underlays above it.
             if shape == CaretShape::Block {
-                children.push(caret::caret_overlay(app, shape, x, cell, caret::CARET_HEIGHT));
-                children.push(text);
-                if let Some(glyph) = glyph {
-                    children.push(caret::caret_ink(app, x, cell, caret::CARET_HEIGHT, glyph));
-                }
-                row = row.with_child(Stack::new().with_children(children).finish());
-            } else {
-                children.push(text);
+                children.push(
+                    SelectionUnderlay::new(
+                        x,
+                        x + cell,
+                        caret::CARET_HEIGHT,
+                        app.theme.color(ColorToken::Focus),
+                    )
+                    .with_top(caret_top)
+                    .finish(),
+                );
+            }
+            children.push(Text::new(display).with_theme_color(color, app).finish());
+            let mut stack = Stack::new().with_children(children);
+            if shape != CaretShape::Block {
+                stack = stack.with_overlay(
+                    caret::caret_overlay(app, shape, x, cell, caret::CARET_HEIGHT),
+                    vec2f(0.0, caret_top),
+                );
+            }
+            if let Some(glyph) = glyph {
+                stack = stack.with_overlay(
+                    caret::caret_ink(app, x, cell, caret::CARET_HEIGHT, glyph),
+                    vec2f(0.0, caret_top),
+                );
+            }
+            if self.wrapping && self.wrap_width.is_finite() {
+                // The row was measuring this run unconstrained, so a draft ran
+                // past the field's edge. Handing the stack its own width is what
+                // makes the run fold, and the caret above is placed on those
+                // rows.
                 row = row.with_child(
-                    Stack::new()
-                        .with_children(children)
-                        .with_overlay(
-                            caret::caret_overlay(app, shape, x, cell, caret::CARET_HEIGHT),
-                            vec2f(0.0, 0.0),
-                        )
+                    crate::elements::ConstrainedBox::new(stack.finish())
+                        .with_max_width(self.wrap_width)
                         .finish(),
                 );
+            } else {
+                row = row.with_child(stack.finish());
             }
         }
         self.root = Some(Container::new(row.finish()).finish());
@@ -942,6 +1059,23 @@ impl TextArea {
         }
     }
 
+    /// The character index the pointer at `position` names, read against the
+    /// field's own bounds: the character boundary nearest it on the row it
+    /// reaches. A pointer past the field still names the nearest character, so
+    /// a drag that leaves the bar keeps selecting.
+    fn index_for_position(&self, position: Vector2F, bounds: RectF) -> usize {
+        if self.multiline {
+            self.index_at_point(position, bounds.min_x(), bounds.min_y())
+        } else if self.wrapping {
+            self.index_at_folded_point(
+                position.x - bounds.min_x(),
+                position.y - bounds.min_y(),
+            )
+        } else {
+            self.index_at_offset(position.x - bounds.min_x())
+        }
+    }
+
     /// The character index a press `offset` pixels from the field's left edge
     /// falls on: the character boundary nearest the press, measured at the very
     /// size the text is drawn at. A press past the end of the line puts the beam
@@ -951,6 +1085,37 @@ impl TextArea {
             return 0;
         }
         index_in(&self.display(), offset, FontFamily::System).min(self.value.chars().count())
+    }
+
+    /// The character index a press on a folded one-line field falls on: the row
+    /// the pointer's height reaches, and the character boundary nearest its
+    /// column on that row.
+    fn index_at_folded_point(&self, x: f32, y: f32) -> usize {
+        let display = self.display();
+        if display.is_empty() {
+            return 0;
+        }
+        let lines = wrapped_lines(
+            &display,
+            TEXT_FONT_SIZE,
+            TEXT_LINE_HEIGHT,
+            self.wrap_width,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+        );
+        let row = lines
+            .iter()
+            .rposition(|line| y >= line.top)
+            .unwrap_or(0);
+        if row >= lines.len() {
+            return 0;
+        }
+        let starts = row_starts(&lines, &display);
+        let start = starts.get(row).copied().unwrap_or(0);
+        let row_text: String = row_chars(&starts, row, &display).into_iter().collect();
+        let column = index_in(&row_text, x, FontFamily::System);
+        (start + column).min(self.value.chars().count())
     }
 
     /// Hand one key to the modal engine, writing its buffer back when the engine
@@ -987,6 +1152,64 @@ impl TextArea {
         }
         self.reveal_caret();
         outcome
+    }
+
+    /// One clipboard chord, when the host gave the field a system clipboard:
+    /// `C` copies the selection, `X` cuts it, `V` pastes at the beam and `A`
+    /// selects the whole value. Reports whether the value changed; `None` is a
+    /// key the field does not answer, which the app keeps.
+    fn clipboard_key(&mut self, key: &str) -> Option<bool> {
+        let cell = self.clipboard.clone()?;
+        match key.to_ascii_lowercase().as_str() {
+            "c" => {
+                if let Some(range) = self.selection() {
+                    let text = text_range(&self.value, range);
+                    if !text.is_empty() {
+                        cell.borrow_mut().write(&text);
+                    }
+                }
+                Some(false)
+            }
+            "x" => {
+                let Some(range) = self.selection() else {
+                    return Some(false);
+                };
+                let text = text_range(&self.value, range.clone());
+                if !text.is_empty() {
+                    cell.borrow_mut().write(&text);
+                }
+                remove_range(Rc::make_mut(&mut self.value), range.start, range.end);
+                self.move_caret(range.start, false);
+                Some(true)
+            }
+            "v" => {
+                let Some(mut text) = cell.borrow_mut().read() else {
+                    return Some(false);
+                };
+                // A one-line field keeps one line: the draft is a single prompt,
+                // and a newline in it would submit the message.
+                if !self.multiline {
+                    text = text.replace(['\n', '\r'], " ");
+                }
+                if text.is_empty() {
+                    return Some(false);
+                }
+                self.replace_selection();
+                let caret = self.caret_index();
+                insert_str(Rc::make_mut(&mut self.value), caret, &text);
+                self.set_caret_index(caret + text.chars().count());
+                Some(true)
+            }
+            "a" => {
+                let len = self.value.chars().count();
+                if let Some(anchor) = self.anchor.as_ref() {
+                    *anchor.borrow_mut() = Some(0);
+                }
+                self.set_caret_index(len);
+                Some(false)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1094,6 +1317,7 @@ fn run_char(runs: &[TextSpan], column: usize) -> Option<(char, FontWeight, bool)
 struct SelectionUnderlay {
     left: f32,
     right: f32,
+    top: f32,
     height: f32,
     color: ColorU,
     size: Option<Vector2F>,
@@ -1105,11 +1329,19 @@ impl SelectionUnderlay {
         Self {
             left,
             right,
+            top: 0.0,
             height,
             color,
             size: None,
             origin: None,
         }
+    }
+
+    /// The row this run sits on, for a value drawn over several wrapped rows:
+    /// the selection is one rectangle per row.
+    fn with_top(mut self, top: f32) -> Self {
+        self.top = top;
+        self
     }
 }
 
@@ -1133,7 +1365,12 @@ impl Element for SelectionUnderlay {
         let width = self.right - self.left;
         if width > 0.0 {
             renderer.fill_rect(
-                rectf(origin.x + self.left, origin.y, width, self.height),
+                rectf(
+                    origin.x + self.left,
+                    origin.y + self.top,
+                    width,
+                    self.height,
+                ),
                 self.color,
             );
         }
@@ -1187,6 +1424,21 @@ fn remove_range(text: &mut String, start: usize, end: usize) {
     let from = char_offset(text, start);
     let to = char_offset(text, end);
     text.replace_range(from..to, "");
+}
+
+/// The characters `start..end` of `text`, as their own string — what a copy or
+/// a cut carries to the clipboard.
+fn text_range(text: &str, range: std::ops::Range<usize>) -> String {
+    let from = char_offset(text, range.start);
+    let to = char_offset(text, range.end);
+    text[from..to].to_string()
+}
+
+/// Insert a whole string at the `index`-th character, which is what a paste
+/// adds at the beam.
+fn insert_str(text: &mut String, index: usize, insert: &str) {
+    let offset = char_offset(text, index);
+    text.insert_str(offset, insert);
 }
 
 /// The characters of the line the `index`-th character sits in: where the line
@@ -1261,6 +1513,20 @@ fn runs_spell(runs: &[TextSpan], line: &str) -> bool {
 /// pass answers the caret, the selection and every other column of the line, so
 /// they are all placed on the very advances the text is drawn with and none of
 /// them can drift inside a word.
+/// The characters wrapped row `row` covers in the value: its drawn text, the
+/// whitespace a soft break folded on, and — on the last row — the spaces the
+/// run leaves out at the end. Those characters still move the beam.
+fn row_chars(starts: &[usize], row: usize, text: &str) -> Vec<char> {
+    let chars: Vec<char> = text.chars().collect();
+    let start = starts.get(row).copied().unwrap_or(0).min(chars.len());
+    let end = starts
+        .get(row + 1)
+        .copied()
+        .unwrap_or(chars.len())
+        .min(chars.len());
+    chars[start..end.max(start)].to_vec()
+}
+
 fn char_advances(
     text: &str,
     font_size: f32,
@@ -1333,6 +1599,11 @@ impl Element for TextArea {
         app: &AppContext,
     ) -> Vector2F {
         // Rebuild every layout so externally-driven value/focus changes render.
+        // The width comes first: the single-line drawing reads the wrap the
+        // drawn run is about to make at this very width.
+        if !self.multiline {
+            self.wrap_width = constraint.max.x;
+        }
         self.rebuild(app);
         let mut inner_constraint = constraint;
         inner_constraint.min.y = inner_constraint.min.y.max(self.min_height);
@@ -1373,7 +1644,7 @@ impl Element for TextArea {
         &mut self,
         event: &DispatchedEvent,
         _ctx: &mut EventContext,
-        _app: &AppContext,
+        app: &AppContext,
     ) -> bool {
         match event {
             DispatchedEvent::MouseDown { position, .. } => {
@@ -1385,24 +1656,64 @@ impl Element for TextArea {
                         // it, so the beam lands under the pointer instead of
                         // staying where the last keystroke left it. A press
                         // drops whatever was selected.
-                        let index = if self.multiline {
-                            self.index_at_point(*position, bounds.min_x(), bounds.min_y())
-                        } else {
-                            self.index_at_offset(position.x - bounds.min_x())
-                        };
+                        let index = self.index_for_position(*position, bounds);
                         self.move_caret(index, false);
+                        // The press leaves the anchor where the beam landed:
+                        // a drag that follows selects from here, and a press
+                        // that moves nowhere selects nothing.
+                        if let Some(anchor) = self.anchor.as_ref() {
+                            *anchor.borrow_mut() = Some(index);
+                        }
                         self.reveal_caret();
                         return true;
                     }
                     if self.blur_on_outside_click {
                         self.set_focused(false);
                     }
+                    // A press somewhere else ends this field's selection, so
+                    // a drag that crosses into the bar does not extend an old
+                    // one.
+                    if let Some(anchor) = self.anchor.as_ref() {
+                        *anchor.borrow_mut() = None;
+                    }
                 }
                 false
+            }
+            // With the button down, the pointer extends the selection to
+            // whatever character sits under it, even when it runs past the
+            // field's edge. The button's state lives on the app context
+            // because this element is rebuilt every frame; the anchor the
+            // press wrote is what says the press started here.
+            DispatchedEvent::MouseMove { position } => {
+                if !app.pointer_down.get() || !self.focused || self.anchor.is_none() {
+                    return false;
+                }
+                let Some(bounds) = self.bounds() else {
+                    return false;
+                };
+                let index = self.index_for_position(*position, bounds);
+                self.move_caret(index, true);
+                self.reveal_caret();
+                true
             }
             DispatchedEvent::KeyDown { key, modifiers } => {
                 if !self.focused {
                     return false;
+                }
+                // The clipboard chords belong to the field while it has the
+                // focus: a copy takes what is selected, a paste writes what the
+                // system holds at the beam. A chord the field does not answer
+                // stays a shortcut for the rest of the app.
+                if (modifiers.command || modifiers.ctrl) && !modifiers.alt && !modifiers.shift {
+                    if let Some(changed) = self.clipboard_key(key) {
+                        self.reveal_caret();
+                        if changed {
+                            if let Some(cb) = self.on_change.as_ref() {
+                                (cb.borrow_mut())((*self.value).clone());
+                            }
+                        }
+                        return true;
+                    }
                 }
                 if let Some(vim) = self.vim.clone() {
                     match self.vim_key(&vim, key, modifiers) {
@@ -1417,13 +1728,13 @@ impl Element for TextArea {
                         }
                     }
                 }
-                // A chorded key is a shortcut the field does not model: the
-                // buffer's own handling stops here, so the "s" of Cmd+S saves
-                // the file instead of being typed into it as well.
-                if self.multiline && (modifiers.command || modifiers.ctrl) {
-                    return false;
-                }
                 if self.multiline {
+                    // A chorded key is a shortcut the buffer does not model:
+                    // its own handling stops here, so the "s" of Cmd+S saves
+                    // the file instead of being typed into it as well.
+                    if (modifiers.command || modifiers.ctrl) && !modifiers.alt {
+                        return false;
+                    }
                     return match self.multiline_key(key, modifiers) {
                         Some(changed) => {
                             self.reveal_caret();
@@ -1439,33 +1750,46 @@ impl Element for TextArea {
                 }
                 let caret = self.caret_index();
                 let length = self.value.chars().count();
+                // Shift with an arrow or Home/End starts a selection from where
+                // the beam was, the way a one-line input selects; a press
+                // without Shift drops it. A copy, a cut and a paste then work on
+                // what is selected.
+                let extend = modifiers.shift;
                 match key.as_str() {
                     // Moving the beam changes nothing about the value, so it is
                     // consumed without reporting a change.
                     "ArrowLeft" => {
-                        self.set_caret_index(caret.saturating_sub(1));
+                        let index = match self.selection() {
+                            Some(range) if !extend => range.start,
+                            _ => caret.saturating_sub(1),
+                        };
+                        self.move_caret(index, extend);
                         return true;
                     }
                     "ArrowRight" => {
-                        self.set_caret_index(caret + 1);
+                        let index = match self.selection() {
+                            Some(range) if !extend => range.end,
+                            _ => (caret + 1).min(length),
+                        };
+                        self.move_caret(index, extend);
                         return true;
                     }
                     "Home" => {
-                        self.set_caret_index(0);
+                        self.move_caret(0, extend);
                         return true;
                     }
                     "End" => {
-                        self.set_caret_index(length);
+                        self.move_caret(length, extend);
                         return true;
                     }
                     "Backspace" => {
-                        if caret > 0 {
+                        if !self.replace_selection() && caret > 0 {
                             remove_char(Rc::make_mut(&mut self.value), caret - 1);
                             self.set_caret_index(caret - 1);
                         }
                     }
                     "Delete" => {
-                        if caret < length {
+                        if !self.replace_selection() && caret < length {
                             remove_char(Rc::make_mut(&mut self.value), caret);
                         }
                     }
@@ -1481,7 +1805,13 @@ impl Element for TextArea {
                     // appended: a named key the editor does not model is left
                     // to the rest of the app.
                     _ => {
-                        if key.len() != 1 {
+                        // A chorded key is a shortcut the field does not model:
+                        // the "s" of Cmd+S saves the file instead of being
+                        // typed into the line as well. Enter stays the
+                        // field's: Cmd/Ctrl+Enter is a submit the host routes
+                        // (a new conversation), and it must reach the arm
+                        // above with its modifiers intact.
+                        if key.len() != 1 || modifiers.command || modifiers.ctrl {
                             return false;
                         }
                         insert_char(
@@ -3104,4 +3434,484 @@ mod tests {
         );
     }
 
+    /// A host clipboard for the tests: the text lives in this cell instead of
+    /// on the system's.
+    struct FakeClipboard(Rc<RefCell<String>>);
+
+    impl FakeClipboard {
+        fn new(text: &str) -> Self {
+            Self(Rc::new(RefCell::new(text.to_string())))
+        }
+
+        fn handle(&self) -> Rc<RefCell<dyn Clipboard>> {
+            Rc::new(RefCell::new(FakeClipboard(self.0.clone())))
+        }
+
+        fn text(&self) -> String {
+            self.0.borrow().clone()
+        }
+
+        fn set(&self, text: &str) {
+            *self.0.borrow_mut() = text.to_string();
+        }
+    }
+
+    impl Clipboard for FakeClipboard {
+        fn read(&mut self) -> Option<String> {
+            Some(self.0.borrow().clone())
+        }
+
+        fn write(&mut self, text: &str) {
+            *self.0.borrow_mut() = text.to_string();
+        }
+    }
+
+    fn chord(modifiers: ModifiersState, key: &str) -> DispatchedEvent {
+        DispatchedEvent::KeyDown {
+            key: key.to_string(),
+            modifiers,
+        }
+    }
+
+    fn command_key(key: &str) -> DispatchedEvent {
+        chord(
+            ModifiersState {
+                command: true,
+                ..ModifiersState::default()
+            },
+            key,
+        )
+    }
+
+    fn shift_key(key: &str) -> DispatchedEvent {
+        chord(
+            ModifiersState {
+                shift: true,
+                ..ModifiersState::default()
+            },
+            key,
+        )
+    }
+
+    /// A draft that wraps keeps its caret on the row the index falls in: the
+    /// field used to place it at the end of the first row, past its own edge,
+    /// once the text folded.
+    #[test]
+    fn the_caret_follows_a_wrapped_draft_onto_its_own_row() {
+        use crate::render::{RenderCommand, Renderer};
+
+        let app = app();
+        // Wide enough for a few words, narrow enough that eight of them fold
+        // over several rows.
+        let width = 120.0;
+        let value = "one two three four five six seven eight nine ten";
+        let caret = Rc::new(RefCell::new(value.chars().count()));
+        let mut area = TextArea::new()
+            .with_value(value)
+            .with_focused(true)
+            .with_wrapping(true)
+            .with_caret(caret);
+        let mut paint = PaintContext::new(Renderer::new());
+        area.layout(
+            SizeConstraint::loose(Vector2F::new(width, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        area.paint(vec2f(0.0, 0.0), &mut paint, &app);
+        let commands = paint
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
+        let wrappers = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText {
+                    max_width, origin, ..
+                } if *max_width == width => Some(*origin),
+                _ => None,
+            })
+            .count();
+        assert!(
+            wrappers > 0,
+            "the run is drawn wrapped at the field's width"
+        );
+        let cell = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if rect.size.height == caret::CARET_HEIGHT =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the field paints its caret cell");
+        assert!(
+            cell.origin.y > 0.0,
+            "the caret is on the row the end of the draft folded onto: {cell:?}"
+        );
+        assert!(
+            cell.origin.x <= width,
+            "and inside the field, not past its edge: {cell:?}"
+        );
+    }
+
+    /// A fold consumes the space it breaks on, and the caret still counts it:
+    /// the first character of the row the fold opens takes a caret at that
+    /// row's own left edge, not one character in.
+    #[test]
+    fn a_caret_after_a_fold_stands_at_the_row_it_opens() {
+        use crate::platform::text_atlas::{advance_width, row_starts, wrapped_lines};
+        use crate::render::{RenderCommand, Renderer};
+
+        let app = app();
+        let value = "one two three four five";
+        // Wide enough for the first four words, too narrow for the fifth.
+        let width = advance_width(
+            "one two three four",
+            TEXT_FONT_SIZE,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+        ) + 8.0;
+        let at = value.chars().count() - "five".chars().count();
+        let caret = Rc::new(RefCell::new(at));
+        let mut area = TextArea::new()
+            .with_value(value)
+            .with_focused(true)
+            .with_wrapping(true)
+            .with_caret(caret);
+        let mut paint = PaintContext::new(Renderer::new());
+        area.layout(
+            SizeConstraint::loose(Vector2F::new(width, 120.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        area.paint(vec2f(0.0, 0.0), &mut paint, &app);
+        let commands = paint
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
+
+        let lines = wrapped_lines(
+            value,
+            TEXT_FONT_SIZE,
+            TEXT_LINE_HEIGHT,
+            width,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+        );
+        assert!(lines.len() > 1, "the draft folds at {width}: {lines:?}");
+        assert_eq!(
+            row_starts(&lines, value)[1],
+            at,
+            "the fold's space is one character of the value"
+        );
+        let cell = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if rect.size.height == caret::CARET_HEIGHT =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the field paints its caret cell");
+        assert_eq!(
+            (cell.origin.x, cell.origin.y),
+            (0.0, lines[1].top),
+            "the caret stands at the first character of the second row"
+        );
+    }
+
+    /// A press starts the selection and a drag with the button still down
+    /// extends it to whatever the pointer reaches; a move with the button up
+    /// is a hover and selects nothing.
+    #[test]
+    fn a_drag_selects_between_the_press_and_the_pointer() {
+        let app = app();
+        let caret = Rc::new(RefCell::new(0));
+        let anchor = Rc::new(RefCell::new(None));
+        let mut area: Box<dyn Element> = Box::new(
+            TextArea::new()
+                .with_value("abcd")
+                .with_focused(true)
+                .with_full_width(true)
+                .with_caret(caret.clone())
+                .with_anchor(anchor.clone()),
+        );
+        area.layout(
+            SizeConstraint::loose(Vector2F::new(200.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        area.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+        let mut event_ctx = EventContext::default();
+        let pen = |text: &str| {
+            measure_text_family(
+                text,
+                TEXT_FONT_SIZE,
+                TEXT_LINE_HEIGHT,
+                f32::INFINITY,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            )
+            .x
+        };
+
+        assert!(area.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(pen("a"), 10.0),
+                button: 0,
+            },
+            &mut event_ctx,
+            &app,
+        ));
+        assert_eq!(*anchor.borrow(), Some(1), "the press anchors the selection");
+        assert_eq!(*caret.borrow(), 1);
+
+        app.pointer_down.set(true);
+        assert!(area.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(pen("abc"), 10.0),
+            },
+            &mut event_ctx,
+            &app,
+        ));
+        assert_eq!(
+            (*anchor.borrow(), *caret.borrow()),
+            (Some(1), 3),
+            "the drag with the button down selects a..c"
+        );
+
+        app.pointer_down.set(false);
+        assert!(
+            !area.dispatch_event(
+                &DispatchedEvent::MouseMove {
+                    position: vec2f(pen("abcd"), 10.0),
+                },
+                &mut event_ctx,
+                &app,
+            ),
+            "a move after the button came up is a hover"
+        );
+        assert_eq!(*caret.borrow(), 3, "and leaves the selection alone");
+    }
+
+    /// Cmd/Ctrl+Enter is a submit the host routes (a new conversation, at a
+    /// shell's bar): it reaches the submit with its modifiers intact.
+    #[test]
+    fn cmd_enter_reaches_the_submit_with_its_modifiers() {
+        let app = app();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let sink = seen.clone();
+        let mut area = TextArea::new()
+            .with_value("hello")
+            .with_focused(true)
+            .with_on_submit(move |mods| sink.borrow_mut().push(mods.command));
+        let mut event_ctx = EventContext::default();
+        assert!(area.dispatch_event(&command_key("Enter"), &mut event_ctx, &app));
+        assert_eq!(*seen.borrow(), vec![true]);
+        assert_eq!(area.value(), "hello", "the submit leaves the draft alone");
+    }
+
+    /// A chorded letter the field does not answer stays the app's: the `s` of
+    /// Cmd+S is not typed into the line.
+    #[test]
+    fn a_chorded_letter_is_not_typed_into_the_line() {
+        let app = app();
+        let mut area = TextArea::new().with_value("a").with_focused(true);
+        let mut event_ctx = EventContext::default();
+        assert!(!area.dispatch_event(&command_key("s"), &mut event_ctx, &app));
+        assert_eq!(area.value(), "a");
+    }
+
+    /// Every space of the draft moves the beam, including the ones a run draws
+    /// no ink for: a draft ending in several spaces used to leave the caret
+    /// standing at the last visible character.
+    #[test]
+    fn the_caret_counts_the_spaces_the_run_leaves_out() {
+        use crate::render::RenderCommand;
+        use crate::test_util::render_element;
+
+        let app = app();
+        let value = "ab   ";
+        let pen = |text: &str| {
+            advance_width(
+                text,
+                TEXT_FONT_SIZE,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            )
+        };
+        assert!(pen(value) > pen("ab"), "the trailing spaces advance the pen");
+
+        for at in [2usize, 5] {
+            let caret = Rc::new(RefCell::new(at));
+            let mut area: Box<dyn Element> = Box::new(
+                TextArea::new()
+                    .with_value(value)
+                    .with_focused(true)
+                    .with_wrapping(true)
+                    .with_caret(caret),
+            );
+            let commands = render_element(&mut area, vec2f(300.0, 40.0), &app);
+            let cell = commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::FillRect { rect, .. }
+                        if rect.size.height == caret::CARET_HEIGHT =>
+                    {
+                        Some(*rect)
+                    }
+                    _ => None,
+                })
+                .expect("the field paints its caret cell");
+            let expected = pen(&value.chars().take(at).collect::<String>());
+            assert!(
+                (cell.origin.x - expected).abs() < 0.5,
+                "the caret after {at} characters sits at {expected}: {cell:?}"
+            );
+        }
+    }
+
+    /// A press on a folded field lands on the row under the pointer: the row
+    /// the press reaches is the row the beam enters, at its own column.
+    #[test]
+    fn a_press_on_a_folded_field_lands_on_the_row_under_the_pointer() {
+        use crate::platform::text_atlas::{row_starts, wrapped_lines};
+
+        let app = app();
+        let width = 120.0;
+        let value = "one two three four five six seven eight nine ten";
+        let caret = Rc::new(RefCell::new(0));
+        let mut area = TextArea::new()
+            .with_value(value)
+            .with_focused(true)
+            .with_wrapping(true)
+            .with_full_width(true)
+            .with_caret(caret.clone());
+        area.layout(
+            SizeConstraint::loose(Vector2F::new(width, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        area.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+        let lines = wrapped_lines(
+            value,
+            TEXT_FONT_SIZE,
+            TEXT_LINE_HEIGHT,
+            width,
+            FontWeight::Regular,
+            FontFamily::System,
+            false,
+        );
+        assert!(lines.len() > 1, "the draft folds over several rows: {value:?}");
+        // The break consumed the space between the rows, so the second row
+        // starts after it: the press lands on the row's first character.
+        let second = row_starts(&lines, value)[1];
+        let mut event_ctx = EventContext::default();
+        assert!(area.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(0.0, lines[1].top + 4.0),
+                button: 0,
+            },
+            &mut event_ctx,
+            &app,
+        ));
+        assert_eq!(
+            *caret.borrow(),
+            second,
+            "a press at the left edge of the second row puts the beam at its \
+             first character"
+        );
+    }
+
+    /// A paste writes what the system holds at the beam, and a copy or a cut
+    /// takes the selected characters: the chords a text input answers.
+    #[test]
+    fn copy_cut_and_paste_read_and_write_the_host_clipboard() {
+        let app = app();
+        let clipboard = FakeClipboard::new(" there");
+        let caret = Rc::new(RefCell::new(5));
+        let anchor = Rc::new(RefCell::new(None));
+        let mut area = TextArea::new()
+            .with_value("hello world")
+            .with_focused(true)
+            .with_caret(caret.clone())
+            .with_anchor(anchor.clone())
+            .with_clipboard(clipboard.handle());
+        let mut ctx = EventContext::default();
+
+        assert!(area.dispatch_event(&command_key("v"), &mut ctx, &app));
+        assert_eq!(
+            area.value(),
+            "hello there world",
+            "the paste lands where the beam was"
+        );
+        assert_eq!(*caret.borrow(), 11, "and the beam moves past it");
+
+        // Shift+Home selects back to the start: a copy takes that range, a cut
+        // takes it out of the draft.
+        assert!(area.dispatch_event(&shift_key("Home"), &mut ctx, &app));
+        assert_eq!(*anchor.borrow(), Some(11), "the selection starts at the beam");
+        assert_eq!(*caret.borrow(), 0, "and runs to the start of the line");
+        assert!(area.dispatch_event(&command_key("c"), &mut ctx, &app));
+        assert_eq!(clipboard.text(), "hello there", "the copy took the selection");
+        assert_eq!(area.value(), "hello there world", "and changed nothing");
+
+        assert!(area.dispatch_event(&command_key("x"), &mut ctx, &app));
+        assert_eq!(clipboard.text(), "hello there", "the cut carries the same text");
+        assert_eq!(area.value(), " world", "and takes it out of the draft");
+        assert_eq!(*caret.borrow(), 0, "leaving the beam where it began");
+    }
+
+    /// Select-all then copy is how a whole draft leaves the field, and a paste
+    /// into a one-line field keeps one line.
+    #[test]
+    fn select_all_copies_the_whole_draft_and_a_paste_stays_one_line() {
+        let app = app();
+        let clipboard = FakeClipboard::new("first\nsecond");
+        let caret = Rc::new(RefCell::new(0));
+        let anchor = Rc::new(RefCell::new(None));
+        let mut area = TextArea::new()
+            .with_value("first")
+            .with_focused(true)
+            .with_caret(caret.clone())
+            .with_anchor(anchor.clone())
+            .with_clipboard(clipboard.handle());
+        let mut ctx = EventContext::default();
+
+        assert!(area.dispatch_event(&command_key("a"), &mut ctx, &app));
+        assert_eq!(*anchor.borrow(), Some(0), "select-all anchors at the start");
+        assert_eq!(*caret.borrow(), 5, "and puts the beam at the end");
+        assert!(area.dispatch_event(&command_key("c"), &mut ctx, &app));
+        assert_eq!(clipboard.text(), "first", "the whole draft is copied");
+
+        // The system holds a two-line draft when the paste arrives.
+        clipboard.set("first\nsecond");
+        assert!(area.dispatch_event(&command_key("v"), &mut ctx, &app));
+        assert_eq!(
+            area.value(),
+            "first second",
+            "a multi-line paste into a one-line field keeps one line"
+        );
+    }
+
+    /// With no clipboard wired, the chords stay the app's: a field never
+    /// swallows a shortcut it does not answer.
+    #[test]
+    fn a_field_without_a_clipboard_leaves_the_chords_to_the_app() {
+        let app = app();
+        let mut area = TextArea::new().with_value("draft").with_focused(true);
+        let mut ctx = EventContext::default();
+        assert!(!area.dispatch_event(&command_key("v"), &mut ctx, &app));
+        assert_eq!(area.value(), "draft");
+    }
 }

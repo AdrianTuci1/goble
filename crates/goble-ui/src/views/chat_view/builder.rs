@@ -286,6 +286,21 @@ impl ChatView {
         self
     }
 
+    /// The system clipboard the composer's own copy, cut and paste use. Wired
+    /// whether or not modal editing is on, so Cmd/Ctrl+C and Cmd/Ctrl+V work in
+    /// the input the way they work in every other one.
+    pub fn with_composer_clipboard(mut self, clipboard: Rc<RefCell<dyn Clipboard>>) -> Self {
+        self.composer_clipboard = Some(clipboard);
+        self
+    }
+
+    /// Share the composer editor's selection anchor with the host, so a
+    /// shift-selection survives the per-frame rebuild.
+    pub fn with_composer_anchor(mut self, anchor: Rc<RefCell<Option<usize>>>) -> Self {
+        self.composer_anchor = anchor;
+        self
+    }
+
     pub fn with_composer_model_label(mut self, label: impl Into<String>) -> Self {
         self.composer_model_label = Some(label.into());
         self

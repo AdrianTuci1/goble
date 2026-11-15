@@ -235,6 +235,10 @@ pub struct AppContext {
     /// nowhere to go (a region already at its end) needs no frame, and a
     /// momentum glide that stops moving has run out of content to travel.
     pub scroll_moves: Rc<Cell<u64>>,
+    /// Whether a mouse button is held. The window keeps this current while it
+    /// dispatches pointer input; an element that is rebuilt every frame reads
+    /// it to know a press that started on it is still dragging.
+    pub pointer_down: Rc<Cell<bool>>,
 }
 
 impl Default for AppContext {
@@ -245,6 +249,7 @@ impl Default for AppContext {
             ui_zoom: Rc::new(RefCell::new(1.0)),
             hover_chips: Rc::new(RefCell::new(hover_chip::HoverChipRegistry::default())),
             scroll_moves: Rc::new(Cell::new(0)),
+            pointer_down: Rc::new(Cell::new(false)),
         }
     }
 }

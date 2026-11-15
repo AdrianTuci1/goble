@@ -187,6 +187,8 @@ pub(crate) fn build_sub_agent_child_view(
         view = view
             .with_composer_value(draft.borrow().clone())
             .with_composer_caret(child.caret.clone())
+            .with_composer_anchor(child.selection_anchor.clone())
+            .with_composer_clipboard(actions.clipboard.clone())
             .with_composer_focused(active)
             .with_composer_on_change(move |text| *on_change_draft.borrow_mut() = text)
             .with_on_send(move |text| (on_send_child.borrow_mut())(pane_id, text));

@@ -151,8 +151,25 @@ impl UiState {
         self.settings_workers.iter().any(|worker| worker.3)
     }
 
-    /// What the settings page says about Remote under its heading.
+    /// What the settings page says about Remote under its heading: the
+    /// configuration's own answer, unless a deploy started from the cloud-agent
+    /// action is in flight or has reported.
     pub fn remote_status_line(&self) -> String {
+        match &self.remote_deploy {
+            RemoteDeploy::Idle => self.remote_config_line(),
+            RemoteDeploy::Deploying { agent, provider } => {
+                format!("Deploying {agent} on {provider} · this takes a moment")
+            }
+            // `sandbox` is already `provider · sandbox_name`, read back from the
+            // binding the deploy persisted.
+            RemoteDeploy::Ready { sandbox } => format!("Sandbox ready · {sandbox}"),
+            RemoteDeploy::Failed { message } => format!("Deploy failed · {message}"),
+        }
+    }
+
+    /// The configuration line the page draws when nothing is deploying: the
+    /// `[remote]` gateway, or the `[remote_agents.*]` tables and their status.
+    fn remote_config_line(&self) -> String {
         if self.remote_mode == RemoteMode::Gateway {
             return if self.remote_gateway_url.trim().is_empty() {
                 "Gateway server · not configured".to_string()
@@ -175,6 +192,44 @@ impl UiState {
             .map(|agent| format!("{} · {}", agent.name, agent.status))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    /// A cloud-agent deploy the action just started: the Remote row says so
+    /// until the service reports the sandbox or what stopped it.
+    pub fn begin_remote_deploy(&mut self, agent: &RemoteAgentEntry) {
+        self.remote_deploy = RemoteDeploy::Deploying {
+            agent: agent.name.clone(),
+            provider: agent.provider.clone(),
+        };
+    }
+
+    /// Apply a `remote:deploy` report: the binding's `provider · sandbox_name`,
+    /// or the sentence naming what stopped the deploy.
+    pub fn apply_remote_deploy(&mut self, payload: &serde_json::Value) {
+        let field = |name: &str| {
+            payload
+                .get(name)
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+        };
+        match field("status") {
+            "ready" => {
+                let (provider, sandbox_name) = (field("provider"), field("sandbox_name"));
+                if !provider.is_empty() && !sandbox_name.is_empty() {
+                    self.remote_deploy = RemoteDeploy::Ready {
+                        sandbox: format!("{provider} · {sandbox_name}"),
+                    };
+                }
+            }
+            "failed" => {
+                let message = match field("message") {
+                    "" => "the deploy stopped before the sandbox existed".to_string(),
+                    message => message.to_string(),
+                };
+                self.remote_deploy = RemoteDeploy::Failed { message };
+            }
+            _ => {}
+        }
     }
 
     /// Open Settings on Agent & Approval, where the Remote configuration and

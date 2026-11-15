@@ -353,6 +353,9 @@ pub struct UiState {
     /// and `[remote_agents.*]`, named on the page so the configuration has a
     /// visible home.
     pub remote_config_path: String,
+    /// What the last cloud-agent deploy reported: the row above says a worker
+    /// is being shipped, or names the sandbox it landed in, or why it stopped.
+    pub remote_deploy: RemoteDeploy,
     /// First-run: whether the model-provider dialog is open over the chat.
     pub llm_dialog_open: bool,
     /// Editable model-provider form values + focus, held here so text/focus

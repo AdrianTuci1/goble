@@ -345,6 +345,9 @@ impl RootView {
                     state.refresh_observability(&desktop);
                 }
                 "agents:updated" => state.refresh_agent_name(&desktop),
+                // A cloud-agent deploy reported: Remote's row names the sandbox
+                // it persisted, or the sentence saying why it stopped.
+                "remote:deploy" => state.apply_remote_deploy(&payload),
                 "vault:updated" => self.ai_state.borrow_mut().refresh_vault(&desktop),
                 "executions:updated" => {
                     self.projects_state.borrow_mut().refresh(&desktop);

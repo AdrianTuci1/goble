@@ -134,6 +134,7 @@ impl UiState {
             remote_gateway_url: String::new(),
             remote_gateway_token: String::new(),
             remote_config_path: String::new(),
+            remote_deploy: RemoteDeploy::default(),
             llm_dialog_open: false,
             llm_dialog_provider: Rc::new(RefCell::new(String::new())),
             llm_dialog_model: Rc::new(RefCell::new(String::new())),

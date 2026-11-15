@@ -65,7 +65,7 @@ pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use types::{
     AgentDashboardGrouping, AgentDashboardState, AppTab, CostEntry, CronEntry, ExecutionEntry,
     ExplorerRow, HarnessEntry, HarnessKind, LlmFormField, McpSearchEntry, McpServerEntry,
-    OnboardingAction, RemoteAgentEntry, SearchRow, SettingsCategory, SettingsControl,
+    OnboardingAction, RemoteAgentEntry, RemoteDeploy, SearchRow, SettingsCategory, SettingsControl,
     SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry,
     WorkflowRunEntry, WorkflowRunStepEntry, WorkflowStepEntry, WorkspaceRouting,
 };

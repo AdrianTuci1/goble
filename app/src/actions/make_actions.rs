@@ -195,6 +195,22 @@ fn flush_queued_prompt(
     state.refresh_messages(desktop);
 }
 
+/// Ship the worker a cloud-agent tab runs on. The deploy is a provider call,
+/// so it runs on the tokio runtime the UI thread already entered; its outcome
+/// reaches the UI as the `remote:deploy` event the service emits.
+fn spawn_remote_deploy(desktop: Arc<DesktopState>, agent: String, project: Option<String>) {
+    tokio::spawn(async move {
+        match desktop.deploy_remote_agent(project.as_deref(), &agent).await {
+            Ok(sandbox) => log::info!(
+                "remote agent `{agent}` deployed into {} · {}",
+                sandbox.provider,
+                sandbox.sandbox_name
+            ),
+            Err(error) => log::warn!("remote agent `{agent}` failed to deploy: {error}"),
+        }
+    });
+}
+
 /// The body a "New cron" starts from: one phase and one agent call, so the row
 /// it creates is runnable immediately instead of being an empty definition.
 const NEW_CRON_SCRIPT: &str = r#"let meta = #{
@@ -3364,6 +3380,30 @@ pub fn make_actions(
                 NEW_CONVERSATION_TITLE,
                 Some("remote"),
             );
+            // A ready platform table is where the worker ships: the tab's
+            // viewer then has a sandbox behind it instead of only a routing.
+            let Some(agent) = state
+                .remote_agents
+                .iter()
+                .find(|agent| agent.enabled && agent.missing.is_empty())
+                .cloned()
+            else {
+                return;
+            };
+            let Some(desktop) = desktop_new_cloud_agent.clone() else {
+                return;
+            };
+            state.begin_remote_deploy(&agent);
+            // The environment's project, when it names a durable one: the
+            // service takes the only project when nothing is named.
+            let selected = media_new_cloud_agent.borrow().selected_project_id().to_string();
+            let project = desktop
+                .list_projects()
+                .into_iter()
+                .find(|project| project.project_id.0 == selected)
+                .map(|project| project.project_id.0);
+            drop(state);
+            spawn_remote_deploy(desktop, agent.name, project);
         })),
         // The topbar "+" menu's "Add new medium…" item opens the add-medium dialog.
         on_open_add_medium: Rc::new(RefCell::new(move || {

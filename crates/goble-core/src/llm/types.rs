@@ -102,8 +102,14 @@ impl CompletionRequest {
         self
     }
 
+    /// Append the conversation to the messages already on the request.
+    ///
+    /// The builder accumulates in the order it is called: a prompt set with
+    /// [`Self::with_system`] stays in front of the history that follows it. Every
+    /// call site names that order (system prompt, then the turns), so replacing
+    /// the list here would silently drop the prompt from the request.
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
-        self.messages = messages;
+        self.messages.extend(messages);
         self
     }
 }

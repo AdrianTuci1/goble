@@ -24,6 +24,20 @@ fn the_python_tool_is_not_defined() {
     );
 }
 
+/// A `cat` of a credentials file is a tool result like any other, and the
+/// transcript is both read by people and replayed to the provider: the prompt
+/// has to say that a value it finds stays out of the reply.
+#[test]
+fn the_system_prompt_keeps_a_found_secret_out_of_the_reply() {
+    let prompt = harness_system_prompt();
+    assert!(prompt.contains("Never print a secret"), "{prompt}");
+    assert!(prompt.contains("explicitly asks"), "{prompt}");
+    // The placeholder the runner expands at execution time, written the way the
+    // model has to write it: one pair of braces, not an escaped pair.
+    assert!(prompt.contains("{{credential:<name>}}"), "{prompt}");
+    assert!(!prompt.contains("{{{{credential"), "{prompt}");
+}
+
 #[test]
 fn spawn_subagent_is_declared_with_its_schema() {
     let definition = harness_tool_definitions()

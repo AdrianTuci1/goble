@@ -28,10 +28,62 @@ export interface RemoteSchedule {
   enabled: boolean;
 }
 
+/**
+ * One sub-agent conversation, as `query_entities "subagents"` reports it: a
+ * child chat with its parent's title and the facts of its last message.
+ * `parent_title` is null when the parent row is gone; the `last_*` fields are
+ * null for a child that has not said anything yet.
+ */
+export interface RemoteSubagent {
+  id: string;
+  title: string;
+  parent_chat_id: string;
+  parent_title: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_message: string | null;
+  last_role: string | null;
+  last_message_at: string | null;
+}
+
+/** One workflow the worker has stored, with its parsed spec. */
+export interface RemoteWorkflow {
+  id: string;
+  name: string;
+  description: string;
+  spec: Record<string, unknown>;
+  trigger: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One execution the worker has run, without its full trace. */
+export interface RemoteExecution {
+  id: string;
+  agent_id: string | null;
+  worker_id: string | null;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+}
+
+/** One team the worker has stored, with its member agent ids. */
+export interface RemoteTeam {
+  id: string;
+  name: string;
+  metadata: Record<string, unknown>;
+  members: string[];
+  created_at: string;
+}
+
 /** One conversation the worker has stored, with its transcript. */
 export interface RemoteChat {
   id: string;
   title: string;
+  /** Set only when the conversation is a sub-agent's child chat. */
+  parent_chat_id?: string | null;
   created_at: string;
   updated_at: string;
   messages: RemoteChatMessage[];
@@ -105,17 +157,63 @@ function request<T>(
   });
 }
 
+/**
+ * Read one entity type from the worker, optionally narrowed by `query`.
+ *
+ * A chat is the one type whose answer kind differs from its request type: the
+ * worker answers `chat:<id>`, naming the chat in the kind itself. The relay
+ * carries no request ids, so that distinct kind is what lets two transcript
+ * reads in flight resolve their own waiter rather than each other's. Every
+ * other type answers under the type it was asked for.
+ */
+export function requestEntities<T>(
+  entityType: string,
+  query?: string,
+): Promise<T[]> {
+  const responseType =
+    entityType === "chat" && query !== undefined ? `chat:${query}` : entityType;
+  return request<T[]>(`entities:${responseType}`, () =>
+    connection.send({ entity_type: entityType, kind: "query_entities", query }),
+  );
+}
+
 /** Agents the worker has stored. */
 export function requestAgents(): Promise<RemoteAgent[]> {
-  return request<RemoteAgent[]>("entities:agents", () =>
-    connection.send({ entity_type: "agents", kind: "query_entities" }),
-  );
+  return requestEntities<RemoteAgent>("agents");
 }
 
 /** The conversations the worker has stored, newest first. */
 export function requestChats(): Promise<RemoteChat[]> {
-  return request<RemoteChat[]>("entities:chats", () =>
-    connection.send({ entity_type: "chats", kind: "query_entities" }),
+  return requestEntities<RemoteChat>("chats");
+}
+
+/** Every sub-agent conversation the worker stores, newest first, up to 100. */
+export function requestSubagents(): Promise<RemoteSubagent[]> {
+  return requestEntities<RemoteSubagent>("subagents");
+}
+
+/** Every workflow the worker stores, newest first. */
+export function requestWorkflows(): Promise<RemoteWorkflow[]> {
+  return requestEntities<RemoteWorkflow>("workflows");
+}
+
+/** The newest executions the worker ran, without their full traces. */
+export function requestExecutions(): Promise<RemoteExecution[]> {
+  return requestEntities<RemoteExecution>("executions");
+}
+
+/** Every team the worker stores, with its member agent ids. */
+export function requestTeams(): Promise<RemoteTeam[]> {
+  return requestEntities<RemoteTeam>("teams");
+}
+
+/**
+ * One conversation, child or top-level, with its transcript; null when the
+ * worker no longer has it. Waits on `chat:<id>`, the kind the worker answers.
+ */
+export function requestChat(id: string): Promise<RemoteChat | null> {
+  return requestEntities<RemoteChat>("chat", id).then(
+    (items) => items[0] ?? null,
   );
 }
 

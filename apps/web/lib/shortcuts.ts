@@ -5,11 +5,13 @@ export interface ShellShortcuts {
   canShell: boolean;
   shellOpen: boolean;
   conversationOpen: boolean;
+  subagentOpen: boolean;
   onShowSessions: () => void;
   onOpenShell: () => void;
   onNewShell: () => void;
   onFocusComposer: () => void;
   onClearConversation: () => void;
+  onCloseSubagent: () => void;
 }
 
 /** True while a field owns the keyboard, where Escape belongs to the field. */
@@ -33,6 +35,8 @@ function typing(): boolean {
  * once. The listener is installed once; a ref carries the latest callbacks so a
  * re-render does not rebind it. Callbacks only run when the action can apply,
  * so `mod+2` without a worker and `mod+k` without a conversation do nothing.
+ * A read-only subagent transcript is not a conversation for `mod+k`: it has no
+ * composer, so the shell must not focus one that was never drawn.
  */
 export function useShellShortcuts(shortcuts: ShellShortcuts): void {
   const latest = useRef(shortcuts);
@@ -66,7 +70,7 @@ export function useShellShortcuts(shortcuts: ShellShortcuts): void {
             return;
           case "k":
           case "K":
-            if (!current.conversationOpen) return;
+            if (!current.conversationOpen || current.subagentOpen) return;
             current.onFocusComposer();
             event.preventDefault();
             return;
@@ -86,6 +90,9 @@ export function useShellShortcuts(shortcuts: ShellShortcuts): void {
 
       if (current.shellOpen) {
         current.onShowSessions();
+        event.preventDefault();
+      } else if (current.subagentOpen) {
+        current.onCloseSubagent();
         event.preventDefault();
       } else if (current.conversationOpen) {
         current.onClearConversation();

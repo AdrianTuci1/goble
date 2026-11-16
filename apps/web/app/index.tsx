@@ -26,14 +26,22 @@ import {
   type ConnectionSnapshot,
   type ConnectionState,
   type RelayStatus,
+  type RemoteSubagent,
 } from "@goble/common";
 
 import { ChatSidebar } from "../components/chat-sidebar";
 import { ConversationPane } from "../components/conversation-pane";
 import { Sidebar, type ThreadRow } from "../components/sidebar";
+import { SubagentPane } from "../components/subagent-pane";
 import { TerminalPane } from "../components/terminal-pane";
+import {
+  RunsCard,
+  SubagentsCard,
+  WorkflowsCard,
+} from "../components/work-cards";
 import { useShellShortcuts } from "../lib/shortcuts";
 import { useWorkerEntities } from "../lib/worker-entities";
+import { useWorkerWork } from "../lib/worker-work";
 
 /**
  * Width at which the third column is composed. The left and right columns take
@@ -94,30 +102,56 @@ export default function WebShell() {
   const status = badge(remote.phase, remote.status);
   const chats = useWorkerThreads();
   const entities = useWorkerEntities();
+  const work = useWorkerWork();
   const [shellOpen, setShellOpen] = useState(false);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [openSubagent, setOpenSubagent] = useState<RemoteSubagent | null>(null);
   const [composerFocusSignal, setComposerFocusSignal] = useState(0);
   /** A shell is one worker's child; with none selected there is nothing to open. */
   const canShell = remote.workerId !== null;
   const activeChat =
     chats.find((thread) => thread.id === activeThreadId) ?? null;
-  const conversationOpen = !shellOpen && activeChat !== null;
+  /** A read-only subagent transcript is not a conversation for the composer. */
+  const conversationOpen =
+    !shellOpen && openSubagent === null && activeChat !== null;
   const showChatSidebar = width >= WIDE_LAYOUT_MIN_WIDTH && conversationOpen;
+  const conversationSubagents = activeChat
+    ? work.subagents.filter(
+        (subagent) => subagent.parent_chat_id === activeChat.id,
+      )
+    : [];
 
   function showSessions() {
     setShellOpen(false);
+    setOpenSubagent(null);
     setActiveThreadId(null);
   }
 
   function openShell() {
+    setOpenSubagent(null);
     setShellOpen(true);
+  }
+
+  function openSubagentTranscript(subagent: RemoteSubagent) {
+    setShellOpen(false);
+    setActiveThreadId(subagent.parent_chat_id);
+    setOpenSubagent(subagent);
+  }
+
+  function closeSubagent() {
+    const parentId = openSubagent?.parent_chat_id ?? null;
+    setOpenSubagent(null);
+    setShellOpen(false);
+    setActiveThreadId(parentId);
   }
 
   useShellShortcuts({
     canShell,
     shellOpen,
     conversationOpen,
+    subagentOpen: openSubagent !== null,
     onClearConversation: () => setActiveThreadId(null),
+    onCloseSubagent: closeSubagent,
     onFocusComposer: () => setComposerFocusSignal((value) => value + 1),
     onNewShell: openShell,
     onOpenShell: openShell,
@@ -142,6 +176,7 @@ export default function WebShell() {
           onNewShell={openShell}
           onSelectThread={(id) => {
             setShellOpen(false);
+            setOpenSubagent(null);
             setActiveThreadId(id);
           }}
           onShowSessions={showSessions}
@@ -154,14 +189,22 @@ export default function WebShell() {
           <View style={styles.header}>
             <View style={styles.headerText}>
               <Text style={styles.title}>
-                {shellOpen ? "Shell" : (activeChat?.title || "Sessions")}
+                {shellOpen
+                  ? "Shell"
+                  : openSubagent
+                    ? (openSubagent.title || "Subagent")
+                    : activeChat?.title || "Sessions"}
               </Text>
               <Text style={styles.subtitle}>
                 {shellOpen
                   ? (remote.workerId ?? "No worker connected")
-                  : activeChat
-                    ? `${activeChat.messages.length} messages`
-                    : "Goble desktop shell"}
+                  : openSubagent
+                    ? openSubagent.parent_title
+                      ? `Subagent of ${openSubagent.parent_title}`
+                      : "Parent conversation not stored"
+                    : activeChat
+                      ? `${activeChat.messages.length} messages`
+                      : "Goble desktop shell"}
               </Text>
             </View>
             <StatusPill label={status.label} state={status.state} />
@@ -169,6 +212,15 @@ export default function WebShell() {
 
           {shellOpen ? (
             <TerminalPane />
+          ) : openSubagent ? (
+            <SubagentPane
+              key={openSubagent.id}
+              live={remote.status === "live"}
+              onBack={closeSubagent}
+              parentTitle={openSubagent.parent_title}
+              subagentId={openSubagent.id}
+              title={openSubagent.title}
+            />
           ) : activeChat ? (
             <ConversationPane
               chat={activeChat}
@@ -302,6 +354,22 @@ export default function WebShell() {
                 ) : null}
               </View>
 
+              <WorkflowsCard
+                error={work.workflowsError}
+                workflows={work.workflows}
+              />
+
+              <RunsCard
+                error={work.executionsError}
+                executions={work.executions}
+              />
+
+              <SubagentsCard
+                error={work.subagentsError}
+                onOpenSubagent={openSubagentTranscript}
+                subagents={work.subagents}
+              />
+
               <EmptyState
                 body={emptyBody(remote)}
                 icon="chatbubble-ellipses-outline"
@@ -313,7 +381,10 @@ export default function WebShell() {
         {showChatSidebar ? (
           <ChatSidebar
             error={entities.schedulesError}
+            onOpenSubagent={openSubagentTranscript}
             schedules={entities.schedules}
+            subagents={conversationSubagents}
+            subagentsError={work.subagentsError}
           />
         ) : null}
       </View>

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -18,6 +19,7 @@ import {
 } from "@goble/common";
 
 import { Sidebar } from "../components/sidebar";
+import { TerminalPane } from "../components/terminal-pane";
 
 const phaseLabel: Record<ConnectionPhase, string> = {
   demo: "Demo workspace",
@@ -68,6 +70,9 @@ function emptyBody(remote: ConnectionSnapshot): string {
 export default function WebShell() {
   const remote = useConnection();
   const status = badge(remote.phase, remote.status);
+  const [shellOpen, setShellOpen] = useState(false);
+  /** A shell is one worker's child; with none selected there is nothing to open. */
+  const canShell = remote.workerId !== null;
 
   return (
     <SafeAreaView
@@ -76,85 +81,99 @@ export default function WebShell() {
     >
       <View style={styles.shell}>
         <Sidebar
+          canShell={canShell}
           label={status.label}
+          onNewShell={() => setShellOpen(true)}
+          onShowSessions={() => setShellOpen(false)}
           server={remote.server}
+          shellOpen={shellOpen}
           state={status.state}
         />
         <View style={styles.main}>
           <View style={styles.header}>
             <View style={styles.headerText}>
-              <Text style={styles.title}>Sessions</Text>
-              <Text style={styles.subtitle}>Goble desktop shell</Text>
+              <Text style={styles.title}>
+                {shellOpen ? "Shell" : "Sessions"}
+              </Text>
+              <Text style={styles.subtitle}>
+                {shellOpen
+                  ? (remote.workerId ?? "No worker connected")
+                  : "Goble desktop shell"}
+              </Text>
             </View>
             <StatusPill label={status.label} state={status.state} />
           </View>
 
-          <ScrollView
-            contentContainerStyle={styles.content}
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={styles.card}>
-              <SectionHeader title="Connection" />
-              <DetailRow label="Phase" value={phaseLabel[remote.phase]} />
-              <DetailRow
-                label="Gateway"
-                value={remote.server ?? "None paired"}
-              />
-              <DetailRow
-                label="Worker"
-                value={remote.workerId ?? "None selected"}
-              />
-              <DetailRow label="Link" value={linkLabel[remote.status]} />
-              <DetailRow label="Workers" value={String(remote.workers.length)} />
-              {remote.error ? (
-                <Text style={styles.error}>{remote.error}</Text>
-              ) : null}
-            </View>
-
-            {remote.workers.length > 0 ? (
+          {shellOpen ? (
+            <TerminalPane />
+          ) : (
+            <ScrollView
+              contentContainerStyle={styles.content}
+              showsVerticalScrollIndicator={false}
+            >
               <View style={styles.card}>
-                <SectionHeader
-                  title={`Workers · ${remote.workers.length}`}
+                <SectionHeader title="Connection" />
+                <DetailRow label="Phase" value={phaseLabel[remote.phase]} />
+                <DetailRow
+                  label="Gateway"
+                  value={remote.server ?? "None paired"}
                 />
-                <View style={styles.workers}>
-                  {remote.workers.map((worker) => {
-                    const active = worker.id === remote.workerId;
-                    return (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: active }}
-                        key={worker.id}
-                        onPress={() => void connection.selectWorker(worker.id)}
-                        style={({ pressed }) => [
-                          styles.workerRow,
-                          active && styles.workerRowActive,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <Text numberOfLines={1} style={styles.workerId}>
-                          {worker.id}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.workerMeta,
-                            active && styles.workerMetaActive,
+                <DetailRow
+                  label="Worker"
+                  value={remote.workerId ?? "None selected"}
+                />
+                <DetailRow label="Link" value={linkLabel[remote.status]} />
+                <DetailRow label="Workers" value={String(remote.workers.length)} />
+                {remote.error ? (
+                  <Text style={styles.error}>{remote.error}</Text>
+                ) : null}
+              </View>
+
+              {remote.workers.length > 0 ? (
+                <View style={styles.card}>
+                  <SectionHeader
+                    title={`Workers · ${remote.workers.length}`}
+                  />
+                  <View style={styles.workers}>
+                    {remote.workers.map((worker) => {
+                      const active = worker.id === remote.workerId;
+                      return (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          key={worker.id}
+                          onPress={() => void connection.selectWorker(worker.id)}
+                          style={({ pressed }) => [
+                            styles.workerRow,
+                            active && styles.workerRowActive,
+                            pressed && styles.pressed,
                           ]}
                         >
-                          {active ? "Selected" : "Connect"}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
+                          <Text numberOfLines={1} style={styles.workerId}>
+                            {worker.id}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.workerMeta,
+                              active && styles.workerMetaActive,
+                            ]}
+                          >
+                            {active ? "Selected" : "Connect"}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                 </View>
-              </View>
-            ) : null}
+              ) : null}
 
-            <EmptyState
-              body={emptyBody(remote)}
-              icon="chatbubble-ellipses-outline"
-              title="No session selected"
-            />
-          </ScrollView>
+              <EmptyState
+                body={emptyBody(remote)}
+                icon="chatbubble-ellipses-outline"
+                title="No session selected"
+              />
+            </ScrollView>
+          )}
         </View>
       </View>
     </SafeAreaView>

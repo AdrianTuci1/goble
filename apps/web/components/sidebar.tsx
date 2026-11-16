@@ -1,4 +1,5 @@
-import { StyleSheet, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import {
   BrandMark,
@@ -14,10 +15,18 @@ export function Sidebar({
   label,
   state,
   server,
+  canShell,
+  shellOpen,
+  onNewShell,
+  onShowSessions,
 }: {
   label: string;
   state: ConnectionState;
   server: string | null;
+  canShell: boolean;
+  shellOpen: boolean;
+  onNewShell: () => void;
+  onShowSessions: () => void;
 }) {
   return (
     <View style={styles.root}>
@@ -29,11 +38,53 @@ export function Sidebar({
         </View>
       </View>
 
+      <Pressable
+        accessibilityRole="button"
+        disabled={!canShell}
+        onPress={onNewShell}
+        style={({ pressed }) => [
+          styles.newShell,
+          !canShell && styles.newShellDisabled,
+          pressed && canShell && styles.pressed,
+        ]}
+      >
+        <Ionicons
+          color={canShell ? palette.bg : palette.subtle}
+          name="add"
+          size={15}
+        />
+        <Text
+          style={[
+            styles.newShellLabel,
+            !canShell && styles.newShellLabelDisabled,
+          ]}
+        >
+          New shell
+        </Text>
+      </Pressable>
+      {!canShell ? (
+        <Text style={styles.newShellHint}>No worker connected</Text>
+      ) : null}
+
       <View style={styles.nav}>
-        <View style={[styles.navRow, styles.navRowActive]}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onShowSessions}
+          style={({ pressed }) => [
+            styles.navRow,
+            !shellOpen && styles.navRowActive,
+            pressed && styles.pressed,
+          ]}
+        >
           <View style={styles.navDot} />
           <Text style={styles.navLabel}>Sessions</Text>
-        </View>
+        </Pressable>
+        {shellOpen ? (
+          <View style={[styles.navRow, styles.navRowActive]}>
+            <View style={styles.navDot} />
+            <Text style={styles.navLabel}>Shell</Text>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.spacer} />
@@ -78,8 +129,37 @@ const styles = StyleSheet.create({
     ...typography.eyebrow,
     color: palette.subtle,
   },
+  newShell: {
+    alignItems: "center",
+    backgroundColor: palette.accent,
+    borderRadius: radius.md,
+    flexDirection: "row",
+    gap: 6,
+    justifyContent: "center",
+    marginTop: space.xl,
+    paddingVertical: 9,
+  },
+  newShellDisabled: {
+    backgroundColor: palette.raised,
+  },
+  newShellLabel: {
+    ...typography.callout,
+    color: palette.bg,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  newShellLabelDisabled: {
+    color: palette.subtle,
+  },
+  newShellHint: {
+    ...typography.caption,
+    color: palette.subtle,
+    fontSize: 11,
+    marginTop: 6,
+    textAlign: "center",
+  },
   nav: {
-    marginTop: space.xxl,
+    marginTop: space.xl,
   },
   navRow: {
     alignItems: "center",
@@ -121,5 +201,8 @@ const styles = StyleSheet.create({
     ...typography.mono,
     color: palette.subtle,
     fontSize: 10,
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });

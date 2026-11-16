@@ -24,6 +24,9 @@ import { PulseDot } from "./pulse-dot";
  * the same bytes, and shows them as text. Escape sequences are consumed before
  * they reach this view (see `TerminalBuffer`), so what is drawn is the shell's
  * words. Keys a touch keyboard cannot type live on the bar above the input.
+ *
+ * A shell without an agent surface (the browser before it owns a transcript)
+ * leaves `onSwitchToAgent` out, and the bar draws no switch action.
  */
 export function TerminalSurface({
   session,
@@ -32,7 +35,7 @@ export function TerminalSurface({
 }: {
   session: TerminalSession;
   snapshot: TerminalSnapshot;
-  onSwitchToAgent: () => void;
+  onSwitchToAgent?: () => void;
 }) {
   const scrollRef = useRef<ScrollViewInstance>(null);
   const [draft, setDraft] = useState("");
@@ -111,19 +114,28 @@ export function TerminalSurface({
           >
             <Ionicons color={palette.muted} name="refresh" size={15} />
           </Pressable>
-          <Pressable
-            accessibilityLabel="Switch to the agent"
-            accessibilityRole="button"
-            hitSlop={8}
-            onPress={() => {
-              getPlatformHaptics().tap();
-              onSwitchToAgent();
-            }}
-            style={({ pressed }) => [styles.barButton, pressed && styles.pressed]}
-            testID="terminal-to-agent"
-          >
-            <Ionicons color={palette.muted} name="chatbubble-outline" size={15} />
-          </Pressable>
+          {onSwitchToAgent ? (
+            <Pressable
+              accessibilityLabel="Switch to the agent"
+              accessibilityRole="button"
+              hitSlop={8}
+              onPress={() => {
+                getPlatformHaptics().tap();
+                onSwitchToAgent();
+              }}
+              style={({ pressed }) => [
+                styles.barButton,
+                pressed && styles.pressed,
+              ]}
+              testID="terminal-to-agent"
+            >
+              <Ionicons
+                color={palette.muted}
+                name="chatbubble-outline"
+                size={15}
+              />
+            </Pressable>
+          ) : null}
         </View>
       </View>
 

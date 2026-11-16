@@ -759,7 +759,7 @@ function SessionView() {
                   accessibilityRole="button"
                   accessibilityState={{ disabled: !answer.trim() }}
                   disabled={!answer.trim()}
-                  hitSlop={5}
+                  hitSlop={6}
                   onPress={() => answerQuestion(answer)}
                   style={({ pressed }) => [
                     styles.askSend,

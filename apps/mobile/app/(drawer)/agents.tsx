@@ -381,7 +381,7 @@ export default function AgentsScreen() {
                     accessibilityLabel={`Use ${model.name} for this agent`}
                     accessibilityRole="button"
                     accessibilityState={{ selected: active }}
-                    hitSlop={6}
+                    hitSlop={8}
                     key={model.id}
                     onPress={() => {
                       tapFeedback();
@@ -420,7 +420,7 @@ export default function AgentsScreen() {
                 accessibilityLabel={`Use ${tool} tools`}
                 accessibilityRole="button"
                 accessibilityState={{ selected: active }}
-                hitSlop={6}
+                hitSlop={8}
                 key={tool}
                 onPress={() => {
                   tapFeedback();

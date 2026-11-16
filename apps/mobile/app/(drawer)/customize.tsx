@@ -606,7 +606,7 @@ export default function CustomizeScreen() {
                       accessibilityLabel={`New sessions start in ${option.label}`}
                       accessibilityRole="button"
                       accessibilityState={{ selected: active }}
-                      hitSlop={6}
+                      hitSlop={8}
                       key={option.mode}
                       onPress={() => pickMode(option.mode)}
                       style={({ pressed }) => [

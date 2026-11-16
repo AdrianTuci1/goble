@@ -69,15 +69,6 @@ export interface RemoteExecution {
   finished_at: string | null;
 }
 
-/** One team the worker has stored, with its member agent ids. */
-export interface RemoteTeam {
-  id: string;
-  name: string;
-  metadata: Record<string, unknown>;
-  members: string[];
-  created_at: string;
-}
-
 /** One conversation the worker has stored, with its transcript. */
 export interface RemoteChat {
   id: string;
@@ -200,11 +191,6 @@ export function requestWorkflows(): Promise<RemoteWorkflow[]> {
 /** The newest executions the worker ran, without their full traces. */
 export function requestExecutions(): Promise<RemoteExecution[]> {
   return requestEntities<RemoteExecution>("executions");
-}
-
-/** Every team the worker stores, with its member agent ids. */
-export function requestTeams(): Promise<RemoteTeam[]> {
-  return requestEntities<RemoteTeam>("teams");
 }
 
 /**

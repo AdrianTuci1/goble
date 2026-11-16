@@ -3,9 +3,10 @@ import { useRouter } from "expo-router";
 import {
   ChoicePage,
   type ChoiceGroup,
-} from "../../../components/settings/choice-page";
-import { saveModelPreferences, useModelChoices } from "@goble/common";
-import type { Model } from "@goble/common";
+  saveModelPreferences,
+  useModelChoices,
+  type Model,
+} from "@goble/common";
 
 /** The catalog grouped by the vendor that serves it, in catalog order. */
 function groupByVendor(models: Model[]): ChoiceGroup[] {

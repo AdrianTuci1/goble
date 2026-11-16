@@ -12,18 +12,20 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { MenuButton } from "../../components/menu-button";
-import { MenuDivider, MenuRow, Popover } from "../../components/popover";
-import { Screen } from "../../components/screen";
-import { tapFeedback } from "../../lib/haptics";
 import {
+  MenuButton,
+  MenuDivider,
+  MenuRow,
+  Popover,
+  Screen,
   useOpenDrawer,
   palette,
   radius,
   space,
   typography,
+  type SessionMode,
 } from "@goble/common";
-import type { SessionMode } from "@goble/common";
+import { tapFeedback } from "../../lib/haptics";
 import {
   loadPreferences,
   saveDefaultMode,

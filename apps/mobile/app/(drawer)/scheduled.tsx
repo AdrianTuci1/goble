@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { SettingsPage } from "../../components/settings/settings-page";
-import { SettingsRow } from "../../components/settings/settings-row";
-import { SettingsSection } from "../../components/settings/settings-section";
-import { Sheet } from "../../components/sheet";
 import {
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+  Sheet,
   naturalSchedule,
   relativeTime,
   until,

@@ -1,7 +1,11 @@
 import { useRouter } from "expo-router";
 
-import { ChoicePage } from "../../../components/settings/choice-page";
-import { relativeTime, connection, useConnection } from "@goble/common";
+import {
+  ChoicePage,
+  relativeTime,
+  connection,
+  useConnection,
+} from "@goble/common";
 
 export default function WorkersScreen() {
   const router = useRouter();

@@ -2,6 +2,8 @@ export type DataSource = "demo" | "live" | "offline";
 
 export type SessionMode = "agent" | "terminal";
 
+export type AttachmentSource = "library" | "camera";
+
 export type SessionStatus = "live" | "waiting" | "done";
 
 export type ThinkingLevel = "low" | "standard" | "high";
@@ -75,6 +77,12 @@ export interface ServerInfo {
   name: string;
   online: boolean;
   version?: string;
+}
+
+export interface KnownServer {
+  url: string;
+  label: string;
+  usedAt: string;
 }
 
 export interface HomeSnapshot {

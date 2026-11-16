@@ -1,9 +1,9 @@
 import * as ImagePicker from "expo-image-picker";
 import { Platform } from "react-native";
 
-import type { PickedAttachment } from "@goble/common";
+import type { AttachmentSource, PickedAttachment } from "@goble/common";
 
-export type AttachmentSource = "library" | "camera";
+export type { AttachmentSource };
 
 function pickOnWeb(capture: boolean): Promise<File | null> {
   if (typeof document === "undefined") return Promise.resolve(null);

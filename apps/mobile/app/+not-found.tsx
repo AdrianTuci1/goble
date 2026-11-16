@@ -1,8 +1,6 @@
 import { useRouter } from "expo-router";
 
-import { DetailHeader } from "../components/detail-header";
-import { EmptyState } from "../components/empty-state";
-import { Screen } from "../components/screen";
+import { DetailHeader, EmptyState, Screen } from "@goble/common";
 
 export default function NotFoundScreen() {
   const router = useRouter();

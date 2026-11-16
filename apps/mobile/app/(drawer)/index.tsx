@@ -13,16 +13,11 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Composer } from "../../components/composer";
-import { ComposerSheet } from "../../components/composer-sheet";
-import { ModelMenu } from "../../components/model-menu";
-import { TopBar } from "../../components/top-bar";
 import {
-  pickAttachment,
-  type AttachmentSource,
-} from "../../lib/attachments";
-import { startDictation, type Dictation } from "../../lib/dictation";
-import {
+  Composer,
+  ComposerSheet,
+  ModelMenu,
+  TopBar,
   greeting,
   useOpenDrawer,
   holdAttachment,
@@ -32,12 +27,15 @@ import {
   typography,
   withAlpha,
   useModelChoices,
+  type SessionMode,
+  type ThinkingLevel,
+  type PickedAttachment,
 } from "@goble/common";
-import type {
-  SessionMode,
-  ThinkingLevel,
-  PickedAttachment,
-} from "@goble/common";
+import {
+  pickAttachment,
+  type AttachmentSource,
+} from "../../lib/attachments";
+import { startDictation, type Dictation } from "../../lib/dictation";
 import { tapFeedback } from "../../lib/haptics";
 
 import {

@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { StyleSheet, TextInput } from "react-native";
 
-import { SettingsPage } from "../../../components/settings/settings-page";
-import { SettingsSegmentedCard } from "../../../components/settings/settings-segmented";
-import { SettingsSection } from "../../../components/settings/settings-section";
 import {
+  SettingsPage,
+  SettingsSegmentedCard,
+  SettingsSection,
   DEFAULT_MODEL_PREFERENCES,
   loadModelPreferences,
   saveModelPreferences,
   palette,
   typography,
   type ModelPreferences,
+  type SessionMode,
+  type ThinkingLevel,
 } from "@goble/common";
-import type { SessionMode, ThinkingLevel } from "@goble/common";
 import {
   loadPreferences,
   saveDefaultMode,

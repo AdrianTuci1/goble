@@ -14,23 +14,13 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useEffect, useState } from "react";
 
-import { BrandMark } from "../components/brand-mark";
-import { ServerSheet } from "../components/server-sheet";
-import { SettingsButton } from "../components/settings/settings-button";
-import { SettingsRow } from "../components/settings/settings-row";
 import {
+  BrandMark,
+  ServerSheet,
+  SettingsButton,
+  SettingsRow,
   SettingsSection,
   SettingsSectionLabel,
-} from "../components/settings/settings-section";
-import {
-  LOCAL_GATEWAY,
-  loadKnownServers,
-  probeServer,
-  rememberServer,
-  signOut,
-  type KnownServer,
-} from "../lib/api";
-import {
   connection,
   hostLabel,
   normalizeServerUrl,
@@ -39,6 +29,14 @@ import {
   radius,
   space,
 } from "@goble/common";
+import {
+  LOCAL_GATEWAY,
+  loadKnownServers,
+  probeServer,
+  rememberServer,
+  signOut,
+  type KnownServer,
+} from "../lib/api";
 import { successFeedback, tapFeedback } from "../lib/haptics";
 
 const LOCAL_SERVER: KnownServer = {

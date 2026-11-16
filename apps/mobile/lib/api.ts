@@ -9,7 +9,10 @@ import {
   loadServerUrl,
   normalizeServerUrl,
   type HomeSnapshot,
+  type KnownServer,
 } from "@goble/common";
+
+export type { KnownServer };
 
 const DEVICE_KEY = "goble.device_token";
 const SERVERS_KEY = "goble.known_servers";
@@ -101,12 +104,6 @@ export async function probeServer(url: string): Promise<{ ok: boolean; message: 
   } finally {
     clearTimeout(timer);
   }
-}
-
-export interface KnownServer {
-  url: string;
-  label: string;
-  usedAt: string;
 }
 
 /** Suggested gateway on this machine; the gateway binds here by default. */

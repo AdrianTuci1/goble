@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { ChoicePage } from "../../../components/settings/choice-page";
+import { ChoicePage } from "@goble/common";
 import { useVoicePreferences } from "../../../lib/use-voice";
 import { voiceProvider, type VoicePreferences } from "../../../lib/voice";
 

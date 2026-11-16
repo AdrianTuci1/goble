@@ -15,22 +15,16 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Composer } from "../../../components/composer";
-import { ComposerSheet } from "../../../components/composer-sheet";
-import { ConversationMenu } from "../../../components/conversation-menu";
-import { ModelMenu } from "../../../components/model-menu";
-import { PulseDot } from "../../../components/pulse-dot";
-import { RichText } from "../../../components/rich-text";
-import { TerminalBlock } from "../../../components/terminal-block";
-import { TerminalSurface } from "../../../components/terminal-surface";
-import { TopBar } from "../../../components/top-bar";
-import { startDictation, type Dictation } from "../../../lib/dictation";
 import {
-  pickAttachment,
-  type AttachmentSource,
-} from "../../../lib/attachments";
-import { tapFeedback } from "../../../lib/haptics";
-import {
+  Composer,
+  ComposerSheet,
+  ConversationMenu,
+  ModelMenu,
+  PulseDot,
+  RichText,
+  TerminalBlock,
+  TerminalSurface,
+  TopBar,
   takeAttachment,
   useOpenDrawer,
   demoConversation,
@@ -55,14 +49,18 @@ import {
   useTerminal,
   useModelChoices,
   type Turn,
+  type ChatMessage,
+  type SessionMode,
+  type ThinkingLevel,
+  type CommandDecision,
+  type PickedAttachment,
 } from "@goble/common";
-import type {
-  ChatMessage,
-  SessionMode,
-  ThinkingLevel,
-  CommandDecision,
-  PickedAttachment,
-} from "@goble/common";
+import { startDictation, type Dictation } from "../../../lib/dictation";
+import {
+  pickAttachment,
+  type AttachmentSource,
+} from "../../../lib/attachments";
+import { tapFeedback } from "../../../lib/haptics";
 
 import {
   notifyAgentNeedsHelp,

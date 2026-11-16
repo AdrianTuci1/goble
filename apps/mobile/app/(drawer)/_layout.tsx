@@ -1,7 +1,6 @@
 import { Drawer } from "expo-router/drawer";
 
-import { Sidebar } from "../../components/sidebar";
-import { palette } from "@goble/common";
+import { Sidebar, palette } from "@goble/common";
 
 export default function DrawerLayout() {
   return (

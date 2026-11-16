@@ -5,7 +5,7 @@ browser. The pieces are deliberately separate:
 
 | Layer | Crate / binary | Job |
 |---|---|---|
-| Client | native app, `goble-web` (WASM) | Shows terminals, sends keystrokes, renders PTY output |
+| Client | `apps/web` (Expo web) | Shows terminals, sends keystrokes, renders PTY output |
 | Gateway | `goble-gateway` | Always-on WebSocket relay with PIN login, sessions, and a worker list |
 | Sandbox | `goblin-worker` | Runs in the provider sandbox, opens a PTY per tab, connects out to the gateway |
 | Provisioner | `goble-remote` + `goble-desktop-service` | Creates and destroys provider sandboxes, passes worker env |
@@ -232,7 +232,7 @@ Routes:
 |---|---|
 | `GET /` | PIN login (redirects to `/app/` when logged in) |
 | `POST /login`, `POST /logout` | Session cookie lifecycle |
-| `GET /app/` | WASM terminal client (session required) |
+| `GET /app/` | Expo web app (session required) |
 | `GET /api/workers` | Connected workers as JSON |
 | `GET /panel` | Transport console for raw frame debugging |
 | `GET /ws/worker?id=<id>` | Worker endpoint, bearer token |
@@ -245,35 +245,16 @@ development and is refused on a non-loopback bind.
 
 ## Browser client
 
-> **Stale.** As of 2026-11-15 the browser and desktop surface is built from the
-> Expo app in `apps/mobile`, which shares the phone's UI and is being optimized
-> for desktop widths. The Rust/wasm client below is kept for reference; new
-> browser work goes into `apps/mobile`, and `/app/` is meant to serve the Expo
-> web export.
-
-`crates/goble-web` is a Rust WASM client (wasm-bindgen + web-sys) with its own
-canvas terminal renderer and a `vt100` screen model. It provides:
-
-- PIN-protected boot through the gateway session cookie.
-- Worker list refreshed every 5 seconds, with an empty state and reconnect.
-- Multiple tabs, one WebSocket and one PTY per tab.
-- Live input, resize (`ResizeObserver`), scrollback, selection and copy/paste.
-- Reconnect with backoff; a new PTY is opened and previous scrollback is kept.
-- Keyboard shortcuts for tabs, reconnect, scrollback, and clipboard.
-
-Build the bundle into the gateway's asset directory:
+The browser client is the Expo web app in `apps/web`, which shares the phone's
+components through `@goble/common`. From the repository root:
 
 ```bash
-scripts/build-web.sh
+npm ci
+npm run web:build
 ```
 
-The script builds `goble-web` for `wasm32-unknown-unknown` and runs
-`wasm-bindgen --target web`. It requires a `wasm-bindgen` CLI whose version
-matches the crate (0.2.126):
-
-```bash
-cargo install wasm-bindgen-cli --version 0.2.126 --locked
-```
+The export lands in `apps/web/dist`. Copy that directory into the gateway's
+`web/` directory, or point the gateway at it with `--web-dir`.
 
 The gateway serves the bundle from `--web-dir`, then `<exe>/web`, then the
 crate's `web/` directory. If the bundle is absent, `/app/` returns a build page.
@@ -326,11 +307,10 @@ cargo test -p goble-core config   # config schema, hub.toml, setup status and br
 cargo test -p goble-cli setup     # the write surface
 cargo test -p goble-app --test setup_flow
 cargo test -p goble-gateway
-cargo test -p goble-web
+npm run web:build
 cargo test -p goblin-worker
 cargo check --workspace --all-targets
 ```
 
-The web client's browser flow is exercised through unit tests for protocol,
-input encoding, the VT screen, layout, and the session state machine. A
-headless browser is not part of the test suite.
+The Expo web app is built by `npm run web:build` and type-checked by
+`npm run typecheck`; a headless browser is not part of the test suite.

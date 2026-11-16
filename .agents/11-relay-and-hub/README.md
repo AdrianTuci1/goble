@@ -41,7 +41,8 @@ reverted like any conversation.
   a shared worker bearer token; frames copied verbatim; in-memory state.
 - `crates/goblin-worker/src/gateway_client.rs` — the worker's outbound connection with reconnect
   backoff, so a sandbox behind NAT needs no inbound port.
-- `crates/goble-web` — the browser terminal (WASM, vt100, canvas) the gateway serves.
+- `apps/web` — the Expo web client the gateway serves, sharing components with the phone via
+  `@goble/common`.
 - `goble-remote` providers (`e2b`, `modal`, `daytona`, `box`, `docker`, `ssh`) with creation
   timeouts and provider-side auto-stop/auto-pause.
 - `goble-cli ctl` and `goble-mcp` — the control verbs and tool names the hub will call.

@@ -590,9 +590,9 @@ async fn a_missing_client_build_serves_the_build_page() {
             "text/html; charset=utf-8"
         );
         let page = response.text().await.unwrap();
-        assert!(page.contains("scripts/build-web.sh"));
-        assert!(page.contains("goble-web --target wasm32-unknown-unknown --release"));
-        assert!(page.contains("wasm-bindgen"));
+        assert!(page.contains("npm ci"));
+        assert!(page.contains("npm run web:build"));
+        assert!(page.contains("apps/web/dist"));
         assert!(page.contains("GOBLE_WEB_DIR"));
         assert!(!page.contains("http://"));
         assert!(!page.contains("https://"));

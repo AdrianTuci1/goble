@@ -153,8 +153,8 @@ The gateway keeps its role as a development surface, with the insecure parts fen
   authenticates that way.
 - Sessions and worker registrations move from the in-memory maps to the registry, so a relay restart
   no longer drops every route and forces a PIN re-entry.
-- The relay's frame codec stays the daemon protocol; `goble-web` keeps working against the new
-  endpoint with an added `hello`/E2EE shim. Terminal replay is unchanged.
+- The relay's frame codec stays the daemon protocol; the web client in `apps/web` keeps working
+  against the new endpoint with an added `hello`/E2EE shim. Terminal replay is unchanged.
 
 ## Tasks
 

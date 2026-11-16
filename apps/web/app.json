@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Goble",
-    "slug": "goble-web",
+    "slug": "goble-browser",
     "scheme": "goble",
     "platforms": ["web"],
     "web": {

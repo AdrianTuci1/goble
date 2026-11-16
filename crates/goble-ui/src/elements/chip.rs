@@ -1,13 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::focus::{centred_origin, hit_target, paint_focus_ring, TargetClass};
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{vec2f, Vector2F};
-use crate::theme::SpacingToken;
+use crate::geometry::{rectf, vec2f, Vector2F};
+use crate::theme::{FocusStyle, SpacingToken};
 
 pub struct Chip {
     child: Box<dyn Element>,
@@ -19,7 +20,15 @@ pub struct Chip {
     /// the row stays where the text around it starts.
     padded: bool,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// Whether the chip owns the keyboard focus and paints the ring.
+    focused: bool,
+    /// The minimum-target rule the chip follows.
+    target_class: TargetClass,
+    /// Whether the pointer is coarse, which grows the hit box around the paint.
+    coarse_pointer: bool,
     size: Option<Vector2F>,
+    /// The size the chip paints at inside its hit target.
+    paint_size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
@@ -32,7 +41,11 @@ impl Chip {
             selected: false,
             padded: true,
             on_click: None,
+            focused: false,
+            target_class: TargetClass::Icon,
+            coarse_pointer: false,
             size: None,
+            paint_size: None,
             origin: None,
         }
     }
@@ -58,6 +71,25 @@ impl Chip {
 
     pub fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_click = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Paint the focus ring while the keyboard is on the chip.
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Use a minimum-target rule other than the icon-button default.
+    pub fn with_target_class(mut self, class: TargetClass) -> Self {
+        self.target_class = class;
+        self
+    }
+
+    /// Grow the hit box to 44×44 under a coarse pointer without growing the
+    /// chip's paint.
+    pub fn with_coarse_pointer(mut self, coarse_pointer: bool) -> Self {
+        self.coarse_pointer = coarse_pointer;
         self
     }
 
@@ -98,22 +130,36 @@ impl Element for Chip {
         let child_size = self
             .child
             .layout(SizeConstraint::new(inner_min, inner_max), ctx, app);
-        let size = vec2f(child_size.x + h_pad * 2.0, child_size.y + v_pad * 2.0);
+        let visual = vec2f(child_size.x + h_pad * 2.0, child_size.y + v_pad * 2.0);
+        let (size, paint_size) = hit_target(visual, self.target_class, self.coarse_pointer);
         self.size = Some(size);
+        self.paint_size = Some(paint_size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
+        let paint_size = self.paint_size.unwrap_or(size);
+        let paint_origin = centred_origin(origin, size, paint_size);
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
         let h_pad = self.horizontal_padding(app);
         let v_pad = self.vertical_padding(app);
         let child_origin = vec2f(
-            origin.x + h_pad + (size.x - child_size.x - h_pad * 2.0).max(0.0) / 2.0,
-            origin.y + v_pad + (size.y - child_size.y - v_pad * 2.0).max(0.0) / 2.0,
+            paint_origin.x + h_pad + (paint_size.x - child_size.x - h_pad * 2.0).max(0.0) / 2.0,
+            paint_origin.y + v_pad + (paint_size.y - child_size.y - v_pad * 2.0).max(0.0) / 2.0,
         );
         self.child.paint(child_origin, ctx, app);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            paint_focus_ring(
+                renderer,
+                rectf(paint_origin.x, paint_origin.y, paint_size.x, paint_size.y),
+                self.focused,
+                FocusStyle::Control,
+                0.0,
+                &app.theme,
+            );
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

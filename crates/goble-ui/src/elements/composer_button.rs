@@ -13,13 +13,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::focus::{centred_origin, hit_target, paint_focus_ring, TargetClass};
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint, Vector2F,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f};
-use crate::theme::ColorToken;
+use crate::theme::{ColorToken, FocusStyle};
 
 /// The rich input's own corner radius, smaller than the theme's `radius_px`:
 /// these controls sit inside the input's box at 24 pt tall, where the theme's
@@ -48,7 +49,15 @@ pub struct ComposerButton {
     /// (the diff menu's trigger) asks for square corners instead.
     radius: f32,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// Whether the button owns the keyboard focus and paints the ring.
+    focused: bool,
+    /// The minimum-target rule the button follows.
+    target_class: TargetClass,
+    /// Whether the pointer is coarse, which grows the hit box around the paint.
+    coarse_pointer: bool,
     size: Option<Vector2F>,
+    /// The size the button paints at inside its hit target.
+    paint_size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
@@ -62,7 +71,11 @@ impl ComposerButton {
             outlined: true,
             radius: COMPOSER_CONTROL_RADIUS,
             on_click: None,
+            focused: false,
+            target_class: TargetClass::Icon,
+            coarse_pointer: false,
             size: None,
+            paint_size: None,
             origin: None,
         }
     }
@@ -97,6 +110,25 @@ impl ComposerButton {
         self.on_click = Some(Rc::new(RefCell::new(callback)));
         self
     }
+
+    /// Paint the focus ring while the keyboard is on the button.
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Use a minimum-target rule other than the icon-button default.
+    pub fn with_target_class(mut self, class: TargetClass) -> Self {
+        self.target_class = class;
+        self
+    }
+
+    /// Grow the hit box to 44×44 under a coarse pointer without growing the
+    /// button's paint.
+    pub fn with_coarse_pointer(mut self, coarse_pointer: bool) -> Self {
+        self.coarse_pointer = coarse_pointer;
+        self
+    }
 }
 
 impl Element for ComposerButton {
@@ -111,19 +143,23 @@ impl Element for ComposerButton {
             (constraint.max.x - h_pad * 2.0).max(0.0),
             (self.height - 4.0).max(0.0),
         );
-        let child_size = self
-            .child
-            .layout(SizeConstraint::new(vec2f(0.0, 0.0), inner_max), ctx, app);
-        let size = vec2f(child_size.x + h_pad * 2.0, self.height);
+        let child_size =
+            self.child
+                .layout(SizeConstraint::new(vec2f(0.0, 0.0), inner_max), ctx, app);
+        let visual = vec2f(child_size.x + h_pad * 2.0, self.height);
+        let (size, paint_size) = hit_target(visual, self.target_class, self.coarse_pointer);
         self.size = Some(size);
+        self.paint_size = Some(paint_size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
-        let rect = rectf(origin.x, origin.y, size.x, size.y);
-        let hovered = ctx.hovered(rect);
+        let paint_size = self.paint_size.unwrap_or(size);
+        let paint_origin = centred_origin(origin, size, paint_size);
+        let rect = rectf(paint_origin.x, paint_origin.y, paint_size.x, paint_size.y);
+        let hovered = ctx.hovered(self.bounds().unwrap_or(rect));
         // The outline and the hover fill share the control's own corner radius,
         // so the fill sits exactly inside the card's border. At rest the
         // control draws the outline only — no fill of its own.
@@ -138,10 +174,20 @@ impl Element for ComposerButton {
         }
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
         let offset = vec2f(
-            (size.x - child_size.x).max(0.0) / 2.0,
-            (size.y - child_size.y).max(0.0) / 2.0,
+            (paint_size.x - child_size.x).max(0.0) / 2.0,
+            (paint_size.y - child_size.y).max(0.0) / 2.0,
         );
-        self.child.paint(origin + offset, ctx, app);
+        self.child.paint(paint_origin + offset, ctx, app);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            paint_focus_ring(
+                renderer,
+                rect,
+                self.focused,
+                FocusStyle::Control,
+                radius,
+                &app.theme,
+            );
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

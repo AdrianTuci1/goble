@@ -3,11 +3,11 @@ use std::rc::Rc;
 
 use crate::elements::{
     caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext, Fill,
-    Icon, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
+    FocusRing, Icon, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{PointF, Vector2F};
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::{ColorToken, FocusStyle, SpacingToken};
 
 pub struct SearchInput {
     value: String,
@@ -200,15 +200,19 @@ impl SearchInput {
         row = row.with_child(run.finish());
         let row = row.finish();
         let v_pad = padding + self.extra_height;
-        let mut container = Container::new(row)
+        // Keep the 1px border neutral in both states: the 3px ring is the
+        // only focus stroke, so a focused field is one ring, not two.
+        let container = Container::new(row)
             .with_padding(EdgeInsets::new(padding, v_pad, padding, v_pad))
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
-        if self.focused {
-            container = container.with_border(app.theme.color(ColorToken::Focus).into());
-        } else {
-            container = container.with_border(app.theme.color(ColorToken::Border).into());
-        }
-        self.root = Some(container.finish());
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .with_border(app.theme.color(ColorToken::Border).into());
+        // The sidebar field is square; other search fields use the same
+        // container and are square too, so the ring's radius is 0 + 2.
+        self.root = Some(
+            FocusRing::new(container.finish(), self.focused, FocusStyle::Field)
+                .with_radius(0.0)
+                .finish(),
+        );
     }
 }
 

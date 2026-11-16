@@ -50,6 +50,10 @@ pub use empty::Empty;
 pub use expanded::Expanded;
 pub use file_icon::{file_icon, file_icon_name};
 pub use flex::Flex;
+pub use focus::{
+    centred_origin, focus_ring, hit_target, paint_focus_ring, FocusRing, TargetClass,
+    CLOSE_TARGET, COARSE_TARGET, ICON_TARGET, ROW_TARGET,
+};
 pub use header::Header;
 pub use hover_button::HoverButton;
 pub use hover_chip::{HoverChipLayer, HoverChipRegistry};
@@ -640,6 +644,7 @@ pub mod empty;
 pub mod expanded;
 pub mod file_icon;
 pub mod flex;
+pub mod focus;
 pub mod group_chat_message;
 pub mod group_chat_message_group;
 pub use group_chat_message::GroupChatMessage;

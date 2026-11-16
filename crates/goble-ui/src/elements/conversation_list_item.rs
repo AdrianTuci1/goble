@@ -5,7 +5,8 @@ use crate::elements::interactive::{contains, handle_mouse_event, InteractiveStat
 use crate::elements::{
     AppContext, AppMark, Border, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
     EventContext, Expanded, Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisAlignment,
-    MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Stack, Text, TopbarButton,
+    MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Stack, TargetClass, Text,
+    TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -547,6 +548,11 @@ impl ConversationListItem {
                         .finish(),
                 )
                 .with_size(DOTS_SIZE)
+                // The 16pt dots are the whole control: unlike the settings
+                // rail's 32px rows or the tab's 20px close, this is a glyph box
+                // with no separate minimum, and growing it would move the dots
+                // off the card's trailing edge.
+                .with_target_class(TargetClass::None)
                 .with_corner_radius(0.0)
                 .with_on_click(move || {
                     let mut ui = ui_dots.borrow_mut();

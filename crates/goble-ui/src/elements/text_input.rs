@@ -2,13 +2,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, EventContext,
-    Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
-    CARET_HEIGHT,
+    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
+    EventContext, Fill, Flex, FocusRing, LayoutContext, MainAxisSize, PaintContext, Point,
+    SizeConstraint, Text, CARET_HEIGHT,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, PointF, Vector2F};
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::{ColorToken, FocusStyle, SpacingToken};
 
 pub struct TextInput {
     value: String,
@@ -149,16 +149,21 @@ impl TextInput {
                 padding * 0.5,
             ))
         } else {
-            let container = Container::new(row.finish())
+            // The 1px border stays `Border` even while focused: the 3px ring
+            // is the focus indicator, and two blue strokes would be two rings.
+            Container::new(row.finish())
                 .with_padding(EdgeInsets::uniform(padding))
-                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
-            if self.focused {
-                container.with_border(app.theme.color(ColorToken::Focus).into())
-            } else {
-                container.with_border(app.theme.color(ColorToken::Border).into())
-            }
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                .with_border(app.theme.color(ColorToken::Border).into())
         };
-        self.root = Some(container.finish());
+        let root = container.finish();
+        self.root = Some(if self.plain {
+            root
+        } else {
+            FocusRing::new(root, self.focused, FocusStyle::Field)
+                .with_radius(app.theme.radius_px())
+                .finish()
+        });
     }
 }
 

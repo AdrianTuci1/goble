@@ -1,13 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::focus::{centred_origin, hit_target, paint_focus_ring, TargetClass};
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::{ColorToken, FocusStyle, SpacingToken};
 
 pub struct Checkbox {
     label: Option<Box<dyn Element>>,
@@ -16,7 +17,15 @@ pub struct Checkbox {
     disabled: bool,
     box_size: Vector2F,
     on_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
+    /// Whether the checkbox owns the keyboard focus and paints the ring.
+    focused: bool,
+    /// The minimum-target rule the checkbox follows.
+    target_class: TargetClass,
+    /// Whether the pointer is coarse, which grows the hit box around the paint.
+    coarse_pointer: bool,
     size: Option<Vector2F>,
+    /// The size the checkbox paints at inside its hit target.
+    paint_size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
@@ -29,7 +38,11 @@ impl Checkbox {
             disabled: false,
             box_size: vec2f(20.0, 20.0),
             on_change: None,
+            focused: false,
+            target_class: TargetClass::Icon,
+            coarse_pointer: false,
             size: None,
+            paint_size: None,
             origin: None,
         }
     }
@@ -56,6 +69,25 @@ impl Checkbox {
 
     pub fn with_on_change<F: FnMut(bool) + 'static>(mut self, callback: F) -> Self {
         self.on_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Paint the focus ring while the keyboard is on the checkbox.
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Use a minimum-target rule other than the icon-button default.
+    pub fn with_target_class(mut self, class: TargetClass) -> Self {
+        self.target_class = class;
+        self
+    }
+
+    /// Grow the hit box to 44×44 under a coarse pointer without growing the
+    /// checkbox's paint.
+    pub fn with_coarse_pointer(mut self, coarse_pointer: bool) -> Self {
+        self.coarse_pointer = coarse_pointer;
         self
     }
 
@@ -95,15 +127,25 @@ impl Element for Checkbox {
 
         let width = self.box_size.x + gap + label_size.x;
         let height = self.box_size.y.max(label_size.y);
-        let size = vec2f(width.min(constraint.max.x), height.min(constraint.max.y));
+        let visual = vec2f(width.min(constraint.max.x), height.min(constraint.max.y));
+        let (size, paint_size) = hit_target(visual, self.target_class, self.coarse_pointer);
         self.size = Some(size);
+        self.paint_size = Some(paint_size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let size = self.size.unwrap_or(Vector2F::zero());
+        let paint_size = self.paint_size.unwrap_or(size);
+        let paint_origin = centred_origin(origin, size, paint_size);
 
-        let box_rect = rectf(origin.x, origin.y, self.box_size.x, self.box_size.y);
+        let box_rect = rectf(
+            paint_origin.x,
+            paint_origin.y,
+            self.box_size.x,
+            self.box_size.y,
+        );
         let radius = app.theme.radius_px() * 0.5;
         let box_color = if self.checked {
             app.theme.color(ColorToken::Accent)
@@ -123,8 +165,8 @@ impl Element for Checkbox {
 
         if self.checked {
             let check_size = self.box_size.x.min(self.box_size.y) * 0.5;
-            let check_x = origin.x + (self.box_size.x - check_size) * 0.5;
-            let check_y = origin.y + (self.box_size.y - check_size) * 0.5;
+            let check_x = paint_origin.x + (self.box_size.x - check_size) * 0.5;
+            let check_y = paint_origin.y + (self.box_size.y - check_size) * 0.5;
             ctx.renderer.as_mut().unwrap().draw_text(
                 vec2f(check_x, check_y),
                 "✓",
@@ -140,9 +182,22 @@ impl Element for Checkbox {
             let label_size = label.size().unwrap_or(Vector2F::zero());
             let y_offset = (self.box_size.y.max(label_size.y) - label_size.y).max(0.0) / 2.0;
             label.paint(
-                vec2f(origin.x + self.box_size.x + gap, origin.y + y_offset),
+                vec2f(
+                    paint_origin.x + self.box_size.x + gap,
+                    paint_origin.y + y_offset,
+                ),
                 ctx,
                 app,
+            );
+        }
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            paint_focus_ring(
+                renderer,
+                rectf(paint_origin.x, paint_origin.y, paint_size.x, paint_size.y),
+                self.focused,
+                FocusStyle::Control,
+                radius,
+                &app.theme,
             );
         }
     }

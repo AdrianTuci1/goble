@@ -91,8 +91,8 @@ use goble_ui::elements::{
     AppContext, Axis, Border, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon,
     KeyHandler, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu,
-    PopupMenuItem, Scrollable, ShortcutHint, ShortcutHints, SizeConstraint, Spacer, Switch, Text,
-    TextInput, TopbarButton,
+    PopupMenuItem, Scrollable, ShortcutHint, ShortcutHints, SizeConstraint, Spacer, Switch,
+    TargetClass, Text, TextInput, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -574,6 +574,9 @@ fn build_nav(
                 .finish(),
         )
         .with_selected(selected)
+        // D3 owns the rail's 32px row; until then the rail keeps its current
+        // drawn height and the generic row target is opt-out here.
+        .with_target_class(TargetClass::None)
         .with_padding(EdgeInsets::uniform(sm))
         .with_on_click(move || (on_select.borrow_mut())(cat))
         .finish();

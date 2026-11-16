@@ -1,14 +1,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::focus::{centred_origin, hit_target, paint_focus_ring, TargetClass};
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, EdgeInsets, Element, EventContext, LayoutContext, PaintContext, Point,
     SizeConstraint,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{vec2f, Vector2F};
-use crate::theme::ColorToken;
+use crate::geometry::{rectf, vec2f, Vector2F};
+use crate::theme::{ColorToken, FocusStyle};
 
 /// A row of a list or a tree: it highlights under the pointer, marks itself
 /// selected, and reports a click.
@@ -40,7 +41,13 @@ pub struct HoverRow {
     /// on a click closes again on the second one.
     on_double_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     state: InteractiveState,
+    /// Whether the row owns the keyboard focus and paints the ring.
+    focused: bool,
+    /// The minimum-target rule the row follows.
+    target_class: TargetClass,
     size: Option<Vector2F>,
+    /// The size the row paints at inside its hit target.
+    paint_size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
@@ -56,7 +63,10 @@ impl HoverRow {
             on_click: None,
             on_double_click: None,
             state: InteractiveState::default(),
+            focused: false,
+            target_class: TargetClass::Row,
             size: None,
+            paint_size: None,
             origin: None,
         }
     }
@@ -91,6 +101,19 @@ impl HoverRow {
 
     pub fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_click = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Paint the focus ring while the keyboard is on the row. The ring wraps
+    /// the whole row, which is what goble's row-level focus model focuses.
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Use a minimum-target rule other than the row default.
+    pub fn with_target_class(mut self, class: TargetClass) -> Self {
+        self.target_class = class;
         self
     }
 
@@ -145,13 +168,18 @@ impl Element for HoverRow {
             ),
         );
         let content = self.content.layout(inner, ctx, app);
-        let size = vec2f(content.x + horizontal, content.y + vertical);
+        let visual = vec2f(content.x + horizontal, content.y + vertical);
+        let (size, paint_size) = hit_target(visual, self.target_class, false);
         self.size = Some(size);
+        self.paint_size = Some(paint_size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let size = self.size.unwrap_or(Vector2F::zero());
+        let paint_size = self.paint_size.unwrap_or(size);
+        let paint_origin = centred_origin(origin, size, paint_size);
         let bounds = self.bounds();
         let hovered = bounds.is_some_and(|bounds| ctx.hovered(bounds));
         if let Some((cell, key)) = &self.hover_key {
@@ -162,32 +190,44 @@ impl Element for HoverRow {
                 *cell = None;
             }
         }
-        if let Some(bounds) = bounds {
-            let background = if !self.hover_highlight {
-                None
-            } else if self.selected {
-                Some(ColorToken::Selected)
-            } else if hovered {
-                Some(ColorToken::Hover)
-            } else {
-                None
-            };
-            if let Some(token) = background {
-                if let Some(renderer) = ctx.renderer.as_mut() {
-                    let color = app.theme.color(token);
-                    if self.corner_radius > 0.0 {
-                        renderer.fill_rounded_rect(bounds, color, self.corner_radius);
-                    } else {
-                        renderer.fill_rect(bounds, color);
-                    }
+        let paint_bounds = rectf(paint_origin.x, paint_origin.y, paint_size.x, paint_size.y);
+        let background = if !self.hover_highlight {
+            None
+        } else if self.selected {
+            Some(ColorToken::Selected)
+        } else if hovered {
+            Some(ColorToken::Hover)
+        } else {
+            None
+        };
+        if let Some(token) = background {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                let color = app.theme.color(token);
+                if self.corner_radius > 0.0 {
+                    renderer.fill_rounded_rect(paint_bounds, color, self.corner_radius);
+                } else {
+                    renderer.fill_rect(paint_bounds, color);
                 }
             }
         }
         self.content.paint(
-            vec2f(origin.x + self.padding.left, origin.y + self.padding.top),
+            vec2f(
+                paint_origin.x + self.padding.left,
+                paint_origin.y + self.padding.top,
+            ),
             ctx,
             app,
         );
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            paint_focus_ring(
+                renderer,
+                paint_bounds,
+                self.focused,
+                FocusStyle::Control,
+                self.corner_radius,
+                &app.theme,
+            );
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

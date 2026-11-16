@@ -2,13 +2,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::color::ColorU;
+use crate::elements::focus::{centred_origin, hit_target, paint_focus_ring, TargetClass};
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::theme::SpacingToken;
+use crate::theme::{FocusStyle, SpacingToken};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonVariant {
@@ -38,7 +39,16 @@ pub struct Button {
     /// The default variant's outline colour. `None` uses `ColorToken::Border`.
     border_color: Option<ColorU>,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// Whether the button owns the keyboard focus and paints the ring.
+    focused: bool,
+    /// The minimum-target rule the button follows.
+    target_class: TargetClass,
+    /// Whether the pointer is coarse; icon controls then grow a 44px hit box
+    /// while their paint keeps the drawn size.
+    coarse_pointer: bool,
     size: Option<Vector2F>,
+    /// The size the button paints at inside its hit target.
+    paint_size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
@@ -52,7 +62,11 @@ impl Button {
             corner_radius: None,
             border_color: None,
             on_click: None,
+            focused: false,
+            target_class: TargetClass::Icon,
+            coarse_pointer: false,
             size: None,
+            paint_size: None,
             origin: None,
         }
     }
@@ -88,6 +102,25 @@ impl Button {
         self
     }
 
+    /// Paint the focus ring while the keyboard is on the button.
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Use a minimum-target rule other than the icon-button default.
+    pub fn with_target_class(mut self, class: TargetClass) -> Self {
+        self.target_class = class;
+        self
+    }
+
+    /// Grow the hit box to 44×44 under a coarse pointer without growing the
+    /// button's paint.
+    pub fn with_coarse_pointer(mut self, coarse_pointer: bool) -> Self {
+        self.coarse_pointer = coarse_pointer;
+        self
+    }
+
     fn horizontal_padding(&self, app: &AppContext) -> f32 {
         app.theme.spacing_px(SpacingToken::Md)
     }
@@ -117,19 +150,23 @@ impl Element for Button {
         let child_size = self
             .child
             .layout(SizeConstraint::new(inner_min, inner_max), ctx, app);
-        let size = vec2f(child_size.x + h_pad * 2.0, child_size.y + v_pad * 2.0);
+        let visual = vec2f(child_size.x + h_pad * 2.0, child_size.y + v_pad * 2.0);
+        let (size, paint_size) = hit_target(visual, self.target_class, self.coarse_pointer);
         self.size = Some(size);
+        self.paint_size = Some(paint_size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
+        let paint_size = self.paint_size.unwrap_or(size);
+        let paint_origin = centred_origin(origin, size, paint_size);
         let h_pad = self.horizontal_padding(app);
         let v_pad = self.vertical_padding(app);
 
-        let bounds = rectf(origin.x, origin.y, size.x, size.y);
-        let hovered = ctx.hovered(bounds);
+        let bounds = rectf(paint_origin.x, paint_origin.y, paint_size.x, paint_size.y);
+        let hovered = ctx.hovered(self.bounds().unwrap_or(bounds));
         // A raised fill and a 1px outline: the default button is the app's
         // secondary control, so it reads as a button on a flat surface instead
         // of dissolving into it. The ghost variant is the low-emphasis one and
@@ -171,8 +208,8 @@ impl Element for Button {
         let corner_radius = self.corner_radius.unwrap_or_else(|| app.theme.radius_px());
         if let Some(renderer) = ctx.renderer.as_mut() {
             let rect = crate::geometry::RectF::new(
-                crate::geometry::PointF::new(origin.x, origin.y),
-                crate::geometry::Size2F::new(size.x, size.y),
+                crate::geometry::PointF::new(paint_origin.x, paint_origin.y),
+                crate::geometry::Size2F::new(paint_size.x, paint_size.y),
             );
             if let Some(bg_color) = bg_color {
                 renderer.fill_rounded_rect(rect, bg_color, corner_radius);
@@ -184,10 +221,20 @@ impl Element for Button {
 
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
         let child_origin = vec2f(
-            origin.x + h_pad + (size.x - child_size.x - h_pad * 2.0).max(0.0) / 2.0,
-            origin.y + v_pad + (size.y - child_size.y - v_pad * 2.0).max(0.0) / 2.0,
+            paint_origin.x + h_pad + (paint_size.x - child_size.x - h_pad * 2.0).max(0.0) / 2.0,
+            paint_origin.y + v_pad + (paint_size.y - child_size.y - v_pad * 2.0).max(0.0) / 2.0,
         );
         self.child.paint(child_origin, ctx, app);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            paint_focus_ring(
+                renderer,
+                bounds,
+                self.focused,
+                FocusStyle::Control,
+                corner_radius,
+                &app.theme,
+            );
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

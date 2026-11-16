@@ -4,10 +4,9 @@ use std::rc::Rc;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Button, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment,
-    MainAxisSize,
-    PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint, Stack, Text,
-    TextInput, Tooltip, TooltipPosition, TopbarButton,
+    Element, Empty, EventContext, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, PopupMenu, PopupMenuItem, RunningIndicator, SizeConstraint, Stack,
+    TargetClass, Text, TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY, BUTTON_SECONDARY};
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -1375,6 +1374,7 @@ fn build_workspace_chip(
         // The close is a 20 pt target with a 10 pt glyph. Its hover fill gets a
         // 4 pt radius, the only rounding on an otherwise square tab.
         .with_size(20.0)
+        .with_target_class(TargetClass::Close)
         .with_corner_radius(4.0)
         .with_on_click(move || (on_close.borrow_mut())(index))
         .finish(),

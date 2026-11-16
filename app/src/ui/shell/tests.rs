@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use goble_core::store::Store;
 use goble_desktop_service::{DesktopState, ThreadStore};
-use goble_ui::elements::{AppContext, Element, Icon, Text, TopbarButton};
+use goble_ui::elements::{AppContext, Element, Icon, TargetClass, Text, TopbarButton};
 use goble_ui::event::{DispatchedEvent, ModifiersState};
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::theme::{ColorToken, TabColor};
@@ -456,6 +456,7 @@ fn close_button(app: &AppContext, on_close: Rc<RefCell<dyn FnMut(usize)>>) -> Bo
             .finish(),
     )
     .with_size(20.0)
+    .with_target_class(TargetClass::Close)
     .with_corner_radius(4.0)
     .with_on_click(move || (on_close.borrow_mut())(index))
     .finish()

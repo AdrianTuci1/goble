@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::focus::{centred_origin, hit_target, paint_focus_ring, TargetClass};
 use crate::elements::interactive::{handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element, EventContext,
@@ -9,7 +10,7 @@ use crate::elements::{
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::{ColorToken, FocusStyle, SpacingToken};
 
 // A bit shorter on macOS so the actions sit vertically next to the traffic
 // lights (the toolbar doubles as the OS titlebar there).
@@ -232,7 +233,15 @@ pub struct TopbarButton {
     /// The hover/active fill's corner radius. `None` uses half the theme's.
     corner_radius: Option<f32>,
     on_click: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// Whether the button owns the keyboard focus and paints the ring.
+    focused: bool,
+    /// The minimum-target rule the button follows.
+    target_class: TargetClass,
+    /// Whether the pointer is coarse, which grows the hit box around the paint.
+    coarse_pointer: bool,
     size: Option<Vector2F>,
+    /// The size the button paints at inside its hit target.
+    paint_size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
@@ -246,7 +255,11 @@ impl TopbarButton {
             button_size: BUTTON_SIZE,
             corner_radius: None,
             on_click: None,
+            focused: false,
+            target_class: TargetClass::Icon,
+            coarse_pointer: false,
             size: None,
+            paint_size: None,
             origin: None,
         }
     }
@@ -280,15 +293,47 @@ impl TopbarButton {
         self
     }
 
-    fn paint_background(&self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+    /// Paint the focus ring while the keyboard is on the button.
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Use a minimum-target rule other than the icon-button default. A close
+    /// control passes [`TargetClass::Close`] so it stays 20px.
+    pub fn with_target_class(mut self, class: TargetClass) -> Self {
+        self.target_class = class;
+        self
+    }
+
+    /// Grow the hit box to 44×44 under a coarse pointer without growing the
+    /// button's paint.
+    pub fn with_coarse_pointer(mut self, coarse_pointer: bool) -> Self {
+        self.coarse_pointer = coarse_pointer;
+        self
+    }
+
+    fn paint_background(
+        &self,
+        paint_origin: Vector2F,
+        paint_size: Vector2F,
+        target_bounds: Option<crate::geometry::RectF>,
+        ctx: &mut PaintContext,
+        app: &AppContext,
+    ) {
         if self.disabled {
             // Disabled buttons are deliberately flat: no hover, no active fill.
             return;
         }
-        let rect = rectf(origin.x, origin.y, self.button_size, self.button_size);
+        let rect = rectf(
+            paint_origin.x,
+            paint_origin.y,
+            paint_size.x,
+            paint_size.y,
+        );
         let bg = if self.active {
             app.theme.color(ColorToken::Selected)
-        } else if ctx.hovered(rect) {
+        } else if target_bounds.is_some_and(|bounds| ctx.hovered(bounds)) {
             app.theme.color(ColorToken::Hover)
         } else {
             return;
@@ -315,20 +360,41 @@ impl Element for TopbarButton {
             ctx,
             app,
         );
-        let size = vec2f(self.button_size, self.button_size);
+        let visual = vec2f(self.button_size, self.button_size);
+        let (size, paint_size) = hit_target(visual, self.target_class, self.coarse_pointer);
         self.size = Some(size);
+        self.paint_size = Some(paint_size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        self.paint_background(origin, ctx, app);
+        let size = self.size.unwrap_or(Vector2F::zero());
+        let paint_size = self.paint_size.unwrap_or(size);
+        let paint_origin = centred_origin(origin, size, paint_size);
+        self.paint_background(paint_origin, paint_size, self.bounds(), ctx, app);
         let child_size = self.child.size().unwrap_or(Vector2F::zero());
         let offset = vec2f(
-            (self.button_size - child_size.x).max(0.0) / 2.0,
-            (self.button_size - child_size.y).max(0.0) / 2.0,
+            (paint_size.x - child_size.x).max(0.0) / 2.0,
+            (paint_size.y - child_size.y).max(0.0) / 2.0,
         );
-        self.child.paint(origin + offset, ctx, app);
+        self.child.paint(paint_origin + offset, ctx, app);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            paint_focus_ring(
+                renderer,
+                rectf(
+                    paint_origin.x,
+                    paint_origin.y,
+                    paint_size.x,
+                    paint_size.y,
+                ),
+                self.focused,
+                FocusStyle::Control,
+                self.corner_radius
+                    .unwrap_or_else(|| app.theme.radius_px() / 2.0),
+                &app.theme,
+            );
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

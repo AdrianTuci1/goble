@@ -1,4 +1,5 @@
 pub mod event_bus;
+pub mod gateway_client;
 pub mod ssh_installer;
 pub mod state;
 pub mod thread_store;

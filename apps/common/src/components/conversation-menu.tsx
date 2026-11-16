@@ -213,8 +213,6 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: palette.text,
     fontSize: 14,
-    outlineColor: "transparent",
-    outlineStyle: "solid",
     padding: 0,
   },
   body: {

@@ -240,8 +240,6 @@ const styles = StyleSheet.create({
     color: palette.text,
     flex: 1,
     fontSize: 14,
-    outlineColor: "transparent",
-    outlineStyle: "solid",
     paddingVertical: 12,
   },
   error: {

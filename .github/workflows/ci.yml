@@ -28,6 +28,10 @@ on:
       - 'crates/goble-replay/**'
       - 'crates/goble-sandbox/**'
       - 'crates/goble-workflow/**'
+      # js / typecheck
+      - 'apps/**'
+      - 'package.json'
+      - 'package-lock.json'
       # both jobs
       - '.config/nextest.toml'
       - '.github/workflows/ci.yml'
@@ -50,6 +54,10 @@ on:
       - 'crates/goble-replay/**'
       - 'crates/goble-sandbox/**'
       - 'crates/goble-workflow/**'
+      # js / typecheck
+      - 'apps/**'
+      - 'package.json'
+      - 'package-lock.json'
       # both jobs
       - '.config/nextest.toml'
       - '.github/workflows/ci.yml'
@@ -140,3 +148,28 @@ jobs:
       # MCP test needs `node` and stays out of the default suite.
       - name: Run the worker suite
         run: cargo nextest run -p goblin-worker --profile ci
+
+  # The client is a TypeScript workspace now (`@goble/common` plus the Expo
+  # shells), and nothing in the Rust jobs reads it. Without this job a change to
+  # a shared screen or to the remote protocol reaches `main` with no compiler
+  # ever having seen it.
+  js-typecheck:
+    name: js / typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # One install at the root: `apps/*` are npm workspaces and the root
+      # package-lock.json is the only lockfile.
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Typecheck every workspace
+        run: npm run check --workspaces --if-present

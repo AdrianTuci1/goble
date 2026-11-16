@@ -58,6 +58,47 @@ impl ColorU {
             255,
         )
     }
+
+    /// Composite this colour over `base` at `alpha` (0..=1) and return an
+    /// opaque result. `alpha` is the overlay's opacity; `self.a` is not used,
+    /// because callers either have a token alpha (e.g. [`crate::theme`]'s
+    /// `Scrim`, 153/255) or an animation value to hand, and the renderer has no
+    /// blend pass to apply it later.
+    pub fn mix_over(&self, base: &Self, alpha: f32) -> Self {
+        let alpha = alpha.clamp(0.0, 1.0);
+        let lerp = |fg: u8, bg: u8| (fg as f32 * alpha + bg as f32 * (1.0 - alpha)).round() as u8;
+        Self::new(
+            lerp(self.r, base.r),
+            lerp(self.g, base.g),
+            lerp(self.b, base.b),
+            255,
+        )
+    }
+
+    /// WCAG 2.x relative luminance: linearise each sRGB channel, then weight
+    /// red 0.2126, green 0.7152 and blue 0.0722. Alpha is ignored; composite a
+    /// translucent colour with [`ColorU::mix_over`] first if it covers another
+    /// surface.
+    pub fn relative_luminance(&self) -> f32 {
+        fn linear(channel: u8) -> f32 {
+            let c = channel as f32 / 255.0;
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * linear(self.r) + 0.7152 * linear(self.g) + 0.0722 * linear(self.b)
+    }
+
+    /// WCAG 2.x contrast ratio, `(lighter + 0.05) / (darker + 0.05)`, in the
+    /// range 1.0..=21.0. The arguments commute.
+    pub fn contrast_ratio(&self, other: &Self) -> f32 {
+        let a = self.relative_luminance();
+        let b = other.relative_luminance();
+        let (lighter, darker) = if a >= b { (a, b) } else { (b, a) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
 }
 
 impl Default for ColorU {
@@ -146,5 +187,71 @@ mod tests {
         let a = ColorU::new(0, 0, 0, 255);
         let b = ColorU::new(255, 255, 255, 255);
         assert_eq!(a.mix(&b, 0.5), ColorU::new(128, 128, 128, 255));
+    }
+
+    /// White and black are the endpoints of the WCAG scale; the primaries pin
+    /// the three channel weights. `#808080` is the hand-worked sRGB case:
+    /// 128/255 = 0.5019608, ((0.5019608 + 0.055) / 1.055)^2.4 = 0.2158605.
+    #[test]
+    fn relative_luminance_matches_wcag_known_values() {
+        let close = |actual: f32, expected: f32| {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "expected {expected}, got {actual}"
+            );
+        };
+        close(ColorU::hex(0x000000).relative_luminance(), 0.0);
+        close(ColorU::hex(0xffffff).relative_luminance(), 1.0);
+        close(ColorU::hex(0xff0000).relative_luminance(), 0.2126);
+        close(ColorU::hex(0x00ff00).relative_luminance(), 0.7152);
+        close(ColorU::hex(0x0000ff).relative_luminance(), 0.0722);
+        close(ColorU::hex(0x808080).relative_luminance(), 0.215_860_5);
+    }
+
+    /// Black on white is the maximum 21:1. `#767676` on white is
+    /// (1.0 + 0.05) / (0.1811642 + 0.05) = 4.5422, and `#595959` on white is
+    /// (1.0 + 0.05) / (0.0998987 + 0.05) = 7.0047. The ratio commutes.
+    #[test]
+    fn contrast_ratio_matches_wcag_known_pairs() {
+        let white = ColorU::hex(0xffffff);
+        let black = ColorU::hex(0x000000);
+        assert!((white.contrast_ratio(&black) - 21.0).abs() < 1e-4);
+
+        let grey = ColorU::hex(0x767676);
+        assert!((grey.contrast_ratio(&white) - 4.542_225).abs() < 1e-5);
+        assert!((white.contrast_ratio(&grey) - 4.542_225).abs() < 1e-5);
+
+        let darker = ColorU::hex(0x595959);
+        assert!((darker.contrast_ratio(&white) - 7.004_729).abs() < 1e-5);
+
+        // The identity is 1.0, not zero: a colour always has some contrast
+        // with itself.
+        assert!((grey.contrast_ratio(&grey) - 1.0).abs() < 1e-6);
+    }
+
+    /// `mix_over` is an opaque composite: red over blue at 50% is
+    /// (0.5*255, 0, 0.5*255) = (127.5, 0, 127.5), rounded to `#800080`.
+    /// Black over white at 25% is 0.25*0 + 0.75*255 = 191.25 -> `#bfbfbf`.
+    #[test]
+    fn mix_over_composites_known_values() {
+        let red = ColorU::hex(0xff0000);
+        let blue = ColorU::hex(0x0000ff);
+        assert_eq!(red.mix_over(&blue, 0.5), ColorU::new(128, 0, 128, 255));
+
+        let black = ColorU::hex(0x000000);
+        let white = ColorU::hex(0xffffff);
+        assert_eq!(
+            black.mix_over(&white, 0.25),
+            ColorU::new(191, 191, 191, 255)
+        );
+
+        // The endpoints are the base and the overlay, and the result is always
+        // opaque even when the overlay carries its own alpha.
+        assert_eq!(black.mix_over(&white, 0.0), white);
+        assert_eq!(black.mix_over(&white, 1.0), black);
+        assert_eq!(
+            ColorU::new(255, 0, 0, 128).mix_over(&white, 0.5),
+            ColorU::new(255, 128, 128, 255)
+        );
     }
 }

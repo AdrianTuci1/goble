@@ -54,6 +54,12 @@ pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};
 /// band above the input draws from.
 pub use elements::{ModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState};
 pub use syntax::highlight;
+/// The theme surface a host needs to name a token or a T3 scale without
+/// reaching through `goble_ui::theme`.
+pub use theme::{
+    AccentColor, ColorScheme, ColorToken, Contrast, Density, FocusStyle, FontFamily, Motion,
+    Radius, RadiusToken, Spacing, SpacingToken, Theme, ThemePreset, TypeToken,
+};
 pub use views::chat_view::ChatView;
 pub use views::chat_view::ComposerModelTray;
 pub use views::settings_view::{SettingsPage, SettingsView};

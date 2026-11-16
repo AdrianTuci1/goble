@@ -9,6 +9,7 @@
   "scripts": {
     "check": "npm run check --workspaces --if-present",
     "typecheck": "npm run check --workspaces --if-present",
-    "web:build": "npm run export:web -w @goble/web"
+    "web:build": "npm run export:web -w @goble/web",
+    "web:size": "node scripts/check-web-size.mjs"
   }
 }

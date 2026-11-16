@@ -177,6 +177,12 @@ jobs:
       - name: Build the Expo web export
         run: npm run web:build
 
+      # The export is what every browser downloads. Typecheck proves the app
+      # compiles; this is the only gate that notices a dependency pulled into
+      # the entry chunk. The budgets live in the script.
+      - name: Check the web export's size budget
+        run: npm run web:size
+
       - name: Upload the web export
         uses: actions/upload-artifact@v4
         with:

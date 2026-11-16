@@ -1,6 +1,6 @@
 # 12 — Client apps: `common` / `web` / `mobile`
 
-**Status:** `[x]` landed — waves 1–4 done; V5 done except the bundle-size gate
+**Status:** `[x]` landed — waves 1–5 done
 **Owns:** the TypeScript client: the shared core and the two shells over it
 **Supersedes:** the Rust/WASM browser client (`crates/goble-web`), marked stale on 2026-11-15
 
@@ -45,30 +45,47 @@ app** and are out of scope: that surface is Rust and stays Rust.
   `recorder.ts`, `voice.ts`, `dictation.ts`, `use-voice.ts`, `haptics.ts`,
   `use-workspace.ts`.
 - [x] **V3 — `apps/web`.** An Expo-web-only shell over `@goble/common`: a
-  permanent 280px sidebar, a header with a live connection `StatusPill`, the
-  gateway/worker state read from the shared remote client, and an honest
-  `EmptyState` pane ("no session selected") instead of mock conversations. Still
-  missing, next: rendering a session/terminal in the pane, keyboard shortcuts and
-  a wide composition beyond the sidebar layout.
+  permanent 280px sidebar with a **New shell** action, a header with a live
+  connection `StatusPill`, the gateway/worker state read from the shared remote
+  client, and an honest `EmptyState` pane ("no session selected") instead of
+  mock conversations. The pane renders the shared `TerminalSurface` over one pty
+  (`useTerminal("web:shell")`), so a shell opened on the selected worker is typed
+  into and read back in the browser, with the shared key bar for control keys.
+  Served by the gateway at `/app/`, the shell adopts its own origin and the
+  `HttpOnly` login cookie (`Connection.adoptBrowserSession`) instead of asking
+  for a PIN the page has already answered. Still missing: a conversation /
+  transcript surface (the pane is a shell, not a chat), desktop keyboard
+  shortcuts beyond the shared key bar, and a wide composition beyond the
+  sidebar + pane.
 - [x] **V4 — cut `crates/goble-web`.** The crate, `scripts/build-web.sh` and the
   checked-in `crates/goble-gateway/web/` bundle are gone; the gateway's `/app/`
   route stays and serves whatever `--web-dir` points at, with the fallback page
   in `web.rs` now naming `npm ci` + `npm run web:build` and `apps/web/dist`. The
   two tests that asserted the wasm command (`web.rs`, `tests/gateway.rs`) assert
-  the new text.
-- [~] **V5 — gates and docs.** The `js / typecheck + web build` CI job runs
-  `npm ci`, `npm run typecheck` and `npm run web:build` on Node 24 and uploads
-  `apps/web/dist`; `docs/PROJECT_STRUCTURE.md` gained an `apps/` section and
-  `.agents/09-mobile-deferred/README.md` no longer describes a Kotlin app.
-  **Open:** the size-regression gate — CI uploads the export but does not fail on
-  a bundle that grows.
+  the new text. The export is built for that mount — `experiments.baseUrl` is
+  `/app` in `apps/web/app.json` — so the index and every bundled asset are
+  requested below `/app/` rather than from the domain root, which the gateway
+  does not serve.
+- [x] **V5 — gates and docs.** The `js / typecheck + web build` CI job runs
+  `npm ci`, `npm run typecheck`, `npm run web:build` and `npm run web:size` on
+  Node 24, then uploads `apps/web/dist`; `docs/PROJECT_STRUCTURE.md` gained an
+  `apps/` section and `.agents/09-mobile-deferred/README.md` no longer describes
+  a Kotlin app. The size gate is `scripts/check-web-size.mjs`: it sums the
+  export's JavaScript and fails over 1900 KB raw, 520 KB gzip or 1250 KB for the
+  largest file — the 2026-11-16 export (1720 KB / 472 KB / 1091 KB) plus about
+  10% of headroom. A change that needs more raises the number in the same
+  commit, where a reviewer sees it move.
 
 ## Verified
 
 `npm ci` at the root installs one hoisted tree (`@goble/common` linked from
 `node_modules`); `npm run typecheck` is green for `@goble/common`, `@goble/mobile`
-and `@goble/web`; `npm run web:build` exports `apps/web/dist` (entry ≈1.1 MB,
-shared chunk ≈630 KB); `npx expo export --platform web` still exports the phone
-shell. `cargo` was **not** run for V4 — there is no Rust toolchain in this
-environment, so the gateway edits are verified by reading and grep, not by
-`cargo test -p goble-gateway`.
+and `@goble/web`; `npm run web:build` exports `apps/web/dist` with `/app/`
+asset URLs (entry ≈1.1 MB, shared chunk ≈630 KB, 1720 KB of JavaScript / 472 KB
+gzipped) and `npm run web:size` accepts it; `npx expo export --platform web`
+still exports the phone shell. V4's gateway edits were verified with the Rust
+toolchain installed for this pass: `cargo test -p goble-gateway` → 22 passed,
+0 failed. The browser shell was loaded from a static `/app/` mount in headless
+Chromium with a faked gateway API and relay: it boots, adopts the origin, lists
+the worker, and the New shell action draws the pty's output. No real gateway or
+worker was involved, and a host without `/api/workers` keeps the demo shell.

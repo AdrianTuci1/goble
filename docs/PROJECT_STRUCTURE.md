@@ -68,9 +68,10 @@ Each follows the `ai/` model: `state.rs` + `actions.rs` + `mod.rs`; in `ui/mod.r
 
 The browser and phone clients are one Expo codebase split into three npm workspaces. The root
 `package.json` declares `workspaces: ["apps/*"]`, so one `npm ci` installs a single hoisted
-`node_modules` for all three, and the two scripts that gate them run from the root:
-`npm run typecheck` (`tsc --noEmit` in every package that has a `check`) and `npm run web:build`
-(`expo export --platform web` in `@goble/web`). `.github/workflows/ci.yml` runs both in its
+`node_modules` for all three, and the scripts that gate them run from the root:
+`npm run typecheck` (`tsc --noEmit` in every package that has a `check`), `npm run web:build`
+(`expo export --platform web` in `@goble/web`) and `npm run web:size` (the export's JavaScript
+against its size budget). `.github/workflows/ci.yml` runs all three in its
 `js / typecheck + web build` job and uploads `apps/web/dist`.
 
 | Package | Role |
@@ -83,7 +84,10 @@ The browser and phone clients are one Expo codebase split into three npm workspa
 so Metro compiles it as part of whichever app imports it. That keeps the phone and the desktop
 shell on the same components while each keeps its own router entry (`expo-router/entry`) and `app/`
 directory. The gateway serves the export from `apps/web/dist` (copied into its `web/` directory or
-pointed at with `--web-dir`).
+pointed at with `--web-dir`). `apps/web/app.json` sets `experiments.baseUrl` to `/app`, so the
+exported index and every bundled asset request under `/app/` — the path the gateway serves; a
+browser opened there already holds the gateway's login cookie, which the shell adopts instead of
+pairing again.
 
 ### Platform registry
 

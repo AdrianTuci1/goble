@@ -320,3 +320,32 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done · `[removed]` cut from
 - [x] Add the signed audit log with a daily Merkle root (`hub.md`) — `HubStore::append_audit` chains Ed25519-signed events, `verify_audit_chain` checks sequence, links, hashes and signatures, and `audit_root` computes the Merkle root; tamper and wrong-key tests
 
 **Core library landed:** `crates/goble-relay` (68 tests) and `crates/goble-hub` (62 tests); `cargo check --workspace --all-targets` passes. The gateway/binary wiring, scheduler loop, provider reaper, API/MCP surface and signed approvals remain.
+
+## 13 — Design parity (T3 Code)
+
+Specs: [`13-design/README.md`](13-design/README.md) (D1–D15: tokens, focus, settings, composer, tabs, harness window, accessibility) and [`13-design/gateway-pairing.md`](13-design/gateway-pairing.md) (G1–G9: the Settings → Gateway page and its backend).
+
+- [x] **D1 — token layer, contrast math and motion.** `crates/goble-ui/src/theme.rs` gains 11 colour tokens (`InputBorder`, `Placeholder`, `BorderStrong`, `SurfaceMuted`, `Scrim`, `Info`/`InfoForeground`, `Success`/`Warning`/`ErrorForeground`, `AccentForeground` computed from its own contrast), the `RadiusToken` 4/6/8/12/16 scale, `TypeToken` 10–24, `SpacingToken` 2–48, `FocusStyle` (2px control / 3px field / 2px tab edge), `Motion` with `motion_ms(200) == 0` under `Reduced`, `Contrast::High`, and `ColorU::{relative_luminance, contrast_ratio, mix_over}`; light `Focus` `#00c2ff` → `#007a9e` (2.07:1 → 3.0:1+), light `Muted` `#6f6f6f` → `#696969`, `InputBorder` `#8a8a8a`/`#6b6b6b`. No component consumes them yet. Verified: `cargo test -p goble-ui --lib theme` → 31 passed, `color` → 10 passed, `cargo test -p goble-ui --lib` → 770 passed; `Muted/SurfaceRaised ≥ 4.5` is gated on dark (5.09) and light (4.82) only — the other presets fail and were deliberately left unchanged (documented in the test) (`13-design/README.md` D1)
+- [x] **D8 — tab 2px edge and close target.** `app/src/ui/shell/topbar.rs` paints a 2px bottom edge after the fill and before the label: `Border` at rest and on hover, `Accent` when selected with a 3:1 gate that falls back to `Text` in the light theme (`Accent #9a9a9a` on `SurfaceRaised #f0f0f0` is 2.47:1); the label is centred in `height - 2`, `h_pad` 7→8, the close target 16→20 with the same 10px glyph, and square corners, the 1px rule and the 60/40/20 tint stay. Verified: `cargo test -p goble-app --lib ui::shell::tests` → the five new tests plus the rewritten square-corner test pass (40 passed; the one failure, `the_right_hand_group_keeps_the_bars_margin_from_the_windows_edge`, fails identically on the pre-D8 baseline — host font metrics, not this item); the edge tests were shown red with the paint call removed (`13-design/README.md` D8)
+- [x] **G1 — gateway pairing contract tests.** `crates/goble-gateway/tests/gateway.rs` now covers `POST /api/v1/session` (correct PIN → token + `expires_in 2700`, token accepted as bearer and as cookie, unissued token and worker bearer rejected), wrong PIN (401 `wrong_pin`, no token, no cookie, a later correct PIN still works), the real backoff (first 3 misses free, then +250 ms each, success resets), `POST /logout` revoking one session but not another, a no-PIN gateway issuing sessions with auth disabled, `GET /health` staying open, and a paired token opening `/ws/client`. Verified: `cargo test -p goble-gateway --test gateway` → 29 passed (was 22); `cargo test -p goble-gateway` → 19 unit + 29 integration (`13-design/gateway-pairing.md` G1)
+- [ ] **D2 — one focus ring and one hit-target rule** (`13-design/README.md` D2)
+- [ ] **D3 — settings rail** (D3)
+- [ ] **D4 — settings page, group and row anatomy** (D4)
+- [ ] **D5 — settings search, empty state and destructive confirmation** (D5)
+- [ ] **D6 — composer card, padding and focus** (D6)
+- [ ] **D7 — composer actions, states and attachments** (D7)
+- [ ] **D9 — tab strip keyboard model** (D9)
+- [ ] **D10 — harness header and page container** (D10)
+- [ ] **D11 — harness group cards, rows and empty state** (D11)
+- [ ] **D12 — appearance: text scale and contrast mode** (D12)
+- [ ] **D13 — reduced motion from the platform** (D13)
+- [ ] **D14 — agent/harness surface header and empty state** (D14)
+- [ ] **D15 — accessibility regression suite** (D15)
+- [ ] **G2 — desktop-side gateway HTTP client** (`13-design/gateway-pairing.md` G2)
+- [ ] **G3 — `DesktopState` pairing state and persistence** (G3)
+- [ ] **G4 — settings category and idle Gateway page** (G4)
+- [ ] **G5 — app state, edits and action wiring** (G5)
+- [ ] **G6 — worker list, refresh and empty state** (G6)
+- [ ] **G7 — restore, expiry and unpair states** (G7)
+- [ ] **G8 — gateway as a worker transport** (G8)
+- [ ] **G9 — deploy credential row and documentation** (G9)

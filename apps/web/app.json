@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Goble",
+    "slug": "goble-web",
+    "scheme": "goble",
+    "platforms": ["web"],
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

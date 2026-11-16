@@ -9,7 +9,8 @@
     },
     "plugins": ["expo-router"],
     "experiments": {
-      "typedRoutes": false
+      "typedRoutes": false,
+      "baseUrl": "/app"
     }
   }
 }

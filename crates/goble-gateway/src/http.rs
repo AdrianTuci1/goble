@@ -185,13 +185,11 @@ async fn panel(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Re
     .into_response()
 }
 
-/// Machine-readable worker list for the browser client. Sorted by id; no token
-/// or connection id ever appears here.
 /// Exchange the gateway PIN for a bearer session token.
 ///
 /// A browser keeps its session in an `HttpOnly` cookie. A native client cannot
 /// read that cookie, so it asks for the token here and sends it as
-/// `Authorization: Bearer <token>` on `/api/v1/workers` and the WebSocket
+/// `Authorization: Bearer <token>` on `/api/workers` and the WebSocket
 /// handshake, both of which accept the same session.
 async fn pair(
     State(state): State<Arc<GatewayState>>,
@@ -226,6 +224,8 @@ async fn pair(
         .into_response()
 }
 
+/// Machine-readable worker list for the browser client. Sorted by id; no token
+/// or connection id ever appears here.
 async fn workers_api(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Response {
     if !authenticated(&state, &headers) {
         return json_unauthorized();

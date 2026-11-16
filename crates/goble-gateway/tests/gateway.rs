@@ -1,10 +1,13 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use axum::body::Body;
 use futures::{SinkExt, StreamExt};
 use goble_gateway::{hash_pin, Gateway, GatewayConfig, DEFAULT_SESSION_TTL, SESSION_COOKIE};
-use reqwest::header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, SET_COOKIE};
+use reqwest::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, SET_COOKIE,
+};
 use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -13,6 +16,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::WebSocketStream;
+use tower::ServiceExt as _;
 
 const PIN: &str = "123456";
 const WORKER_TOKEN: &str = "test-worker-token";
@@ -192,6 +196,22 @@ async fn connect_client(
         .map(|(socket, _)| socket)
 }
 
+async fn connect_client_bearer(
+    server: &TestServer,
+    worker_id: &str,
+    token: &str,
+) -> Result<Ws, WsError> {
+    let url = format!("ws://{}/ws/client?worker={worker_id}", server.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+    );
+    tokio_tungstenite::connect_async(request)
+        .await
+        .map(|(socket, _)| socket)
+}
+
 async fn next_text(socket: &mut Ws) -> String {
     loop {
         let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
@@ -205,6 +225,100 @@ async fn next_text(socket: &mut Ws) -> String {
             other => panic!("expected a text frame, got {other:?}"),
         }
     }
+}
+
+/// Build a `Gateway` whose router can be driven with `tower::ServiceExt::oneshot`
+/// without binding a socket. Each test gets its own in-memory state.
+fn test_gateway(pin: Option<&str>, session_ttl: Duration) -> Gateway {
+    let mut config = GatewayConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        pin.map(hash_pin),
+        WORKER_TOKEN,
+    );
+    config.session_ttl = session_ttl;
+    Gateway::new(config).unwrap()
+}
+
+struct Reply {
+    status: StatusCode,
+    headers: reqwest::header::HeaderMap,
+    json: serde_json::Value,
+}
+
+impl Reply {
+    fn token(&self) -> &str {
+        self.json["token"].as_str().expect("token in the response")
+    }
+
+    fn set_cookie(&self) -> Option<&str> {
+        self.headers.get(SET_COOKIE)?.to_str().ok()
+    }
+}
+
+/// Send one request straight into `Gateway::router()`. `bearer` and `cookie`
+/// are mutually exclusive ways to present a session; `body` is sent as JSON.
+async fn call(
+    gateway: &Gateway,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    cookie: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> Reply {
+    let mut builder = axum::http::Request::builder().method(method).uri(path);
+    if let Some(token) = bearer {
+        builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+    }
+    if let Some(token) = cookie {
+        builder = builder.header(COOKIE, format!("{SESSION_COOKIE}={token}"));
+    }
+    let body = match body {
+        Some(value) => {
+            builder = builder.header(CONTENT_TYPE, "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = gateway
+        .router()
+        .oneshot(builder.body(body).expect("request should build"))
+        .await
+        .expect("the router should answer");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("response body");
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    Reply {
+        status,
+        headers,
+        json,
+    }
+}
+
+async fn pair(gateway: &Gateway, pin: &str) -> Reply {
+    call(
+        gateway,
+        "POST",
+        "/api/v1/session",
+        None,
+        None,
+        Some(serde_json::json!({ "pin": pin })),
+    )
+    .await
+}
+
+/// Pair over a real loopback socket; only needed by the WebSocket handshake test.
+async fn pair_over_http(server: &TestServer, pin: &str) -> reqwest::Response {
+    server
+        .client
+        .post(format!("http://{}/api/v1/session", server.addr))
+        .header(CONTENT_TYPE, "application/json")
+        .body(serde_json::json!({ "pin": pin }).to_string())
+        .send()
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -420,6 +534,239 @@ async fn logout_clears_the_session() {
         panel(&server, Some(&token)).await.status(),
         StatusCode::SEE_OTHER
     );
+}
+
+#[tokio::test]
+async fn pairing_exchanges_the_pin_for_a_bearer_session() {
+    let ttl = Duration::from_secs(45 * 60);
+    let gateway = test_gateway(Some(PIN), ttl);
+
+    let response = pair(&gateway, PIN).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.headers.get(CONTENT_TYPE).unwrap(),
+        "application/json"
+    );
+    assert_eq!(response.headers.get(CACHE_CONTROL).unwrap(), "no-store");
+    let token = response.token().to_string();
+    assert!(!token.is_empty());
+    assert_eq!(response.json["expires_in"], ttl.as_secs());
+    assert_eq!(
+        response.json.as_object().unwrap().len(),
+        2,
+        "the response is exactly {{token, expires_in}}"
+    );
+
+    // The native path: the token is accepted as a bearer.
+    let bearer = call(&gateway, "GET", "/api/workers", Some(&token), None, None).await;
+    assert_eq!(bearer.status, StatusCode::OK);
+    assert_eq!(bearer.headers.get(CACHE_CONTROL).unwrap(), "no-store");
+    assert_eq!(bearer.json["workers"].as_array().unwrap().len(), 0);
+
+    // The browser path: the same token is also a valid session cookie. The
+    // gateway does not distinguish the two presentations on /api/workers.
+    let cookie = call(&gateway, "GET", "/api/workers", None, Some(&token), None).await;
+    assert_eq!(cookie.status, StatusCode::OK);
+
+    // A token that was never issued is rejected, and the worker bearer is not a
+    // client credential.
+    for rejected in ["this-token-was-never-issued", WORKER_TOKEN] {
+        let response = call(&gateway, "GET", "/api/workers", Some(rejected), None, None).await;
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(response.json["error"], "login required");
+    }
+}
+
+#[tokio::test]
+async fn a_wrong_pin_is_rejected_without_issuing_a_token_or_cookie() {
+    let gateway = test_gateway(Some(PIN), DEFAULT_SESSION_TTL);
+
+    let response = pair(&gateway, "000000").await;
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(response.json, serde_json::json!({ "error": "wrong_pin" }));
+    assert!(response.json.get("token").is_none());
+    assert!(
+        response.set_cookie().is_none(),
+        "a rejected PIN must not set a session cookie"
+    );
+
+    // The correct PIN still works, and the earlier miss is on the failure path
+    // (the next test observes the recorded failure through the backoff).
+    let accepted = pair(&gateway, PIN).await;
+    assert_eq!(accepted.status, StatusCode::OK);
+    assert!(!accepted.token().is_empty());
+}
+
+/// The backoff in `state.rs`: three free misses, then 250 ms per extra failure,
+/// applied before verification; a success resets the counter.
+#[tokio::test]
+async fn repeated_wrong_pins_back_off_after_three_failures_and_success_resets() {
+    let gateway = test_gateway(Some(PIN), DEFAULT_SESSION_TTL);
+
+    let mut elapsed = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let response = pair(&gateway, "000000").await;
+        elapsed.push(started.elapsed());
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+        assert!(response.set_cookie().is_none());
+    }
+
+    // Misses 1..=3 are free; miss 4 waits 250 ms and miss 5 waits 500 ms.
+    assert!(
+        elapsed[2] < Duration::from_millis(200),
+        "the third miss should not be delayed yet: {:?}",
+        elapsed[2]
+    );
+    assert!(
+        elapsed[3] >= elapsed[2] + Duration::from_millis(200),
+        "the fourth miss should add a 250 ms step: {:?}",
+        elapsed
+    );
+    assert!(
+        elapsed[4] >= elapsed[3] + Duration::from_millis(200),
+        "the fifth miss should add a second 250 ms step: {:?}",
+        elapsed
+    );
+
+    // The delay is applied before the PIN is checked, so a success after five
+    // failures still waits 750 ms, then resets the counter.
+    let started = Instant::now();
+    let accepted = pair(&gateway, PIN).await;
+    let success_elapsed = started.elapsed();
+    assert_eq!(accepted.status, StatusCode::OK);
+    assert!(
+        success_elapsed >= Duration::from_millis(700),
+        "the accumulating delay should apply to the successful attempt too: {success_elapsed:?}"
+    );
+
+    let started = Instant::now();
+    let after_reset = pair(&gateway, "000000").await;
+    let reset_elapsed = started.elapsed();
+    assert_eq!(after_reset.status, StatusCode::UNAUTHORIZED);
+    assert!(
+        reset_elapsed < Duration::from_millis(200),
+        "a successful PIN should reset the backoff: {reset_elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn logout_revokes_the_paired_session() {
+    let gateway = test_gateway(Some(PIN), DEFAULT_SESSION_TTL);
+    let first = pair(&gateway, PIN).await.token().to_string();
+    let second = pair(&gateway, PIN).await.token().to_string();
+    assert_ne!(first, second);
+
+    for token in [&first, &second] {
+        assert_eq!(
+            call(&gateway, "GET", "/api/workers", Some(token), None, None)
+                .await
+                .status,
+            StatusCode::OK
+        );
+    }
+
+    let response = call(&gateway, "POST", "/logout", Some(&first), None, None).await;
+    assert_eq!(response.status, StatusCode::SEE_OTHER);
+    assert_eq!(response.headers.get(LOCATION).unwrap(), "/");
+    let cookie = response
+        .set_cookie()
+        .expect("logout should clear the session cookie");
+    assert!(cookie.contains(&format!("{SESSION_COOKIE}=;")));
+    assert!(cookie.contains("Max-Age=0"));
+
+    // Revoked through either presentation of the same token ...
+    assert_eq!(
+        call(&gateway, "GET", "/api/workers", Some(&first), None, None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&gateway, "GET", "/api/workers", None, Some(&first), None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    // ... while a different session survives.
+    assert_eq!(
+        call(&gateway, "GET", "/api/workers", Some(&second), None, None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_gateway_without_a_pin_issues_a_session_without_one() {
+    let ttl = Duration::from_secs(90);
+    let gateway = test_gateway(None, ttl);
+
+    let response = pair(&gateway, "anything").await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.headers.get(CACHE_CONTROL).unwrap(), "no-store");
+    assert!(!response.token().is_empty());
+    assert_eq!(response.json["expires_in"], ttl.as_secs());
+
+    // With auth disabled the token and cookie are accepted, and even an
+    // anonymous request can list workers.
+    let token = response.token().to_string();
+    assert_eq!(
+        call(&gateway, "GET", "/api/workers", Some(&token), None, None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&gateway, "GET", "/api/workers", None, Some(&token), None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&gateway, "GET", "/api/workers", None, None, None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn health_stays_open_when_a_pin_is_configured() {
+    let gateway = test_gateway(Some(PIN), DEFAULT_SESSION_TTL);
+
+    let response = call(&gateway, "GET", "/health", None, None, None).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.json,
+        serde_json::json!({ "status": "ok", "workers": 0 })
+    );
+    assert!(response.set_cookie().is_none());
+
+    // It stays open with a credential attached as well.
+    let response = call(&gateway, "GET", "/health", Some(WORKER_TOKEN), None, None).await;
+    assert_eq!(response.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_paired_token_opens_the_client_websocket_handshake() {
+    let server = start(Some(PIN), DEFAULT_SESSION_TTL).await;
+    let mut worker = connect_worker(&server, "worker-paired", WORKER_TOKEN)
+        .await
+        .expect("worker should connect");
+    wait_for_worker_count(&server, 1).await;
+
+    let response = pair_over_http(&server, PIN).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let token = body["token"].as_str().expect("a paired token").to_string();
+
+    let mut client = connect_client_bearer(&server, "worker-paired", &token)
+        .await
+        .expect("the paired bearer should open /ws/client");
+    let frame = r#"{"kind":"ping","from":"paired"}"#;
+    client.send(WsMessage::Text(frame.into())).await.unwrap();
+    assert_eq!(next_text(&mut worker).await, frame);
 }
 
 #[tokio::test]

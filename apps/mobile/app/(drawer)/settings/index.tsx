@@ -2,18 +2,21 @@ import { useRouter } from "expo-router";
 import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
-import { SettingsRootPage } from "../../../components/settings/settings-page";
 import {
+  SettingsRootPage,
   SettingsRow,
   type SettingsIconName,
-} from "../../../components/settings/settings-row";
-import { SettingsSearchField } from "../../../components/settings/settings-search-field";
-import { SettingsSection } from "../../../components/settings/settings-section";
-import { StatusPill } from "../../../components/status-pill";
+  SettingsSearchField,
+  SettingsSection,
+  StatusPill,
+  hostLabel,
+  palette,
+  space,
+  typography,
+  useModelChoices,
+} from "@goble/common";
 import { signOut } from "../../../lib/api";
-import { hostLabel } from "../../../lib/format";
-import { palette, space, typography } from "../../../lib/theme";
-import { useModelChoices } from "../../../lib/use-models";
+
 import { useVoicePreferences } from "../../../lib/use-voice";
 import { useWorkspace } from "../../../lib/use-workspace";
 import { voiceProvider } from "../../../lib/voice";

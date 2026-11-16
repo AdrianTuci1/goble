@@ -1,13 +1,17 @@
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 
-import { SettingsPage } from "../../../components/settings/settings-page";
-import { SettingsRow } from "../../../components/settings/settings-row";
-import { SettingsSection } from "../../../components/settings/settings-section";
-import { SettingsSwitchRow } from "../../../components/settings/settings-switch-row";
+import {
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+  SettingsSwitchRow,
+  hostLabel,
+  connection,
+  useConnection,
+} from "@goble/common";
 import { signOut } from "../../../lib/api";
-import { hostLabel } from "../../../lib/format";
-import { connection, useConnection } from "../../../lib/remote/connection";
+
 import { setHapticsEnabled } from "../../../lib/haptics";
 import {
   loadHapticsPreference,

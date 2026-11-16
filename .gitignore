@@ -15,3 +15,4 @@ crates/goble-desktop-service/threads.json
 
 # Local Grok Build artifacts (patches, reports); skills and workflows stay tracked.
 .grok/artifacts/
+dist/

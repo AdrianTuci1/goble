@@ -35,7 +35,7 @@ mod vault;
 mod workers;
 mod workflows;
 
-pub use chats::ChatCompaction;
+pub use chats::{ChatCompaction, SubagentChat};
 pub use secret_groups::{SecretEntry, SecretGroup};
 
 #[cfg(test)]

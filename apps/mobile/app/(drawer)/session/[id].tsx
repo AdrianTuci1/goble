@@ -15,25 +15,18 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Composer } from "../../../components/composer";
-import { ComposerSheet } from "../../../components/composer-sheet";
-import { ConversationMenu } from "../../../components/conversation-menu";
-import { ModelMenu } from "../../../components/model-menu";
-import { PulseDot } from "../../../components/pulse-dot";
-import { RichText } from "../../../components/rich-text";
-import { TerminalBlock } from "../../../components/terminal-block";
-import { TerminalSurface } from "../../../components/terminal-surface";
-import { TopBar } from "../../../components/top-bar";
-import { startDictation, type Dictation } from "../../../lib/dictation";
 import {
-  pickAttachment,
-  type PickedAttachment,
-  type AttachmentSource,
-} from "../../../lib/attachments";
-import { tapFeedback } from "../../../lib/haptics";
-import { takeAttachment } from "../../../lib/pending-attachment";
-import { useOpenDrawer } from "../../../lib/navigation";
-import {
+  Composer,
+  ComposerSheet,
+  ConversationMenu,
+  ModelMenu,
+  PulseDot,
+  RichText,
+  TerminalBlock,
+  TerminalSurface,
+  TopBar,
+  takeAttachment,
+  useOpenDrawer,
   demoConversation,
   forgetConversation,
   rememberConversation,
@@ -43,21 +36,39 @@ import {
   setConversationStarred,
   storeConversationMessages,
   subscribeConversations,
-} from "../../../lib/mock";
-import { palette, radius, space, typography, withAlpha } from "../../../lib/theme";
-import { refreshThreads } from "../../../lib/threads";
-import type { ChatMessage, SessionMode, ThinkingLevel } from "../../../lib/types";
+  palette,
+  radius,
+  space,
+  typography,
+  withAlpha,
+  refreshThreads,
+  startTurn,
+  useConnection,
+  uploadAttachment,
+  requestChats,
+  requestChat,
+  useTerminal,
+  useModelChoices,
+  type Turn,
+  type ChatMessage,
+  type RemoteChat,
+  type SessionMode,
+  type ThinkingLevel,
+  type CommandDecision,
+  type PickedAttachment,
+} from "@goble/common";
+import { startDictation, type Dictation } from "../../../lib/dictation";
+import {
+  pickAttachment,
+  type AttachmentSource,
+} from "../../../lib/attachments";
+import { tapFeedback } from "../../../lib/haptics";
+
 import {
   notifyAgentNeedsHelp,
   notifyRunFinished,
 } from "../../../lib/notifications";
-import { startTurn, type Turn } from "../../../lib/remote/chat";
-import type { CommandDecision } from "../../../lib/remote/protocol";
-import { useConnection } from "../../../lib/remote/connection";
-import { uploadAttachment } from "../../../lib/remote/attachments";
-import { requestChats } from "../../../lib/remote/entities";
-import { useTerminal } from "../../../lib/remote/terminal";
-import { useModelChoices } from "../../../lib/use-models";
+
 import { useVoicePreferences } from "../../../lib/use-voice";
 import { voiceProvider } from "../../../lib/voice";
 import type { ScrollViewInstance } from "react-native";
@@ -191,19 +202,31 @@ function SessionView() {
   useEffect(() => {
     if (remote.status !== "live" || turnRef.current) return;
     let cancelled = false;
+    const show = (chat: RemoteChat | null) => {
+      if (!chat || chat.messages.length === 0) return;
+      commit(
+        chat.messages.map((message) => ({
+          at: message.created_at,
+          id: message.id,
+          role: message.role === "user" ? "user" : "assistant",
+          text: message.content,
+        })),
+      );
+    };
     void requestChats()
       .then((chats) => {
         if (cancelled) return;
         const chat = chats.find((item) => item.id === id);
-        if (!chat || chat.messages.length === 0) return;
-        commit(
-          chat.messages.map((message) => ({
-            at: message.created_at,
-            id: message.id,
-            role: message.role === "user" ? "user" : "assistant",
-            text: message.content,
-          })),
-        );
+        if (chat) {
+          show(chat);
+          return;
+        }
+        // A subagent's child chat is not in the top-level list, so ask the
+        // worker for it by id. A brand-new session has nothing stored yet.
+        if (id === "new") return;
+        return requestChat(id).then((child) => {
+          if (!cancelled) show(child);
+        });
       })
       .catch(() => {
         // A worker that cannot list conversations keeps the local transcript.

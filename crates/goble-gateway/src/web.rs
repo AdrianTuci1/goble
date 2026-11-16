@@ -224,8 +224,8 @@ pub(crate) fn build_page(web_dir: &str) -> String {
 </style>
 </head>
 <body>
-<h1>Goble browser client is not built</h1>
-<p>The gateway is running, but the terminal client it serves from <code>/app/</code> is missing.
+<h1>Goble web app is not built</h1>
+<p>The gateway is running, but the web app it serves from <code>/app/</code> is missing.
 The gateway looked in:</p>
 <pre>"#,
     );
@@ -235,12 +235,10 @@ The gateway looked in:</p>
 
 <h2>Build it</h2>
 <p>From the repository root:</p>
-<pre>scripts/build-web.sh</pre>
-<p>Or by hand:</p>
-<pre>rustup target add wasm32-unknown-unknown
-cargo build -p goble-web --target wasm32-unknown-unknown --release
-wasm-bindgen target/wasm32-unknown-unknown/release/goble_web.wasm \
-  --out-dir crates/goble-gateway/web --target web</pre>
+<pre>npm ci
+npm run web:build</pre>
+<p>The export lands in <code>apps/web/dist</code>. Copy it into the gateway's
+web directory, or point the gateway at it with <code>--web-dir</code>.</p>
 
 <h2>Point the gateway elsewhere</h2>
 <p>Start it with <code>--web-dir &lt;DIR&gt;</code> or set <code>GOBLE_WEB_DIR=&lt;DIR&gt;</code>.
@@ -296,8 +294,9 @@ mod tests {
     #[test]
     fn build_page_names_the_path_and_escapes_it() {
         let page = build_page("/srv/<client>");
-        assert!(page.contains("scripts/build-web.sh"));
-        assert!(page.contains("goble-web --target wasm32-unknown-unknown --release"));
+        assert!(page.contains("npm ci"));
+        assert!(page.contains("npm run web:build"));
+        assert!(page.contains("apps/web/dist"));
         assert!(page.contains("&lt;client&gt;"));
         assert!(!page.contains("<client>"));
         assert!(!page.contains("http://"));

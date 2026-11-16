@@ -9,24 +9,27 @@ import {
   View,
 } from "react-native";
 
-import { SettingsButton } from "../../components/settings/settings-button";
-import { SettingsPage } from "../../components/settings/settings-page";
-import { SettingsRow } from "../../components/settings/settings-row";
-import { SettingsSection } from "../../components/settings/settings-section";
-import { Sheet } from "../../components/sheet";
-import { relativeTime } from "../../lib/format";
-import { tapFeedback } from "../../lib/haptics";
-import { demoAgents, demoModels } from "../../lib/mock";
-import { useConnection } from "../../lib/remote/connection";
 import {
+  SettingsButton,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+  Sheet,
+  relativeTime,
+  demoAgents,
+  demoModels,
+  useConnection,
   removeAgent,
   requestAgents,
   saveAgent,
+  palette,
+  radius,
+  space,
   type RemoteAgent,
-} from "../../lib/remote/entities";
-import type { AgentSpec } from "../../lib/remote/protocol";
-import { palette, radius, space } from "../../lib/theme";
-import type { Agent } from "../../lib/types";
+  type AgentSpec,
+  type Agent,
+} from "@goble/common";
+import { tapFeedback } from "../../lib/haptics";
 
 const tools = ["read/write", "read-only", "sandbox"] as const;
 

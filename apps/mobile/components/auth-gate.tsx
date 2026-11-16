@@ -3,8 +3,7 @@ import { useEffect, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import type { ReactNode } from "react";
 
-import { loadAuthMode } from "../lib/api";
-import { palette } from "../lib/theme";
+import { loadAuthMode, palette } from "@goble/common";
 
 /**
  * Sends a fresh install to sign-in. Once a server or the demo workspace has

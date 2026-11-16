@@ -1,19 +1,23 @@
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 
-import { demoSnapshot } from "./mock";
-import type { HomeSnapshot } from "./types";
+import {
+  clearAuthMode,
+  clearGatewaySession,
+  clearServerUrl,
+  demoSnapshot,
+  loadServerUrl,
+  normalizeServerUrl,
+  type HomeSnapshot,
+  type KnownServer,
+} from "@goble/common";
 
-const SERVER_KEY = "goble.server_url";
+export type { KnownServer };
+
 const DEVICE_KEY = "goble.device_token";
 const SERVERS_KEY = "goble.known_servers";
-const AUTH_KEY = "goble.auth_mode";
-const SESSION_KEY = "goble.gateway_session";
-const WORKER_KEY = "goble.worker_id";
 const PROBE_TIMEOUT_MS = 5_000;
 const FETCH_TIMEOUT_MS = 8_000;
-
-let memoryServer: string | null = null;
 
 /** SecureStore has no web implementation; fall back to localStorage there. */
 function webStorage(): Storage | null {
@@ -62,25 +66,6 @@ async function safeDelete(key: string): Promise<void> {
   }
 }
 
-export async function loadServerUrl(): Promise<string | null> {
-  if (memoryServer !== null) return memoryServer;
-  const stored = await safeGet(SERVER_KEY);
-  memoryServer = stored ? stored : null;
-  return memoryServer;
-}
-
-export async function saveServerUrl(url: string): Promise<void> {
-  const normalized = normalizeServerUrl(url);
-  if (!normalized.ok) throw new Error(normalized.error);
-  memoryServer = normalized.url;
-  await safeSet(SERVER_KEY, normalized.url);
-}
-
-export async function clearServerUrl(): Promise<void> {
-  memoryServer = null;
-  await safeDelete(SERVER_KEY);
-}
-
 export async function loadDeviceToken(): Promise<string | null> {
   return safeGet(DEVICE_KEY);
 }
@@ -91,88 +76,6 @@ export async function saveDeviceToken(token: string): Promise<void> {
 
 export async function clearDeviceToken(): Promise<void> {
   await safeDelete(DEVICE_KEY);
-}
-
-/** The relay session this phone paired with: a bearer token, or the cookie. */
-export interface StoredGatewaySession {
-  token: string | null;
-  mode: "token" | "cookie";
-  expiresAt: number;
-}
-
-export async function loadGatewaySession(): Promise<StoredGatewaySession | null> {
-  const raw = await safeGet(SESSION_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<StoredGatewaySession>;
-    if (parsed.mode !== "token" && parsed.mode !== "cookie") return null;
-    return {
-      token: typeof parsed.token === "string" ? parsed.token : null,
-      mode: parsed.mode,
-      expiresAt: typeof parsed.expiresAt === "number" ? parsed.expiresAt : 0,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function saveGatewaySession(
-  session: StoredGatewaySession,
-): Promise<void> {
-  await safeSet(SESSION_KEY, JSON.stringify(session));
-}
-
-export async function clearGatewaySession(): Promise<void> {
-  await safeDelete(SESSION_KEY);
-  await safeDelete(WORKER_KEY);
-}
-
-export async function loadWorkerId(): Promise<string | null> {
-  return safeGet(WORKER_KEY);
-}
-
-export async function saveWorkerId(id: string): Promise<void> {
-  await safeSet(WORKER_KEY, id);
-}
-
-export type NormalizedServer =
-  | { ok: true; url: string }
-  | { ok: false; error: string };
-
-export function normalizeServerUrl(input: string): NormalizedServer {
-  const trimmed = input.trim();
-  if (!trimmed) return { ok: false, error: "Enter a gateway URL" };
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : `https://${trimmed}`;
-
-  let parsed: URL;
-  try {
-    parsed = new URL(withScheme);
-  } catch {
-    return { ok: false, error: "That does not look like a URL" };
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return { ok: false, error: "Use an http or https URL" };
-  }
-  if (parsed.protocol === "http:" && !isLocalHost(parsed.hostname)) {
-    return { ok: false, error: "Public gateways need https://" };
-  }
-  if (!parsed.hostname) return { ok: false, error: "That URL is missing a host" };
-  return { ok: true, url: `${parsed.protocol}//${parsed.host}` };
-}
-
-export function isLocalHost(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host.endsWith(".local") ||
-    /^10(?:\.\d{1,3}){3}$/.test(host) ||
-    /^192\.168(?:\.\d{1,3}){2}$/.test(host) ||
-    /^172\.(1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}$/.test(host)
-  );
 }
 
 export async function probeServer(url: string): Promise<{ ok: boolean; message: string }> {
@@ -201,14 +104,6 @@ export async function probeServer(url: string): Promise<{ ok: boolean; message: 
   } finally {
     clearTimeout(timer);
   }
-}
-
-export type AuthMode = "demo" | "server";
-
-export interface KnownServer {
-  url: string;
-  label: string;
-  usedAt: string;
 }
 
 /** Suggested gateway on this machine; the gateway binds here by default. */
@@ -245,22 +140,11 @@ export async function loadServerName(url: string | null): Promise<string | null>
   return known.find((item) => item.url === url)?.label ?? null;
 }
 
-export async function loadAuthMode(): Promise<AuthMode | null> {
-  const stored = await safeGet(AUTH_KEY);
-  if (stored === "demo" || stored === "server") return stored;
-  const url = await loadServerUrl();
-  return url ? "server" : null;
-}
-
-export async function saveAuthMode(mode: AuthMode): Promise<void> {
-  await safeSet(AUTH_KEY, mode);
-}
-
 export async function signOut(): Promise<void> {
   await clearServerUrl();
   await clearDeviceToken();
   await clearGatewaySession();
-  await safeDelete(AUTH_KEY);
+  await clearAuthMode();
 }
 
 export async function fetchHome(): Promise<HomeSnapshot> {

@@ -1,4 +1,5 @@
 import "react-native-gesture-handler";
+import "../lib/platform";
 
 import { Stack } from "expo-router";
 import { useEffect } from "react";
@@ -9,10 +10,22 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AuthGate } from "../components/auth-gate";
 import { setHapticsEnabled } from "../lib/haptics";
-import { syncPushRegistration } from "../lib/notifications";
+import {
+  notifyAgentNeedsHelp,
+  notifyRunFinished,
+  syncPushRegistration,
+} from "../lib/notifications";
 import { loadHapticsPreference } from "../lib/preferences";
-import { connection } from "../lib/remote/connection";
-import { palette } from "../lib/theme";
+import { configureTurnNotifier, connection, palette } from "@goble/common";
+
+configureTurnNotifier({
+  runFinished(title) {
+    void notifyRunFinished(title);
+  },
+  agentNeedsHelp(title) {
+    void notifyAgentNeedsHelp(title);
+  },
+});
 
 export default function RootLayout() {
   useEffect(() => {

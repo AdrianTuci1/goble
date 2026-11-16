@@ -13,27 +13,36 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Composer } from "../../components/composer";
-import { ComposerSheet } from "../../components/composer-sheet";
-import { ModelMenu } from "../../components/model-menu";
-import { TopBar } from "../../components/top-bar";
+import {
+  Composer,
+  ComposerSheet,
+  ModelMenu,
+  TopBar,
+  greeting,
+  useOpenDrawer,
+  holdAttachment,
+  palette,
+  radius,
+  space,
+  typography,
+  withAlpha,
+  useModelChoices,
+  type SessionMode,
+  type ThinkingLevel,
+  type PickedAttachment,
+} from "@goble/common";
 import {
   pickAttachment,
   type AttachmentSource,
-  type PickedAttachment,
 } from "../../lib/attachments";
 import { startDictation, type Dictation } from "../../lib/dictation";
-import { greeting } from "../../lib/format";
 import { tapFeedback } from "../../lib/haptics";
-import { useOpenDrawer } from "../../lib/navigation";
-import { holdAttachment } from "../../lib/pending-attachment";
+
 import {
   loadPreferences,
   subscribeDefaultMode,
 } from "../../lib/preferences";
-import { palette, radius, space, typography, withAlpha } from "../../lib/theme";
-import type { SessionMode, ThinkingLevel } from "../../lib/types";
-import { useModelChoices } from "../../lib/use-models";
+
 import { useVoicePreferences } from "../../lib/use-voice";
 import { voiceProvider } from "../../lib/voice";
 

@@ -1,7 +1,7 @@
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 
-import type { SessionMode, ThinkingLevel } from "./types";
+import type { SessionMode } from "@goble/common";
 import {
   DEFAULT_VOICE_PREFERENCES,
   normalizeVoicePreferences,
@@ -11,7 +11,6 @@ import {
 const INSTRUCTIONS_KEY = "goble.custom_instructions";
 const MODE_KEY = "goble.default_mode";
 const VOICE_KEY = "goble.voice_preferences";
-const MODELS_KEY = "goble.model_preferences";
 const NOTIFICATIONS_KEY = "goble.notification_preferences";
 const HAPTICS_KEY = "goble.haptics_enabled";
 
@@ -114,79 +113,6 @@ export async function saveVoicePreferences(
   const next = normalizeVoicePreferences(preferences);
   for (const listener of voiceListeners) listener(next);
   await write(VOICE_KEY, JSON.stringify(next));
-}
-
-export interface ModelPreferences {
-  /** Model used when the top bar has not picked one for the session. */
-  defaultModelId: string | null;
-  /** Thinking level a new session starts on. */
-  defaultThinking: ThinkingLevel;
-  /** Models hidden from the top-bar menu on every screen. */
-  disabled: string[];
-}
-
-export const DEFAULT_MODEL_PREFERENCES: ModelPreferences = {
-  defaultModelId: null,
-  defaultThinking: "standard",
-  disabled: [],
-};
-
-const thinkingLevels: ThinkingLevel[] = ["low", "standard", "high"];
-
-function normalizeThinking(value: unknown): ThinkingLevel {
-  return thinkingLevels.includes(value as ThinkingLevel)
-    ? (value as ThinkingLevel)
-    : "standard";
-}
-
-function normalizeModelPreferences(
-  input: Partial<ModelPreferences> | null | undefined,
-): ModelPreferences {
-  const disabled = Array.isArray(input?.disabled)
-    ? [...new Set(input.disabled.filter((id): id is string => typeof id === "string"))]
-    : [];
-  const defaultModelId =
-    typeof input?.defaultModelId === "string" &&
-    !disabled.includes(input.defaultModelId)
-      ? input.defaultModelId
-      : null;
-  return {
-    defaultModelId,
-    defaultThinking: normalizeThinking(input?.defaultThinking),
-    disabled,
-  };
-}
-
-const modelListeners = new Set<(preferences: ModelPreferences) => void>();
-
-/** Keeps the home screen and the model menu in step with Settings. */
-export function subscribeModelPreferences(
-  listener: (preferences: ModelPreferences) => void,
-): () => void {
-  modelListeners.add(listener);
-  return () => {
-    modelListeners.delete(listener);
-  };
-}
-
-export async function loadModelPreferences(): Promise<ModelPreferences> {
-  const raw = await read(MODELS_KEY);
-  if (!raw) return DEFAULT_MODEL_PREFERENCES;
-  try {
-    return normalizeModelPreferences(
-      JSON.parse(raw) as Partial<ModelPreferences>,
-    );
-  } catch {
-    return DEFAULT_MODEL_PREFERENCES;
-  }
-}
-
-export async function saveModelPreferences(
-  preferences: ModelPreferences,
-): Promise<void> {
-  const next = normalizeModelPreferences(preferences);
-  for (const listener of modelListeners) listener(next);
-  await write(MODELS_KEY, JSON.stringify(next));
 }
 
 export interface NotificationPreferences {

@@ -1,10 +1,11 @@
-//! Static browser client, served from `/app/`.
+//! Expo web client, served from `/app/`.
 //!
-//! The assets are produced by `scripts/build-web.sh` into `crates/goble-gateway/
-//! web/` and are checked in so a source checkout works without the wasm
-//! toolchain. Rebuild them after changing `goble-web`. Serving still degrades
-//! gracefully: when the directory or its `index.html` is missing, the gateway
-//! answers with a self-contained page that explains how to build the client.
+//! The assets are the Expo web export produced by `apps/web`: run `npm ci`
+//! then `npm run web:build` from the repository root, and the export lands in
+//! `apps/web/dist`. Copy it into the gateway's `web/` directory or point the
+//! gateway at it with `--web-dir`. Serving still degrades gracefully: when the
+//! directory or its `index.html` is missing, the gateway answers with a
+//! self-contained page that explains how to build the app.
 //!
 //! Every path handed to [`serve_file`] has already passed
 //! [`relative_asset_path`], and the resolved file is re-checked against the
@@ -20,7 +21,7 @@ use crate::web;
 /// Entry point served for `/app/`.
 const INDEX_FILE: &str = "index.html";
 
-/// wasm-bindgen writes stable filenames (`goble_web_bg.wasm`), so a long cache
+/// A build changes the exported asset URLs and their contents, so a long cache
 /// would pin an old client after a rebuild. Revalidate every asset instead.
 const NO_CACHE: &str = "no-cache";
 

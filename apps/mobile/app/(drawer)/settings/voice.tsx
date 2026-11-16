@@ -1,12 +1,12 @@
 import { useRouter } from "expo-router";
 
-import { SettingsPage } from "../../../components/settings/settings-page";
 import {
+  SettingsPage,
   SettingsRow,
   type SettingsIconName,
-} from "../../../components/settings/settings-row";
-import { SettingsSection } from "../../../components/settings/settings-section";
-import { SettingsSwitchRow } from "../../../components/settings/settings-switch-row";
+  SettingsSection,
+  SettingsSwitchRow,
+} from "@goble/common";
 import { useVoicePreferences } from "../../../lib/use-voice";
 import {
   VOICE_PROVIDERS,

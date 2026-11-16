@@ -295,6 +295,114 @@ fn chat_messages_keep_the_reasoning_content_they_came_with() {
     assert_eq!(store.list_chat_messages("c1").unwrap()[0].2, "It is clean.");
 }
 
+/// The sub-agent listing reads the child rows the sidebar leaves out, newest
+/// first, with the parent's title and the child's own last message joined in.
+/// A top-level conversation is not a sub-agent, so it never appears here.
+#[test]
+fn test_subagent_chats_join_parent_and_last_message() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .insert_chat(
+            "parent",
+            "Parent talk",
+            None,
+            None,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+        )
+        .unwrap();
+    store
+        .insert_chat(
+            "top",
+            "Top talk",
+            None,
+            None,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+        )
+        .unwrap();
+    store
+        .insert_subagent_chat(
+            "child-old",
+            "Old child",
+            "parent",
+            None,
+            None,
+            "2024-01-01T00:00:01Z",
+            "2024-01-01T00:00:05Z",
+        )
+        .unwrap();
+    store
+        .insert_subagent_chat(
+            "child-new",
+            "New child",
+            "gone",
+            None,
+            None,
+            "2024-01-01T00:00:02Z",
+            "2024-01-01T00:00:10Z",
+        )
+        .unwrap();
+    store
+        .insert_chat_message(
+            "m1",
+            "child-old",
+            "user",
+            "first",
+            None,
+            "2024-01-01T00:00:03Z",
+        )
+        .unwrap();
+    store
+        .insert_chat_message(
+            "m2",
+            "child-old",
+            "assistant",
+            "last word",
+            None,
+            "2024-01-01T00:00:04Z",
+        )
+        .unwrap();
+
+    let rows = store.list_subagent_chats(100).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        ["child-new", "child-old"],
+        "children are newest first and top-level chats are not among them"
+    );
+
+    let old = &rows[1];
+    assert_eq!(old.parent_chat_id, "parent");
+    assert_eq!(old.parent_title.as_deref(), Some("Parent talk"));
+    assert_eq!(old.message_count, 2);
+    assert_eq!(old.last_message.as_deref(), Some("last word"));
+    assert_eq!(old.last_role.as_deref(), Some("assistant"));
+    assert_eq!(old.last_message_at.as_deref(), Some("2024-01-01T00:00:04Z"));
+
+    let new = &rows[0];
+    assert_eq!(
+        new.parent_title, None,
+        "a parent row that is gone has no title"
+    );
+    assert_eq!(new.message_count, 0);
+    assert!(
+        new.last_message.is_none() && new.last_role.is_none() && new.last_message_at.is_none(),
+        "a child with no messages has no last-message facts"
+    );
+
+    // The cap belongs to the query, so it keeps the newest children.
+    let capped = store.list_subagent_chats(1).unwrap();
+    assert_eq!(capped.len(), 1);
+    assert_eq!(capped[0].id, "child-new");
+
+    // One chat row is readable on its own, child or not.
+    let child = store.get_chat("child-old").unwrap().unwrap();
+    assert_eq!(child.1, "Old child");
+    assert_eq!(child.2.as_deref(), Some("parent"));
+    assert!(store.get_chat("top").unwrap().unwrap().2.is_none());
+    assert!(store.get_chat("missing").unwrap().is_none());
+}
+
 #[test]
 fn test_mcp_server_crud() {
     let store = Store::open_in_memory().unwrap();

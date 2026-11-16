@@ -1,0 +1,16 @@
+{
+  "name": "@goble/common",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Platform-neutral core of the Goble client: the remote protocol, state and UI shared by every shell.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "sideEffects": false,
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "typescript": "~6.0.3"
+  }
+}

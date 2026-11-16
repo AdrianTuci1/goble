@@ -165,8 +165,8 @@ Run 1 ── 1 Session (project, worktree, ledger)
   of what it will start with.
 - Team: the same binary with Postgres (`DATABASE_URL`) and N replicas behind the relay's registry;
   the scheduler takes a database advisory lock so two replicas cannot lease the same run.
-- The hub's own UI is the same `goble-ui` element set as the desktop, served by `goble-web`; the API
-  is the documented surface underneath it.
+- The hub's own UI is the same Expo component set as the web app, served by the gateway from the
+  `apps/web` export; the API is the documented surface underneath it.
 
 ## API and MCP
 

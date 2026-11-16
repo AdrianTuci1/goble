@@ -15,6 +15,7 @@
   "dependencies": {
     "@expo/metro-runtime": "~58.0.17",
     "@expo/vector-icons": "^15.1.1",
+    "@goble/common": "*",
     "expo": "~58.0.23",
     "expo-audio": "~58.0.12",
     "expo-constants": "~58.0.15",

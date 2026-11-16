@@ -1,20 +1,24 @@
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { SettingsPage } from "../../components/settings/settings-page";
-import { SettingsRow } from "../../components/settings/settings-row";
-import { SettingsSection } from "../../components/settings/settings-section";
-import { Sheet } from "../../components/sheet";
-import { naturalSchedule, relativeTime, until } from "../../lib/format";
-import { tapFeedback } from "../../lib/haptics";
-import { demoSchedules } from "../../lib/mock";
-import { useConnection } from "../../lib/remote/connection";
 import {
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+  Sheet,
+  naturalSchedule,
+  relativeTime,
+  until,
+  demoSchedules,
+  useConnection,
   cancelScheduledTask,
   requestScheduledTasks,
+  palette,
+  radius,
+  space,
   type RemoteSchedule,
-} from "../../lib/remote/entities";
-import { palette, radius, space } from "../../lib/theme";
+} from "@goble/common";
+import { tapFeedback } from "../../lib/haptics";
 
 /**
  * A `Trigger` is externally tagged: the bare word `Manual`, or one object that

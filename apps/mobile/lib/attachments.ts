@@ -1,17 +1,9 @@
 import * as ImagePicker from "expo-image-picker";
 import { Platform } from "react-native";
 
-export type AttachmentSource = "library" | "camera";
+import type { AttachmentSource, PickedAttachment } from "@goble/common";
 
-/** An image the composer holds, with its bytes ready for the worker. */
-export interface PickedAttachment {
-  /** Local URI, used for the preview in the transcript and the composer. */
-  uri: string;
-  name: string;
-  mime: string;
-  /** Base64 of the file's bytes. Empty when the platform gave no bytes. */
-  base64: string;
-}
+export type { AttachmentSource };
 
 function pickOnWeb(capture: boolean): Promise<File | null> {
   if (typeof document === "undefined") return Promise.resolve(null);

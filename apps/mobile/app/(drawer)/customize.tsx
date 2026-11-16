@@ -12,18 +12,25 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { MenuButton } from "../../components/menu-button";
-import { MenuDivider, MenuRow, Popover } from "../../components/popover";
-import { Screen } from "../../components/screen";
+import {
+  MenuButton,
+  MenuDivider,
+  MenuRow,
+  Popover,
+  Screen,
+  useOpenDrawer,
+  palette,
+  radius,
+  space,
+  typography,
+  type SessionMode,
+} from "@goble/common";
 import { tapFeedback } from "../../lib/haptics";
-import { useOpenDrawer } from "../../lib/navigation";
 import {
   loadPreferences,
   saveDefaultMode,
   saveInstructions,
 } from "../../lib/preferences";
-import { palette, radius, space, typography } from "../../lib/theme";
-import type { SessionMode } from "../../lib/types";
 
 const tabs = [
   { id: "discover", label: "Discover" },

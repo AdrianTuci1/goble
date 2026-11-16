@@ -67,6 +67,26 @@ Every interactive element must be announced with a name. The rules:
 - decorative glyphs are hidden, not labelled;
 - a control under 44×44 gets `hitSlop` rather than a bigger visual box.
 
+## Shared-component gaps the first pass found
+
+These live in `apps/common` and were reported by the shell passes rather than
+fixed, because a change there reaches both clients:
+
+- `SettingsRow` has no `accessibilityHint` prop, so a subagent row cannot say
+  "Opens the subagent's transcript", and its accessible name is built only from
+  label/description/detail — an `accessory` such as the Settings connection pill
+  may be missed.
+- `SettingsPage` / `SettingsSection` titles are plain `Text`, not
+  `accessibilityRole="header"`, which blocks heading navigation on every
+  settings page (including the three newest screens).
+- `Sidebar` rows are `button` + `selected` but carry no explicit label or hint,
+  and its "Starred" / "Recent" group titles are not headers.
+- `TopBar`'s model picker has a label but no hint and no `hitSlop`; its text
+  press area is under 44 high.
+- `SettingsSegmented` options are 34 high with no hit slop; `TerminalSurface`
+  keys and its run button are under 44 and omit a disabled state;
+  `ConversationMenu`'s pill buttons are 25–31 high with no hit slop.
+
 ## What is not done
 
 - no screen-reader pass (NVDA/VoiceOver/TalkBack) and no browser or device was

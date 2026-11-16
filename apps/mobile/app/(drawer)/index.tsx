@@ -48,11 +48,13 @@ import { voiceProvider } from "../../lib/voice";
 
 const suggestions = [
   {
+    hint: "Starts a new session with this prompt.",
     icon: "git-compare-outline" as const,
     label: "Review the gateway diff",
     prompt: "Review the gateway diff and tell me what changed.",
   },
   {
+    hint: "Starts a new session with this prompt.",
     icon: "cube-outline" as const,
     label: "Start a sandbox run",
     prompt: "Start a sandbox run for the mobile shell and show me the result.",
@@ -220,7 +222,9 @@ export default function HomeScreen() {
             {dictation ? null : (
               <>
                 <Text style={styles.greeting}>{greeting()}</Text>
-                <Text style={styles.title}>What are we building?</Text>
+                <Text accessibilityRole="header" style={styles.title}>
+                  What are we building?
+                </Text>
                 <Text style={styles.subtitle}>
                   Ask the agent, run a command, or pick up a session from the
                   sidebar.
@@ -232,7 +236,10 @@ export default function HomeScreen() {
           <View style={styles.suggestions}>
             {suggestions.map((suggestion) => (
               <Pressable
+                accessibilityHint={suggestion.hint}
+                accessibilityLabel={suggestion.label}
                 accessibilityRole="button"
+                hitSlop={4}
                 key={suggestion.label}
                 onPress={() =>
                   pickSuggestion(suggestion.label, suggestion.prompt)
@@ -251,7 +258,10 @@ export default function HomeScreen() {
               </Pressable>
             ))}
             <Pressable
+              accessibilityHint="Opens the most recent terminal session."
+              accessibilityLabel="Open the last terminal"
               accessibilityRole="button"
+              hitSlop={4}
               onPress={() => pickSuggestion("Open the last terminal", "")}
               style={({ pressed }) => [
                 styles.suggestion,
@@ -277,6 +287,7 @@ export default function HomeScreen() {
           {temporary ? (
             <View style={styles.tempNote}>
               <Ionicons
+                accessible={false}
                 color={palette.accent}
                 name="eye-off-outline"
                 size={13}

@@ -134,13 +134,16 @@ export default function ScheduledScreen() {
         </SettingsSection>
 
         <Sheet onClose={() => setConfirming(null)} visible={confirming !== null}>
-          <Text style={styles.sheetTitle}>Cancel this schedule?</Text>
+          <Text accessibilityRole="header" style={styles.sheetTitle}>
+            Cancel this schedule?
+          </Text>
           <Text style={styles.sheetBody}>
             {confirming
               ? `${describeTrigger(confirming.trigger)} · agent ${confirming.agent_id}. The routine stops running; a schedule can be created again from the desktop.`
               : ""}
           </Text>
           <Pressable
+            accessibilityHint="Stops the routine from running again."
             accessibilityLabel="Cancel schedule"
             accessibilityRole="button"
             onPress={() => confirming && cancel(confirming)}

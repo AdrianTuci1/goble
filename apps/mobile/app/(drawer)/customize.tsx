@@ -395,12 +395,18 @@ export default function CustomizeScreen() {
         <MenuButton onPress={openDrawer} />
         <View style={styles.headerPill}>
           <Pressable
+            accessibilityHint={
+              searchOpen
+                ? "Clears the query and hides the search field."
+                : "Filters the skills and connectors list."
+            }
             accessibilityLabel={
               searchOpen
                 ? "Close search"
                 : "Search skills and connectors"
             }
             accessibilityRole="button"
+            hitSlop={6}
             onPress={toggleSearch}
             style={({ pressed }) => [
               styles.headerButton,
@@ -414,8 +420,10 @@ export default function CustomizeScreen() {
             />
           </Pressable>
           <Pressable
+            accessibilityHint="Opens the menu for a new skill or connector."
             accessibilityLabel="Create skill or connector"
             accessibilityRole="button"
+            hitSlop={6}
             onPress={() => {
               tapFeedback();
               setCreateOpen(true);
@@ -435,8 +443,11 @@ export default function CustomizeScreen() {
           const selected = entry.id === tab;
           return (
             <Pressable
+              accessibilityHint={`Shows the ${entry.label} tab.`}
+              accessibilityLabel={entry.label}
               accessibilityRole="button"
               accessibilityState={{ selected }}
+              hitSlop={4}
               key={entry.id}
               onPress={() => pickTab(entry.id)}
               style={({ pressed }) => [
@@ -457,7 +468,12 @@ export default function CustomizeScreen() {
 
       {searchOpen ? (
         <View style={styles.search}>
-          <Ionicons color={palette.subtle} name="search" size={17} />
+          <Ionicons
+            accessible={false}
+            color={palette.subtle}
+            name="search"
+            size={17}
+          />
           <TextInput
             accessibilityLabel="Search skills and connectors"
             autoFocus
@@ -510,6 +526,7 @@ export default function CustomizeScreen() {
             <Pressable
               accessibilityLabel="Cancel editing"
               accessibilityRole="button"
+              hitSlop={6}
               onPress={() => {
                 tapFeedback();
                 setEditor(null);
@@ -522,10 +539,14 @@ export default function CustomizeScreen() {
               <Text style={styles.secondaryLabel}>Cancel</Text>
             </Pressable>
             <Pressable
+              accessibilityHint={`Saves this ${
+                editor.kind === "skill" ? "skill" : "connector"
+              }.`}
               accessibilityLabel="Save"
               accessibilityRole="button"
               accessibilityState={{ disabled: !editor.name.trim() }}
               disabled={!editor.name.trim()}
+              hitSlop={6}
               onPress={saveEditor}
               style={({ pressed }) => [
                 styles.primaryButton,
@@ -541,7 +562,9 @@ export default function CustomizeScreen() {
 
       {tab === "discover" ? (
         <View>
-          <Text style={styles.pageTitle}>Discover</Text>
+          <Text accessibilityRole="header" style={styles.pageTitle}>
+            Discover
+          </Text>
           <Text style={styles.pageBody}>
             Make Goble work the way you do. Instructions travel with every new
             session.
@@ -579,8 +602,11 @@ export default function CustomizeScreen() {
                   const active = option.mode === mode;
                   return (
                     <Pressable
+                      accessibilityHint="Changes the default mode for new sessions."
+                      accessibilityLabel={`New sessions start in ${option.label}`}
                       accessibilityRole="button"
                       accessibilityState={{ selected: active }}
+                      hitSlop={6}
                       key={option.mode}
                       onPress={() => pickMode(option.mode)}
                       style={({ pressed }) => [
@@ -621,7 +647,9 @@ export default function CustomizeScreen() {
 
       {tab === "skills" ? (
         <View>
-          <Text style={styles.pageTitle}>Skills</Text>
+          <Text accessibilityRole="header" style={styles.pageTitle}>
+            Skills
+          </Text>
           <Text style={styles.pageBody}>
             Tell Goble how you like things done.{" "}
             <Text style={styles.learnMore}>Learn more</Text>
@@ -689,7 +717,9 @@ export default function CustomizeScreen() {
 
       {tab === "connectors" ? (
         <View>
-          <Text style={styles.pageTitle}>Connected Apps</Text>
+          <Text accessibilityRole="header" style={styles.pageTitle}>
+            Connected Apps
+          </Text>
           <Text style={styles.pageBody}>
             Connect your tools to get more done.
           </Text>
@@ -721,6 +751,8 @@ export default function CustomizeScreen() {
                     : "Expand inactive connectors"
                 }
                 accessibilityRole="button"
+                accessibilityState={{ expanded: inactiveOpen }}
+                hitSlop={12}
                 onPress={() => {
                   tapFeedback();
                   setInactiveOpen(!inactiveOpen);
@@ -856,7 +888,12 @@ function SkillRow({
         </Text>
       </View>
       {skill.installed ? (
-        <MoreButton label={`Actions for ${skill.name}`} onOpen={onMore} />
+        <MoreButton
+          label={`Actions for ${skill.name}, ${
+            skill.active ? "active" : "inactive"
+          }`}
+          onOpen={onMore}
+        />
       ) : (
         <Pressable
           accessibilityLabel={`Install ${skill.name}`}
@@ -896,7 +933,7 @@ function ConnectorRow({
       </View>
       {connector.active ? (
         <MoreButton
-          label={`Actions for ${connector.name}`}
+          label={`Actions for ${connector.name}, connected`}
           onOpen={onMore}
         />
       ) : (

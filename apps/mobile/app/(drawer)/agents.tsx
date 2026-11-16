@@ -321,7 +321,7 @@ export default function AgentsScreen() {
       </SettingsPage>
 
       <Sheet onClose={close} visible={sheetOpen}>
-        <Text style={styles.sheetTitle}>
+        <Text accessibilityRole="header" style={styles.sheetTitle}>
           {editing || editingRemote ? "Edit agent" : "New agent"}
         </Text>
 
@@ -381,6 +381,7 @@ export default function AgentsScreen() {
                     accessibilityLabel={`Use ${model.name} for this agent`}
                     accessibilityRole="button"
                     accessibilityState={{ selected: active }}
+                    hitSlop={6}
                     key={model.id}
                     onPress={() => {
                       tapFeedback();
@@ -419,6 +420,7 @@ export default function AgentsScreen() {
                 accessibilityLabel={`Use ${tool} tools`}
                 accessibilityRole="button"
                 accessibilityState={{ selected: active }}
+                hitSlop={6}
                 key={tool}
                 onPress={() => {
                   tapFeedback();
@@ -450,6 +452,11 @@ export default function AgentsScreen() {
 
         {editingRemote ? (
           <Pressable
+            accessibilityHint={
+              confirmRemove
+                ? "Deletes this agent from the worker."
+                : "Asks for confirmation before deleting this agent."
+            }
             accessibilityLabel="Remove agent"
             accessibilityRole="button"
             onPress={remove}

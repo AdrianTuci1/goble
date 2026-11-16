@@ -455,13 +455,15 @@ fn close_button(app: &AppContext, on_close: Rc<RefCell<dyn FnMut(usize)>>) -> Bo
             .with_theme_color(ColorToken::Muted, app)
             .finish(),
     )
-    .with_size(16.0)
+    .with_size(20.0)
+    .with_corner_radius(4.0)
     .with_on_click(move || (on_close.borrow_mut())(index))
     .finish()
 }
 
-/// R2: a workspace tab is a browser-style tab — square-cornered, no border,
-/// and as tall as the toolbar.
+/// R2: a workspace tab is a browser-style tab — square-cornered, no border
+/// around it, and as tall as the toolbar. Its 2 pt bottom edge is a fill, not a
+/// stroke, so it does not double the strip's rule.
 #[test]
 fn a_workspace_tab_fills_the_bar_with_square_corners() {
     let app = AppContext::default();
@@ -481,14 +483,14 @@ fn a_workspace_tab_fills_the_bar_with_square_corners() {
                 rect,
                 corner_radius,
                 ..
-            } => Some((*rect, *corner_radius)),
+            } if (rect.height() - TOPBAR_HEIGHT).abs() < 0.01 => Some((*rect, *corner_radius)),
             _ => None,
         })
         .collect();
     assert_eq!(
         fills.len(),
         1,
-        "the active tab is the one filled surface: {fills:?}"
+        "the active tab is the one full-height filled surface: {fills:?}"
     );
     let (rect, radius) = fills[0];
     assert_eq!(radius, 0.0, "a tab has square corners: {rect:?}");
@@ -497,7 +499,286 @@ fn a_workspace_tab_fills_the_bar_with_square_corners() {
         !commands
             .iter()
             .any(|c| matches!(c, RenderCommand::StrokeRect { .. })),
-        "a tab never strokes a border (that would double the neighbour's rule)"
+        "a tab never strokes a border around itself (that would double the neighbour's rule); its \
+         bottom edge is a fill"
+    );
+}
+
+/// The 2 pt bottom edge a tab paints at `height`, and its colour.
+fn tab_edge(commands: &[RenderCommand], height: f32) -> (RectF, goble_ui::ColorU) {
+    commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if (rect.height() - 2.0).abs() < 0.01 && (rect.max_y() - height).abs() < 0.01 =>
+            {
+                Some((*rect, *color))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the tab draws its 2 pt bottom edge: {commands:?}"))
+}
+
+/// D8/§3.3 test 1: every resting tab carries a 2 pt full-width `Border` edge
+/// along its bottom, as a fill.
+#[test]
+fn a_resting_workspace_tab_has_a_2px_border_edge() {
+    const WIDTH: f32 = 200.0;
+    let app = AppContext::default();
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let mut element = tab(&app, false, noop.clone(), close_button(&app, noop));
+    let commands = render_tab(&mut element, WIDTH, &app, None);
+
+    let (rect, color) = tab_edge(&commands, TOPBAR_HEIGHT);
+    assert_eq!(rect, rectf(0.0, TOPBAR_HEIGHT - 2.0, WIDTH, 2.0));
+    assert_eq!(
+        color,
+        app.theme.color(ColorToken::Border),
+        "a resting tab's edge is the bar's border colour"
+    );
+}
+
+/// D8/§3.3 test 2: the selected tab's edge is `Accent` where the accent clears
+/// the 3:1 non-text gate and `Text` where it does not (the light theme's grey
+/// accent is 2.47:1 on `SurfaceRaised`). Whichever theme is drawn, the edge is
+/// at least 3:1 against the surface it sits on.
+#[test]
+fn the_selected_workspace_tab_edge_is_accent() {
+    const WIDTH: f32 = 200.0;
+    let mut light = AppContext::default();
+    light.theme = goble_ui::theme::Theme::light();
+
+    for (name, app) in [("dark", AppContext::default()), ("light", light)] {
+        let raised = app.theme.color(ColorToken::SurfaceRaised);
+        let accent = app.theme.color(ColorToken::Accent);
+        let text = app.theme.color(ColorToken::Text);
+        let falls_back = accent.contrast_ratio(&raised) < 3.0;
+
+        let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+        let mut element = tab(&app, true, noop.clone(), close_button(&app, noop));
+        let commands = render_tab(&mut element, WIDTH, &app, None);
+        let (_, edge) = tab_edge(&commands, TOPBAR_HEIGHT);
+
+        assert!(
+            edge == accent || edge == text,
+            "{name}: the selected edge is the accent or its text fallback: {edge:?}"
+        );
+        assert_eq!(
+            edge,
+            if falls_back { text } else { accent },
+            "{name}: the selected edge follows the 3:1 gate"
+        );
+        assert!(
+            edge.contrast_ratio(&raised) >= 3.0,
+            "{name}: the selected edge clears the 3:1 non-text minimum: {}",
+            edge.contrast_ratio(&raised)
+        );
+        if name == "light" {
+            assert!(
+                falls_back,
+                "the light preset is the case the gate exists for; without it this test is vacuous"
+            );
+        }
+    }
+}
+
+/// D8/§3.3 test 3: the label is centred in `height - 2`, not the full height,
+/// and its bottom stays clear of the 2 pt edge.
+#[test]
+fn the_tab_edge_does_not_eat_the_label() {
+    const WIDTH: f32 = 200.0;
+    let app = AppContext::default();
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let mut element = tab(&app, true, noop.clone(), close_button(&app, noop));
+    let commands = render_tab(&mut element, WIDTH, &app, None);
+
+    let (origin, font_size) = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                origin,
+                font_size,
+                ..
+            } if text == "Space 1" => Some((*origin, *font_size)),
+            _ => None,
+        })
+        .expect("the tab draws its label");
+    let run = Text::new("Space 1").with_font_size(font_size).layout(
+        SizeConstraint::loose(vec2f(f32::INFINITY, TOPBAR_HEIGHT)),
+        &mut LayoutContext,
+        &app,
+    );
+    let centre = origin.y + run.y / 2.0;
+    assert!(
+        (centre - (TOPBAR_HEIGHT - 2.0) / 2.0).abs() < 0.01,
+        "the label is centred in the height-2 content box: {centre} against {}",
+        (TOPBAR_HEIGHT - 2.0) / 2.0
+    );
+    assert!(
+        origin.y + run.y <= TOPBAR_HEIGHT - 4.0 + 0.01,
+        "the label's bottom stays at least 2 pt above the edge: {} in {}",
+        origin.y + run.y,
+        TOPBAR_HEIGHT
+    );
+}
+
+/// D8/§3.3 test 4: a coloured active tab keeps its 60 % tint and still paints
+/// its `Accent`/`Text` edge — the tab's own colour never reaches the edge.
+#[test]
+fn a_tinted_tab_keeps_its_tint_and_its_edge() {
+    const WIDTH: f32 = 200.0;
+    let app = AppContext::default();
+    let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));
+    let red = TabColor::Red;
+    let mut element = tab_colored(
+        &app,
+        true,
+        Some(red),
+        noop.clone(),
+        close_button(&app, noop),
+    );
+    let commands = render_tab(&mut element, WIDTH, &app, None);
+
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    let accent = app.theme.color(ColorToken::Accent);
+    let text = app.theme.color(ColorToken::Text);
+    assert_eq!(
+        single_fill(&commands),
+        red.tint_over(raised, goble_ui::theme::TabTint::Active),
+        "the active red tab keeps its 60 % tint"
+    );
+    let (_, edge) = tab_edge(&commands, TOPBAR_HEIGHT);
+    assert!(
+        edge == accent || edge == text,
+        "the tinted tab's edge is the accent or its text fallback: {edge:?}"
+    );
+    assert_ne!(edge, red.color(), "the tab's tint never reaches its edge");
+    assert!(
+        edge.contrast_ratio(&raised) >= 3.0,
+        "the tinted tab's edge still clears 3:1 against the surface"
+    );
+}
+
+/// D8/§3.3 test 5: the close target is 20x20, inset 8 pt from the tab's right
+/// edge, and its hover fill is the only rounded thing on the tab; clicking it
+/// closes, clicking the label selects.
+#[test]
+fn the_close_target_is_20px_and_sits_inside_the_tab() {
+    const WIDTH: f32 = 200.0;
+    const CLOSE: f32 = 20.0;
+    let app = AppContext::default();
+    let selected: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let closed: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let on_click: Rc<RefCell<dyn FnMut(usize)>> = {
+        let selected = selected.clone();
+        Rc::new(RefCell::new(move |i: usize| selected.borrow_mut().push(i)))
+    };
+    let on_close: Rc<RefCell<dyn FnMut(usize)>> = {
+        let closed = closed.clone();
+        Rc::new(RefCell::new(move |i: usize| closed.borrow_mut().push(i)))
+    };
+    let mut element = tab(&app, true, on_click, close_button(&app, on_close));
+
+    // The pointer over the close control makes it draw its 20 pt hover fill.
+    let cursor = vec2f(WIDTH - 8.0 - CLOSE / 2.0, TOPBAR_HEIGHT / 2.0);
+    let commands = render_tab(&mut element, WIDTH, &app, Some(cursor));
+    let hover = app.theme.color(ColorToken::Hover);
+    let (close_rect, radius) = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == hover
+                && (rect.width() - CLOSE).abs() < 0.01
+                && (rect.height() - CLOSE).abs() < 0.01 =>
+            {
+                Some((*rect, *corner_radius))
+            }
+            _ => None,
+        })
+        .expect("the hovered close control draws its hover fill");
+    assert_eq!(
+        close_rect.width(),
+        CLOSE,
+        "the close hit box is 20 pt wide: {close_rect:?}"
+    );
+    assert_eq!(
+        close_rect.height(),
+        CLOSE,
+        "the close hit box is 20 pt tall: {close_rect:?}"
+    );
+    assert_eq!(radius, 4.0, "only the close hover fill is rounded");
+    assert_eq!(
+        close_rect.max_x(),
+        WIDTH - 8.0,
+        "the close target ends 8 pt from the tab's right edge: {close_rect:?}"
+    );
+    assert!(
+        close_rect.min_x() >= 0.0 && close_rect.max_x() <= WIDTH,
+        "the close target sits inside the tab: {close_rect:?}"
+    );
+
+    // A click 1 pt inside the 20 pt target's leading edge is outside the old
+    // 16 pt target, so this proves the target really grew.
+    let mut ctx = EventContext;
+    for event in [
+        DispatchedEvent::MouseDown {
+            position: vec2f(close_rect.min_x() + 1.0, close_rect.min_y() + CLOSE / 2.0),
+            button: 0,
+        },
+        DispatchedEvent::MouseUp {
+            position: vec2f(close_rect.min_x() + 1.0, close_rect.min_y() + CLOSE / 2.0),
+            button: 0,
+        },
+    ] {
+        element.dispatch_event(&event, &mut ctx, &app);
+    }
+    assert_eq!(
+        *closed.borrow(),
+        vec![1],
+        "a click inside the 20 pt close closes"
+    );
+    assert!(
+        selected.borrow().is_empty(),
+        "the close click must not also select"
+    );
+
+    // A click on the label is still a select, not a close.
+    let selected: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let closed: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let on_click: Rc<RefCell<dyn FnMut(usize)>> = {
+        let selected = selected.clone();
+        Rc::new(RefCell::new(move |i: usize| selected.borrow_mut().push(i)))
+    };
+    let on_close: Rc<RefCell<dyn FnMut(usize)>> = {
+        let closed = closed.clone();
+        Rc::new(RefCell::new(move |i: usize| closed.borrow_mut().push(i)))
+    };
+    let mut element = tab(&app, true, on_click, close_button(&app, on_close));
+    let _ = render_tab(&mut element, WIDTH, &app, Some(cursor));
+    for event in [
+        DispatchedEvent::MouseDown {
+            position: vec2f(20.0, TOPBAR_HEIGHT / 2.0),
+            button: 0,
+        },
+        DispatchedEvent::MouseUp {
+            position: vec2f(20.0, TOPBAR_HEIGHT / 2.0),
+            button: 0,
+        },
+    ] {
+        element.dispatch_event(&event, &mut ctx, &app);
+    }
+    assert_eq!(
+        *selected.borrow(),
+        vec![1],
+        "the label click selects the tab"
+    );
+    assert!(
+        closed.borrow().is_empty(),
+        "the label click does not close it"
     );
 }
 
@@ -511,10 +792,12 @@ fn only_the_active_tab_is_filled() {
     let commands = render_element(&mut element, vec2f(400.0, TOPBAR_HEIGHT), &app);
 
     assert!(
-        !commands
-            .iter()
-            .any(|c| matches!(c, RenderCommand::FillRect { .. })),
-        "an inactive tab has no idle background: {commands:?}"
+        !commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::FillRect { rect, .. }
+                if (rect.height() - TOPBAR_HEIGHT).abs() < 0.01
+        )),
+        "an inactive tab has no idle background; only its 2 pt bottom edge is filled: {commands:?}"
     );
 }
 
@@ -649,12 +932,17 @@ fn close_point(commands: &[RenderCommand]) -> Option<Vector2F> {
     })
 }
 
-/// The one fill a frame drew, when it drew exactly one: a tab's own surface.
+/// The one full-height fill a frame drew, when it drew exactly one: a tab's own
+/// surface (the 2 pt bottom edge is a separate, short fill).
 fn single_fill(commands: &[RenderCommand]) -> goble_ui::ColorU {
     let fills: Vec<_> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::FillRect { color, .. } => Some(*color),
+            RenderCommand::FillRect { rect, color, .. }
+                if (rect.height() - TOPBAR_HEIGHT).abs() < 0.01 =>
+            {
+                Some(*color)
+            }
             _ => None,
         })
         .collect();
@@ -959,11 +1247,11 @@ fn a_tab_shows_its_shortcut_hint_in_place_of_the_close_control() {
 #[test]
 fn a_short_named_tab_centres_its_name() {
     const WIDTH: f32 = 200.0;
-    // `WorkspaceChip`'s own inset, the gap to the close "x", and the 16 pt
+    // `WorkspaceChip`'s own inset, the gap to the close "x", and the 20 pt
     // button the "x" is drawn in; the room the name may use is between them.
-    const INSET: f32 = 7.0;
+    const INSET: f32 = 8.0;
     const GAP: f32 = 4.0;
-    const CLOSE: f32 = 16.0;
+    const CLOSE: f32 = 20.0;
 
     let app = AppContext::default();
     let noop: Rc<RefCell<dyn FnMut(usize)>> = Rc::new(RefCell::new(|_: usize| {}));

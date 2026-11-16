@@ -470,6 +470,10 @@ pub(super) fn build_live_indicator(
 /// — only the density factor — so there is nothing for this to be read from.
 const TAB_FONT_SIZE: f32 = 12.0;
 
+/// The thickness of the bottom edge every tab draws: a full-width marker that
+/// separates the tab from the content below it while keeping the tab square.
+const TAB_EDGE_HEIGHT: f32 = 2.0;
+
 /// The font size a tab's shortcut hint reads at, a step under the name's so
 /// the hint reads as the tab's secondary line of information.
 const TAB_HINT_FONT_SIZE: f32 = 11.0;
@@ -1368,7 +1372,10 @@ fn build_workspace_chip(
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
         )
-        .with_size(16.0)
+        // The close is a 20 pt target with a 10 pt glyph. Its hover fill gets a
+        // 4 pt radius, the only rounding on an otherwise square tab.
+        .with_size(20.0)
+        .with_corner_radius(4.0)
         .with_on_click(move || (on_close.borrow_mut())(index))
         .finish(),
         hint,
@@ -1423,10 +1430,11 @@ fn build_rename_field(
 
 /// A browser-style workspace tab: a full-height, square-cornered surface with
 /// no idle background, a hover fill, and (when active) a raised fill plus the
-/// themed text color. The strip draws the rule between neighbours, so the tab
-/// itself never strokes a border — no boundary can read as a doubled line. The
-/// trailing "x" closes the workspace; it is hit-tested before the tab body so
-/// it never doubles as a select click.
+/// themed text color. Every tab paints a 2 pt bottom edge — `Border` at rest
+/// and on hover, the selected marker when active — as a fill, not a stroke, so
+/// it never doubles the strip's own rule between neighbours. The trailing "x"
+/// closes the workspace; it is hit-tested before the tab body so it never
+/// doubles as a select click.
 ///
 /// A tab carrying a colour fills its surface with that colour, at the share the
 /// tab's own state gives it — 60 % while it is the active tab, 40 % while the
@@ -1514,7 +1522,38 @@ impl WorkspaceChip {
     }
 
     fn h_pad() -> f32 {
-        7.0
+        8.0
+    }
+
+    /// The height of the tab's content box: the tab minus the bottom edge the
+    /// label is centred above.
+    fn content_height() -> f32 {
+        (Self::height() - TAB_EDGE_HEIGHT).max(0.0)
+    }
+
+    /// The selected tab's edge. `Accent` is the marker, but only where it
+    /// clears WCAG's 3:1 non-text contrast minimum against the surface it sits
+    /// on; the light theme's `#9a9a9a` on `#f0f0f0` is 2.47:1, so the selected
+    /// edge falls back to `Text` (15.1:1) there instead of disappearing.
+    fn selected_edge_color(app: &AppContext) -> goble_ui::ColorU {
+        let accent = app.theme.color(ColorToken::Accent);
+        let raised = app.theme.color(ColorToken::SurfaceRaised);
+        if accent.contrast_ratio(&raised) >= 3.0 {
+            accent
+        } else {
+            app.theme.color(ColorToken::Text)
+        }
+    }
+
+    /// The colour of the tab's bottom edge: `Border` at rest and on hover, and
+    /// the gated selected marker while active. The tab's own tint never reaches
+    /// the edge.
+    fn edge_color(&self, app: &AppContext) -> goble_ui::ColorU {
+        if self.active {
+            Self::selected_edge_color(app)
+        } else {
+            app.theme.color(ColorToken::Border)
+        }
     }
 
     /// Gap between the workspace name and its close "x".
@@ -1530,7 +1569,7 @@ impl WorkspaceChip {
     fn inner(constraint: SizeConstraint, trailing_width: f32) -> SizeConstraint {
         let room =
             (constraint.max.x - Self::h_pad() * 2.0 - Self::close_gap() - trailing_width).max(0.0);
-        SizeConstraint::new(Vector2F::zero(), vec2f(room, Self::height()))
+        SizeConstraint::new(Vector2F::zero(), vec2f(room, Self::content_height()))
     }
 
     /// The tab's own width: the slot the strip gave it. warp-new's tab is a
@@ -1622,6 +1661,9 @@ impl Element for WorkspaceChip {
         let size = self.size.unwrap_or(Vector2F::zero());
         let rect = rectf(origin.x, origin.y, size.x, size.y);
         let hovered = ctx.hovered(rect);
+        // Every command is painted inside the tab's own rect: the name is
+        // measured and cut to the room the tab leaves and the close is pinned
+        // inside its trailing slot, so no child can spill onto a neighbour.
         if let Some(renderer) = ctx.renderer.as_mut() {
             // `fill_rect`, not `fill_rounded_rect`: a tab has square corners,
             // and no stroke joins it to its neighbour's rule. A coloured tab
@@ -1640,16 +1682,19 @@ impl Element for WorkspaceChip {
                     self.tinted(app, ColorToken::Surface, TabTint::Resting),
                 );
             }
+            // The full-width bottom edge is painted after the fill and before
+            // the close and the label, so the tab's tint never covers it and
+            // its colour is the state's alone.
+            renderer.fill_rect(
+                rectf(
+                    rect.min_x(),
+                    rect.max_y() - TAB_EDGE_HEIGHT,
+                    rect.width(),
+                    TAB_EDGE_HEIGHT,
+                ),
+                self.edge_color(app),
+            );
         }
-        let child_size = self.child.size().unwrap_or(Vector2F::zero());
-        self.child.paint(
-            vec2f(
-                origin.x + self.child_x,
-                origin.y + (size.y - child_size.y).max(0.0) / 2.0,
-            ),
-            ctx,
-            app,
-        );
         // The trailing slot draws the shortcut hint while the chord modifier is
         // held, and the close "x" otherwise — only while the pointer is over the
         // tab. The slot stays reserved in `layout`, so the strip's tabs keep
@@ -1664,6 +1709,17 @@ impl Element for WorkspaceChip {
             self.close
                 .paint(Self::trailing_origin(origin, size, close_size), ctx, app);
         }
+        // The label is painted last; it is centred in the content box above the
+        // bottom edge rather than in the tab's full height.
+        let child_size = self.child.size().unwrap_or(Vector2F::zero());
+        self.child.paint(
+            vec2f(
+                origin.x + self.child_x,
+                origin.y + (Self::content_height() - child_size.y).max(0.0) / 2.0,
+            ),
+            ctx,
+            app,
+        );
     }
 
     fn size(&self) -> Option<Vector2F> {

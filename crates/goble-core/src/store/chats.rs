@@ -19,6 +19,24 @@ pub struct ChatCompaction {
     pub created_at: String,
 }
 
+/// One sub-agent conversation as a client's list card reads it: the child's own
+/// row, the title of the conversation that spawned it, and the facts of its
+/// last message. `parent_title` is `None` when the parent row is gone, and the
+/// `last_*` fields are `None` for a child that has not said anything yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentChat {
+    pub id: String,
+    pub title: String,
+    pub parent_chat_id: String,
+    pub parent_title: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub message_count: u64,
+    pub last_message: Option<String>,
+    pub last_role: Option<String>,
+    pub last_message_at: Option<String>,
+}
+
 impl Store {
     pub fn insert_chat(
         &self,
@@ -66,6 +84,30 @@ impl Store {
         } else {
             Ok(None)
         }
+    }
+
+    /// One stored conversation's row — child or top-level — or `None` when the
+    /// id is unknown. The transcript is read separately with
+    /// [`Self::list_chat_messages`], which returns a child's own messages too.
+    pub fn get_chat(
+        &self,
+        id: &str,
+    ) -> Result<Option<(String, String, Option<String>, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, parent_chat_id, created_at, updated_at FROM chats WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        )))
     }
 
     pub fn set_chat_model(&self, id: &str, provider: &str, model: &str) -> Result<()> {
@@ -281,6 +323,54 @@ impl Store {
                 r.get::<_, String>(4)?,
                 r.get::<_, String>(5)?,
             ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// The sub-agent conversations, newest first, with the parent's title and
+    /// the child's message facts already joined in. A sub-agent is a child chat
+    /// (see [`Self::list_chats`]), so it is absent from the top-level listing and
+    /// this is how a client sees it. One query reads every row's counts and last
+    /// message, so a list of `limit` children is not `limit` more reads.
+    pub fn list_subagent_chats(&self, limit: usize) -> Result<Vec<SubagentChat>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT
+                c.id,
+                c.title,
+                c.parent_chat_id,
+                p.title,
+                c.created_at,
+                c.updated_at,
+                (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = c.id),
+                lm.content,
+                lm.role,
+                lm.created_at
+             FROM chats c
+             LEFT JOIN chats p ON p.id = c.parent_chat_id
+             LEFT JOIN chat_messages lm ON lm.rowid = (
+                 SELECT m.rowid FROM chat_messages m
+                 WHERE m.chat_id = c.id
+                 ORDER BY m.created_at DESC, m.rowid DESC
+                 LIMIT 1
+             )
+             WHERE c.parent_chat_id IS NOT NULL
+             ORDER BY c.updated_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(SubagentChat {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                parent_chat_id: r.get(2)?,
+                parent_title: r.get(3)?,
+                created_at: r.get(4)?,
+                updated_at: r.get(5)?,
+                message_count: r.get::<_, i64>(6)?.max(0) as u64,
+                last_message: r.get(7)?,
+                last_role: r.get(8)?,
+                last_message_at: r.get(9)?,
+            })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }

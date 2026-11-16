@@ -659,11 +659,8 @@ async fn handle_desktop_message(
                 });
             });
         }
-        DesktopMessage::QueryEntities {
-            entity_type,
-            query: _,
-        } => {
-            let items = query_store_entities(state, &entity_type)?;
+        DesktopMessage::QueryEntities { entity_type, query } => {
+            let (entity_type, items) = query_store_entities(state, &entity_type, query.as_deref())?;
             state.emit(WorkerMessage::EntityList { entity_type, items });
         }
         DesktopMessage::TriggerSnapshot => {
@@ -807,7 +804,70 @@ pub fn handle_daemon_desktop_message(
     }
 }
 
+/// Read one `query_entities` request, returning the `entity_type` its answer
+/// must carry and the items.
+///
+/// Almost every entity answers under the type the client asked for. A single
+/// chat is the exception: it answers under `chat:<id>`, a kind that names the
+/// chat it is about. The relay carries no request id, so that distinct kind is
+/// what lets a client with two transcript reads in flight pair each reply with
+/// the request that asked for it. [`query_chat`] owns that kind.
 fn query_store_entities(
+    state: &Arc<AppState>,
+    entity_type: &str,
+    query: Option<&str>,
+) -> anyhow::Result<(String, Vec<serde_json::Value>)> {
+    if entity_type == "chat" {
+        return query_chat(state, query);
+    }
+    let items = query_entity_items(state, entity_type)?;
+    Ok((entity_type.to_string(), items))
+}
+
+/// One chat and its transcript, answered under `chat:<id>`. A child chat is
+/// readable here too: its own messages live under its own id, never the
+/// parent's. An unknown id is an empty list, not an error, because a client
+/// asking for a conversation the worker no longer has should see nothing
+/// rather than a failed request.
+fn query_chat(
+    state: &Arc<AppState>,
+    query: Option<&str>,
+) -> anyhow::Result<(String, Vec<serde_json::Value>)> {
+    let Some(chat_id) = query else {
+        return Ok(("chat".to_string(), Vec::new()));
+    };
+    let response_type = format!("chat:{chat_id}");
+    let store = state.store()?;
+    let Some((id, title, parent_chat_id, created_at, updated_at)) = store.get_chat(chat_id)? else {
+        return Ok((response_type, Vec::new()));
+    };
+    let messages = store
+        .list_chat_messages(&id)?
+        .into_iter()
+        .map(|(message_id, role, content, _tool_calls, created_at)| {
+            serde_json::json!({
+                "id": message_id,
+                "role": role,
+                "content": content,
+                "created_at": created_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok((
+        response_type,
+        vec![serde_json::json!({
+            "id": id,
+            "title": title,
+            "parent_chat_id": parent_chat_id,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "messages": messages,
+        })],
+    ))
+}
+
+/// Read one non-chat entity type from the worker's store.
+fn query_entity_items(
     state: &Arc<AppState>,
     entity_type: &str,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
@@ -867,20 +927,21 @@ fn query_store_entities(
             }
             Ok(items)
         }
+        // A phone lists runs; the full trace JSON is large enough to dwarf the
+        // list and no client reads it here, so each item keeps only the run's
+        // identity and outcome. The cap keeps the newest fifty runs in one frame.
         "executions" => {
             let rows = store.list_executions()?;
             let items = rows
                 .into_iter()
+                .take(50)
                 .map(
-                    |(id, agent_id, worker_id, status, trace, started_at, finished_at)| {
-                        let trace: serde_json::Value =
-                            serde_json::from_str(&trace).unwrap_or_default();
+                    |(id, agent_id, worker_id, status, _trace, started_at, finished_at)| {
                         serde_json::json!({
                             "id": id,
                             "agent_id": agent_id,
                             "worker_id": worker_id,
                             "status": status,
-                            "trace": trace,
                             "started_at": started_at,
                             "finished_at": finished_at,
                         })
@@ -916,6 +977,31 @@ fn query_store_entities(
                     "messages": messages,
                 }));
             }
+            Ok(items)
+        }
+        // A sub-agent is stored as a child chat, so the "chats" arm above does
+        // not carry it. The listing joins the parent's title and the child's
+        // message facts in the store's single read; the cap keeps the newest
+        // hundred cards in one frame.
+        "subagents" => {
+            let rows = store.list_subagent_chats(100)?;
+            let items = rows
+                .into_iter()
+                .map(|chat| {
+                    serde_json::json!({
+                        "id": chat.id,
+                        "title": chat.title,
+                        "parent_chat_id": chat.parent_chat_id,
+                        "parent_title": chat.parent_title,
+                        "created_at": chat.created_at,
+                        "updated_at": chat.updated_at,
+                        "message_count": chat.message_count,
+                        "last_message": chat.last_message,
+                        "last_role": chat.last_role,
+                        "last_message_at": chat.last_message_at,
+                    })
+                })
+                .collect();
             Ok(items)
         }
         "mcp_servers" => {
@@ -1156,5 +1242,128 @@ mod tests {
         assert_eq!(safe_component(""), "attachment");
         assert_eq!(safe_component(".."), "attachment");
         assert_eq!(safe_component("shot-1.jpeg"), "shot-1.jpeg");
+    }
+
+    /// `subagents` lists the child chats the `chats` listing leaves out, and
+    /// `chat` with a query answers under `chat:<id>` with the child's own
+    /// transcript. An unknown id answers nothing rather than failing.
+    #[test]
+    fn test_query_entities_lists_subagents_and_opens_a_chat_by_id() {
+        let (tmp, state) = test_state();
+        state.set_store_path(tmp.path().join("worker.db")).unwrap();
+        let store = state.store().unwrap();
+        store
+            .insert_chat(
+                "parent",
+                "Parent talk",
+                None,
+                None,
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            )
+            .unwrap();
+        store
+            .insert_subagent_chat(
+                "child",
+                "Child talk",
+                "parent",
+                None,
+                None,
+                "2024-01-01T00:00:01Z",
+                "2024-01-01T00:00:02Z",
+            )
+            .unwrap();
+        store
+            .insert_chat_message(
+                "m1",
+                "child",
+                "user",
+                "do the thing",
+                None,
+                "2024-01-01T00:00:01Z",
+            )
+            .unwrap();
+        store
+            .insert_chat_message(
+                "m2",
+                "child",
+                "assistant",
+                "done",
+                None,
+                "2024-01-01T00:00:02Z",
+            )
+            .unwrap();
+
+        let (kind, items) = query_store_entities(&state, "subagents", None).unwrap();
+        assert_eq!(kind, "subagents");
+        assert_eq!(items.len(), 1, "the top-level parent is not a subagent");
+        assert_eq!(items[0]["id"], "child");
+        assert_eq!(items[0]["parent_title"], "Parent talk");
+        assert_eq!(items[0]["message_count"], 2);
+        assert_eq!(items[0]["last_message"], "done");
+
+        let (kind, items) = query_store_entities(&state, "chat", Some("child")).unwrap();
+        assert_eq!(kind, "chat:child");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "child");
+        assert_eq!(items[0]["parent_chat_id"], "parent");
+        let messages = items[0]["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[0]["content"], "do the thing",
+            "the child's own transcript comes back"
+        );
+        assert_eq!(messages[1]["content"], "done");
+
+        let (kind, items) = query_store_entities(&state, "chat", Some("missing")).unwrap();
+        assert_eq!(kind, "chat:missing");
+        assert!(items.is_empty(), "an unknown chat id answers nothing");
+
+        assert!(
+            query_store_entities(&state, "bogus", None).is_err(),
+            "unknown entity types are still rejected"
+        );
+    }
+
+    /// The executions list is capped and carries no trace JSON: the trace is
+    /// the heavy part of a run and the list does not show it.
+    #[test]
+    fn test_query_entities_trims_and_caps_executions() {
+        let (tmp, state) = test_state();
+        state.set_store_path(tmp.path().join("worker.db")).unwrap();
+        let store = state.store().unwrap();
+        for index in 0..55 {
+            store
+                .insert_execution(
+                    &format!("run-{index}"),
+                    Some("agent-1"),
+                    Some("worker-1"),
+                    "succeeded",
+                    "{\"steps\":[]}",
+                    &format!("2024-01-01T00:00:{index:02}Z"),
+                    None,
+                )
+                .unwrap();
+        }
+
+        let (kind, items) = query_store_entities(&state, "executions", None).unwrap();
+        assert_eq!(kind, "executions");
+        assert_eq!(items.len(), 50, "the newest fifty runs only");
+        let item = &items[0];
+        assert_eq!(item["id"], "run-54");
+        assert!(
+            item.get("trace").is_none(),
+            "the full trace JSON is not in the list payload"
+        );
+        for field in [
+            "id",
+            "agent_id",
+            "worker_id",
+            "status",
+            "started_at",
+            "finished_at",
+        ] {
+            assert!(item.get(field).is_some(), "the item keeps {field}");
+        }
     }
 }

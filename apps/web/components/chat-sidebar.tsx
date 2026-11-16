@@ -59,6 +59,7 @@ export function ChatSidebar({
                 : "";
               return (
                 <Pressable
+                  accessibilityLabel={`Open subagent ${subagent.title || subagent.id}`}
                   accessibilityRole="button"
                   key={subagent.id}
                   onPress={() => onOpenSubagent(subagent)}

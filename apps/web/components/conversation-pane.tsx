@@ -341,6 +341,7 @@ export function ConversationPane({
           value={draft}
         />
         <Pressable
+          accessibilityLabel="Send message"
           accessibilityRole="button"
           disabled={!canSend || !live}
           onPress={send}
@@ -351,6 +352,7 @@ export function ConversationPane({
           ]}
         >
           <Ionicons
+            aria-hidden
             color={canSend && live ? palette.bg : palette.subtle}
             name="arrow-up"
             size={16}
@@ -510,7 +512,6 @@ const styles = StyleSheet.create({
     color: palette.text,
     flex: 1,
     fontSize: 14,
-    outlineColor: "transparent",
     paddingHorizontal: space.md,
     paddingVertical: 10,
   },

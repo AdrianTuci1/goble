@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
@@ -21,11 +28,19 @@ import {
   type RelayStatus,
 } from "@goble/common";
 
+import { ChatSidebar } from "../components/chat-sidebar";
 import { ConversationPane } from "../components/conversation-pane";
 import { Sidebar, type ThreadRow } from "../components/sidebar";
 import { TerminalPane } from "../components/terminal-pane";
 import { useShellShortcuts } from "../lib/shortcuts";
 import { useWorkerEntities } from "../lib/worker-entities";
+
+/**
+ * Width at which the third column is composed. The left and right columns take
+ * 280 each, so the centre keeps 540 px here: enough for the transcript bubbles
+ * and the composer without squeezing either.
+ */
+const WIDE_LAYOUT_MIN_WIDTH = 1100;
 
 const phaseLabel: Record<ConnectionPhase, string> = {
   demo: "Demo workspace",
@@ -75,6 +90,7 @@ function emptyBody(remote: ConnectionSnapshot): string {
 
 export default function WebShell() {
   const remote = useConnection();
+  const { width } = useWindowDimensions();
   const status = badge(remote.phase, remote.status);
   const chats = useWorkerThreads();
   const entities = useWorkerEntities();
@@ -86,6 +102,7 @@ export default function WebShell() {
   const activeChat =
     chats.find((thread) => thread.id === activeThreadId) ?? null;
   const conversationOpen = !shellOpen && activeChat !== null;
+  const showChatSidebar = width >= WIDE_LAYOUT_MIN_WIDTH && conversationOpen;
 
   function showSessions() {
     setShellOpen(false);
@@ -293,6 +310,12 @@ export default function WebShell() {
             </ScrollView>
           )}
         </View>
+        {showChatSidebar ? (
+          <ChatSidebar
+            error={entities.schedulesError}
+            schedules={entities.schedules}
+          />
+        ) : null}
       </View>
     </SafeAreaView>
   );

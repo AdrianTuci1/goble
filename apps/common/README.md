@@ -6,25 +6,30 @@ reads or taps lives here, so a fix lands once and both surfaces get it.
 
 ## The boundary rule
 
-Nothing under `src/` may import an `expo-*` package, and `react-native` is
-limited to the neutral set that `react-native-web` also provides (`View`, `Text`,
-`StyleSheet`, `Pressable`, `FlatList`, `Animated`, `useWindowDimensions`, …).
+Both shells are Expo apps, so `@goble/common` may use the Expo packages that also
+run in a browser — `expo-router`, `expo-linear-gradient`, `@expo/vector-icons` —
+plus the `react-native` set `react-native-web` provides (`View`, `Text`,
+`StyleSheet`, `Pressable`, `FlatList`, `Animated`, `Linking`, `Image`, …).
 
-A capability that only a platform has — the keychain, haptics, push, the
-camera, the microphone, the filesystem — is declared as an interface in
-[`src/platform/index.ts`](src/platform/index.ts) first. The shells implement it:
+What may **not** appear here is a module that only exists on a phone. A
+capability that needs one — the keychain, haptics, push, the camera, the
+microphone, the filesystem — is declared in
+[`src/platform/index.ts`](src/platform/index.ts) and handed over by the shell at
+boot through `configurePlatform`. The defaults are `localStorage` when the host
+has it and no-ops when it does not, which is exactly what the web export needs.
 
-| Interface | Mobile | Web |
+| Interface | Mobile shell | Web shell |
 |---|---|---|
-| `SecureStorage` | `expo-secure-store` | `localStorage` |
-| `Haptics` | `expo-haptics` | no-op |
-| `PushNotifications` | `expo-notifications` | `unsupported` |
-| `AttachmentPicker` | `expo-image-picker` | `<input type="file">` |
-| `AudioRecorder` | `expo-audio` | `MediaRecorder` |
-| `FileSystem` | `expo-file-system` | Blob/download |
+| `SecureStorage` | `expo-secure-store` | `localStorage` (the default) |
+| `Haptics` | `expo-haptics` | no-op (the default) |
+| `PushNotifications` | `expo-notifications` | — |
+| `AttachmentPicker` | `expo-image-picker` | — |
+| `AudioRecorder` | `expo-audio` | — |
+| `FileSystem` | `expo-file-system` | — |
 
-`expo-router` stays in the shells, never here: the web layout is a sidebar, the
-mobile one a drawer, and both need their own route tree over the same screens.
+Storage and haptics are the two wired through the registry today; the rest are
+declared and still live in the mobile shell, which is where the web shell will
+pick them up when a screen needs them.
 
 ## Consuming it
 

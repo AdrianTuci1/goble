@@ -7,9 +7,11 @@
  * microphone — so every one of them is an interface here and an implementation
  * in the shell (`*.native.ts` on mobile, `*.web.ts` on the web).
  *
- * The rule that keeps this file honest: nothing under `src/` imports `expo-*`
- * or `react-native` beyond the neutral `View`/`Text`/`StyleSheet` set. If a
- * screen needs a new capability, it lands here first.
+ * The rule that keeps this file honest: both shells are Expo apps, so the
+ * `expo-*` packages that also run in a browser (`expo-router`,
+ * `expo-linear-gradient`, `@expo/vector-icons`) are fair game above. A module
+ * that only exists on a phone — the keychain, haptics, push, the camera, the
+ * microphone — lands here first, and the shell hands it over at boot.
  */
 
 /** An image the composer holds, with its bytes ready for the worker. */

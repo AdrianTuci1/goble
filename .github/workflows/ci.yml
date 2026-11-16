@@ -32,6 +32,7 @@ on:
       - 'apps/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'scripts/check-contrast.mjs'
       # all jobs
       - '.config/nextest.toml'
       - '.github/workflows/ci.yml'
@@ -58,6 +59,7 @@ on:
       - 'apps/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'scripts/check-contrast.mjs'
       # all jobs
       - '.config/nextest.toml'
       - '.github/workflows/ci.yml'
@@ -173,6 +175,12 @@ jobs:
 
       - name: Typecheck every workspace
         run: npm run check --workspaces --if-present
+
+      # The shared dark palette is consumed by name, so a token can fall below
+      # WCAG AA without breaking the compiler. This gate reads theme.ts and
+      # fails the pair it names.
+      - name: Check the shared palette's contrast
+        run: npm run a11y:contrast
 
       - name: Build the Expo web export
         run: npm run web:build

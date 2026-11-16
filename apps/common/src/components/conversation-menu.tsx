@@ -268,7 +268,7 @@ const styles = StyleSheet.create({
   },
   destructiveLabel: {
     ...typography.caption,
-    color: palette.white,
+    color: palette.bg,
     fontSize: 11,
     fontWeight: "600",
   },

@@ -11,14 +11,17 @@ import {
   radius,
   space,
   typography,
+  threadConversation,
   useConnection,
+  useWorkerThreads,
   type ConnectionPhase,
   type ConnectionSnapshot,
   type ConnectionState,
   type RelayStatus,
 } from "@goble/common";
 
-import { Sidebar } from "../components/sidebar";
+import { ConversationPane } from "../components/conversation-pane";
+import { Sidebar, type ThreadRow } from "../components/sidebar";
 import { TerminalPane } from "../components/terminal-pane";
 
 const phaseLabel: Record<ConnectionPhase, string> = {
@@ -70,9 +73,17 @@ function emptyBody(remote: ConnectionSnapshot): string {
 export default function WebShell() {
   const remote = useConnection();
   const status = badge(remote.phase, remote.status);
+  const chats = useWorkerThreads();
   const [shellOpen, setShellOpen] = useState(false);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   /** A shell is one worker's child; with none selected there is nothing to open. */
   const canShell = remote.workerId !== null;
+  const activeChat =
+    chats.find((thread) => thread.id === activeThreadId) ?? null;
+  const threads: ThreadRow[] = chats.map((chat) => {
+    const thread = threadConversation(chat);
+    return { id: thread.id, title: thread.title, preview: thread.preview };
+  });
 
   return (
     <SafeAreaView
@@ -81,24 +92,35 @@ export default function WebShell() {
     >
       <View style={styles.shell}>
         <Sidebar
+          activeThreadId={activeThreadId}
           canShell={canShell}
           label={status.label}
           onNewShell={() => setShellOpen(true)}
-          onShowSessions={() => setShellOpen(false)}
+          onSelectThread={(id) => {
+            setShellOpen(false);
+            setActiveThreadId(id);
+          }}
+          onShowSessions={() => {
+            setShellOpen(false);
+            setActiveThreadId(null);
+          }}
           server={remote.server}
           shellOpen={shellOpen}
           state={status.state}
+          threads={threads}
         />
         <View style={styles.main}>
           <View style={styles.header}>
             <View style={styles.headerText}>
               <Text style={styles.title}>
-                {shellOpen ? "Shell" : "Sessions"}
+                {shellOpen ? "Shell" : (activeChat?.title || "Sessions")}
               </Text>
               <Text style={styles.subtitle}>
                 {shellOpen
                   ? (remote.workerId ?? "No worker connected")
-                  : "Goble desktop shell"}
+                  : activeChat
+                    ? `${activeChat.messages.length} messages`
+                    : "Goble desktop shell"}
               </Text>
             </View>
             <StatusPill label={status.label} state={status.state} />
@@ -106,6 +128,12 @@ export default function WebShell() {
 
           {shellOpen ? (
             <TerminalPane />
+          ) : activeChat ? (
+            <ConversationPane
+              chat={activeChat}
+              key={activeChat.id}
+              live={remote.status === "live"}
+            />
           ) : (
             <ScrollView
               contentContainerStyle={styles.content}

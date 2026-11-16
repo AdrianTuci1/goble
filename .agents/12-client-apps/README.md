@@ -53,10 +53,14 @@ app** and are out of scope: that surface is Rust and stays Rust.
   into and read back in the browser, with the shared key bar for control keys.
   Served by the gateway at `/app/`, the shell adopts its own origin and the
   `HttpOnly` login cookie (`Connection.adoptBrowserSession`) instead of asking
-  for a PIN the page has already answered. Still missing: a conversation /
-  transcript surface (the pane is a shell, not a chat), desktop keyboard
-  shortcuts beyond the shared key bar, and a wide composition beyond the
-  sidebar + pane.
+  for a PIN the page has already answered. The worker's conversations are the
+  sidebar's second list (`useWorkerThreads`), and a selected one draws its
+  stored transcript with a composer: a message starts a turn (`startTurn`),
+  deltas stream into the reply, and a question (quick replies or typed) or a
+  proposed command (run / reject) is answered in the pane. Still missing:
+  desktop keyboard shortcuts beyond Enter in the composer, a wide composition
+  beyond the sidebar + pane, and any surface for the other worker entities
+  (agents, schedules, screens).
 - [x] **V4 — cut `crates/goble-web`.** The crate, `scripts/build-web.sh` and the
   checked-in `crates/goble-gateway/web/` bundle are gone; the gateway's `/app/`
   route stays and serves whatever `--web-dir` points at, with the fallback page
@@ -72,7 +76,7 @@ app** and are out of scope: that surface is Rust and stays Rust.
   `apps/` section and `.agents/09-mobile-deferred/README.md` no longer describes
   a Kotlin app. The size gate is `scripts/check-web-size.mjs`: it sums the
   export's JavaScript and fails over 1900 KB raw, 520 KB gzip or 1250 KB for the
-  largest file — the 2026-11-16 export (1720 KB / 472 KB / 1091 KB) plus about
+  largest file — the 2026-11-16 export (≈1730 KB / 474 KB / 1091 KB) plus about
   10% of headroom. A change that needs more raises the number in the same
   commit, where a reviewer sees it move.
 
@@ -81,11 +85,14 @@ app** and are out of scope: that surface is Rust and stays Rust.
 `npm ci` at the root installs one hoisted tree (`@goble/common` linked from
 `node_modules`); `npm run typecheck` is green for `@goble/common`, `@goble/mobile`
 and `@goble/web`; `npm run web:build` exports `apps/web/dist` with `/app/`
-asset URLs (entry ≈1.1 MB, shared chunk ≈630 KB, 1720 KB of JavaScript / 472 KB
+asset URLs (entry ≈1.1 MB, shared chunk ≈630 KB, 1729 KB of JavaScript / 474 KB
 gzipped) and `npm run web:size` accepts it; `npx expo export --platform web`
 still exports the phone shell. V4's gateway edits were verified with the Rust
 toolchain installed for this pass: `cargo test -p goble-gateway` → 22 passed,
 0 failed. The browser shell was loaded from a static `/app/` mount in headless
 Chromium with a faked gateway API and relay: it boots, adopts the origin, lists
-the worker, and the New shell action draws the pty's output. No real gateway or
-worker was involved, and a host without `/api/workers` keeps the demo shell.
+the worker and its conversations, draws a stored transcript, streams a reply to
+a message sent from the composer, answers an `ask_user` question from a quick
+reply and approves a proposed command — and the New shell action draws the pty's
+output. No real gateway or worker was involved, and a host without
+`/api/workers` keeps the demo shell.

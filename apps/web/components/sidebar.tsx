@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import {
   BrandMark,
@@ -11,13 +11,23 @@ import {
   type ConnectionState,
 } from "@goble/common";
 
+/** What the sidebar needs from a stored conversation; the pane loads the rest. */
+export interface ThreadRow {
+  id: string;
+  title: string;
+  preview: string;
+}
+
 export function Sidebar({
   label,
   state,
   server,
   canShell,
   shellOpen,
+  activeThreadId,
+  threads,
   onNewShell,
+  onSelectThread,
   onShowSessions,
 }: {
   label: string;
@@ -25,9 +35,14 @@ export function Sidebar({
   server: string | null;
   canShell: boolean;
   shellOpen: boolean;
+  activeThreadId: string | null;
+  threads: ThreadRow[];
   onNewShell: () => void;
+  onSelectThread: (id: string) => void;
   onShowSessions: () => void;
 }) {
+  const overview = !shellOpen && activeThreadId === null;
+
   return (
     <View style={styles.root}>
       <View style={styles.brandRow}>
@@ -72,7 +87,7 @@ export function Sidebar({
           onPress={onShowSessions}
           style={({ pressed }) => [
             styles.navRow,
-            !shellOpen && styles.navRowActive,
+            overview && styles.navRowActive,
             pressed && styles.pressed,
           ]}
         >
@@ -87,7 +102,43 @@ export function Sidebar({
         ) : null}
       </View>
 
-      <View style={styles.spacer} />
+      <Text style={styles.section}>Conversations</Text>
+      <ScrollView
+        contentContainerStyle={styles.threadList}
+        showsVerticalScrollIndicator={false}
+        style={styles.threads}
+      >
+        {threads.length === 0 ? (
+          <Text style={styles.threadEmpty}>No conversations yet.</Text>
+        ) : (
+          threads.map((thread) => {
+            const active = thread.id === activeThreadId;
+            return (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                key={thread.id}
+                onPress={() => onSelectThread(thread.id)}
+                style={({ pressed }) => [
+                  styles.threadRow,
+                  active && styles.threadRowActive,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text
+                  numberOfLines={1}
+                  style={[styles.threadTitle, active && styles.threadTitleActive]}
+                >
+                  {thread.title || "Untitled conversation"}
+                </Text>
+                <Text numberOfLines={2} style={styles.threadPreview}>
+                  {thread.preview}
+                </Text>
+              </Pressable>
+            );
+          })
+        )}
+      </ScrollView>
 
       <View style={styles.footer}>
         <Text style={styles.footerLabel}>Gateway</Text>
@@ -183,8 +234,51 @@ const styles = StyleSheet.create({
     color: palette.text,
     fontSize: 14,
   },
-  spacer: {
+  section: {
+    ...typography.eyebrow,
+    color: palette.subtle,
+    marginBottom: space.sm,
+    marginTop: space.xl,
+    paddingHorizontal: space.sm,
+  },
+  threads: {
     flex: 1,
+    marginHorizontal: -space.sm,
+  },
+  threadList: {
+    gap: 2,
+    paddingBottom: space.md,
+  },
+  threadEmpty: {
+    ...typography.caption,
+    color: palette.subtle,
+    fontSize: 11,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.sm,
+  },
+  threadRow: {
+    borderRadius: radius.md,
+    gap: 2,
+    paddingHorizontal: space.sm,
+    paddingVertical: 8,
+  },
+  threadRowActive: {
+    backgroundColor: palette.raised,
+  },
+  threadTitle: {
+    ...typography.callout,
+    color: palette.text,
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  threadTitleActive: {
+    color: palette.primary,
+  },
+  threadPreview: {
+    ...typography.caption,
+    color: palette.subtle,
+    fontSize: 11,
+    lineHeight: 15,
   },
   footer: {
     borderTopColor: palette.border,

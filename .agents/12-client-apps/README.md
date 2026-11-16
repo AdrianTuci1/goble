@@ -1,6 +1,6 @@
 # 12 — Client apps: `common` / `web` / `mobile`
 
-**Status:** `[x]` landed — waves 1–5 done
+**Status:** `[x]` landed — waves 1–6 done
 **Owns:** the TypeScript client: the shared core and the two shells over it
 **Supersedes:** the Rust/WASM browser client (`crates/goble-web`), marked stale on 2026-11-15
 
@@ -100,6 +100,24 @@ app** and are out of scope: that surface is Rust and stays Rust.
   largest file — the 2026-11-16 export (≈1734 KB / 475 KB / 1091 KB) plus about
   10% of headroom. A change that needs more raises the number in the same
   commit, where a reviewer sees it move.
+- [x] **V6 — worker entities on both shells.** The worker can finally name a
+  subagent: `query_entities` honours its `query` field, `subagents` answers with
+  the child chats (`Store::list_subagent_chats`: newest first, ≤100, one SQL read
+  with the parent's title, the message count and the last message), and `chat`
+  with a query answers under `chat:<id>` so a client can open a child's own
+  transcript; an unknown id is an empty list, not an error. The distinct answer
+  kind is what pairs two reads in flight, since the relay carries no request id.
+  `executions` is capped at 50 and drops the full `trace`. `@goble/common` wraps
+  them (`requestSubagents`, `requestWorkflows`, `requestExecutions`,
+  `requestChat`). The browser overview gained **Workflows · N / Runs · N /
+  Subagents · N** (`apps/web/components/work-cards.tsx`, read by
+  `apps/web/lib/worker-work.ts`), the wide third column lists the open
+  conversation's children, and a press opens
+  `apps/web/components/subagent-pane.tsx`, a read-only transcript with a Back
+  bar (Escape returns to the parent; `mod+k` refuses while it is open). The phone
+  gained `subagents` / `workflows` / `runs` drawer screens and
+  `session/[id].tsx` now falls back to `requestChat(id)`, so a pushed child id
+  loads its stored transcript.
 
 ## Verified
 
@@ -129,3 +147,17 @@ largest. **Not verified:** the third column in a browser — this checkout carri
 no headless-browser harness and the container has no Chromium binary, so the
 breakpoint composition and routine rendering were not exercised beyond
 typecheck and the export.
+
+V6 was gated on the integrated branch: `cargo test -p goblin-worker --lib` →
+67 passed, 0 failed; `cargo test -p goble-core --lib store::` → 24 passed
+(the new tests assert a top-level chat is not listed as a subagent, a child's
+messages come back under `chat:<id>`, an unknown id answers nothing, and 55
+inserted runs trim to the newest 50 without a `trace` key); `npm run typecheck`
+→ exit 0 for `@goble/common`, `@goble/mobile` and `@goble/web`;
+`npm run web:build` → exit 0 and `npm run web:size` accepts **1749.8 KB raw /
+478.4 KB gzip / 1090.6 KB largest**; `npx expo export --platform web` from
+`apps/mobile` exports the phone shell with the three new routes. **Not
+verified:** a browser or a phone — this checkout has neither a headless harness
+nor a device, so the cards, the drawer entries, the subagent view, scrolling and
+the tap targets were not exercised; typecheck and the export prove the types and
+that every route bundles, nothing more.

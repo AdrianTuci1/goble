@@ -8,6 +8,7 @@ import {
   TextInput,
   View,
   type ScrollViewInstance,
+  type TextInputInstance,
 } from "react-native";
 
 import {
@@ -61,9 +62,11 @@ function stored(chat: RemoteChat): Line[] {
 export function ConversationPane({
   chat,
   live,
+  focusSignal,
 }: {
   chat: RemoteChat;
   live: boolean;
+  focusSignal: number;
 }) {
   const [local, setLocal] = useState<Line[] | null>(null);
   const [draft, setDraft] = useState("");
@@ -73,12 +76,20 @@ export function ConversationPane({
   const replyId = useRef(`web-reply-${chat.id}`);
   const turn = useRef<Turn | null>(null);
   const transcript = useRef<ScrollViewInstance>(null);
+  const input = useRef<TextInputInstance>(null);
+  const focusSeen = useRef(focusSignal);
 
   const lines = local ?? stored(chat);
 
   useEffect(() => {
     return () => turn.current?.detach();
   }, []);
+
+  useEffect(() => {
+    if (focusSignal === focusSeen.current) return;
+    focusSeen.current = focusSignal;
+    input.current?.focus();
+  }, [focusSignal]);
 
   useEffect(() => {
     const timer = setTimeout(
@@ -323,6 +334,7 @@ export function ConversationPane({
               : "The worker link is not live"
           }
           placeholderTextColor={palette.subtle}
+          ref={input}
           returnKeyType="send"
           selectionColor={palette.accent}
           style={styles.input}

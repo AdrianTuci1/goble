@@ -23,7 +23,7 @@ import {
   type PickedAttachment,
 } from "../../lib/attachments";
 import { startDictation, type Dictation } from "../../lib/dictation";
-import { greeting } from "../../lib/format";
+import { greeting } from "@goble/common";
 import { tapFeedback } from "../../lib/haptics";
 import { useOpenDrawer } from "../../lib/navigation";
 import { holdAttachment } from "../../lib/pending-attachment";

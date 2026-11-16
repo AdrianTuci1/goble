@@ -1,7 +1,7 @@
 import { useRouter } from "expo-router";
 
 import { ChoicePage } from "../../../components/settings/choice-page";
-import { relativeTime } from "../../../lib/format";
+import { relativeTime } from "@goble/common";
 import { connection, useConnection } from "../../../lib/remote/connection";
 
 export default function WorkersScreen() {

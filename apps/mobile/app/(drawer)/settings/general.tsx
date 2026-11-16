@@ -6,7 +6,7 @@ import { SettingsRow } from "../../../components/settings/settings-row";
 import { SettingsSection } from "../../../components/settings/settings-section";
 import { SettingsSwitchRow } from "../../../components/settings/settings-switch-row";
 import { signOut } from "../../../lib/api";
-import { hostLabel } from "../../../lib/format";
+import { hostLabel } from "@goble/common";
 import { connection, useConnection } from "../../../lib/remote/connection";
 import { setHapticsEnabled } from "../../../lib/haptics";
 import {

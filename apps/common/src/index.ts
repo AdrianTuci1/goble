@@ -18,3 +18,5 @@ export type {
   PushNotifications,
   SecureStorage,
 } from "./platform";
+
+export * from "./lib/format";

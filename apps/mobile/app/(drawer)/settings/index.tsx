@@ -11,7 +11,7 @@ import { SettingsSearchField } from "../../../components/settings/settings-searc
 import { SettingsSection } from "../../../components/settings/settings-section";
 import { StatusPill } from "../../../components/status-pill";
 import { signOut } from "../../../lib/api";
-import { hostLabel } from "../../../lib/format";
+import { hostLabel } from "@goble/common";
 import { palette, space, typography } from "../../../lib/theme";
 import { useModelChoices } from "../../../lib/use-models";
 import { useVoicePreferences } from "../../../lib/use-voice";

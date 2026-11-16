@@ -33,7 +33,7 @@ import {
   type KnownServer,
 } from "../lib/api";
 import { connection } from "../lib/remote/connection";
-import { hostLabel } from "../lib/format";
+import { hostLabel } from "@goble/common";
 import { successFeedback, tapFeedback } from "../lib/haptics";
 import { palette, radius, space } from "../lib/theme";
 

@@ -5,7 +5,7 @@ import { SettingsPage } from "../../components/settings/settings-page";
 import { SettingsRow } from "../../components/settings/settings-row";
 import { SettingsSection } from "../../components/settings/settings-section";
 import { Sheet } from "../../components/sheet";
-import { naturalSchedule, relativeTime, until } from "../../lib/format";
+import { naturalSchedule, relativeTime, until } from "@goble/common";
 import { tapFeedback } from "../../lib/haptics";
 import { demoSchedules } from "../../lib/mock";
 import { useConnection } from "../../lib/remote/connection";

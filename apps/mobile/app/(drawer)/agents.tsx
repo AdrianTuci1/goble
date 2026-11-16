@@ -14,7 +14,7 @@ import { SettingsPage } from "../../components/settings/settings-page";
 import { SettingsRow } from "../../components/settings/settings-row";
 import { SettingsSection } from "../../components/settings/settings-section";
 import { Sheet } from "../../components/sheet";
-import { relativeTime } from "../../lib/format";
+import { relativeTime } from "@goble/common";
 import { tapFeedback } from "../../lib/haptics";
 import { demoAgents, demoModels } from "../../lib/mock";
 import { useConnection } from "../../lib/remote/connection";

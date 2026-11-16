@@ -65,8 +65,23 @@ app** and are out of scope: that surface is Rust and stays Rust.
   `apps/web/lib/shortcuts.ts` (`useShellShortcuts`): `mod+1` returned to the
   sessions overview, `mod+2` opened the shell, `mod+n` opened a new shell,
   `mod+k` focused the open conversation's composer, and Escape left the shell or
-  conversation unless a text field held focus. Still missing: the wide
-  composition beyond the sidebar + pane.
+  conversation unless a text field held focus. The wide composition landed in
+  this pass: with a conversation open at a viewport width of at least **1100
+  px**, `apps/web/app/index.tsx` appends a third 280px column
+  (`apps/web/components/chat-sidebar.tsx`) after the conversation pane. It draws
+  the routines `useWorkerEntities` already reads with `requestScheduledTasks`
+  (`apps/web/lib/worker-entities.ts`): each row shows the trigger spoken through
+  `naturalSchedule` (or its webhook/heartbeat form), the task's enabled or
+  paused state and its `agent_id`. The column keeps the last good list and
+  reports the error beneath it when a read fails, and an honest "No routines on
+  this worker." empty state when there are none. Below 1100 px, with no
+  conversation open, in the shell and in the sessions overview it is not
+  composed, so narrow widths keep the existing two columns. The native **+**
+  action is deliberately left out: the web protocol has no schedule-create call,
+  so there is nothing to wire and no dead button. The worker keys a routine by
+  `agent_id`, but a stored chat carries no agent id, so the column draws the
+  worker's whole routine list — the same set the native right sidebar receives —
+  and names each row's agent rather than inventing a per-conversation filter.
 - [x] **V4 — cut `crates/goble-web`.** The crate, `scripts/build-web.sh` and the
   checked-in `crates/goble-gateway/web/` bundle are gone; the gateway's `/app/`
   route stays and serves whatever `--web-dir` points at, with the fallback page
@@ -105,3 +120,12 @@ lists into their cards, opened the shell with `mod+2` and `mod+n`, returned with
 `mod+1`, focused the composer with `mod+k` and left the shell and conversation
 with Escape with no console or page error. No real gateway or worker was
 involved, and a host without `/api/workers` keeps the demo shell.
+
+The wide composition was gated from scratch in this pass: `npm ci` → exit 0;
+`npm run typecheck` → exit 0 for `@goble/common`, `@goble/mobile` and
+`@goble/web`; `npm run web:build` → exit 0 exporting `apps/web/dist`;
+`npm run web:size` → accepted at 1736.1 KB raw / 475.9 KB gzip / 1090.6 KB
+largest. **Not verified:** the third column in a browser — this checkout carries
+no headless-browser harness and the container has no Chromium binary, so the
+breakpoint composition and routine rendering were not exercised beyond
+typecheck and the export.

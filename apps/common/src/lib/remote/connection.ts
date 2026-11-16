@@ -163,6 +163,43 @@ class Connection {
     }
   }
 
+  /**
+   * Take the gateway this page is served from as the paired one.
+   *
+   * The web export is mounted at `/app/` behind the gateway's own PIN login, so
+   * the browser already holds the `HttpOnly` session cookie: there is no PIN to
+   * ask for and no bearer token to keep. Both `/api/workers` and the client
+   * socket accept that cookie, which is why the token stays `null`. This is the
+   * browser counterpart of [`pair`], not a shortcut around it — a page served
+   * from anywhere else still has to pair.
+   */
+  async adoptBrowserSession(url: string): Promise<void> {
+    const normalized = normalizeServerUrl(url);
+    if (!normalized.ok) {
+      this.patch({ phase: "error", error: normalized.error });
+      return;
+    }
+    // A static host — or `expo start --web`, which also serves this page under
+    // `/app` — answers no `/api/workers`. Probe before claiming a gateway, so a
+    // page that is not behind one keeps the demo shell instead of an error.
+    try {
+      await listWorkers(normalized.url, null);
+    } catch {
+      this.patch({ phase: "demo", server: null, status: "idle" });
+      return;
+    }
+    this.token = null;
+    this.patch({
+      phase: "connected",
+      server: normalized.url,
+      workers: [],
+      workerId: null,
+      status: "idle",
+      error: null,
+    });
+    await this.connect();
+  }
+
   /** Point the socket at another worker behind the same gateway. */
   async selectWorker(workerId: string): Promise<void> {
     this.patch({ workerId, error: null });

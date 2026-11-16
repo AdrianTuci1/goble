@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { ReactNode } from "react";
 
 import { tapFeedback } from "../lib/haptics";
-import { palette, radius, space, typography } from "../lib/theme";
+import { palette, radius, space, typography } from "@goble/common";
 
 export function DetailHeader({
   title,

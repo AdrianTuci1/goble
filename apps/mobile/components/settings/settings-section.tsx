@@ -1,7 +1,7 @@
 import { StyleSheet, Text, View } from "react-native";
 import type { ReactNode } from "react";
 
-import { palette, space, typography } from "../../lib/theme";
+import { palette, space, typography } from "@goble/common";
 
 /**
  * A grouped card of settings rows: a muted title above, the card, an optional

@@ -1,7 +1,7 @@
 import { Image, StyleSheet, Text, View } from "react-native";
 
-import { palette, typography } from "../lib/theme";
-import type { ChatMessage } from "../lib/types";
+import { palette, typography } from "@goble/common";
+import type { ChatMessage } from "@goble/common";
 
 const outputColor = "#d6d6d6";
 

@@ -12,8 +12,8 @@ import {
 } from "react-native";
 
 import { tapFeedback } from "../lib/haptics";
-import { palette, space, typography, withAlpha } from "../lib/theme";
-import type { SessionMode } from "../lib/types";
+import { palette, space, typography, withAlpha } from "@goble/common";
+import type { SessionMode } from "@goble/common";
 
 export function Composer({
   mode,

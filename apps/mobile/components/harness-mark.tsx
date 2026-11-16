@@ -1,9 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, View } from "react-native";
 
-import { harnessMark } from "../lib/harness";
-import { sessionStatusColor } from "../lib/theme";
-import type { SessionStatus } from "../lib/types";
+import { harnessMark, sessionStatusColor } from "@goble/common";
+import type { SessionStatus } from "@goble/common";
+
 import { BrandMark } from "./brand-mark";
 
 /** The size the sidebar's rows draw the mark at. */

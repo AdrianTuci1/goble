@@ -16,14 +16,19 @@ import { MenuButton } from "../../components/menu-button";
 import { MenuDivider, MenuRow, Popover } from "../../components/popover";
 import { Screen } from "../../components/screen";
 import { tapFeedback } from "../../lib/haptics";
-import { useOpenDrawer } from "../../lib/navigation";
+import {
+  useOpenDrawer,
+  palette,
+  radius,
+  space,
+  typography,
+} from "@goble/common";
+import type { SessionMode } from "@goble/common";
 import {
   loadPreferences,
   saveDefaultMode,
   saveInstructions,
 } from "../../lib/preferences";
-import { palette, radius, space, typography } from "../../lib/theme";
-import type { SessionMode } from "../../lib/types";
 
 const tabs = [
   { id: "discover", label: "Discover" },

@@ -27,13 +27,12 @@ import { TopBar } from "../../../components/top-bar";
 import { startDictation, type Dictation } from "../../../lib/dictation";
 import {
   pickAttachment,
-  type PickedAttachment,
   type AttachmentSource,
 } from "../../../lib/attachments";
 import { tapFeedback } from "../../../lib/haptics";
-import { takeAttachment } from "../../../lib/pending-attachment";
-import { useOpenDrawer } from "../../../lib/navigation";
 import {
+  takeAttachment,
+  useOpenDrawer,
   demoConversation,
   forgetConversation,
   rememberConversation,
@@ -43,21 +42,33 @@ import {
   setConversationStarred,
   storeConversationMessages,
   subscribeConversations,
-} from "../../../lib/mock";
-import { palette, radius, space, typography, withAlpha } from "../../../lib/theme";
-import { refreshThreads } from "../../../lib/threads";
-import type { ChatMessage, SessionMode, ThinkingLevel } from "../../../lib/types";
+  palette,
+  radius,
+  space,
+  typography,
+  withAlpha,
+  refreshThreads,
+  startTurn,
+  useConnection,
+  uploadAttachment,
+  requestChats,
+  useTerminal,
+  useModelChoices,
+  type Turn,
+} from "@goble/common";
+import type {
+  ChatMessage,
+  SessionMode,
+  ThinkingLevel,
+  CommandDecision,
+  PickedAttachment,
+} from "@goble/common";
+
 import {
   notifyAgentNeedsHelp,
   notifyRunFinished,
 } from "../../../lib/notifications";
-import { startTurn, type Turn } from "../../../lib/remote/chat";
-import type { CommandDecision } from "../../../lib/remote/protocol";
-import { useConnection } from "../../../lib/remote/connection";
-import { uploadAttachment } from "../../../lib/remote/attachments";
-import { requestChats } from "../../../lib/remote/entities";
-import { useTerminal } from "../../../lib/remote/terminal";
-import { useModelChoices } from "../../../lib/use-models";
+
 import { useVoicePreferences } from "../../../lib/use-voice";
 import { voiceProvider } from "../../../lib/voice";
 import type { ScrollViewInstance } from "react-native";

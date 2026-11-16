@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { tapFeedback } from "../../lib/haptics";
-import { palette, radius, space } from "../../lib/theme";
+import { palette, radius, space } from "@goble/common";
 
 /** A compact choice strip, used for modes and thinking levels. */
 export function SettingsSegmented<T extends string>({

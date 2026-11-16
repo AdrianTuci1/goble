@@ -82,3 +82,13 @@ export interface HomeSnapshot {
   updatedAt: string;
   source: DataSource;
 }
+
+/** An image the composer holds, with its bytes ready for the worker. */
+export interface PickedAttachment {
+  /** Local URI, used for the preview in the transcript and the composer. */
+  uri: string;
+  name: string;
+  mime: string;
+  /** Base64 of the file's bytes. Empty when the platform gave no bytes. */
+  base64: string;
+}

@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from "react-native";
 
-import { mono, palette, radius } from "../lib/theme";
+import { mono, palette, radius } from "@goble/common";
 
 export function BrandMark({ size = 30 }: { size?: number }) {
   return (

@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { tapFeedback } from "../lib/haptics";
-import { palette, radius, space, typography } from "../lib/theme";
+import { palette, radius, space, typography } from "@goble/common";
 import type { ComponentProps } from "react";
 
 type IconName = ComponentProps<typeof Ionicons>["name"];

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { StyleSheet, Text } from "react-native";
 
-import { palette, space, typography } from "../../lib/theme";
+import { palette, space, typography } from "@goble/common";
 import { SettingsPage } from "./settings-page";
 import { SettingsRow } from "./settings-row";
 import { SettingsSearchField } from "./settings-search-field";

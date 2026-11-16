@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { palette, space, typography } from "../lib/theme";
+import { palette, space, typography } from "@goble/common";
 
 export function SectionHeader({
   title,

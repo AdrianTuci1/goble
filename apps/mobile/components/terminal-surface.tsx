@@ -12,11 +12,9 @@ import {
 } from "react-native";
 
 import { tapFeedback } from "../lib/haptics";
-import { palette, radius, space, typography } from "../lib/theme";
-import type {
-  TerminalSession,
-  TerminalSnapshot,
-} from "../lib/remote/terminal";
+import { palette, radius, space, typography } from "@goble/common";
+import type { TerminalSession, TerminalSnapshot } from "@goble/common";
+
 import { PulseDot } from "./pulse-dot";
 
 /**

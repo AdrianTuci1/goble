@@ -1,4 +1,4 @@
-import type { PickedAttachment } from "./attachments";
+import type { PickedAttachment } from "./types";
 
 /**
  * The image a Home composer handed to the session it is opening.

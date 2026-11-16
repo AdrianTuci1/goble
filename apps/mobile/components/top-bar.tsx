@@ -3,8 +3,9 @@ import type { ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { tapFeedback } from "../lib/haptics";
-import { palette, space, typography } from "../lib/theme";
-import type { Model } from "../lib/types";
+import { palette, space, typography } from "@goble/common";
+import type { Model } from "@goble/common";
+
 import { MenuButton } from "./menu-button";
 
 export function TopBar({

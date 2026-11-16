@@ -7,14 +7,17 @@ import { SettingsSection } from "../../../components/settings/settings-section";
 import {
   DEFAULT_MODEL_PREFERENCES,
   loadModelPreferences,
+  saveModelPreferences,
+  palette,
+  typography,
+  type ModelPreferences,
+} from "@goble/common";
+import type { SessionMode, ThinkingLevel } from "@goble/common";
+import {
   loadPreferences,
   saveDefaultMode,
   saveInstructions,
-  saveModelPreferences,
-  type ModelPreferences,
 } from "../../../lib/preferences";
-import { palette, typography } from "../../../lib/theme";
-import type { SessionMode, ThinkingLevel } from "../../../lib/types";
 
 const modes: { id: SessionMode; label: string }[] = [
   { id: "agent", label: "Agent" },

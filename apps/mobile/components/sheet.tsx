@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { palette, radius, space } from "../lib/theme";
+import { palette, radius, space } from "@goble/common";
 
 /** Shared bottom sheet: overlay, grab handle and safe-area padding. */
 export function Sheet({

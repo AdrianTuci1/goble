@@ -9,7 +9,7 @@ import {
 } from "react-native";
 import type { ReactNode } from "react";
 
-import { palette, space } from "../lib/theme";
+import { palette, space } from "@goble/common";
 
 export function Screen({
   children,

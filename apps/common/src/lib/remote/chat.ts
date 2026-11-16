@@ -1,6 +1,17 @@
-import { notifyAgentNeedsHelp, notifyRunFinished } from "../notifications";
 import { connection } from "./connection";
 import type { AgentSpec, CommandDecision } from "./protocol";
+
+/** The alerts the host app raises for a turn that outlived its screen. */
+export interface TurnNotifier {
+  runFinished(title: string): void;
+  agentNeedsHelp(title: string): void;
+}
+
+let notifier: TurnNotifier | null = null;
+
+export function configureTurnNotifier(next: TurnNotifier): void {
+  notifier = next;
+}
 
 /** One turn's stream, as the session screen wants it. */
 export interface TurnHandlers {
@@ -60,13 +71,13 @@ function watchAbandoned() {
     switch (message.kind) {
       case "agent_finished":
         abandoned.delete(message.trace_id);
-        void notifyRunFinished(title);
+        notifier?.runFinished(title);
         break;
       case "ask_user":
       case "command_proposed":
         // The run waits on a decision nobody is looking at.
         abandoned.delete(message.trace_id);
-        void notifyAgentNeedsHelp(title);
+        notifier?.agentNeedsHelp(title);
         break;
       default:
         break;

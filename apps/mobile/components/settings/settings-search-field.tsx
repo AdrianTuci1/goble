@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
-import { palette, radius, space, typography } from "../../lib/theme";
+import { palette, radius, space, typography } from "@goble/common";
 
 /** A rounded search field that filters a settings list in place. */
 export function SettingsSearchField({

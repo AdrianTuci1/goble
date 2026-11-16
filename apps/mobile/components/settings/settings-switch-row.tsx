@@ -1,7 +1,7 @@
 import { Switch } from "react-native";
 
 import { tapFeedback } from "../../lib/haptics";
-import { palette } from "../../lib/theme";
+import { palette } from "@goble/common";
 import { SettingsRowBody, type SettingsIconName } from "./settings-row";
 
 /** A settings row with a switch on the right. */

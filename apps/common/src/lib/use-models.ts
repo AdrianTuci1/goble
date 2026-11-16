@@ -6,7 +6,7 @@ import {
   loadModelPreferences,
   subscribeModelPreferences,
   type ModelPreferences,
-} from "./preferences";
+} from "./model-preferences";
 import type { Model } from "./types";
 
 /**

@@ -3,8 +3,9 @@ import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { tapFeedback } from "../lib/haptics";
-import { palette, radius, space, typography } from "../lib/theme";
-import type { Conversation } from "../lib/types";
+import { palette, radius, space, typography } from "@goble/common";
+import type { Conversation } from "@goble/common";
+
 import { MenuRow, Popover } from "./popover";
 
 type MenuView = "actions" | "rename" | "delete";

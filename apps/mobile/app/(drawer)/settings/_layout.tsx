@@ -1,6 +1,6 @@
 import { Stack } from "expo-router";
 
-import { palette } from "../../../lib/theme";
+import { palette } from "@goble/common";
 
 export default function SettingsLayout() {
   return (

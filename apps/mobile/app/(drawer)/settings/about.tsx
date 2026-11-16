@@ -5,8 +5,8 @@ import { BrandMark } from "../../../components/brand-mark";
 import { SettingsPage } from "../../../components/settings/settings-page";
 import { SettingsRow } from "../../../components/settings/settings-row";
 import { SettingsSection } from "../../../components/settings/settings-section";
-import { hostLabel } from "@goble/common";
-import { palette, space, typography } from "../../../lib/theme";
+import { hostLabel, palette, space, typography } from "@goble/common";
+
 import { useWorkspace } from "../../../lib/use-workspace";
 
 export default function AboutSettingsScreen() {

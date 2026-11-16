@@ -6,12 +6,12 @@ import {
   loadGatewaySession,
   loadServerUrl,
   loadWorkerId,
-  normalizeServerUrl,
   saveAuthMode,
   saveGatewaySession,
   saveServerUrl,
   saveWorkerId,
-} from "../api";
+} from "./session-store";
+import { normalizeServerUrl } from "./server-url";
 import {
   GatewayError,
   listWorkers,

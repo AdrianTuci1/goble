@@ -25,17 +25,21 @@ import {
 import {
   LOCAL_GATEWAY,
   loadKnownServers,
-  normalizeServerUrl,
   probeServer,
   rememberServer,
-  saveAuthMode,
   signOut,
   type KnownServer,
 } from "../lib/api";
-import { connection } from "../lib/remote/connection";
-import { hostLabel } from "@goble/common";
+import {
+  connection,
+  hostLabel,
+  normalizeServerUrl,
+  saveAuthMode,
+  palette,
+  radius,
+  space,
+} from "@goble/common";
 import { successFeedback, tapFeedback } from "../lib/haptics";
-import { palette, radius, space } from "../lib/theme";
 
 const LOCAL_SERVER: KnownServer = {
   url: LOCAL_GATEWAY,

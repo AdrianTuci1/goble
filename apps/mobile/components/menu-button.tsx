@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Pressable, StyleSheet } from "react-native";
 
 import { tapFeedback } from "../lib/haptics";
-import { palette, radius } from "../lib/theme";
+import { palette, radius } from "@goble/common";
 
 export function MenuButton({ onPress }: { onPress: () => void }) {
   return (

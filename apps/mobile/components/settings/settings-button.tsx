@@ -6,7 +6,7 @@ import {
 } from "react-native";
 
 import { tapFeedback } from "../../lib/haptics";
-import { palette, radius } from "../../lib/theme";
+import { palette, radius } from "@goble/common";
 
 /**
  * The filled action T3 draws for the one thing a page is for: light surface,

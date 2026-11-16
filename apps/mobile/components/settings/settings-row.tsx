@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { ComponentProps, ReactNode } from "react";
 
 import { tapFeedback } from "../../lib/haptics";
-import { palette, space, typography, withAlpha } from "../../lib/theme";
+import { palette, space, typography, withAlpha } from "@goble/common";
 
 export type SettingsIconName = ComponentProps<typeof Ionicons>["name"];
 

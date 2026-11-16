@@ -75,3 +75,72 @@ export interface Platform {
   recorder: AudioRecorder;
   files: FileSystem;
 }
+
+/**
+ * The registry a shell fills in at boot.
+ *
+ * The interfaces above describe every capability; a shell only has to hand over
+ * the ones the shared code reaches for today. Anything it leaves out keeps the
+ * default below, which is what the web export gets for free: `localStorage`
+ * when the host has it, and no-ops when it does not.
+ */
+export type PlatformOverrides = Partial<Platform>;
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof globalThis.localStorage === "undefined"
+      ? null
+      : globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+const memory = new Map<string, string>();
+
+const defaultStorage: SecureStorage = {
+  async get(key) {
+    const browser = browserStorage();
+    if (browser) return browser.getItem(key);
+    return memory.get(key) ?? null;
+  },
+  async set(key, value) {
+    const browser = browserStorage();
+    if (browser) {
+      browser.setItem(key, value);
+      return;
+    }
+    memory.set(key, value);
+  },
+  async remove(key) {
+    const browser = browserStorage();
+    if (browser) {
+      browser.removeItem(key);
+      return;
+    }
+    memory.delete(key);
+  },
+};
+
+const defaultHaptics: Haptics = {
+  tap() {},
+  success() {},
+  error() {},
+};
+
+let storage: SecureStorage = defaultStorage;
+let haptics: Haptics = defaultHaptics;
+
+/** Called once by a shell at boot, before anything reads a stored value. */
+export function configurePlatform(overrides: PlatformOverrides): void {
+  if (overrides.storage) storage = overrides.storage;
+  if (overrides.haptics) haptics = overrides.haptics;
+}
+
+export function getPlatformStorage(): SecureStorage {
+  return storage;
+}
+
+export function getPlatformHaptics(): Haptics {
+  return haptics;
+}

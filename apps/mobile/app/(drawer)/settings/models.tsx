@@ -4,9 +4,11 @@ import { SettingsPage } from "../../../components/settings/settings-page";
 import { SettingsRow } from "../../../components/settings/settings-row";
 import { SettingsSection } from "../../../components/settings/settings-section";
 import { SettingsSwitchRow } from "../../../components/settings/settings-switch-row";
-import { demoModels } from "../../../lib/mock";
-import { saveModelPreferences } from "../../../lib/preferences";
-import { useModelChoices } from "../../../lib/use-models";
+import {
+  demoModels,
+  saveModelPreferences,
+  useModelChoices,
+} from "@goble/common";
 
 export default function ModelsSettingsScreen() {
   const { allModels, defaultModel, models, preferences } = useModelChoices();

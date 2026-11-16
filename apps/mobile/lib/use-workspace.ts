@@ -2,8 +2,8 @@ import { useCallback, useState } from "react";
 import { useFocusEffect } from "expo-router";
 
 import { fetchHome } from "./api";
-import { demoSnapshot } from "./mock";
-import type { HomeSnapshot } from "./types";
+import { demoSnapshot } from "@goble/common";
+import type { HomeSnapshot } from "@goble/common";
 
 export function useWorkspace() {
   const [snapshot, setSnapshot] = useState<HomeSnapshot>(() => demoSnapshot());

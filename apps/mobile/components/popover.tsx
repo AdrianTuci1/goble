@@ -10,7 +10,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
-import { palette, radius, space, withAlpha } from "../lib/theme";
+import { palette, radius, space, withAlpha } from "@goble/common";
 
 type IconName = ComponentProps<typeof Ionicons>["name"];
 

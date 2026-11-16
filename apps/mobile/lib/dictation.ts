@@ -1,5 +1,5 @@
-import { connection } from "./remote/connection";
-import { transcribeAudio } from "./remote/transcribe";
+import { connection, transcribeAudio } from "@goble/common";
+
 import { SegmentRecorder, type RecordedSegment } from "./recorder";
 
 /**

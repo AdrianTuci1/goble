@@ -11,8 +11,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import type { ReactNode } from "react";
 
 import { tapFeedback } from "../../lib/haptics";
-import { useOpenDrawer } from "../../lib/navigation";
-import { palette, radius, space } from "../../lib/theme";
+import { useOpenDrawer, palette, radius, space } from "@goble/common";
+
 import { MenuButton } from "../menu-button";
 
 const SCREEN_PADDING = 20;

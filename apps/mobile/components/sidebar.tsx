@@ -5,18 +5,21 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { tapFeedback } from "../lib/haptics";
-import { harnessMark } from "../lib/harness";
-import { demoConversations, subscribeConversations } from "../lib/mock";
-import { useConnection } from "../lib/remote/connection";
-import { threadConversation, useWorkerThreads } from "../lib/threads";
 import {
+  harnessMark,
+  demoConversations,
+  subscribeConversations,
+  useConnection,
+  threadConversation,
+  useWorkerThreads,
   palette,
   radius,
   sessionStatusLabel,
   space,
   typography,
-} from "../lib/theme";
-import type { Conversation } from "../lib/types";
+} from "@goble/common";
+import type { Conversation } from "@goble/common";
+
 import { Avatar } from "./avatar";
 import { BrandMark } from "./brand-mark";
 import { HarnessMark } from "./harness-mark";

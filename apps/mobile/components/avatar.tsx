@@ -1,7 +1,7 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { StyleSheet, Text, View } from "react-native";
 
-import { palette, typography } from "../lib/theme";
+import { palette, typography } from "@goble/common";
 
 export function Avatar({ size = 34 }: { size?: number }) {
   return (

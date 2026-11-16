@@ -3,8 +3,9 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { AttachmentSource } from "../lib/attachments";
 import { tapFeedback } from "../lib/haptics";
-import { palette, radius, space, typography, withAlpha } from "../lib/theme";
-import type { SessionMode } from "../lib/types";
+import { palette, radius, space, typography, withAlpha } from "@goble/common";
+import type { SessionMode } from "@goble/common";
+
 import { Sheet } from "./sheet";
 
 const modes = [

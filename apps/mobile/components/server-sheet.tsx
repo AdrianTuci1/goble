@@ -2,10 +2,17 @@ import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { normalizeServerUrl, type KnownServer } from "../lib/api";
-import { hostLabel } from "@goble/common";
+import type { KnownServer } from "../lib/api";
+import {
+  hostLabel,
+  normalizeServerUrl,
+  palette,
+  radius,
+  space,
+  typography,
+} from "@goble/common";
 import { tapFeedback } from "../lib/haptics";
-import { palette, radius, space, typography } from "../lib/theme";
+
 import { Sheet } from "./sheet";
 
 export function ServerSheet({

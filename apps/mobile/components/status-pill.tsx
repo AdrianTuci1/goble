@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from "react-native";
 
-import { palette, radius, space, typography } from "../lib/theme";
+import { palette, radius, space, typography } from "@goble/common";
 
 export type ConnectionState = "online" | "offline" | "demo";
 

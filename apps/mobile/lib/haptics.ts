@@ -18,3 +18,10 @@ export function successFeedback(): void {
     () => undefined,
   );
 }
+
+export function errorFeedback(): void {
+  if (!enabled) return;
+  void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
+    () => undefined,
+  );
+}

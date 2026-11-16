@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Animated, StyleSheet, View } from "react-native";
 
-import { palette } from "../lib/theme";
+import { palette } from "@goble/common";
 
 export function PulseDot({
   color = palette.success,

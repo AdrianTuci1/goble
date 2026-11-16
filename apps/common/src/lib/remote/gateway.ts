@@ -1,4 +1,4 @@
-import { normalizeServerUrl } from "../api";
+import { normalizeServerUrl } from "./server-url";
 
 /** One worker behind the gateway, as `/api/v1/workers` reports it. */
 export interface WorkerSummary {

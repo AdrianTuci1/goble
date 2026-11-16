@@ -7,7 +7,7 @@ import {
   type TextStyle,
 } from "react-native";
 
-import { mono, palette } from "../lib/theme";
+import { mono, palette } from "@goble/common";
 
 /** The inline styles a single run can carry at once. */
 export type RichStyle = {

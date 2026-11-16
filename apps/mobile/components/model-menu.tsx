@@ -11,8 +11,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { tapFeedback } from "../lib/haptics";
-import { palette, radius, space, typography, withAlpha } from "../lib/theme";
-import type { Model, ThinkingLevel } from "../lib/types";
+import { palette, radius, space, typography, withAlpha } from "@goble/common";
+import type { Model, ThinkingLevel } from "@goble/common";
 
 const levels: { id: ThinkingLevel; label: string; detail: string }[] = [
   { id: "low", label: "Low", detail: "Shortest reasoning" },

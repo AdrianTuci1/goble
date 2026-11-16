@@ -25,6 +25,9 @@ export default function DrawerLayout() {
       <Drawer.Screen name="index" options={{ title: "Home" }} />
       <Drawer.Screen name="agents" options={{ title: "Agents" }} />
       <Drawer.Screen name="scheduled" options={{ title: "Scheduled" }} />
+      <Drawer.Screen name="subagents" options={{ title: "Subagents" }} />
+      <Drawer.Screen name="workflows" options={{ title: "Workflows" }} />
+      <Drawer.Screen name="runs" options={{ title: "Runs" }} />
       <Drawer.Screen name="customize" options={{ title: "Customize" }} />
       <Drawer.Screen name="voice" options={{ title: "Voice" }} />
       <Drawer.Screen name="settings" options={{ title: "Settings" }} />

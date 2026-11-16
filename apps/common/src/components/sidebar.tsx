@@ -59,6 +59,9 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
 
   const agentsActive = pathname.startsWith("/agents");
   const scheduledActive = pathname.startsWith("/scheduled");
+  const subagentsActive = pathname.startsWith("/subagents");
+  const workflowsActive = pathname.startsWith("/workflows");
+  const runsActive = pathname.startsWith("/runs");
   const customizeActive = pathname.startsWith("/customize");
 
   return (
@@ -129,6 +132,58 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
             <Ionicons name="calendar-outline" size={18} color={palette.muted} />
           </View>
           <Text style={styles.actionLabel}>Scheduled</Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: subagentsActive }}
+          onPress={() => go("/subagents")}
+          style={({ pressed }) => [
+            styles.action,
+            subagentsActive && styles.actionActive,
+            pressed && styles.pressed,
+          ]}
+        >
+          <View style={styles.actionIcon}>
+            <Ionicons
+              name="git-branch-outline"
+              size={18}
+              color={palette.muted}
+            />
+          </View>
+          <Text style={styles.actionLabel}>Subagents</Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: workflowsActive }}
+          onPress={() => go("/workflows")}
+          style={({ pressed }) => [
+            styles.action,
+            workflowsActive && styles.actionActive,
+            pressed && styles.pressed,
+          ]}
+        >
+          <View style={styles.actionIcon}>
+            <Ionicons name="layers-outline" size={18} color={palette.muted} />
+          </View>
+          <Text style={styles.actionLabel}>Workflows</Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: runsActive }}
+          onPress={() => go("/runs")}
+          style={({ pressed }) => [
+            styles.action,
+            runsActive && styles.actionActive,
+            pressed && styles.pressed,
+          ]}
+        >
+          <View style={styles.actionIcon}>
+            <Ionicons name="pulse-outline" size={18} color={palette.muted} />
+          </View>
+          <Text style={styles.actionLabel}>Runs</Text>
         </Pressable>
 
         <Pressable

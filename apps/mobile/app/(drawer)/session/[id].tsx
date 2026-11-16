@@ -46,10 +46,12 @@ import {
   useConnection,
   uploadAttachment,
   requestChats,
+  requestChat,
   useTerminal,
   useModelChoices,
   type Turn,
   type ChatMessage,
+  type RemoteChat,
   type SessionMode,
   type ThinkingLevel,
   type CommandDecision,
@@ -200,19 +202,31 @@ function SessionView() {
   useEffect(() => {
     if (remote.status !== "live" || turnRef.current) return;
     let cancelled = false;
+    const show = (chat: RemoteChat | null) => {
+      if (!chat || chat.messages.length === 0) return;
+      commit(
+        chat.messages.map((message) => ({
+          at: message.created_at,
+          id: message.id,
+          role: message.role === "user" ? "user" : "assistant",
+          text: message.content,
+        })),
+      );
+    };
     void requestChats()
       .then((chats) => {
         if (cancelled) return;
         const chat = chats.find((item) => item.id === id);
-        if (!chat || chat.messages.length === 0) return;
-        commit(
-          chat.messages.map((message) => ({
-            at: message.created_at,
-            id: message.id,
-            role: message.role === "user" ? "user" : "assistant",
-            text: message.content,
-          })),
-        );
+        if (chat) {
+          show(chat);
+          return;
+        }
+        // A subagent's child chat is not in the top-level list, so ask the
+        // worker for it by id. A brand-new session has nothing stored yet.
+        if (id === "new") return;
+        return requestChat(id).then((child) => {
+          if (!cancelled) show(child);
+        });
       })
       .catch(() => {
         // A worker that cannot list conversations keeps the local transcript.

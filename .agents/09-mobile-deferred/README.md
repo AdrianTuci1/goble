@@ -1,12 +1,12 @@
 # 09 — Mobile client (deferred)
 
-**Status:** `[ ]` deferred — direction recorded
-**Owns:** a future Kotlin app (Android/iOS) doing the same thing
+**Status:** `[x]` shipped — the Expo/React Native TypeScript client in `apps/mobile`
+**Owns:** the Expo/React Native TypeScript client in `apps/mobile` (Android/iOS) doing the same thing
 **Depends on:** [`../05-execution-router-and-targets/runtime-targets.md`](../05-execution-router-and-targets/runtime-targets.md), [`../03-workspace-model/workspace.md`](../03-workspace-model/workspace.md), [`../08-threads-deferred/README.md`](../08-threads-deferred/README.md)
 
 ## Direction
 
-The mobile app runs the **same product** — the same workspace model, routers, harness and threads — but on Android/iOS (Kotlin). It will not run the harness locally; it connects to a workspace.
+The mobile client ships as the **Expo/React Native TypeScript app in `apps/mobile`**, not a Kotlin app, and runs the **same product** as the Expo desktop shell in `apps/web` — the same workspace model, routers, harness and threads — on Android/iOS. Both shells import the shared TypeScript layer in `apps/common` (`@goble/common`): domain types, the remote gateway/relay client, components and theme. The mobile client does not run the harness locally; it connects to a workspace. The former Rust/wasm browser client is gone, so the gateway now serves the Expo web export built from `apps/web`.
 
 ## Key architectural idea
 
@@ -24,10 +24,10 @@ The mobile app runs the **same product** — the same workspace model, routers, 
 
 ## Non-goals
 
-- No mobile build in this milestone. This doc only records the forward-compatibility constraints.
+- No packaged app-store release in this milestone; `apps/mobile` ships the Expo shell, and this doc only records the forward-compatibility constraints.
 
 ## Tasks (when this is picked up)
 
 - [ ] Wire the local machine as a Tailscale-exposed worker (self-as-worker target).
 - [ ] Confirm the client/workspace + harness event contracts are mobile-friendly (transport-agnostic).
-- [ ] Scaffold the Kotlin client against the same workspace/routing contract.
+- [x] Scaffold the Expo/React Native client in `apps/mobile` against the same workspace/routing contract.

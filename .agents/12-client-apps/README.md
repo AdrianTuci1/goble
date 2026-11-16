@@ -1,6 +1,6 @@
 # 12 — Client apps: `common` / `web` / `mobile`
 
-**Status:** `[~]` in progress — wave 1 landed, waves 2–5 pending
+**Status:** `[x]` landed — waves 1–4 done; V5 done except the bundle-size gate
 **Owns:** the TypeScript client: the shared core and the two shells over it
 **Supersedes:** the Rust/WASM browser client (`crates/goble-web`), marked stale on 2026-11-15
 
@@ -30,27 +30,45 @@ app** and are out of scope: that surface is Rust and stays Rust.
   so Metro follows the workspace link; the platform interface set in
   `src/platform/index.ts`; a `js / typecheck` CI job (+ `apps/**` in the path
   filters, which previously could not trigger anything).
-- [ ] **V2 — extract the shared core.** Move `lib/remote/*`, `theme.ts`,
-  `format.ts`, `types.ts`, `threads.ts`, the hooks and the platform-neutral
-  components out of `apps/mobile` into `apps/common`, behind the `@common/*`
-  import. Every `expo-*` import becomes a `Platform` interface implemented by the
-  shell. `tsc --noEmit` must stay green per move.
-- [ ] **V3 — `apps/web`.** The Expo web shell over `@goble/common` with a desktop
-  layout (permanent sidebar instead of a drawer, keyboard shortcuts, wide
-  composition), no native modules; `expo export --platform web` produces the
-  bundle.
-- [ ] **V4 — cut `crates/goble-web`.** Delete the crate and `scripts/build-web.sh`;
-  the gateway keeps serving `/app/` from `crates/goble-gateway/web/`, now filled
-  by the Expo export; rewrite the "no bundle" page in `web.rs` and the two tests
-  that assert the wasm build command (`web.rs`, `tests/gateway.rs`); update
-  `docs/remote-sandboxes.md` and `.agents/11-relay-and-hub/*`.
-- [ ] **V5 — gates and docs.** CI builds the web export and fails on a size
-  regression; `docs/PROJECT_STRUCTURE.md` gains an `apps/` section;
-  `.agents/09-mobile-deferred/README.md` (still describing a Kotlin app) is
-  rewritten or folded into this doc.
+- [x] **V2 — extract the shared core.** `lib/remote/*` (protocol, socket,
+  gateway, connection, entities, sessions, attachments, transcribe), `theme.ts`,
+  `format.ts`, `types.ts`, `threads.ts`, `use-models.ts`, `harness.ts`, `mock.ts`,
+  `navigation.ts` and `pending-attachment.ts` moved to `apps/common/src/lib/`,
+  behind the `@goble/common` import. Two seams were cut out of mobile-only code
+  so the move stayed honest: `server-url.ts` and `session-store.ts` (persistence
+  through the platform registry), and `model-preferences.ts`. The runtime
+  registry (`configurePlatform` / `getPlatformStorage` / `getPlatformHaptics`)
+  is what a shell fills in at boot; defaults are `localStorage` when present and
+  no-ops otherwise. `apps/mobile/lib/platform.ts` hands it `expo-secure-store`
+  and `expo-haptics`. Left in the shell because they need a native module or the
+  router: `api.ts`, `attachments.ts`, `notifications.ts`, `preferences.ts`,
+  `recorder.ts`, `voice.ts`, `dictation.ts`, `use-voice.ts`, `haptics.ts`,
+  `use-workspace.ts`.
+- [x] **V3 — `apps/web`.** An Expo-web-only shell over `@goble/common`: a
+  permanent 280px sidebar, a header with a live connection `StatusPill`, the
+  gateway/worker state read from the shared remote client, and an honest
+  `EmptyState` pane ("no session selected") instead of mock conversations. Still
+  missing, next: rendering a session/terminal in the pane, keyboard shortcuts and
+  a wide composition beyond the sidebar layout.
+- [x] **V4 — cut `crates/goble-web`.** The crate, `scripts/build-web.sh` and the
+  checked-in `crates/goble-gateway/web/` bundle are gone; the gateway's `/app/`
+  route stays and serves whatever `--web-dir` points at, with the fallback page
+  in `web.rs` now naming `npm ci` + `npm run web:build` and `apps/web/dist`. The
+  two tests that asserted the wasm command (`web.rs`, `tests/gateway.rs`) assert
+  the new text.
+- [~] **V5 — gates and docs.** The `js / typecheck + web build` CI job runs
+  `npm ci`, `npm run typecheck` and `npm run web:build` on Node 24 and uploads
+  `apps/web/dist`; `docs/PROJECT_STRUCTURE.md` gained an `apps/` section and
+  `.agents/09-mobile-deferred/README.md` no longer describes a Kotlin app.
+  **Open:** the size-regression gate — CI uploads the export but does not fail on
+  a bundle that grows.
 
-## Verified so far
+## Verified
 
-`npm install` at the root links `node_modules/@goble/common` → `apps/common`;
-`npm run check --workspaces --if-present` is green for `@goble/common` and
-`@goble/mobile`; `npm ci --dry-run` accepts the root lockfile.
+`npm ci` at the root installs one hoisted tree (`@goble/common` linked from
+`node_modules`); `npm run typecheck` is green for `@goble/common`, `@goble/mobile`
+and `@goble/web`; `npm run web:build` exports `apps/web/dist` (entry ≈1.1 MB,
+shared chunk ≈630 KB); `npx expo export --platform web` still exports the phone
+shell. `cargo` was **not** run for V4 — there is no Rust toolchain in this
+environment, so the gateway edits are verified by reading and grep, not by
+`cargo test -p goble-gateway`.

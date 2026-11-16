@@ -28,11 +28,11 @@ on:
       - 'crates/goble-replay/**'
       - 'crates/goble-sandbox/**'
       - 'crates/goble-workflow/**'
-      # js / typecheck
+      # js / typecheck + web build
       - 'apps/**'
       - 'package.json'
       - 'package-lock.json'
-      # both jobs
+      # all jobs
       - '.config/nextest.toml'
       - '.github/workflows/ci.yml'
   pull_request:
@@ -54,11 +54,11 @@ on:
       - 'crates/goble-replay/**'
       - 'crates/goble-sandbox/**'
       - 'crates/goble-workflow/**'
-      # js / typecheck
+      # js / typecheck + web build
       - 'apps/**'
       - 'package.json'
       - 'package-lock.json'
-      # both jobs
+      # all jobs
       - '.config/nextest.toml'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
@@ -154,7 +154,7 @@ jobs:
   # a shared screen or to the remote protocol reaches `main` with no compiler
   # ever having seen it.
   js-typecheck:
-    name: js / typecheck
+    name: js / typecheck + web build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -173,3 +173,13 @@ jobs:
 
       - name: Typecheck every workspace
         run: npm run check --workspaces --if-present
+
+      - name: Build the Expo web export
+        run: npm run web:build
+
+      - name: Upload the web export
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: apps/web/dist
+          if-no-files-found: error

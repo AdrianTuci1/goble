@@ -14,7 +14,9 @@ grok-build architectural approach (small crates per concern) + warp-new (thick-a
 ```
 goble/
 ├─ Cargo.toml                 # workspace: members = ["app", "crates/*"]
+├─ package.json               # npm workspace: workspaces = ["apps/*"]; typecheck + web:build
 ├─ app/                       # GUIPRODUCT shell (goble-app, native wgpu/winit) → thin client over daemon
+├─ apps/                      # Expo clients: common (shared TS) + mobile (phone) + web (desktop shell)
 ├─ crates/                    # composable crates; the daemon core is framework-agnostic
 ├─ deploy/                    # goblin Dockerfile + goblin-cluster Helm chart
 ├─ scripts/                   # dev-ui.sh, install-goblin.sh, release.sh
@@ -59,6 +61,40 @@ app/src/voice/       # [model-only] microphone + live STT→TTS transcript (kept
 
 Each follows the `ai/` model: `state.rs` + `actions.rs` + `mod.rs`; in `ui/mod.rs` add `XSnapshot` +
 `XActions`; in `root_view.rs` wire up `x_state` + an arm in `drain_events`.
+
+---
+
+## `apps/` — the Expo clients (TypeScript)
+
+The browser and phone clients are one Expo codebase split into three npm workspaces. The root
+`package.json` declares `workspaces: ["apps/*"]`, so one `npm ci` installs a single hoisted
+`node_modules` for all three, and the two scripts that gate them run from the root:
+`npm run typecheck` (`tsc --noEmit` in every package that has a `check`) and `npm run web:build`
+(`expo export --platform web` in `@goble/web`). `.github/workflows/ci.yml` runs both in its
+`js / typecheck + web build` job and uploads `apps/web/dist`.
+
+| Package | Role |
+|---|---|
+| `apps/common` (`@goble/common`) | the shared TypeScript layer: domain types, the remote gateway/relay client (`lib/remote/`), theme, formatting, hooks and the components both shells draw |
+| `apps/mobile` (`@goble/mobile`) | the Expo phone shell (React Native): expo-router screens, native modules, push/voice/attachment hosts; it still exports for web |
+| `apps/web` (`@goble/web`) | the Expo desktop shell: the browser surface `npm run web:build` exports to `apps/web/dist`, which the gateway serves (there is no Rust/wasm web client any more) |
+
+`@goble/common` is not a build artifact: its `package.json` points `main`/`types` at `src/index.ts`,
+so Metro compiles it as part of whichever app imports it. That keeps the phone and the desktop
+shell on the same components while each keeps its own router entry (`expo-router/entry`) and `app/`
+directory. The gateway serves the export from `apps/web/dist` (copied into its `web/` directory or
+pointed at with `--web-dir`).
+
+### Platform registry
+
+`apps/common/src/platform/index.ts` is the seam for capabilities the web and native hosts provide
+differently. It declares `PlatformStorage` (get/set/delete) and `PlatformHaptics` (impact), keeps a
+default implementation, and exposes `configurePlatform` / `getPlatformStorage` /
+`getPlatformHaptics`. Shared code only calls the getters, so `@goble/common` never imports a host
+API directly. Each app registers its implementation by importing its own `lib/platform.ts` before
+rendering: `apps/web` installs `localStorage` and a no-op haptic, `apps/mobile` installs Expo
+SecureStore (native only) and its tap feedback. A host that registers nothing keeps the
+in-memory/browser default.
 
 ---
 

@@ -2,24 +2,28 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind, ToolDisplayMode};
 use crate::elements::chat_message_bubble::{tool_fold_targets, ToolFoldTarget};
+use crate::elements::chat_typography;
 use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
+use crate::elements::popup_menu::POPUP_PANEL_RADIUS;
 use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
-    Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
-    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
-    QuickActionButton, Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip,
-    TooltipPosition, TurnStatusFooter,
+    Container, ContentLane, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
+    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
+    Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
+    TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
+use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, SpacingToken};
 
 use super::sticky::StickyTurn;
+use super::usage_popover::UsagePopover;
 use super::ChatView;
 
 /// How much lower the instruction strip sits than the block's own inset put
 /// it: the strip belongs to the input under it, and the caps read as that
-/// input's row only when they hug the separator over it.
+/// input's row only when they hug the input card under them.
 pub(super) const STRIP_RISE: f32 = 6.0;
 
 /// What the whole-transcript filter bar's field says when it is empty.
@@ -45,6 +49,88 @@ fn group_digits(value: u64) -> String {
         out.push(ch);
     }
     out
+}
+
+/// A compact token count, DSH's `formatTokens`: `517`, `12.3K`, `517K`,
+/// `1.2M` — one decimal below a hundred units, whole numbers at or above it.
+pub(super) fn compact_tokens(value: u64) -> String {
+    fn scaled(candidate: f64) -> String {
+        if candidate >= 100.0 {
+            return format!("{}", candidate.round() as u64);
+        }
+        let rounded = (candidate * 10.0).round() / 10.0;
+        if rounded.fract().abs() < f64::EPSILON {
+            format!("{}", rounded as u64)
+        } else {
+            format!("{rounded:.1}")
+        }
+    }
+    if value < 1_000 {
+        return value.to_string();
+    }
+    if value < 1_000_000 {
+        return format!("{}K", scaled(value as f64 / 1_000.0));
+    }
+    format!("{}M", scaled(value as f64 / 1_000_000.0))
+}
+
+/// The cache-hit share of the prompt side, DSH's `formatCacheHitPercent` with
+/// one decimal place: nearest 0.1% with ties up, and never a 100% reading for
+/// a partial hit (`units >= 1000` while some input missed the cache caps at
+/// `99.9`, which understates by less than a tenth of a percent rather than
+/// claiming a full hit).
+///
+/// `None` when the provider reported no prompt tokens at all: there is no
+/// share to state. A `cached` of `Some(0)` is a *reported* miss and reads
+/// `0%`; only `None` (unknown) omits the row.
+pub(super) fn cache_hit_percent(cached: u64, input: u64) -> Option<String> {
+    if input == 0 {
+        return None;
+    }
+    let cached = cached.min(input);
+    let missed = input.saturating_sub(cached);
+    if missed == 0 {
+        return Some("100".to_string());
+    }
+    let units = (cached as u128 * 2000 + input as u128) / (2 * input as u128);
+    if units >= 1_000 {
+        return Some("99.9".to_string());
+    }
+    let whole = units / 10;
+    let tenths = units % 10;
+    if tenths == 0 {
+        Some(format!("{whole}%"))
+    } else {
+        Some(format!("{whole}.{tenths}%"))
+    }
+}
+
+/// One label/value row of the usage panel: DSH's two-column detail grid, the
+/// label in the muted tier at the leading edge and the exact count in the text
+/// tier at the trailing one.
+fn usage_row(app: &AppContext, label: &str, value: String) -> Box<dyn Element> {
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(16.0)
+        .with_child(
+            Text::new(label)
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_family(chat_typography::chat_font(app))
+                .with_font_size(chat_typography::SMALL_SIZE)
+                .with_line_height(chat_typography::SMALL_LH)
+                .finish(),
+        )
+        .with_child(
+            Text::new(value)
+                .with_theme_color(ColorToken::Text, app)
+                .with_font_family(chat_typography::chat_font(app))
+                .with_font_size(chat_typography::SMALL_SIZE)
+                .with_line_height(chat_typography::SMALL_LH)
+                .finish(),
+        )
+        .finish()
 }
 
 /// The short form of a failed turn's reason: the first non-empty line, with a
@@ -91,10 +177,16 @@ fn brief_failure(message: &str) -> String {
 fn failure_block(error: &str, app: &AppContext) -> Box<dyn Element> {
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let md = app.theme.spacing_px(SpacingToken::Md);
+    let family = chat_typography::chat_font(app);
+    // DSH's turn-failure row: 13 / 20, the title semibold in the error ink and
+    // the reason in the secondary ink. Goble keeps its raised band (the
+    // DSH-style dot column would restructure the transcript for no type gain).
     let reason = Tooltip::new(
         Text::new(brief_failure(error))
-            .with_theme_color(ColorToken::Text, app)
-            .with_font_size(12.0)
+            .with_color(chat_typography::chat_ink_quiet(app))
+            .with_font_family(family)
+            .with_font_size(chat_typography::ROW_SIZE)
+            .with_line_height(chat_typography::ROW_TIGHT_LH)
             .finish(),
         error.to_string(),
     )
@@ -110,7 +202,10 @@ fn failure_block(error: &str, app: &AppContext) -> Box<dyn Element> {
             .with_child(
                 Text::new("Agent turn failed")
                     .with_theme_color(ColorToken::Error, app)
-                    .with_font_size(12.0)
+                    .with_font_family(family)
+                    .with_font_size(chat_typography::ROW_SIZE)
+                    .with_line_height(chat_typography::ROW_TIGHT_LH)
+                    .with_weight(FontWeight::SemiBold)
                     .finish(),
             )
             .with_child(reason)
@@ -355,23 +450,22 @@ impl ChatView {
     /// The conversation's own footer, at the end of its transcript: fork it
     /// into a new one, and the tokens it has spent behind a disclosure.
     ///
-    /// Both are hover affordances — no fill at rest, a band under the pointer,
-    /// the shape the reference tool's response footer gives them — rather than
-    /// the raised controls a button draws. The counts are the provider's own,
-    /// summed over the conversation's model calls: the prompt tokens that
-    /// missed the cache plus the output, which is what the conversation spent
-    /// rather than the size of the calls (the cached share is billed at a
-    /// discount). Nothing here is a price. A
-    /// conversation whose provider has reported nothing yet says so rather than
-    /// drawing a zero, and its disclosure does not open.
+    /// The two affordances are DeepSeek Harness' completed-turn footer, rebuilt
+    /// on Goble's accounting. The usage pill reads the conversation's billed
+    /// tokens (`spend()`: prompt tokens that missed the cache plus generated
+    /// tokens) in DSH's `Usage {count} tok` idiom; a press opens the details
+    /// panel above it. That panel is a floating layer, not a row: the footer
+    /// stays exactly as tall while it is open, and the transcript's scroll and
+    /// selection are untouched.
     ///
-    /// The row is the closing child of the message column, i.e. part of the
-    /// scrolled transcript rather than a sibling of it: `rebuild` hands it to
-    /// the same `Scrollable` the messages go into, so the column's own spacing
-    /// puts it directly under the last message and scrolling carries it away
-    /// with that message instead of stranding it over the composer.
+    /// Both rows rest without a band and band under the pointer, the shape the
+    /// reference tool's footer gives them. The counts are the provider's own,
+    /// summed over the conversation's model calls; nothing here is a price. A
+    /// conversation whose provider has reported nothing yet says so rather than
+    /// drawing a zero, and its slot has no disclosure to open.
     fn build_conversation_footer(&self, app: &AppContext) -> Option<Box<dyn Element>> {
         if self.messages.is_empty() {
+            self.forget_usage_open();
             return None;
         }
         // A turn that is still in flight — including one suspended on a
@@ -379,16 +473,27 @@ impl ChatView {
         // and its spend are read after the agent has finished, not while it is
         // still working.
         if self.turn_status.is_in_flight() || self.composer_proposal.is_some() {
+            self.forget_usage_open();
             return None;
         }
         let has_usage = !self.usage.is_empty();
+        // The empty slot is not a disclosure: a stale open flag from an earlier
+        // conversation must not open a panel of invented figures (or re-open
+        // one on the next completed turn).
+        if !has_usage {
+            self.forget_usage_open();
+        }
         let has_fork = self.on_fork.is_some();
         if !has_fork && !has_usage {
             return None;
         }
         let sm = app.theme.spacing_px(SpacingToken::Sm);
-        let xs = app.theme.spacing_px(SpacingToken::Xs);
-        let padding = EdgeInsets::new(sm, xs, sm, xs);
+        let md = app.theme.spacing_px(SpacingToken::Md);
+        // DSH's pill is 28 px tall with 8 px side padding; the row box carries
+        // the height (a 20 px line + 4 px top and bottom), so both affordances
+        // sit on one baseline.
+        let pill_padding = EdgeInsets::new(8.0, 4.0, 8.0, 4.0);
+        let pill_radius = app.theme.radius_px();
         let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -397,23 +502,28 @@ impl ChatView {
         if let Some(cb) = self.on_fork.clone() {
             let fork = HoverRow::new(
                 Flex::row()
-                    .with_spacing(6.0)
+                    .with_spacing(4.0)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
                         Icon::new("branch")
-                            .with_size(13.0)
+                            .with_size(chat_typography::PILL_ICON)
                             .with_theme_color(ColorToken::Muted, app)
                             .finish(),
                     )
                     .with_child(
                         Text::new("Fork")
                             .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(11.0)
+                            .with_font_family(chat_typography::chat_font(app))
+                            .with_font_size(chat_typography::ROW_SIZE)
+                            // DSH's 13 / 20 fork label; the 20 px line is what
+                            // keeps it on the usage pill's baseline.
+                            .with_line_height(chat_typography::ROW_TIGHT_LH)
                             .finish(),
                     )
                     .finish(),
             )
-            .with_padding(padding)
+            .with_padding(pill_padding)
+            .with_corner_radius(pill_radius)
             .with_on_click(move || (cb.borrow_mut())())
             .finish();
             row = row.with_child(
@@ -425,73 +535,66 @@ impl ChatView {
 
         if has_usage {
             let open = self.usage_open.clone();
-            let is_open = *open.borrow();
-            let label = format!("{} tokens", group_digits(self.usage.spend()));
-            let usage = HoverRow::new(
+            let label = format!("Usage {} tok", compact_tokens(self.usage.spend()));
+            // The pill is DSH's information tier: muted glyph and label, no
+            // chevron, and no tooltip (the click is self-explaining; the panel
+            // carries every number).
+            let pill = HoverRow::new(
                 Flex::row()
-                    .with_spacing(6.0)
+                    .with_spacing(4.0)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
-                        Icon::new("activity")
-                            .with_size(13.0)
-                            .with_theme_color(ColorToken::Accent, app)
+                        Icon::new("database")
+                            .with_size(chat_typography::PILL_ICON)
+                            .with_theme_color(ColorToken::Muted, app)
                             .finish(),
                     )
                     .with_child(
                         Text::new(label)
-                            .with_theme_color(ColorToken::Accent, app)
-                            .with_font_size(11.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .with_font_family(chat_typography::chat_font(app))
+                            .with_font_size(chat_typography::SMALL_SIZE)
+                            .with_line_height(chat_typography::PILL_LH)
+                            .with_max_lines(1)
                             .finish(),
-                    )
-                    .with_child(
-                        Icon::new(if is_open {
-                            "chevron-down"
-                        } else {
-                            "chevron-right"
-                        })
-                        .with_size(12.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
                     )
                     .finish(),
             )
-            .with_padding(padding)
-            .with_on_click(move || {
-                let mut open = open.borrow_mut();
-                *open = !*open;
-            })
+            .with_padding(pill_padding)
+            .with_corner_radius(pill_radius)
             .finish();
-            row = row.with_child(
-                Tooltip::new(
-                    usage,
-                    "Show this conversation's token spend (cache hits excluded)",
-                )
-                .with_position(TooltipPosition::Above)
-                .finish(),
-            );
+            // The panel is built only while it is open: a closed footer pays
+            // nothing for the details surface.
+            let panel = (*open.borrow()).then(|| self.build_usage_panel(app));
+            row = row.with_child(UsagePopover::new(pill, open, panel).finish());
         } else {
             // Nothing reported yet: the slot stays, saying so, so the footer of
             // a conversation that has run turns reads the same as one that has
-            // not — with no number invented to fill it.
+            // not — with no number invented to fill it. It is a reading, not a
+            // control: no hover band, no click, no panel.
             let usage = HoverRow::new(
                 Flex::row()
-                    .with_spacing(6.0)
+                    .with_spacing(4.0)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
-                        Icon::new("activity")
-                            .with_size(13.0)
+                        Icon::new("database")
+                            .with_size(chat_typography::PILL_ICON)
                             .with_theme_color(ColorToken::Muted, app)
                             .finish(),
                     )
                     .with_child(
                         Text::new("no usage yet")
                             .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(11.0)
+                            .with_font_family(chat_typography::chat_font(app))
+                            .with_font_size(chat_typography::SMALL_SIZE)
+                            .with_line_height(chat_typography::PILL_LH)
                             .finish(),
                     )
                     .finish(),
             )
-            .with_padding(padding)
+            .with_padding(pill_padding)
+            .with_corner_radius(pill_radius)
+            .with_quiet_hover()
             .finish();
             row = row.with_child(
                 Tooltip::new(
@@ -504,51 +607,125 @@ impl ChatView {
             );
         }
 
-        let mut column = Flex::column()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_spacing(app.theme.spacing_px(SpacingToken::Xs))
-            .with_child(row.finish());
-        if has_usage && *self.usage_open.borrow() {
-            column = column.with_child(
-                Text::new(self.usage_detail())
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(11.0)
-                    .finish(),
-            );
-        }
         // The room the transcript keeps under its own last row belongs to this
         // row, since it is what the anchored content ends on: without it the
-        // affordances are pressed onto the input's separator, which reads as
+        // affordances are pressed onto the input card, which reads as
         // the input's chrome rather than as the tail of the message above them.
         Some(
             Padding::new(
-                column.finish(),
-                EdgeInsets::new(0.0, 0.0, 0.0, app.theme.spacing_px(SpacingToken::Md)),
+                Flex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                    .with_child(row.finish())
+                    .finish(),
+                EdgeInsets::new(0.0, 0.0, 0.0, md),
             )
             .finish(),
         )
     }
 
-    /// The expanded usage line, shaped like the reference tool's readout: the
-    /// prompt side carries its cached share in parentheses, because the cache is
-    /// a subset of the input rather than a bucket beside it, so the three
-    /// numbers never read as a sum. Then the generated side and the spend the
-    /// meter shows: the prompt tokens that missed the cache plus the output.
-    fn usage_detail(&self) -> String {
-        let input = match self.usage.cached {
-            Some(cached) => format!(
-                "Input {} ({} cached)",
-                group_digits(self.usage.input),
-                group_digits(cached)
-            ),
-            None => format!("Input {}", group_digits(self.usage.input)),
-        };
-        format!(
-            "{input}  ·  Output {}  ·  Spent {}",
-            group_digits(self.usage.output),
-            group_digits(self.usage.spend())
+    /// Reset the app-owned disclosure when the footer is not drawn (or draws no
+    /// usage): otherwise a stale `true` would open the panel — and reveal a
+    /// disclosure — on the next completed turn.
+    fn forget_usage_open(&self) {
+        *self.usage_open.borrow_mut() = false;
+    }
+
+    /// The details panel the footer pill opens, DSH's stat-dialog anatomy on
+    /// Goble's accounting: a title row carrying the exact billed total, a 1px
+    /// rule, then the rows the provider's counts can fill.
+    ///
+    /// DSH's headline is the call size (`totalTokens`); Goble keeps its
+    /// existing cache-aware meter, so the headline is `spend()` — what the
+    /// conversation paid for — and the call size is demoted to the `Total` row
+    /// so no DSH information is lost. `Consumed` is the same Goble-only row
+    /// stated plainly. Rows DSH can show but Goble does not track (provider /
+    /// model routes, cache write, the reasoning subset) are omitted rather than
+    /// drawn as zeros, and a provider without cache accounting gets the plain
+    /// `Input` label instead of a cache split.
+    fn build_usage_panel(&self, app: &AppContext) -> Box<dyn Element> {
+        let usage = &self.usage;
+        let title = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(16.0)
+            .with_child(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(6.0)
+                    .with_child(
+                        Icon::new("database")
+                            .with_size(14.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        Text::new("Turn usage")
+                            .with_theme_color(ColorToken::Text, app)
+                            .with_font_family(chat_typography::chat_font(app))
+                            .with_font_size(chat_typography::SMALL_SIZE)
+                            .with_line_height(chat_typography::SMALL_LH)
+                            .with_weight(FontWeight::Medium)
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_child(
+                Text::new(group_digits(usage.spend()))
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_family(chat_typography::chat_font(app))
+                    .with_font_size(chat_typography::SMALL_SIZE)
+                    .with_line_height(chat_typography::SMALL_LH)
+                    .finish(),
+            )
+            .finish();
+
+        // DSH's `titleRule`: a hairline between the heading and the rows.
+        let rule = Padding::new(
+            Divider::horizontal().finish(),
+            EdgeInsets::new(0.0, 8.0, 0.0, 10.0),
         )
+        .finish();
+
+        let mut rows = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(6.0);
+        if let Some(cached) = usage.cached {
+            // A reported cache split says how much of the prompt the provider
+            // served from its cache. `cached: Some(0)` is a reported miss and
+            // reads 0%; `None` omits the whole split.
+            if usage.input > 0 {
+                if let Some(percent) = cache_hit_percent(cached, usage.input) {
+                    rows = rows.with_child(usage_row(app, "Cache hit", percent));
+                }
+            }
+            rows = rows.with_child(usage_row(
+                app,
+                "Uncached input",
+                group_digits(usage.input.saturating_sub(cached)),
+            ));
+            rows = rows.with_child(usage_row(app, "Cached input", group_digits(cached)));
+        } else {
+            rows = rows.with_child(usage_row(app, "Input", group_digits(usage.input)));
+        }
+        rows = rows.with_child(usage_row(app, "Output", group_digits(usage.output)));
+        rows = rows.with_child(usage_row(app, "Consumed", group_digits(usage.spend())));
+        rows = rows.with_child(usage_row(app, "Total", group_digits(usage.total())));
+
+        Container::new(
+            Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(title)
+                .with_child(rule)
+                .with_child(rows.finish())
+                .finish(),
+        )
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+        .with_corner_radius(POPUP_PANEL_RADIUS)
+        .with_padding(EdgeInsets::uniform(16.0))
+        .finish()
     }
 
     /// Whether the transcript contains at least one terminal output block (so
@@ -611,15 +788,11 @@ impl ChatView {
     pub(super) fn rebuild(&mut self, app: &AppContext, header_height: f32) {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
 
-        let mut column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_spacing(spacing);
-
-        // The pane's chrome — the height the floating bar takes and the
-        // sub-agent strip under it — is one band. The strip continues the bar's
-        // surface, so the column's spacing opens between the band and the
-        // conversation and never inside the band.
+        // The pane's chrome is its own full-width band, OUTSIDE the content
+        // lane: the topbar (the height the floating bar takes) and the work
+        // dock under it. The bar's band paints flush with the pane's slot and
+        // the dock's band spans the pane; only the text and cards inside them
+        // are bounded to the conversation column, which the lane below meters.
         let mut chrome = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         let mut has_chrome = false;
         if header_height > 0.0 && self.header.is_some() {
@@ -633,14 +806,21 @@ impl ChatView {
 
         // The pane's work dock sits directly under the bar and above the
         // conversation: it is chrome around the transcript, so it takes the
-        // slot the header reserved rather than scrolling with the messages.
+        // slot the header reserved rather than scrolling with the messages. It
+        // spans the pane's full width; its cards are bounded to the lane.
         if let Some(dock) = self.work_dock.take() {
             chrome = chrome.with_child(dock);
             has_chrome = true;
         }
-        if has_chrome {
-            column = column.with_child(chrome.finish());
-        }
+        let chrome: Option<Box<dyn Element>> = has_chrome.then(|| chrome.finish());
+
+        // The conversation column under the chrome: the transcript, the input
+        // and the rows between them. The `md` gap below the chrome is the
+        // content's own top padding, so the lane's background carries it.
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_spacing(spacing);
 
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
@@ -757,19 +937,22 @@ impl ChatView {
             if let Some(prompt) = &self.queued_prompt {
                 let sm = app.theme.spacing_px(SpacingToken::Sm);
                 let md = app.theme.spacing_px(SpacingToken::Md);
+                let family = chat_typography::chat_font(app);
                 let mut header = Flex::row()
                     .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
                         Text::new("Pending message")
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
+                            .with_color(chat_typography::chat_ink_quiet(app))
+                            .with_font_family(family)
+                            .with_font_size(chat_typography::ROW_SIZE)
+                            .with_line_height(chat_typography::ROW_LH)
                             .finish(),
                     );
                 if let Some(cb) = self.on_dismiss_queued.clone() {
                     let dismiss = Button::new(
                         Icon::new("x-close")
-                            .with_size(11.0)
+                            .with_size(chat_typography::SMALL_SIZE)
                             .with_theme_color(ColorToken::Muted, app)
                             .finish(),
                     )
@@ -783,7 +966,9 @@ impl ChatView {
                     let send_now = Button::new(
                         Text::new("Send now")
                             .with_theme_color(ColorToken::Bg, app)
-                            .with_font_size(12.0)
+                            .with_font_family(family)
+                            .with_font_size(chat_typography::ROW_SIZE)
+                            .with_line_height(chat_typography::ROW_LH)
                             .finish(),
                     )
                     .with_variant(ButtonVariant::Primary)
@@ -797,9 +982,13 @@ impl ChatView {
                         .with_spacing(sm)
                         .with_child(header.finish())
                         .with_child(
+                            // The queued prompt is the user's own words: DSH's
+                            // 14 / 22 user-message type.
                             Text::new(prompt.clone())
-                                .with_theme_color(ColorToken::Text, app)
-                                .with_font_size(12.0)
+                                .with_color(chat_typography::chat_ink(app))
+                                .with_font_family(family)
+                                .with_font_size(chat_typography::BODY_SIZE)
+                                .with_line_height(chat_typography::USER_LH)
                                 .finish(),
                         )
                         .with_child(footer.finish())
@@ -910,7 +1099,7 @@ impl ChatView {
             // The rich input is built the same way in both surfaces: the
             // context row (harness, directory, branch, attach) rides above the
             // editor, where it describes the draft, and the pane's instructions
-            // are drawn by the pane over the separator above it. A terminal
+            // are drawn by the pane above the input it describes. A terminal
             // pane's bar is built from this same widget in this same order, so
             // switching a pane between the shell and its agent view moves
             // nothing but the text in the editor.
@@ -1080,14 +1269,14 @@ impl ChatView {
             composer = composer.with_clipboard(clipboard);
         }
         let composer = composer.finish();
-        // A separator line above the rich input separates it from the
-        // transcript. The composer is a content-sized child (not flex-grown),
-        // so it pins to the bottom: its textarea grows with the draft (capped)
-        // and the row under it (the model) hugs the bottom, leaving the message
-        // transcript most of the height. A read-only transcript (a sub-agent's
-        // child view) drops both — the input belongs to another conversation.
+        // The rich input is a floating card, so it takes no rule of its own: it
+        // is a content-sized child (not flex-grown) pinned to the bottom of the
+        // pane, its textarea grows with the draft (capped) and the row under it
+        // (the model) hugs the bottom, leaving the message transcript most of
+        // the height. A read-only transcript (a sub-agent's child view) drops
+        // it — the input belongs to another conversation.
         //
-        // The pane's instructions are the strip over the separator, the last row
+        // The pane's instructions are the strip above the input, the last row
         // of the content: they name the gestures the input under them answers,
         // and warp-new keeps them off the input's own rows. The build draws both
         // bands — the draft's commands, the model tray and the flat model list —
@@ -1131,12 +1320,12 @@ impl ChatView {
                 // is what reads them as the input's own row rather than as the
                 // conversation's tail.
                 //
-                // The block is pinned to the input under it (the transcript
-                // above it is the flex child that takes the slack), so the caps'
-                // height over the separator is decided by the inset *beneath*
-                // them and not by the gap above: `sm - STRIP_RISE` puts them
-                // six points lower than `sm` alone did, with the block's own
-                // height unchanged.
+                // The block is pinned to the input card under it (the
+                // transcript above it is the flex child that takes the slack),
+                // so the caps' height above the card is decided by the inset
+                // *beneath* them and not by the gap above: `sm - STRIP_RISE`
+                // puts them six points lower than `sm` alone did, with the
+                // block's own height unchanged.
                 column = column.with_child(
                     Padding::new(
                         strip,
@@ -1145,41 +1334,84 @@ impl ChatView {
                     .finish(),
                 );
             }
-            // The separator is the input's top edge and the composer sits on
-            // it: the pair is one block, so the column's `md` spacing does not
-            // open a gap under the rule. The shell pane's bar keeps its rows
-            // `xs` under its own divider; this is the same edge.
+            // No rule between the content and the card: the floating rich
+            // input is the pane's bottom surface and the content simply ends
+            // above it (the column's own `md` spacing is the only gap). The
+            // shell pane's bar keeps its rule, where the shell's output and
+            // the input are two surfaces of the same terminal.
             //
             // A waiting command or question hides the whole input: the card
             // above is the pane's only typing surface until the decision or
             // the answer settles it. The turn-status row stays as the mark
             // that the turn is suspended.
             if !waiting {
-                let input = Flex::column()
-                    .with_main_axis_size(MainAxisSize::Min)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                    .with_child(Divider::horizontal().finish())
-                    .with_child(composer)
-                    .finish();
-                column = column.with_child(input);
+                column = column.with_child(composer);
             }
         }
 
-        // No outer padding: the header and composer span the full width and
-        // the composer pins flush to the bottom of the window.
-        let content = Container::new(column.finish())
+        // No outer padding: the content column and the composer fill the lane's
+        // column and the composer pins flush to the bottom of the pane. The
+        // `md` gap the chrome used to contribute to the column is this
+        // container's own top padding, so the lane's background covers it too.
+        let content: Box<dyn Element> = Container::new(column.finish())
             .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+            .with_padding(EdgeInsets::new(
+                0.0,
+                if chrome.is_some() { spacing } else { 0.0 },
+                0.0,
+                0.0,
+            ))
             .finish();
+        // The pane's content column is what the content lane meters: the
+        // transcript, the notice bands, the hint strip and the rich input are
+        // centred inside the pane's own width, with the invisible draggable
+        // edges at its sides. The chrome band above the lane — the pane's
+        // topbar and its work dock — is outside it and spans the whole pane;
+        // the lane starts below the chrome, so no lane handle covers the bar.
+        let content: Box<dyn Element> = if self.content_lane {
+            let mut lane = ContentLane::new(content)
+                .with_preference(self.content_lane_pref)
+                .with_dragging(self.content_lane_dragging)
+                .with_drag_edge(self.content_lane_drag_edge);
+            if let Some(cb) = self.on_content_lane_drag_start.clone() {
+                lane = lane.with_on_drag_start(move |pointer_x, edge, base_width, column| {
+                    (cb.borrow_mut())(pointer_x, edge, base_width, column)
+                });
+            }
+            if let Some(cb) = self.on_content_lane_drag_move.clone() {
+                lane = lane.with_on_drag_move(move |pointer_x| (cb.borrow_mut())(pointer_x));
+            }
+            if let Some(cb) = self.on_content_lane_drag_end.clone() {
+                lane = lane.with_on_drag_end(move || (cb.borrow_mut())());
+            }
+            lane.finish()
+        } else {
+            content
+        };
+        // The pane's tree: the full-width chrome band above the laned content
+        // column. The chrome takes its own height (the bar's reserved height
+        // and the dock's own); the lane fills the rest.
+        let body: Box<dyn Element> = match chrome {
+            Some(chrome) => Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_child(chrome)
+                .with_child(Expanded::new(content).finish())
+                .finish(),
+            None => content,
+        };
         // The header floats above the transcript on its own layer: the tray the
         // dots open hangs over the messages below the bar, and an in-flow child
-        // would be painted over by them. The column above reserves the bar's
+        // would be painted over by them. It is NOT inside the lane: it is laid
+        // out with the full pane constraint and spans the whole pane, so it
+        // never resizes with the content. The chrome above reserves the bar's
         // height (`header_height`), so the transcript still starts under it.
         self.root = Some(match self.header.take() {
             Some(header) => Stack::new()
-                .with_children(vec![content])
+                .with_children(vec![body])
                 .with_overlay(header, Vector2F::zero())
                 .finish(),
-            None => content,
+            None => body,
         });
     }
 

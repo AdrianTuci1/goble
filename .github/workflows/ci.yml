@@ -29,7 +29,9 @@ on:
       - 'crates/goble-sandbox/**'
       - 'crates/goble-workflow/**'
       # js / typecheck + web build
-      - 'apps/**'
+      - 'apps/common/**'
+      - 'apps/mobile/**'
+      - 'apps/web/**'
       - 'package.json'
       - 'package-lock.json'
       - 'scripts/check-contrast.mjs'
@@ -56,7 +58,9 @@ on:
       - 'crates/goble-sandbox/**'
       - 'crates/goble-workflow/**'
       # js / typecheck + web build
-      - 'apps/**'
+      - 'apps/common/**'
+      - 'apps/mobile/**'
+      - 'apps/web/**'
       - 'package.json'
       - 'package-lock.json'
       - 'scripts/check-contrast.mjs'

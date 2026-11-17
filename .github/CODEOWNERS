@@ -24,7 +24,7 @@
 /crates/goble-update/           @AdrianTuci1
 
 # The native surface and the terminal it is built on.
-/app/                           @AdrianTuci1
+/apps/desktop/                  @AdrianTuci1
 /crates/goble-ui/               @AdrianTuci1
 /crates/goble-desktop-service/  @AdrianTuci1
 /crates/goble-desktop-native/   @AdrianTuci1

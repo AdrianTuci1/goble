@@ -31,6 +31,7 @@ mod agents;
 pub mod catalog;
 mod commands;
 mod credentials;
+pub mod detect;
 mod definitions;
 mod dispatch;
 mod entities;
@@ -48,6 +49,10 @@ mod workflows;
 mod tests;
 
 pub use catalog::{detect_harness, harness_by_id, harness_for, HarnessSpec, HARNESSES};
+pub use detect::{
+    launch_command, path_dirs, probe_version, resolve_command, resolve_command_in,
+    resolve_harness, status, status_with_version, HarnessStatus, VERSION_PROBE_TIMEOUT,
+};
 pub use presentation::{
     edit_change_counts, edit_diffstat, is_hidden_tool, one_line, skill_name, string_argument,
     subagent_subject, tool_display_name, tool_kind_for, tool_row, web_search_sources, ToolKind,

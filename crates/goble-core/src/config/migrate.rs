@@ -85,6 +85,7 @@ impl GobleConfig {
                 // The old field was never resolved through the vault — no reader
                 // looked it up — so the string it held was the key itself.
                 api_key: Some(model.api_key_secret_id.clone()).filter(|key| !key.trim().is_empty()),
+                api_key_env: None,
                 max_completion_tokens: None,
                 context_window: None,
                 hidden: (!model.enabled).then_some(true),

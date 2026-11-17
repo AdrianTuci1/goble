@@ -1,0 +1,798 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use goble_core::store::SecretGroup;
+use goble_harness_types::MediumKind;
+use goble_ui::elements::{
+    AgentCardUi, ChatMessage as UiChatMessage, ConversationEntry, DiffSummary, LaneEdge,
+    PanelScroll, PopupMenuItem, TerminalFilter,
+};
+use goble_ui::geometry::Vector2F;
+use goble_ui::{ScrollState, SettingsPage};
+
+use crate::state::{
+    ArchiveConfirm, InboxItem, PaneAttach, PaneControls, PaneDrag, PaneWorkItem, SidebarRename,
+    SpaceMenu, ToastNotice, WorkerPaneSession,
+};
+use crate::terminal::TerminalRegistry;
+use crate::ui::FloatingDrag;
+
+use super::color_picker;
+use super::pane::Space;
+use super::types::{
+    AgentDashboardState, AppTab, ArchivedFilter, CostEntry, CronEntry, ExecutionEntry, ExplorerRow,
+    HarnessEntry, LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow,
+    SettingsCategory, SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
+    WorkflowEntry, WorkflowRunEntry, WorkspaceRouting,
+};
+
+/// What a pane's sub-agent child view (S6) shows: the child's own conversation,
+/// with the live record that titles the view. The rows are the child's, read
+/// from the store under the child's chat id and parsed on the app side, so the
+/// view draws them through the same message renderer the parent's transcript
+/// uses.
+#[derive(Clone, Debug)]
+pub struct SubAgentViewSnapshot {
+    pub child_id: String,
+    /// The live record's row: the title's type, description, status and elapsed
+    /// time. `None` when the child has no record in this pane anymore, which
+    /// leaves the conversation itself on screen.
+    pub row: Option<goble_ui::SubAgentRow>,
+    pub messages: Vec<UiChatMessage>,
+    /// The message typed into the child view, and its caret: the app owns both
+    /// so the composer survives the per-frame rebuild.
+    pub draft: std::rc::Rc<std::cell::RefCell<String>>,
+    pub caret: std::rc::Rc<std::cell::RefCell<usize>>,
+    /// Where the child input's shift-selection began, `None` when nothing is
+    /// selected.
+    pub selection_anchor: std::rc::Rc<std::cell::RefCell<Option<usize>>>,
+}
+
+/// What a pane's workflow-runs view shows: which run's detail is open, or
+/// `None` for the run list. The runs themselves are read from
+/// [`UiSnapshot::workflow_runs`], so a run that settles while the view is open
+/// reports its final state without reopening it.
+#[derive(Clone, Debug)]
+pub struct WorkflowViewSnapshot {
+    pub selected: Option<String>,
+}
+
+/// A viewer pane's session as its surface draws it: which worker the
+/// conversation runs on, and how the connection stands. `None` on every pane
+/// that is not a viewer pane ([`crate::ui::PaneKind::Worker`]), which is why a
+/// chat pane and a viewer pane cannot be drawn from the same data by accident.
+#[derive(Clone, Debug)]
+pub struct WorkerPaneSnapshot {
+    /// The paired worker the conversation's turns run on. Empty while none has
+    /// been resolved — the pane's state names what is missing.
+    pub worker_id: String,
+    pub attach: PaneAttach,
+    /// The session the pane (re-)attached to on that worker, or that the
+    /// conversation has none. `None` before any attach has run, so the pane
+    /// never claims a session it has not rejoined.
+    pub session: Option<WorkerPaneSession>,
+}
+
+impl WorkerPaneSnapshot {
+    /// The line the pane leads its transcript with: which worker, how the
+    /// connection stands, and what the conversation's session there is. The
+    /// words are [`PaneAttach`]'s and [`WorkerPaneSession`]'s own.
+    ///
+    /// A conversation with no session says so here — the line is the pane's own
+    /// report, and "no session to rejoin" is a state of it, not silence.
+    pub fn connection_line(&self) -> String {
+        let connection = self.attach.words(&self.worker_id);
+        match &self.session {
+            Some(session) => format!("{connection} · {}", session.words()),
+            None => connection,
+        }
+    }
+
+    /// What the composer's directory control reads for this pane. There is no
+    /// local directory behind a viewer pane — drawing one would name this
+    /// machine for work that is not running on it — so the pill names where the
+    /// conversation actually runs.
+    pub fn location_label(&self) -> String {
+        if self.worker_id.trim().is_empty() {
+            "no worker".to_string()
+        } else {
+            self.worker_id.clone()
+        }
+    }
+}
+
+/// Per-pane chat data used to render a chat leaf: its own transcript, composer
+/// draft, working-directory label, suspended ask and queued prompt. Each chat
+/// pane is an independent session, so this is keyed by pane id and never shared.
+#[derive(Clone, Debug)]
+pub struct PaneChatSnapshot {
+    pub conversation_id: String,
+    pub messages: Vec<UiChatMessage>,
+    pub composer_draft: String,
+    pub composer_path: String,
+    /// This pane's viewer session, when the pane is a viewer pane: the worker
+    /// its conversation runs on and the state of that connection. `None` for
+    /// every other pane, including a chat pane — which is what makes the two
+    /// distinguishable on screen (the viewer pane draws the connection's own
+    /// report, and there is no shell behind it).
+    pub worker: Option<WorkerPaneSnapshot>,
+    /// The files this pane's rich input carries (the attach control added
+    /// them), drawn as chips over the editor.
+    pub composer_attachments: Vec<String>,
+    pub pending_ask: Option<goble_ui::AskUserUi>,
+    /// A command the harness suspended on for approval, rendered by the
+    /// composer's proposal card (A5).
+    pub pending_command: Option<goble_ui::CommandProposalUi>,
+    /// The app-owned selected candidate index for `pending_command`, so the
+    /// composer's selection survives the per-frame rebuild.
+    pub command_selection: Rc<RefCell<usize>>,
+    /// The approval card's app-owned command viewport, so a long command or a
+    /// candidate list keeps the position it was scrolled to.
+    pub command_scroll: Rc<RefCell<goble_ui::ScrollState>>,
+    /// The approval card's editable command: the text, its caret and the
+    /// viewport the field scrolls in. App-owned for the same reason.
+    pub command_draft: Rc<RefCell<String>>,
+    pub command_caret: Rc<RefCell<usize>>,
+    pub command_editor_scroll: Rc<RefCell<goble_ui::ScrollState>>,
+    pub queued_prompt: Option<String>,
+    pub agent_busy: bool,
+    /// The live turn-status footer's state (C2): the activity/elapsed while the
+    /// pane's turn is busy, or the still-running kinds once it stops, or
+    /// [`goble_ui::TurnStatus::Idle`] when nothing is in flight.
+    pub turn_status: goble_ui::TurnStatus,
+    /// The pane's live sub-agent records, keyed by the id of the parent tool
+    /// call that spawned each child; the parent transcript's rows read their
+    /// status, activity and elapsed time from these.
+    pub sub_agents: HashMap<String, goble_ui::SubAgentRow>,
+    /// The groups the pane's work dock lists: its in-flight workflows,
+    /// sub-agents, tasks and watchers, each with its fold state. Empty when
+    /// nothing is in flight, which draws no dock at all.
+    pub work_dock: Vec<goble_ui::WorkGroup>,
+    /// The dock's spinner phase, supplied by the pane's own work clock so every
+    /// live row turns together with the footer's indicator.
+    pub work_dock_phase: f32,
+    /// The message the pane's last turn failed on, drawn inline at the end of
+    /// the transcript so a failed turn is readable where it happened.
+    pub turn_error: Option<String>,
+    /// The sub-agent child view this pane shows (S6): the child's own
+    /// conversation, entered from the pane's sub-agent strip. `None` when the
+    /// pane shows its own transcript.
+    pub sub_agent_view: Option<SubAgentViewSnapshot>,
+    /// The workflow-runs view this pane shows, when it has one: the ledger's
+    /// runs in place of the pane's own surface, with one run's detail open or
+    /// the list. `None` when the pane shows its ordinary surface.
+    pub workflow_view: Option<WorkflowViewSnapshot>,
+    /// This pane's transcript scroll offset (app-owned, so the scrollback
+    /// position and follow-the-stream flag survive the per-frame rebuild).
+    pub scroll: Rc<RefCell<ScrollState>>,
+    /// This pane's transcript drag selection: the highlight and the frozen text
+    /// a press captured. App-owned for the same reason as the scroll offset.
+    pub text_selection: Rc<RefCell<goble_ui::TranscriptSelection>>,
+    /// The tokens this conversation has spent, summed from the provider-reported
+    /// usage of its own model calls. Accounting only, never a price.
+    pub usage: goble_ui::TokenUsage,
+    /// Whether the usage disclosure is expanded. App-owned so it survives the
+    /// per-frame rebuild.
+    pub usage_open: Rc<RefCell<bool>>,
+}
+
+/// The composer's warp-new style context pills: which harness (the selected
+/// environment medium), which working directory and which git branch the next
+/// turn is scoped to. The harness is window-wide; the directory and branch are
+/// the pane's own, read off the machine when their menus open. The menu open
+/// flags are app-owned so they survive the per-frame element rebuild.
+#[derive(Clone, Debug)]
+pub struct ComposerContext {
+    pub harness_label: String,
+    /// The glyph that names the pane's environment: the computer for a local
+    /// pane and the cloud for one running on a worker.
+    pub harness_icon: &'static str,
+    pub harness_ids: Vec<String>,
+    pub harness_items: Vec<PopupMenuItem>,
+    pub harness_menu_open: Rc<RefCell<bool>>,
+    pub dir_ids: Vec<String>,
+    pub dir_items: Vec<PopupMenuItem>,
+    pub dir_menu_open: Rc<RefCell<bool>>,
+    /// The row the directory tray's keyboard highlight is on. App-owned so the
+    /// highlight survives the per-frame rebuild.
+    pub dir_menu_highlight: Rc<RefCell<Option<usize>>>,
+    /// The directory tray's scroll offset, shared with the app so a tray longer
+    /// than its row cap keeps its position across the per-frame rebuild.
+    pub dir_menu_scroll: PanelScroll,
+    pub branch_label: String,
+    pub branch_ids: Vec<String>,
+    pub branch_items: Vec<PopupMenuItem>,
+    pub branch_menu_open: Rc<RefCell<bool>>,
+    /// The row the branch tray's keyboard highlight is on.
+    pub branch_menu_highlight: Rc<RefCell<Option<usize>>>,
+    /// The working tree's changed files. `None` outside a local repository;
+    /// a clean repository arrives as an empty summary and draws no control.
+    pub diff: Option<DiffSummary>,
+    pub diff_menu_open: Rc<RefCell<bool>>,
+    pub diff_menu_scroll: PanelScroll,
+}
+
+/// Plain snapshot of the main UI state used to build the tree. Owned by the
+/// host app; rendered from scratch every frame so state changes show up live.
+#[derive(Clone, Debug)]
+pub struct UiSnapshot {
+    pub current_tab: AppTab,
+    pub conversations: Vec<ConversationEntry>,
+    pub selected_id: Option<String>,
+    pub search_query: String,
+    pub search_focused: bool,
+    /// The search field's insertion point, shared with the element so the beam
+    /// survives the per-frame rebuild.
+    pub sidebar_search_caret: Rc<RefCell<usize>>,
+    pub new_conversation_draft: String,
+    pub create_focused: bool,
+    pub chat_messages: Vec<UiChatMessage>,
+    /// A suspended agent question shown inline at the end of the transcript.
+    pub pending_ask: Option<goble_ui::AskUserUi>,
+    /// A prompt the user sent while the agent was busy, shown as a pending block.
+    pub queued_prompt: Option<String>,
+    pub composer_draft: String,
+    pub composer_focused: bool,
+    /// Model choices shown in the composer's model dropdown.
+    pub models: Vec<String>,
+    /// The same models grouped for the composer's model tray: one column per
+    /// provider the configuration declares models for, each with the thinking
+    /// levels its harness runs them at.
+    pub model_groups: Vec<goble_desktop_service::ModelGroup>,
+    /// The harness's own composer catalog: what a draft can list behind `/` and
+    /// `$`, and the models the tray shows.
+    pub composer_catalog: goble_harness_types::HarnessCatalog,
+    /// The paths a `@` draft lists, read from the active pane's working
+    /// directory while that draft asks for them. Empty otherwise.
+    pub mention_paths: Vec<String>,
+    /// Currently selected model (shown as the composer's model label).
+    pub selected_model: String,
+    /// Harnesses the composer can route a turn to (native + registered BYOH).
+    pub harnesses: Vec<HarnessEntry>,
+    /// The harness the active pane routes turns to (default `internal`).
+    pub selected_harness: String,
+    /// App-owned open flag for the composer model menu, so open state survives
+    /// the per-frame element rebuild.
+    pub model_menu_open: Rc<RefCell<bool>>,
+    pub agent_name: String,
+    pub agent_busy: bool,
+    /// The topbar live cue (C3): the count of work in flight beside the active
+    /// pane's turn (`LiveWork::work_count`) and the spinner phase from the
+    /// observed turn start. Zero is the inert state.
+    pub live_work_count: usize,
+    pub live_work_phase: f32,
+    /// The pane header's work chip, keyed by pane id: the items that pane's own
+    /// background work is made of (its in-flight tool calls and its running
+    /// sub-agent children). A pane with no entry draws no chip at all.
+    pub pane_live_work: HashMap<u64, Vec<PaneWorkItem>>,
+    /// Whether the agent auto-approves `ask_user` questions.
+    pub auto_approve: bool,
+    /// The app-wide approval policy the composer menu and the settings page
+    /// draw.
+    pub approval_mode: goble_ui::ApprovalMode,
+    /// First-run onboarding: whether the overlay is up and which step it shows,
+    /// plus the answers being collected.
+    pub onboarding_open: bool,
+    pub onboarding_step: usize,
+    pub onboarding_usage: String,
+    pub onboarding_name: String,
+    pub onboarding_share: bool,
+    /// Telemetry consent in force, for the Profile page's switch.
+    pub share_telemetry: bool,
+    /// The model new agents start on.
+    pub settings_default_model: String,
+    pub right_sidebar_open: bool,
+    /// Whether the agent/window is fullscreen (borderless). Rendered as the
+    /// checked state of `/fullscreen` in the palette.
+    pub fullscreen: bool,
+    /// The pane drawn over the whole panes space, if any.
+    pub maximized_pane: Option<u64>,
+    /// Per-terminal-block filter state (open flag + selected filter), keyed by
+    /// content; shared with app state so the filter tray persists.
+    pub terminal_filters: Rc<RefCell<HashMap<String, TerminalFilter>>>,
+    /// Collapsed/expanded state per reasoning row, keyed by the row's
+    /// `<conversation>:<step>` key; shared with app state so a row the user
+    /// expanded stays expanded.
+    pub reasoning_expanded: Rc<RefCell<HashMap<String, bool>>>,
+    /// Three-state fold per tool call (`Collapsed -> Truncated -> Expanded`),
+    /// keyed by the call's id; shared with app state so a fold survives the
+    /// per-frame rebuild.
+    pub tool_fold: Rc<RefCell<HashMap<String, goble_ui::ToolDisplayMode>>>,
+    /// The tool row under the pointer, set by the row's own paint; the next
+    /// frame draws that row's arrow and white label.
+    pub tool_hover: Rc<RefCell<Option<String>>>,
+    /// Whole-transcript terminal filters (open flag + selected filter) keyed by
+    /// pane id, so each pty/agent pane keeps its own filter bar.
+    pub terminal_global_filters: HashMap<u64, TerminalFilter>,
+    /// Per-pane scroll offset of the terminal pane's command sections, shared
+    /// with app state so a scrollback position survives the per-frame rebuild.
+    pub pane_terminal_scroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
+    /// Per-pane scroll offset of a pane's file view, shared with app state so a
+    /// file keeps the user's place across the per-frame rebuild.
+    pub file_scroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
+    /// Per-pane horizontal offset of a pane's file view. The lines do not wrap,
+    /// so the view scrolls sideways to the end of the longest one.
+    pub file_hscroll: HashMap<u64, Rc<RefCell<goble_ui::ScrollState>>>,
+    /// What each open file view draws, keyed by pane id — its body and the
+    /// body's highlighted runs. Read while the snapshot is built (never per
+    /// frame), so a pane that shows a file reads and highlights it once.
+    pub pane_files: HashMap<u64, crate::ui::file_view::FileContent>,
+    /// What each open diff pane draws, keyed by pane id. `Some(None)` is a
+    /// directory with no repository to review; an id the map does not hold has
+    /// not been read yet. Read while the snapshot is built, under the same
+    /// cache the diff summary uses, so a frame that changes nothing reads no
+    /// git.
+    pub pane_diffs: HashMap<u64, Option<std::rc::Rc<crate::ui::pickers::DiffDetail>>>,
+    /// The changed files each review pane has opened for editing, keyed by the
+    /// pane's id and the file's absolute path. Read while the snapshot is
+    /// built, only for the files in edit mode, so the panel reads and
+    /// highlights a file once and never per frame.
+    pub pane_diff_editors:
+        HashMap<u64, HashMap<String, std::rc::Rc<crate::ui::file_view::DiffEditor>>>,
+    /// The files each pane holds open as chips, in the order they were opened.
+    /// The file a pane shows is its `PaneKind::File` path, independent of this
+    /// order, so switching files never moves a chip.
+    pub pane_open_files: HashMap<u64, Vec<String>>,
+    /// The editing state of every file a pane keeps open, keyed by pane and
+    /// file. Shared with the read cache that settles it every frame, so the
+    /// text the pane edits, its caret and its unsaved-changes mark outlive the
+    /// per-frame rebuild.
+    pub file_buffers: HashMap<(u64, String), Rc<RefCell<crate::ui::file_view::FileBuffer>>>,
+    pub crons_open: bool,
+    /// The active pane's work clock, so a live row in the dock, a live workflow
+    /// view and the footer's indicator turn together.
+    pub work_dock_phase: f32,
+    /// Whether the keyboard shortcuts panel is up (also an overlay over the
+    /// workspace, opened with Ctrl+.).
+    pub shortcuts_help_open: bool,
+    /// The shortcuts panel's filter text and the row it highlights (an index
+    /// into the rows the filter leaves).
+    pub shortcuts_help_filter: String,
+    pub shortcuts_help_index: usize,
+    /// Scroll offset of the shortcuts panel's list.
+    pub shortcuts_help_scroll: Rc<RefCell<ScrollState>>,
+    pub crons: Vec<CronEntry>,
+    /// Workflows registered with the embedded daemon (real data).
+    pub workflows: Vec<WorkflowEntry>,
+    /// Workflow runs, newest first (real run ledger): the live ones the dock
+    /// lists and the settled ones as the ledger recorded them.
+    pub workflow_runs: Vec<WorkflowRunEntry>,
+    /// Executions from the daemon execution ledger (real data).
+    pub executions: Vec<ExecutionEntry>,
+    /// Durable tasks from the persistence layer (real data).
+    pub tasks: Vec<TaskEntry>,
+    /// Chronological record derived from execution/session/task data.
+    pub timeline: Vec<TimelineEntry>,
+    /// Cost rows derived from real execution/usage records.
+    pub costs: Vec<CostEntry>,
+    pub settings_page: SettingsPage,
+    pub settings_profile_name: String,
+    pub settings_profile_email: String,
+    pub settings_dark_mode: bool,
+    pub settings_llm_provider: String,
+    pub settings_llm_model: String,
+    pub settings_llm_api_key: String,
+    pub settings_llm_base_url: String,
+    pub settings_llm_temperature: String,
+    pub settings_workers: Vec<(String, String, String, bool)>,
+    pub settings_cluster_name: String,
+    pub settings_cluster_configured: bool,
+    pub settings_authorized_keys: Vec<(String, String, String)>,
+    pub settings_vault_unlocked: bool,
+    /// The page the settings tab shows, read off its leaf.
+    pub settings_category: SettingsCategory,
+    /// The settings tab's two-region keyboard focus, and the pane control it is
+    /// on.
+    pub settings_focus: SettingsFocus,
+    pub settings_pane_focus: usize,
+    /// Whether the focused pane control is a text field holding the caret.
+    pub settings_pane_field_active: bool,
+    /// Settings → Agent & Approval: the default-model menu's open flag, and the
+    /// rect its field last painted at. The menu is drawn at the window's top
+    /// layer, hung from that rect.
+    pub settings_model_menu_open: Rc<RefCell<bool>>,
+    pub settings_model_anchor: Rc<RefCell<Option<goble_ui::geometry::RectF>>>,
+    pub settings_model_painted: Rc<RefCell<bool>>,
+    /// Settings → Environment: the persisted groups with their secrets, the
+    /// group the pane has open, and the fields a new or edited secret is typed
+    /// into.
+    pub settings_environment_groups: Vec<SecretGroup>,
+    pub settings_environment_open_group: Option<String>,
+    pub settings_environment_group_draft: String,
+    pub settings_environment_secret_name: String,
+    pub settings_environment_secret_value: String,
+    pub settings_environment_editing: Option<String>,
+    /// Settings → Connections: the `~/.ssh` read and the host alias the page
+    /// has selected. The read is cached in app state — the page draws it, it
+    /// never reads the directory itself.
+    pub settings_ssh_hosts: Option<goble_core::ssh_hosts::SshHosts>,
+    pub settings_ssh_selected: Option<String>,
+    /// Settings → Updates: what the update checker last published, and whether
+    /// this build has a release host to check at all.
+    pub update: crate::update::UpdateView,
+    pub update_configured: bool,
+    pub settings_invert_scroll: bool,
+    pub settings_scroll_speed: i32,
+    pub settings_font_size: f32,
+    /// Whether the rich input uses modal (vim) editing, and which pane states
+    /// to read for the mode badge.
+    pub vim_mode: bool,
+    /// Whether closing a file pane with unsaved edits saves it first instead
+    /// of asking.
+    pub auto_save_on_close: bool,
+    /// The pane a close is waiting on, or `None` when no dialog is up.
+    pub pending_close_pane: Option<u64>,
+    /// The one file chip a close is waiting on, as `(pane, path)`.
+    pub pending_close_file: Option<(u64, String)>,
+    pub theme_primary: Option<String>,
+    pub theme_secondary: Option<String>,
+    pub theme_accent: Option<String>,
+    pub theme_bg: Option<String>,
+    pub theme_surface: Option<String>,
+    /// The preset palette in force (`ThemePreset::key`), or `None` for Default.
+    pub theme_preset: Option<String>,
+    /// Which theme channel the single color wheel in Settings→Appearance edits.
+    pub theme_color_target: color_picker::ColorTarget,
+    pub theme_color_drag: Rc<RefCell<Option<color_picker::ColorPickerDrag>>>,
+    /// First-run: whether the "configure a model key" banner is shown in chat.
+    pub show_llm_key_banner: bool,
+    /// What that banner is headed: the missing API key, or a key with no
+    /// provider/model behind it.
+    pub llm_notice_heading: &'static str,
+    /// First-run: whether the "local or remote workspace?" choice is shown.
+    pub show_workspace_choice: bool,
+    /// First-run routing decision once the user picks Local or Remote.
+    pub workspace_routing: Option<WorkspaceRouting>,
+    /// Settings → Agent & Approval: the `[remote_agents.<name>]` tables the
+    /// config declares, in name order, with the credentials each still lacks.
+    /// Read from app state every frame, so a reload shows up at once.
+    pub remote_agents: Vec<RemoteAgentEntry>,
+    /// `[remote] mode`: a sandbox platform, or a gateway server.
+    pub remote_mode: goble_core::config::RemoteMode,
+    /// `[remote] gateway_url`, as configured.
+    pub remote_gateway_url: String,
+    /// Whether Remote has somewhere to run (gateway, ready platform table, or a
+    /// paired worker). Choosers open Remote's settings when it is false.
+    pub remote_configured: bool,
+    /// What the settings page's Remote section says under its heading.
+    pub remote_status: String,
+    /// The `config.toml` the page names as Remote's configuration file.
+    pub remote_config_path: String,
+    /// First-run: whether the model-provider dialog is open over the chat.
+    pub llm_dialog_open: bool,
+    /// Editable model-form fields, held in app-owned ref cells so the text and
+    /// focus survive the per-frame element rebuild while the dialog is open.
+    pub llm_dialog_provider: Rc<RefCell<String>>,
+    pub llm_dialog_model: Rc<RefCell<String>>,
+    pub llm_dialog_api_key: Rc<RefCell<String>>,
+    pub llm_dialog_base_url: Rc<RefCell<String>>,
+    pub llm_dialog_temperature: Rc<RefCell<String>>,
+    pub llm_dialog_focus: Rc<RefCell<Option<LlmFormField>>>,
+    pub sidebar_width: f32,
+    pub sidebar_dragging: bool,
+    /// The user's committed content-lane width PER PANE: a pane with an entry
+    /// lays its content out at that width (re-clamped into the pane each
+    /// frame); a pane with none keeps the aspect-ratio width. The lane element
+    /// resolves the entry against the pane's own column.
+    pub content_lane_prefs: HashMap<u64, f32>,
+    /// Which pane owns the live content-lane drag, if one is in flight, so
+    /// only that pane's lane draws the handle line and takes the moves.
+    pub content_lane_drag_pane: Option<u64>,
+    /// Whether a content-lane edge is being dragged (carried here so the
+    /// per-frame rebuild does not forget it).
+    pub content_lane_dragging: bool,
+    /// The lane edge being dragged, so its handle line is drawn there.
+    pub content_lane_drag_edge: Option<LaneEdge>,
+    /// Whether the left conversation sidebar is shown.
+    pub sidebar_visible: bool,
+    /// Whether the sidebar lists every conversation (false shows a few cards
+    /// plus a "View all" button).
+    pub conversations_expanded: bool,
+    /// Which of the sidebar's views is showing.
+    pub sidebar_view: SidebarView,
+    /// The starred conversations, by id: the sidebar's Starred section.
+    pub starred: Vec<String>,
+    /// The sidebar sections the user collapsed, by key.
+    pub collapsed_sections: Vec<String>,
+    /// The project explorer: which directory the tree shows (the active pane's
+    /// working directory) and its rows, flattened to what is on screen.
+    pub explorer_root: String,
+    pub explorer_rows: Vec<ExplorerRow>,
+    /// The explorer row the pointer was over on the last frame, by path: the
+    /// tree draws that row's chevron, icon and label in the main colour and
+    /// every other row in the muted one, and hover is only known while the
+    /// previous frame paints (see `HoverRow::with_hover_key`).
+    pub explorer_hover: Rc<RefCell<Option<String>>>,
+    /// The Workspaces row under the pointer on the last frame, by key
+    /// (`header:settings`, `header:new`, `action:new-conversation`,
+    /// `group:<folder>`, `session:<id>`), shared with the rows.
+    pub sidebar_hover_row: Rc<RefCell<Option<String>>>,
+    /// The Workspaces row holding the sidebar's keyboard focus, by key.
+    pub sidebar_focus_row: Rc<RefCell<Option<String>>>,
+    /// Whether the Workspaces header menu (sliders) is open.
+    pub sidebar_menu_open: Rc<RefCell<bool>>,
+    /// The list's grouping: one flat list or one block per project.
+    pub sidebar_flat_list: Rc<RefCell<bool>>,
+    /// The list's order: most recent first, or the user's manual drag order.
+    pub sidebar_recent_first: Rc<RefCell<bool>>,
+    /// The sidebar's drag-reorder gesture, shared with the rows.
+    pub sidebar_drag: Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarDrag>>,
+    /// The user's manual order of conversations inside each group.
+    pub sidebar_session_order:
+        Rc<RefCell<std::collections::HashMap<String, Vec<String>>>>,
+    /// Global search: the query, its rows and whether it has run.
+    pub global_search_query: String,
+    pub global_search_rows: Vec<SearchRow>,
+    pub global_search_searched: bool,
+    pub global_search_error: Option<String>,
+    pub global_search_focused: bool,
+    /// The global search field's insertion point, shared with the element.
+    pub global_search_caret: Rc<RefCell<usize>>,
+    /// Scroll offset of the sidebar's conversation list.
+    pub sidebar_scroll: Rc<RefCell<ScrollState>>,
+    /// Scroll offsets of the project explorer's and the global search's lists.
+    pub explorer_scroll: Rc<RefCell<ScrollState>>,
+    pub global_search_scroll: Rc<RefCell<ScrollState>>,
+    /// Scroll offset of the settings overlay's content pane.
+    pub settings_scroll: Rc<RefCell<ScrollState>>,
+    /// Whether the topbar workspace frame is in inline-rename mode.
+    pub space_rename_editing: bool,
+    /// Whether the platform's chord modifier (Command on macOS, Ctrl elsewhere)
+    /// is held: each workspace tab then draws its own shortcut number in its
+    /// trailing slot, in place of the close control.
+    pub command_held: bool,
+    /// The in-progress space name while renaming.
+    pub space_rename_draft: String,
+    /// Whether the rename field holds focus.
+    pub space_rename_focused: bool,
+    /// The workspace tab whose right-click menu is open and the point the
+    /// pointer was at when it opened, so the bar can hang the panel from it.
+    pub space_menu: Rc<RefCell<Option<SpaceMenu>>>,
+    /// Per-card interaction state (hover / delete menu), shared with the
+    /// card elements so selections and menus persist across frames.
+    pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
+    /// Hover flag for the sidebar's "New conversation" row, owned here so the row's
+    /// highlight survives the per-frame element rebuild.
+    pub new_agent_hover: Rc<RefCell<bool>>,
+    /// Multiple "spaces": each is a pane tree rendered as a top-bar tab. The
+    /// active space's tree is what `build_ui` renders as the main content.
+    pub spaces: Vec<Space>,
+    pub active_space: usize,
+    /// Hovered space tab index (app state so it survives the per-frame rebuild).
+    pub space_hover: Option<usize>,
+    /// Space tab currently pressed (MouseDown), used to detect a drag start.
+    pub space_press: Option<usize>,
+    /// Where that press landed, in window coordinates (see
+    /// [`crate::state::UiState::space_press_at`]).
+    pub space_press_at: Option<goble_ui::Vector2F>,
+    /// Space tab currently being dragged (reordering in progress).
+    pub space_drag: Option<usize>,
+    /// The pane lifted out of its grid toward the tab strip, if any: the strip
+    /// draws the insertion marker from it and the bar draws its ghost card.
+    pub pane_drag: Option<PaneDrag>,
+    /// The bounds each pane leaf was drawn at on the last frame, in window
+    /// coordinates, keyed by pane id: what the drag handlers resolve the pane
+    /// under the pointer against, and where the drop ghost is drawn. Shared with
+    /// app state, so the frame that reads it is one paint behind the pointer's
+    /// own frame.
+    pub pane_bounds: Rc<RefCell<HashMap<u64, goble_ui::geometry::RectF>>>,
+    /// The bounds the panes were drawn at on the frame before this one. The
+    /// live registry is cleared before each build and refilled while the panes
+    /// paint, so a pane building its own layout cannot read the width it is
+    /// about to be drawn at from it; this copy is one frame behind and is what
+    /// a pane's content reads to adapt to the split it sits in.
+    pub pane_bounds_prev: HashMap<u64, goble_ui::geometry::RectF>,
+    /// The floating pane drag in progress. Shared with app state so a gesture
+    /// that began in one frame continues in the next.
+    pub floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
+    /// The saved SSH hosts from `~/.goble/hosts.toml`, and the picker that
+    /// offers them (Cmd+Shift+N).
+    pub ssh_host_entries: Vec<goble_core::hosts::HostEntry>,
+    pub ssh_host_picker_open: bool,
+    pub ssh_host_picker_index: usize,
+    /// A saved host whose session ended, with the pane it ran in.
+    pub ssh_reconnect_prompt: Option<(u64, String)>,
+    /// The focused leaf pane (target for splits/closes, highlighted).
+    pub active_pane_id: u64,
+    /// The split node currently being dragged, if any.
+    pub dragging_pane_id: Option<u64>,
+    /// The current working path shown in the composer.
+    pub composer_path: String,
+    /// Warp-new composer context pills (harness / working dir / git branch),
+    /// built per pane id: two pty/agent panes in one workspace each get their
+    /// own pills and their own open flags.
+    pub composer_context: HashMap<u64, ComposerContext>,
+    /// Per-pane hover flags (keyed by pane id) so pane-header hover survives
+    /// the per-frame element rebuild.
+    pub pane_hover: HashMap<u64, Rc<RefCell<bool>>>,
+    /// Per-pane chat data (transcript + draft + path) keyed by pane id, so each
+    /// chat pane renders its own independent session.
+    pub pane_chat: HashMap<u64, PaneChatSnapshot>,
+    /// What each mounted pane calls itself when it talks to an agent: the
+    /// conversation's subject, or [`crate::state::NEW_AGENT_TAB_LABEL`] while
+    /// that conversation has none. The agent view centres it in its bar.
+    pub pane_titles: HashMap<u64, String>,
+    /// Per-pane rich-input controls (auto-approve, model, branch, harness mode,
+    /// dropdown open flags), keyed by pane id.
+    pub pane_controls: HashMap<u64, PaneControls>,
+    /// Live terminal sessions + input mirrors, shared with the terminal pane
+    /// elements so they can spawn/read/write a PTY without blocking the UI
+    /// thread. Cloned by `Rc` each frame (never the sessions themselves).
+    pub terminal: Rc<RefCell<TerminalRegistry>>,
+    /// Whether the Cmd+K command palette overlay is open.
+    pub command_palette_open: bool,
+    /// The palette's filter text, used to narrow the command list.
+    pub command_palette_query: String,
+    /// The palette's selected row index.
+    pub command_palette_index: usize,
+    /// The global inbox's items, newest first, and how many are unread (the
+    /// topbar control's badge).
+    pub inbox_items: Vec<InboxItem>,
+    pub inbox_unread_count: usize,
+    /// Whether the inbox overlay is up, the row it highlights, and the reason
+    /// the last jump did not land.
+    pub inbox_open: bool,
+    pub inbox_index: usize,
+    pub inbox_error: Option<String>,
+    /// Scroll offset of the inbox overlay's list.
+    pub inbox_scroll: Rc<RefCell<ScrollState>>,
+    /// The rect the topbar's inbox control painted at: the popover hangs from
+    /// it, one frame behind the control's own paint.
+    pub inbox_anchor: Rc<RefCell<Option<goble_ui::RectF>>>,
+    /// The item announced at the top of the window, if one is out.
+    pub announcement: Option<InboxItem>,
+    /// The agent-management panel's own state: its open flag, the roster's
+    /// filter and grouping, its cursor, the drafts and the rename field.
+    pub agent_dashboard: AgentDashboardState,
+    /// First run: a compact "getting started" hint shown once the workspace
+    /// choice is made, so the first-run flow lands on the chat with a tip.
+    pub show_onboarding_tip: bool,
+    /// App-owned open flag for the topbar "+" menu (choose an environment to
+    /// open a new space, or add a new medium).
+    pub add_space_menu_open: Rc<RefCell<bool>>,
+    /// App-owned open flag for the topbar compact environment selector.
+    pub env_selector_open: Rc<RefCell<bool>>,
+    /// The environment menu's hovered row (an item index), shared with the menu
+    /// so its hover tray survives the per-frame rebuild.
+    pub env_selector_hover: Rc<RefCell<Option<usize>>>,
+    /// Whether the "add a new medium" dialog is open over the app.
+    pub add_medium_dialog_open: bool,
+    /// The new medium's name as typed in the add-medium dialog.
+    pub add_medium_draft: String,
+    /// Whether the add-medium dialog's text field is focused.
+    pub add_medium_focused: bool,
+    /// App-owned open flag for the terminal pane's "Run agent" menu, so the
+    /// popup survives the per-frame element rebuild.
+    pub terminal_run_agent_menu_open: Rc<RefCell<bool>>,
+    /// The window's size on the previous frame: the session row's tray is tall,
+    /// and a row near the bottom edge flips it above itself with this.
+    pub window_size: Vector2F,
+    /// The Workspaces list's archived filter (hide / show / only).
+    pub sidebar_archived_filter: ArchivedFilter,
+    /// The open "Rename conversation" dialog, if any.
+    pub sidebar_rename: Option<SidebarRename>,
+    /// The open stop-and-archive confirmation, if any.
+    pub archive_confirm: Option<ArchiveConfirm>,
+    /// The transient notice at the top of the window, if one is up.
+    pub toast: Option<ToastNotice>,
+}
+
+impl UiSnapshot {
+    /// Whether the onboarding step on screen has an answer worth advancing
+    /// with. Mirrors [`crate::state::UiState::onboarding_can_advance`] for the
+    /// element tree, which only sees the snapshot.
+    pub fn onboarding_can_advance(&self) -> bool {
+        match self.onboarding_step {
+            0 => !self.onboarding_usage.trim().is_empty(),
+            1 => !self.onboarding_name.trim().is_empty(),
+            _ => true,
+        }
+    }
+
+    /// The newest recorded run for `workflow_id`, if any.
+    pub fn latest_run(&self, workflow_id: &str) -> Option<&WorkflowRunEntry> {
+        self.workflow_runs
+            .iter()
+            .find(|run| run.workflow_id == workflow_id)
+    }
+}
+
+/// Plain snapshot of the AI domain state (vault + MCP connectors) used to
+/// build the auxiliary panels. Owned by the host app.
+#[derive(Clone, Debug)]
+pub struct AiSnapshot {
+    pub connectors_open: bool,
+    pub vault_open: bool,
+    pub vault_unlocked: bool,
+    pub vault_secrets: Vec<VaultSecretEntry>,
+    pub vault_unlock_draft: String,
+    pub vault_new_key: String,
+    pub vault_new_value: String,
+    pub vault_error: Option<String>,
+    pub connector_search: String,
+    pub connectors: Vec<McpServerEntry>,
+    pub install_open: bool,
+    pub install_editing_id: Option<String>,
+    pub install_name: String,
+    pub install_source: String,
+    pub install_source_value: String,
+    pub install_search_query: String,
+    pub install_search_results: Vec<McpSearchEntry>,
+    pub install_selected_secrets: Vec<String>,
+    pub install_error: Option<String>,
+    pub installing: bool,
+}
+
+/// A single session/run shown in the per-project observability panel.
+#[derive(Clone, Debug)]
+pub struct ProjectSessionEntry {
+    pub session_id: String,
+    pub medium: String,
+    pub created_at: String,
+    pub status: String,
+}
+
+/// A project group in the projects panel: its sessions and a "what's running"
+/// status derived from the project's tasks.
+#[derive(Clone, Debug)]
+pub struct ProjectEntry {
+    pub project_id: String,
+    pub directory: String,
+    pub status: String,
+    pub sessions: Vec<ProjectSessionEntry>,
+}
+
+/// Plain snapshot of the per-project observability panel. Owned by the host
+/// app and rebuilt from [`crate::projects::ProjectsState`] every frame.
+#[derive(Clone, Debug)]
+pub struct ProjectsSnapshot {
+    pub projects: Vec<ProjectEntry>,
+}
+
+/// A session leaf in the environment tree: one run scoped to a project on a
+/// medium. `path` is the working directory the turn runs in (and the active
+/// pane's cwd is set to it when the session is chosen).
+#[derive(Clone, Debug)]
+pub struct MediaSession {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+}
+
+/// A project branch in the environment tree, holding the sessions that run on
+/// that project through the parent medium.
+#[derive(Clone, Debug)]
+pub struct MediaProject {
+    pub id: String,
+    pub label: String,
+    pub sessions: Vec<MediaSession>,
+}
+
+/// A top-level medium node in the environment tree (Local, VM, Remote worker,
+/// Browser, Container), each expandable to its projects, each project
+/// expandable to its sessions. `id` is the [`goble_harness_types::MediumId`]
+/// string carried on the turn.
+#[derive(Clone, Debug)]
+pub struct MediaNode {
+    pub kind: MediumKind,
+    pub id: String,
+    pub label: String,
+    pub projects: Vec<MediaProject>,
+}
+
+/// Plain snapshot of the environment-tree selector state. Owned by the host
+/// app and rebuilt from [`crate::media::MediaState`] every frame.
+#[derive(Clone, Debug)]
+pub struct MediaSnapshot {
+    pub mediums: Vec<MediaNode>,
+    /// The id of the currently selected medium.
+    pub selected_medium: String,
+    /// The id of the currently selected project (under the selected medium).
+    pub selected_project: String,
+    /// The id of the currently selected session leaf, or empty when the user
+    /// has not picked one yet (the turn then runs on the pane's own session).
+    pub selected_session: String,
+    /// Keys of the tree branches currently expanded (medium / project nodes).
+    pub expanded: Vec<String>,
+}

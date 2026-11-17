@@ -29,6 +29,12 @@ pub struct HarnessSpec {
 }
 
 impl HarnessSpec {
+    /// The `[harness.<id>]` key this harness's overrides live under. The catalog
+    /// id is already a bare TOML key (lowercase letters, digits and `-`).
+    pub fn config_key(&self) -> &'static str {
+        self.id
+    }
+
     /// The command that reopens `session_id`, or `None` when this harness keeps
     /// no resumable session on the command line.
     pub fn resume_command(&self, session_id: &str) -> Option<String> {

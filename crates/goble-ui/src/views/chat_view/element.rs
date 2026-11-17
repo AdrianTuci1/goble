@@ -112,6 +112,17 @@ impl Element for ChatView {
             }
         }
 
+        // A details panel anchored to the footer's pill scrolls away with it:
+        // any wheel in the pane puts it away. The transcript's own `Scrollable`
+        // consumes the wheel before it could reach the footer element, so the
+        // view closes the app-owned flag here rather than leaving a floating
+        // panel over a transcript that just moved under it.
+        if let DispatchedEvent::Scroll { .. } = event {
+            if *self.usage_open.borrow() {
+                *self.usage_open.borrow_mut() = false;
+            }
+        }
+
         // `e` advances the transcript's tool calls one step through
         // Collapsed -> Truncated -> Expanded. It is a transcript key only while
         // the composer is not holding the keyboard, so typing an `e` into a

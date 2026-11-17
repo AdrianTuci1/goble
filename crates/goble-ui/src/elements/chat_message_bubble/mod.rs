@@ -23,5 +23,3 @@ pub(crate) use tool_call::{tool_fold_targets, ToolFoldTarget};
 pub(crate) use quote_rail::QUOTE_RAIL_WIDTH;
 #[cfg(test)]
 pub(crate) use read_excerpt::read_excerpt;
-#[cfg(test)]
-pub(crate) use tool_body::SUB_AGENT_TRANSCRIPT_NOTE;

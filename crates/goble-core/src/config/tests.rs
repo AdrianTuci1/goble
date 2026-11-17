@@ -775,3 +775,121 @@ fn remote_agent_missing_credentials_names_the_keys() {
     assert!(ready.missing_credentials().is_empty());
     assert_eq!(ready.status_label(), "ready");
 }
+
+/// `[app]` is goble's own settings section: every key optional, an absent key
+/// reads as the default, and the section round-trips through the seeder.
+#[test]
+fn the_app_section_parses_and_round_trips() {
+    let text = r##"
+[app]
+friendly_name = "Ada"
+usage = "coding"
+telemetry = true
+in_app_notifications = false
+invert_scroll = true
+scroll_speed = 80
+font_size = 1.25
+auto_save_on_close = true
+approval_mode = "auto-review"
+auto_approve = true
+vim_mode = true
+"##;
+    let (config, problems) = GobleConfig::load_toml(text).expect("valid TOML");
+    assert!(problems.is_empty(), "{problems:?}");
+    let app = &config.app;
+    assert_eq!(app.friendly_name.as_deref(), Some("Ada"));
+    assert_eq!(app.usage.as_deref(), Some("coding"));
+    assert_eq!(app.telemetry, Some(true));
+    assert_eq!(app.in_app_notifications, Some(false));
+    assert_eq!(app.invert_scroll, Some(true));
+    assert_eq!(app.scroll_speed, Some(80));
+    assert_eq!(app.font_size, Some(1.25));
+    assert_eq!(app.auto_save_on_close, Some(true));
+    assert_eq!(app.approval_mode.as_deref(), Some("auto-review"));
+    assert_eq!(app.auto_approve, Some(true));
+    assert_eq!(app.vim_mode, Some(true));
+    assert!(!app.is_unset());
+
+    // The seeder writes every key back and the file parses to the same config.
+    let toml = config.to_toml().expect("serialize");
+    assert!(toml.contains("[app]"), "{toml}");
+    assert!(toml.contains(r#"friendly_name = "Ada""#), "{toml}");
+    assert_eq!(GobleConfig::from_toml(&toml).expect("parse"), config);
+
+    // An absent `[app]` is the default section, not an error.
+    let (bare, problems) = GobleConfig::load_toml("[theme]\ndark = true\n").expect("valid");
+    assert!(problems.is_empty(), "{problems:?}");
+    assert!(bare.app.is_unset());
+}
+
+/// grok's `[ui]` section is a different tool's and stays untouched; goble's
+/// `[app]` is not a rename of it.
+#[test]
+fn the_grok_ui_section_is_not_the_app_section() {
+    let text = r##"
+[ui]
+max_thoughts_width = 120
+compact_mode = false
+
+[app]
+friendly_name = "Ada"
+"##;
+    let (config, problems) = GobleConfig::load_toml(text).expect("valid TOML");
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(config.app.friendly_name.as_deref(), Some("Ada"));
+    // [ui] is unmodelled and kept verbatim in `extra`.
+    assert!(config.extra.contains_key("ui"), "{:?}", config.extra.keys());
+    let toml = config.to_toml().expect("serialize");
+    assert!(toml.contains("[ui]"), "{toml}");
+    assert!(toml.contains("max_thoughts_width = 120"), "{toml}");
+    assert!(toml.contains("[app]"), "{toml}");
+}
+
+/// A `[harness.<id>]` override parses per table: one unknown shape costs that
+/// override, not the rest of the file.
+#[test]
+fn the_harness_section_parses_per_table() {
+    let text = r##"
+[harness.codex]
+enabled = false
+command = "/opt/homebrew/bin/codex"
+args = ["--full-auto"]
+env = { RUST_LOG = "info" }
+
+[harness.claude]
+args = ["--verbose"]
+
+[harness.broken]
+enabled = "definitely"
+"##;
+    let (config, problems) = GobleConfig::load_toml(text).expect("valid TOML");
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("[harness.broken]"), "{problems:?}");
+    let codex = &config.harness["codex"];
+    assert!(!codex.enabled);
+    assert_eq!(codex.command.as_deref(), Some("/opt/homebrew/bin/codex"));
+    assert_eq!(codex.args, ["--full-auto"]);
+    assert_eq!(codex.env.get("RUST_LOG").map(String::as_str), Some("info"));
+    assert!(config.harness["claude"].enabled, "enabled defaults to true");
+    assert_eq!(config.harness["claude"].args, ["--verbose"]);
+
+    // A harness id this build does not know is still a legal override table.
+    let (future, problems) = GobleConfig::load_toml("[harness.future-agent]\nenabled = true\n")
+        .expect("valid TOML");
+    assert!(problems.is_empty(), "{problems:?}");
+    assert!(future.harness.contains_key("future-agent"));
+}
+
+/// The seeded default carries neither `[app]` nor `[harness]`: settings are
+/// written by a change, and an absent key is the default.
+#[test]
+fn the_seeded_default_does_not_write_app_or_harness() {
+    let toml = GobleConfig::default().to_toml().expect("serialize");
+    // The header documents both sections in comments; the body must not carry
+    // them until a setting changed.
+    let body = toml
+        .strip_prefix(CONFIG_HEADER)
+        .expect("the seeded file opens with the header");
+    assert!(!body.contains("[app]"), "{body}");
+    assert!(!body.contains("[harness."), "{body}");
+}

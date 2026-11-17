@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use crate::elements::chat_content::{ChatAction, ChatMessage, SubAgentRow, ToolDisplayMode};
 use crate::elements::{
-    ApprovalMode, AskUserUi, CommandProposalUi, DiffSummary, Element, PanelScroll, Point,
+    ApprovalMode, AskUserUi, CommandProposalUi, DiffSummary, Element, LaneEdge, PanelScroll, Point,
     PopupMenuItem, ScrollState, SelectableText, ShortcutHint, SlashMenuItem, TerminalFilter,
     TranscriptSelection, TurnStatus,
 };
@@ -27,6 +27,7 @@ mod element;
 mod sticky;
 mod surface;
 mod transcript;
+mod usage_popover;
 
 #[cfg(test)]
 mod tests;
@@ -111,10 +112,11 @@ pub struct ChatView {
     /// selection survives the per-frame rebuild.
     composer_anchor: Rc<RefCell<Option<usize>>>,
     /// What the conversation has spent, from the provider's own token counts.
-    /// Drawn at the end of the transcript; accounting only, never a price.
+    /// Drawn at the end of the transcript as DSH's usage pill, with its details
+    /// panel a click away; accounting only, never a price.
     usage: TokenUsage,
-    /// Whether the usage disclosure is expanded. App-owned so it survives the
-    /// per-frame rebuild.
+    /// Whether the usage pill's details panel is open. App-owned so it survives
+    /// the per-frame rebuild (the popover element is rebuilt every frame).
     usage_open: Rc<RefCell<bool>>,
     /// Fork the conversation into a new one. `None` on a surface that cannot
     /// (a mock/dev transcript with no store behind it).
@@ -131,9 +133,8 @@ pub struct ChatView {
     /// the editor.
     composer_attachments: Vec<String>,
     composer_stop_visible: bool,
-    /// The instruction strip the pane draws over the separator above its input:
-    /// the gestures this pane's input answers, as key caps and names. Empty
-    /// draws nothing.
+    /// The instruction strip the pane draws above its input: the gestures this
+    /// pane's input answers, as key caps and names. Empty draws nothing.
     composer_hints: Vec<ShortcutHint>,
     /// The live turn-status footer: what the pane is doing, or what is still
     /// running once its turn stops. [`TurnStatus::Idle`] gives the row zero
@@ -256,6 +257,27 @@ pub struct ChatView {
     /// to the parent's transcript; a plain transcript wires nothing, so Escape
     /// keeps reaching whatever is focused (the composer's proposal, say).
     on_escape: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// Whether the pane meters its content column: the content is centred
+    /// inside the pane's own width by the app's content lane, and the pane's
+    /// header above it keeps the full pane width. `false` — a standalone view
+    /// or an element test — leaves the whole view at the width it is given.
+    content_lane: bool,
+    /// The committed content width for this view's pane, if the user dragged
+    /// the lane's invisible edge there. `None` leaves the view on the lane's
+    /// aspect-ratio width (the host owns this per pane).
+    content_lane_pref: Option<f32>,
+    /// Whether this view's lane is the one being dragged. Only the pane the
+    /// drag started in carries it, so the captured moves and the accent handle
+    /// line are that pane's own.
+    content_lane_dragging: bool,
+    /// The lane edge being dragged, so its handle line is drawn there.
+    content_lane_drag_edge: Option<LaneEdge>,
+    /// The lane's drag callbacks, wired to the host's app-owned per-pane width
+    /// state. The lane reports the pointer; the host resolves and stores the
+    /// width.
+    on_content_lane_drag_start: Option<Rc<RefCell<dyn FnMut(f32, LaneEdge, f32, f32) + 'static>>>,
+    on_content_lane_drag_move: Option<Rc<RefCell<dyn FnMut(f32) + 'static>>>,
+    on_content_lane_drag_end: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     root: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -364,6 +386,13 @@ impl ChatView {
             pane_active: true,
             show_composer: true,
             on_escape: None,
+            content_lane: false,
+            content_lane_pref: None,
+            content_lane_dragging: false,
+            content_lane_drag_edge: None,
+            on_content_lane_drag_start: None,
+            on_content_lane_drag_move: None,
+            on_content_lane_drag_end: None,
             root: None,
             size: None,
             origin: None,

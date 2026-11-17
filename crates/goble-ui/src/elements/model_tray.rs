@@ -1,22 +1,27 @@
-//! The composer's model tray: the models a pane can run, listed in the column
-//! layout the reference client uses — the models in one list, grouped under the
-//! harness each one belongs to, and the thinking levels the highlighted model
-//! accepts beside them.
+//! The composer's model selector: a DeepSeek Harness-style two-level menu
+//! anchored to the model chip in the input's footer.
 //!
-//! The harness column is recognition, not a switch. A group header carries the
-//! harness's mark and its name, so a row says which harness owns a model without
-//! asking the user to choose a provider first; a pick is always a model. Which
-//! endpoint that model talks to is the configuration's business, not the tray's.
+//! DSH's `ModelSelect` (`@deepseek-ai/dsh-client-ui-model-selection`) is a
+//! dropdown, not a band: the trigger is the model chip, and the card above it
+//! opens on a root pane with one **Model** row and one **Effort** row (label,
+//! current value, a right chevron); each drills into its own list — the models
+//! grouped under the provider that owns them, and the thinking levels — with the
+//! value in force marked by a trailing check. This module is that card, wired to
+//! the pane's real catalogue ([`ModelTrayHarness`] groups of [`ModelTrayModel`]s)
+//! and the app's own selection callbacks.
 //!
-//! It is the same band the command list uses ([`super::slash_menu`]): drawn
-//! directly above the input rather than floating over it, the input's width, in
-//! the same slot. What differs is the layout: two lists side by side instead of
-//! one, and the card's own rounding.
+//! The card is drawn by the element that wraps the chip, so it is anchored to
+//! the chip the way DSH anchors its portaled card (above it, right-aligned),
+//! and it paints outside the composer card without being in the host's layout.
+//! Like every menu here it never holds the keyboard: the composer routes the
+//! keys ([`handle_tray_key`]), the element draws what the shared
+//! [`ModelTrayState`] says and reports what the pointer chose.
 //!
-//! Like the command list it does not take the keyboard: the editor keeps the
-//! caret and the composer routes the keys ([`handle_tray_key`]), because the
-//! tray itself never holds focus. The element draws what it was given; what it
-//! owns is the geometry, the hit testing and the paint.
+//! The tree is rebuilt every frame, so the state the card and the key routing
+//! must agree on — pane, highlighted row, highlighted level — lives in the
+//! app-owned [`ModelTrayState`]. The host's flat model list
+//! ([`super::slash_menu::ModelMenu`]) stays as the slot the view draws for hosts
+//! that do not wire this menu.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,44 +33,64 @@ use crate::elements::{
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, RectF, Vector2F};
-use crate::theme::ColorToken;
+use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::theme::{ColorToken, FontFamily};
 
-/// How many model rows a column draws before it windows around the selection.
+/// How many model rows the card draws at once before it windows around the
+/// selection.
 pub const MODEL_TRAY_ROWS: usize = 8;
 
-/// The width the panel falls back to when its constraint is unbounded.
-const FALLBACK_WIDTH: f32 = 420.0;
+/// The width the card's root pane keeps: DSH's 240pt settings-menu casing.
+const ROOT_WIDTH: f32 = 240.0;
+const MIN_WIDTH: f32 = 240.0;
+const MAX_WIDTH: f32 = 420.0;
+/// The design cap on the card's height (DSH clamps it to the window).
+const MAX_HEIGHT: f32 = 360.0;
+/// The air between the card and the chip it hangs from (DSH:
+/// `bottom: calc(anchor(top) + 8px)`).
+const CARD_GAP: f32 = 8.0;
+const CARD_PADDING: f32 = 4.0;
+const CARD_RADIUS: f32 = 8.0;
+const ROW_RADIUS: f32 = 6.0;
 
-/// The thinking column's width: the levels are short words, so the model list
-/// takes what is left — model names are the long ones.
-const LEVEL_WIDTH: f32 = 132.0;
-/// The narrowest the model column is allowed to get before the thinking column
-/// gives room back.
-const MODEL_MIN_WIDTH: f32 = 180.0;
+/// A cell/row: DSH's 34pt menu cell, its content inset and the glyph gaps.
+const ROW_HEIGHT: f32 = 34.0;
+const ROW_PAD_X: f32 = 8.0;
+const ROW_GAP: f32 = 6.0;
+const CHECK_SIZE: f32 = 14.0;
+const CHEVRON_SIZE: f32 = 12.0;
 
-/// The column headers' row, and the room under the lists so the last row does
-/// not sit on the card's edge.
-const HEADER_HEIGHT: f32 = 24.0;
-const PADDING_BOTTOM: f32 = 6.0;
-/// A model row, a thinking row, and the smaller header that names a harness.
-const ROW_HEIGHT: f32 = 26.0;
-const GROUP_HEIGHT: f32 = 20.0;
-/// A row's text starts this far from its column's left edge.
-const ROW_INSET: f32 = 14.0;
-/// The gap between a harness's mark and its name.
-const MARK_GAP: f32 = 8.0;
-const GROUP_MARK_SIZE: f32 = 12.0;
-const LABEL_FONT_SIZE: f32 = 12.0;
+/// A provider/group heading over its rows: 4 above, the 16pt line, 2 below;
+/// groups are 3 apart.
+const GROUP_HEIGHT: f32 = 22.0;
+const GROUP_PAD_X: f32 = 7.0;
+const GROUP_PAD_TOP: f32 = 4.0;
+const GROUP_GAP: f32 = 3.0;
+
+/// A status row inside the card.
+const STATUS_HEIGHT: f32 = 28.0;
+
+const LABEL_FONT_SIZE: f32 = 13.0;
+const CELL_LINE_HEIGHT: f32 = 20.0;
+const MODEL_LINE_HEIGHT: f32 = 18.0;
 const GROUP_FONT_SIZE: f32 = 11.0;
-const HEADER_FONT_SIZE: f32 = 10.0;
-const LINE_HEIGHT: f32 = 1.2;
+const GROUP_LINE_HEIGHT: f32 = 16.0;
 
-/// One harness a pane can run, as the tray recognises it: the mark an id draws,
-/// the name its group header shows, and the models that harness runs.
+/// The root pane's two dictionary labels.
+pub const MODEL_CELL_LABEL: &str = "Model";
+pub const EFFORT_CELL_LABEL: &str = "Effort";
+/// The effort row's value when the pane runs on the model's default level.
+pub const EFFORT_DEFAULT_LABEL: &str = "Default";
+/// The two empty states the card can draw.
+pub const NO_MODELS: &str = "No models configured";
+pub const NO_EFFORTS: &str = "This model provides no reasoning effort levels.";
+
+/// One provider a pane can run, as the card recognises it: the name its group
+/// heading shows and the models that provider runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelTrayHarness {
-    /// The harness id the mark comes from (`goble`, `claude`, `grok`), or a
-    /// provider name this build has no mark for.
+    /// The provider/harness id the models belong to (`deepseek`, `anthropic`,
+    /// `goble`, …).
     pub harness: String,
     pub label: String,
     pub models: Vec<ModelTrayModel>,
@@ -86,7 +111,7 @@ impl ModelTrayHarness {
     }
 }
 
-/// One model in a harness's group: the id a turn runs on, the label the row
+/// One model in a provider's group: the id a turn runs on, the label the row
 /// shows, and the thinking levels the model accepts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelTrayModel {
@@ -109,14 +134,14 @@ impl ModelTrayModel {
         self
     }
 
-    /// The level the tray falls back to: the first one the model offers, so a
+    /// The level the card falls back to: the first one the model offers, so a
     /// pick is always one the harness runs.
     pub fn default_level(&self) -> String {
         self.thinking.first().cloned().unwrap_or_default()
     }
 }
 
-/// What a thinking level is called in the tray. The harness reports the ids it
+/// What a thinking level is called in the card. The harness reports the ids it
 /// runs; the row spells them the way a person reads them.
 pub fn level_label(level: &str) -> String {
     match level {
@@ -132,33 +157,18 @@ pub fn level_label(level: &str) -> String {
     }
 }
 
-/// The two lists, in the order the tray draws them. The harness is a group
-/// header inside the first one; it is not a list of its own.
+/// Which pane of the two-level menu the card shows: DSH's root menu, or one of
+/// the two lists it drills into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModelTrayColumn {
+pub enum ModelTrayPane {
+    Root,
     Model,
-    Level,
+    Effort,
 }
 
-impl ModelTrayColumn {
-    fn index(self) -> usize {
-        match self {
-            ModelTrayColumn::Model => 0,
-            ModelTrayColumn::Level => 1,
-        }
-    }
-
-    fn from_index(index: usize) -> Self {
-        match index {
-            1 => ModelTrayColumn::Level,
-            _ => ModelTrayColumn::Model,
-        }
-    }
-}
-
-/// Every model the tray lists, in the order it draws them, each with the harness
-/// that owns it. The keyboard and the hit test both work on this one list, so
-/// what the arrows move and what a press takes cannot disagree.
+/// Every model the card lists, in the order it draws them, each with the
+/// provider that owns it. The keyboard and the hit test both work on this one
+/// list, so what the arrows move and what a press takes cannot disagree.
 fn flat_models(harnesses: &[ModelTrayHarness]) -> Vec<(usize, &ModelTrayModel)> {
     harnesses
         .iter()
@@ -167,31 +177,43 @@ fn flat_models(harnesses: &[ModelTrayHarness]) -> Vec<(usize, &ModelTrayModel)> 
         .collect()
 }
 
-/// The tray's selection, host-owned: the element is rebuilt every frame, so the
-/// row the arrows moved to has to live outside it.
+/// The model a pane runs, when the catalogue still holds it.
+fn model_by_id<'a>(harnesses: &'a [ModelTrayHarness], id: &str) -> Option<&'a ModelTrayModel> {
+    flat_models(harnesses)
+        .into_iter()
+        .find(|(_, model)| model.id == id)
+        .map(|(_, model)| model)
+}
+
+/// The card's selection, app-owned: the element is rebuilt every frame, so the
+/// pane the menu is on and the rows the arrows moved to have to live outside it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModelTrayState {
-    pub column: usize,
+    pub pane: ModelTrayPane,
+    /// The root pane's highlighted cell: 0 = Model, 1 = Effort.
+    pub cell: usize,
     /// The row of the model list the selection is on, counted across every
-    /// harness: the group headers are not rows a keyboard can land on.
+    /// provider: the group headings are not rows a keyboard can land on.
     pub row: usize,
+    /// The row of the current model's thinking levels.
     pub level: usize,
-    /// Whether the tray has been placed on the pane's own model yet. The tray
+    /// Whether the card has been placed on the pane's own model yet. The card
     /// seeds itself from the model in force the first time it is drawn, and the
-    /// control clears this when it opens so the next open starts there again.
+    /// chip clears this when it opens so the next open starts there again.
     pub seeded: bool,
 }
 
 impl ModelTrayState {
-    pub fn column(&self) -> ModelTrayColumn {
-        ModelTrayColumn::from_index(self.column)
+    pub fn pane(&self) -> ModelTrayPane {
+        self.pane
     }
 
-    /// Place the selection on the pane's model, and on the level it runs at.
-    /// Called once per open, from the model the composer shows.
+    /// Place the card on the root pane, on the pane's model and on the level it
+    /// runs at. Called once per open, from the model the composer shows.
     pub fn seed(&mut self, harnesses: &[ModelTrayHarness], model: &str, level: &str) {
         let list = flat_models(harnesses);
-        self.column = ModelTrayColumn::Model.index();
+        self.pane = ModelTrayPane::Root;
+        self.cell = 0;
         self.row = list
             .iter()
             .position(|(_, candidate)| candidate.id == model)
@@ -201,29 +223,34 @@ impl ModelTrayState {
             .and_then(|(_, candidate)| candidate.thinking.iter().position(|one| one == level))
             .unwrap_or(0);
         self.seeded = true;
-        self.clamp(harnesses);
+        self.clamp(harnesses, model);
     }
 
-    /// Keep every index inside the lists the tray was given: the groups are
+    /// Keep every index inside the lists the card was given: the groups are
     /// rebuilt from configuration that can change between frames.
-    pub fn clamp(&mut self, harnesses: &[ModelTrayHarness]) {
+    pub fn clamp(&mut self, harnesses: &[ModelTrayHarness], model: &str) {
         let list = flat_models(harnesses);
         self.row = self.row.min(list.len().saturating_sub(1));
-        let levels = self.level_count(harnesses);
+        let levels = model_by_id(harnesses, model)
+            .map(|model| model.thinking.len())
+            .unwrap_or(0);
         self.level = self.level.min(levels.saturating_sub(1));
-        // The thinking column holds nothing for a model with no levels, so the
-        // keyboard never sits in an empty column.
-        self.column = self.column.min(if levels == 0 { 0 } else { 1 });
+        // The effort cell exists only while the model in force offers levels;
+        // the keyboard never sits in a pane that is not there.
+        self.cell = self.cell.min(if levels == 0 { 0 } else { 1 });
+        if levels == 0 {
+            self.level = 0;
+        }
     }
 
-    /// How many thinking levels the highlighted model offers.
+    /// How many thinking levels the current model offers.
     pub fn level_count(&self, harnesses: &[ModelTrayHarness]) -> usize {
         self.model_at(harnesses)
             .map(|model| model.thinking.len())
             .unwrap_or(0)
     }
 
-    /// The model the selection is on, when the lists still hold it.
+    /// The model the selection is on, when the list still holds it.
     pub fn model_at<'a>(&self, harnesses: &'a [ModelTrayHarness]) -> Option<&'a ModelTrayModel> {
         flat_models(harnesses)
             .get(self.row)
@@ -240,134 +267,867 @@ impl ModelTrayState {
     }
 }
 
-/// What a key did to the tray. The composer routes the keys and fires the host
+/// What a key did to the card. The composer routes the keys and fires the host
 /// callback for the outcome, so what the arrows move and what a pick applies can
 /// never disagree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelTrayKey {
-    /// The key moved the selection inside the tray.
-    Moved,
     /// The key belongs to the editor.
     Ignored,
-    /// Enter on a model row: apply the model at that flat index.
+    /// The key moved the selection (a pane switch or a row move).
+    Moved,
+    /// Enter/Tab on the root pane's Model cell: show the model list.
+    DrillModel,
+    /// Enter/Tab on the root pane's Effort cell: show the effort list.
+    DrillEffort,
+    /// Escape/Shift+Tab: leave the drilled pane for the root menu.
+    Back,
+    /// Enter/Tab on a model row: apply the model at that flat index.
     AcceptModel(usize),
-    /// Enter on a thinking row: apply the level at that index, named by the id
-    /// its harness reports (`off`, `on`).
+    /// Enter/Tab on a thinking row: apply the level at that index, named by the
+    /// id its harness reports (`off`, `on`).
     AcceptLevel(String),
-    /// Escape: put the tray away.
+    /// Escape from the root pane: put the menu away.
     Close,
 }
 
-/// Route one key to the tray: Left/Right move between the two lists, Up/Down
-/// move the row inside the list, Enter takes the row and Escape puts the tray
-/// away.
+fn wrap(index: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    ((index as isize + delta).rem_euclid(len as isize)) as usize
+}
+
+/// Route one key to the card the way DSH's `ModelSelect` does: Up/Down move the
+/// highlight (root cells, model rows, effort rows, wrapping), Enter or Tab
+/// drills in the root and takes a row in a list, Escape and Shift+Tab leave a
+/// drilled pane first and otherwise close.
 pub fn handle_tray_key(
     event: &DispatchedEvent,
     harnesses: &[ModelTrayHarness],
+    current_model: &str,
+    current_level: &str,
     state: &Rc<RefCell<ModelTrayState>>,
 ) -> ModelTrayKey {
     let DispatchedEvent::KeyDown { key, modifiers } = event else {
         return ModelTrayKey::Ignored;
     };
-    // Cmd/Ctrl+Enter is the host's own gesture (a new conversation), so it falls
-    // through to the editor even with the tray up.
-    if modifiers.command || modifiers.ctrl || modifiers.shift {
+    // A chorded key is the host's own gesture (Cmd/Ctrl+Enter, Shift+Tab rings
+    // the composer): it falls through to the composer even with the card up.
+    if modifiers.command || modifiers.ctrl || modifiers.alt {
         return ModelTrayKey::Ignored;
     }
     let mut state = state.borrow_mut();
-    state.clamp(harnesses);
+    if !state.seeded {
+        state.seed(harnesses, current_model, current_level);
+    }
+    state.clamp(harnesses, current_model);
     let total = flat_models(harnesses).len();
-    let levels = state.level_count(harnesses);
+    let levels = model_by_id(harnesses, current_model)
+        .map(|model| model.thinking.len())
+        .unwrap_or(0);
+    let back = |state: &mut ModelTrayState| {
+        if state.pane == ModelTrayPane::Root {
+            ModelTrayKey::Close
+        } else {
+            state.pane = ModelTrayPane::Root;
+            ModelTrayKey::Back
+        }
+    };
     match key.as_str() {
-        "ArrowLeft" => {
-            state.column = ModelTrayColumn::Model.index();
-            ModelTrayKey::Moved
-        }
-        "ArrowRight" => {
-            if levels > 0 {
-                state.column = ModelTrayColumn::Level.index();
+        "Escape" => back(&mut state),
+        "Tab" if modifiers.shift => back(&mut state),
+        "Enter" | "Tab" => match state.pane {
+            ModelTrayPane::Root => {
+                if state.cell == 1 && levels > 0 {
+                    state.pane = ModelTrayPane::Effort;
+                    ModelTrayKey::DrillEffort
+                } else {
+                    state.pane = ModelTrayPane::Model;
+                    ModelTrayKey::DrillModel
+                }
             }
-            ModelTrayKey::Moved
-        }
+            ModelTrayPane::Model => ModelTrayKey::AcceptModel(state.row),
+            ModelTrayPane::Effort => ModelTrayKey::AcceptLevel(state.level_at(harnesses)),
+        },
         "ArrowUp" | "ArrowDown" => {
-            let down = key == "ArrowDown";
-            match state.column() {
-                ModelTrayColumn::Model => {
+            let delta = if key == "ArrowDown" { 1 } else { -1 };
+            match state.pane {
+                ModelTrayPane::Root => {
+                    let cells = if levels == 0 { 1 } else { 2 };
+                    state.cell = wrap(state.cell.min(cells - 1), delta, cells);
+                }
+                ModelTrayPane::Model => {
                     if total > 0 {
-                        state.row = if down {
-                            (state.row + 1).min(total - 1)
-                        } else {
-                            state.row.saturating_sub(1)
-                        };
-                        // The levels belong to the model listed above them.
+                        state.row = wrap(state.row, delta, total);
+                        // The levels belong to the model row above them.
                         state.level = 0;
                     }
                 }
-                ModelTrayColumn::Level => {
+                ModelTrayPane::Effort => {
                     if levels > 0 {
-                        state.level = if down {
-                            (state.level + 1).min(levels - 1)
-                        } else {
-                            state.level.saturating_sub(1)
-                        };
+                        state.level = wrap(state.level, delta, levels);
                     }
                 }
             }
             ModelTrayKey::Moved
         }
-        "Enter" | "Tab" => match state.column() {
-            ModelTrayColumn::Model => ModelTrayKey::AcceptModel(state.row),
-            ModelTrayColumn::Level => ModelTrayKey::AcceptLevel(state.level_at(harnesses)),
-        },
-        "Escape" => ModelTrayKey::Close,
         _ => ModelTrayKey::Ignored,
     }
 }
 
-/// What a drawn row stands for.
+/// What a drawn row of the panel stands for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RowKind {
-    /// A harness header inside the model list: recognition only, never taken.
+enum PanelRowKind {
+    /// The root pane's cell, by index (0 = Model, 1 = Effort).
+    Cell(usize),
+    /// A provider heading.
     Group(usize),
     /// A model row, by its flat index.
     Model(usize),
-    /// A thinking row, by its index in the highlighted model's list.
+    /// A thinking row, by its index in the current model's list.
     Level(usize),
 }
 
-/// One drawn row's bounds, and what it stands for.
+/// One drawn row's bounds, relative to the menu element's origin, and what it
+/// stands for.
 #[derive(Clone, Debug)]
-struct TrayRow {
-    kind: RowKind,
+struct PanelRow {
+    kind: PanelRowKind,
     rect: RectF,
 }
 
-/// Where one list sits in the tray.
-#[derive(Clone, Copy, Debug)]
-struct ColumnBox {
-    column: ModelTrayColumn,
-    x: f32,
-    width: f32,
+/// The drawn panel: where it sits relative to the chip and its rows.
+#[derive(Clone, Debug)]
+struct Panel {
+    origin: Vector2F,
+    size: Vector2F,
+    rows: Vec<PanelRow>,
 }
 
-/// What a pane hands a composer and its band: the tray's data, the selection the
-/// two share, and the flag the model control toggles.
+/// The card the composer's model chip opens. It wraps the trigger the composer
+/// built (the chip is the host's control: its press toggles [`Self::open`]) and
+/// draws DSH's two-level menu above it.
+pub struct ModelTray {
+    trigger: Box<dyn Element>,
+    harnesses: Rc<Vec<ModelTrayHarness>>,
+    state: Rc<RefCell<ModelTrayState>>,
+    open: Rc<RefCell<bool>>,
+    /// The model and level in force, so the card marks them and seeds itself on
+    /// them.
+    current_model: String,
+    current_level: String,
+    on_select_model: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    on_select_level: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    panel: Option<Panel>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl ModelTray {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        trigger: Box<dyn Element>,
+        harnesses: Rc<Vec<ModelTrayHarness>>,
+        state: Rc<RefCell<ModelTrayState>>,
+        open: Rc<RefCell<bool>>,
+        current_model: impl Into<String>,
+        current_level: impl Into<String>,
+        on_select_model: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+        on_select_level: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    ) -> Self {
+        Self {
+            trigger,
+            harnesses,
+            state,
+            open,
+            current_model: current_model.into(),
+            current_level: current_level.into(),
+            on_select_model,
+            on_select_level,
+            panel: None,
+            size: None,
+            origin: None,
+        }
+    }
+
+    /// Place the shared state on the pane's own model, once per open.
+    fn seed(&self) {
+        let mut state = self.state.borrow_mut();
+        if state.seeded {
+            return;
+        }
+        state.seed(&self.harnesses, &self.current_model, &self.current_level);
+    }
+
+    /// The first model row the list shows: the window never scrolls past the
+    /// end, and the selected row always sits inside it.
+    fn window_start(row: usize, total: usize) -> usize {
+        let span = MODEL_TRAY_ROWS.min(total);
+        if span == 0 {
+            return 0;
+        }
+        row.saturating_sub(MODEL_TRAY_ROWS / 2)
+            .min(total.saturating_sub(span))
+    }
+
+    /// The current model's thinking levels: the effort pane and the root cell's
+    /// presence both read them.
+    fn levels(&self) -> Vec<String> {
+        model_by_id(&self.harnesses, &self.current_model)
+            .map(|model| model.thinking.clone())
+            .unwrap_or_default()
+    }
+
+    /// The label of the model in force, as the root cell's value reads it.
+    fn current_model_label(&self) -> String {
+        model_by_id(&self.harnesses, &self.current_model)
+            .map(|model| model.name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| self.current_model.clone())
+    }
+
+    /// The label of the level in force, as the root cell's value reads it.
+    fn current_level_label(&self) -> String {
+        if self.current_level.trim().is_empty() {
+            EFFORT_DEFAULT_LABEL.to_string()
+        } else {
+            level_label(&self.current_level)
+        }
+    }
+
+    /// The widest a model row needs: its content inset, the name, the check
+    /// column, and the card's own padding.
+    fn model_width(model: &ModelTrayModel) -> f32 {
+        ROW_PAD_X * 2.0
+            + measure_text_family(
+                &model.name,
+                LABEL_FONT_SIZE,
+                MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                f32::INFINITY,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            )
+            .x
+            + ROW_GAP
+            + CHECK_SIZE
+            + CARD_PADDING * 2.0
+    }
+
+    /// Build the panel the current pane draws: its size, where it sits relative
+    /// to the chip, and its rows for the hit test.
+    fn build_panel(&self) -> Panel {
+        let state = self.state.borrow().clone();
+        let levels = self.levels();
+        let mut rows: Vec<PanelRow> = Vec::new();
+        let (width, height) = match state.pane() {
+            ModelTrayPane::Root => {
+                let cells = if levels.is_empty() { 1 } else { 2 };
+                let width = ROOT_WIDTH;
+                let height = CARD_PADDING * 2.0 + cells as f32 * ROW_HEIGHT;
+                for cell in 0..cells {
+                    rows.push(PanelRow {
+                        kind: PanelRowKind::Cell(cell),
+                        rect: rectf(
+                            CARD_PADDING,
+                            CARD_PADDING + cell as f32 * ROW_HEIGHT,
+                            (width - CARD_PADDING * 2.0).max(0.0),
+                            ROW_HEIGHT,
+                        ),
+                    });
+                }
+                (width, height)
+            }
+            ModelTrayPane::Model => {
+                let flat = flat_models(&self.harnesses);
+                let total = flat.len();
+                let start = Self::window_start(state.row, total);
+                let mut end = (start + MODEL_TRAY_ROWS).min(total);
+                // The window is capped so group headings keep the card under
+                // the design height.
+                loop {
+                    let mut probe_rows: Vec<PanelRow> = Vec::new();
+                    Self::push_model_rows(
+                        &self.harnesses,
+                        start,
+                        end,
+                        &mut probe_rows,
+                        0.0,
+                        ROOT_WIDTH,
+                    );
+                    let height = CARD_PADDING * 2.0 + Self::rows_height(&probe_rows);
+                    if height <= MAX_HEIGHT || end.saturating_sub(start) <= 1 {
+                        break;
+                    }
+                    end -= 1;
+                }
+                let mut width = ROOT_WIDTH;
+                for index in start..end {
+                    if let Some((_, model)) = flat.get(index) {
+                        width = width.max(Self::model_width(model));
+                    }
+                }
+                // A provider heading may be the widest thing in the card.
+                let mut group: Option<usize> = None;
+                for index in start..end {
+                    let Some((group_index, _)) = flat.get(index).copied() else {
+                        continue;
+                    };
+                    if group != Some(group_index) {
+                        group = Some(group_index);
+                        if let Some(harness) = self.harnesses.get(group_index) {
+                            width = width.max(
+                                GROUP_PAD_X * 2.0
+                                    + measure_text_family(
+                                        &harness.label,
+                                        GROUP_FONT_SIZE,
+                                        GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
+                                        f32::INFINITY,
+                                        FontWeight::Regular,
+                                        FontFamily::System,
+                                        false,
+                                    )
+                                    .x
+                                    + CARD_PADDING * 2.0,
+                            );
+                        }
+                    }
+                }
+                let width = width.clamp(MIN_WIDTH, MAX_WIDTH);
+                let mut local_rows: Vec<PanelRow> = Vec::new();
+                Self::push_model_rows(&self.harnesses, start, end, &mut local_rows, 0.0, width);
+                let height = CARD_PADDING * 2.0 + Self::rows_height(&local_rows);
+                for mut row in local_rows {
+                    row.rect = Self::offset_rect(row.rect, CARD_PADDING, CARD_PADDING);
+                    rows.push(row);
+                }
+                (width, height)
+            }
+            ModelTrayPane::Effort => {
+                let mut width = MIN_WIDTH;
+                for level in &levels {
+                    width = width.max(
+                        ROW_PAD_X * 2.0
+                            + measure_text_family(
+                                &level_label(level),
+                                LABEL_FONT_SIZE,
+                                MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                                f32::INFINITY,
+                                FontWeight::Regular,
+                                FontFamily::System,
+                                false,
+                            )
+                            .x
+                            + ROW_GAP
+                            + CHECK_SIZE
+                            + CARD_PADDING * 2.0,
+                    );
+                }
+                let width = width.clamp(MIN_WIDTH, MAX_WIDTH);
+                let height = if levels.is_empty() {
+                    CARD_PADDING * 2.0 + STATUS_HEIGHT
+                } else {
+                    CARD_PADDING * 2.0 + levels.len() as f32 * ROW_HEIGHT
+                };
+                for index in 0..levels.len() {
+                    rows.push(PanelRow {
+                        kind: PanelRowKind::Level(index),
+                        rect: rectf(
+                            CARD_PADDING,
+                            CARD_PADDING + index as f32 * ROW_HEIGHT,
+                            (width - CARD_PADDING * 2.0).max(0.0),
+                            ROW_HEIGHT,
+                        ),
+                    });
+                }
+                (width, height)
+            }
+        };
+        // Above the chip, right-aligned to it: DSH's `bottom: anchor(top) + 8px;
+        // right: anchor(right)`.
+        let origin = vec2f(
+            self.size.map(|size| size.x - width).unwrap_or(-width),
+            -(height + CARD_GAP),
+        );
+        Panel {
+            origin,
+            size: vec2f(width, height),
+            rows,
+        }
+    }
+
+    /// Push the visible model rows, inserting a provider heading whenever the
+    /// group changes, and measure their stacked height. The rows are laid out
+    /// inside the card's padding: they start at the card's content edge and are
+    /// `width - 2 * CARD_PADDING` wide.
+    fn push_model_rows(
+        harnesses: &[ModelTrayHarness],
+        start: usize,
+        end: usize,
+        rows: &mut Vec<PanelRow>,
+        top: f32,
+        width: f32,
+    ) {
+        let flat = flat_models(harnesses);
+        let row_width = (width - CARD_PADDING * 2.0).max(0.0);
+        let mut y = top;
+        let mut group: Option<usize> = None;
+        for index in start..end {
+            let Some((group_index, _)) = flat.get(index).copied() else {
+                continue;
+            };
+            if group != Some(group_index) {
+                if group.is_some() {
+                    y += GROUP_GAP;
+                }
+                group = Some(group_index);
+                rows.push(PanelRow {
+                    kind: PanelRowKind::Group(group_index),
+                    rect: rectf(0.0, y, row_width, GROUP_HEIGHT),
+                });
+                y += GROUP_HEIGHT;
+            }
+            rows.push(PanelRow {
+                kind: PanelRowKind::Model(index),
+                rect: rectf(0.0, y, row_width, ROW_HEIGHT),
+            });
+            y += ROW_HEIGHT;
+        }
+    }
+
+    /// The stacked height of a run of rows.
+    fn rows_height(rows: &[PanelRow]) -> f32 {
+        rows.iter()
+            .map(|row| row.rect.max_y())
+            .fold(0.0f32, f32::max)
+    }
+
+    fn offset_rect(rect: RectF, x: f32, y: f32) -> RectF {
+        rectf(
+            rect.min_x() + x,
+            rect.min_y() + y,
+            rect.width(),
+            rect.height(),
+        )
+    }
+
+    /// The drawn panel's bounds in the frame's coordinates.
+    fn panel_bounds(&self) -> Option<RectF> {
+        let origin = self.origin?;
+        let panel = self.panel.as_ref()?;
+        Some(rectf(
+            origin.x() + panel.origin.x,
+            origin.y() + panel.origin.y,
+            panel.size.x,
+            panel.size.y,
+        ))
+    }
+
+    /// One line of `font_size` vertically centred in a row.
+    fn line_y(bounds: RectF, line_height: f32) -> f32 {
+        bounds.min_y() + (ROW_HEIGHT - line_height).max(0.0) / 2.0
+    }
+
+    /// The row the pointer is in, when it is over the open panel.
+    fn row_at(&self, position: Vector2F) -> Option<PanelRowKind> {
+        let panel = self.panel.as_ref()?;
+        let origin = self.origin?;
+        panel
+            .rows
+            .iter()
+            .find(|row| {
+                contains(
+                    rectf(
+                        origin.x() + panel.origin.x + row.rect.min_x(),
+                        origin.y() + panel.origin.y + row.rect.min_y(),
+                        row.rect.width(),
+                        row.rect.height(),
+                    ),
+                    position,
+                )
+            })
+            .map(|row| row.kind)
+    }
+
+    /// Track the pointer over the open panel: the highlight follows the row
+    /// under it, the way DSH's rows take focus on hover.
+    fn pointer_move(&self, position: Vector2F) {
+        let Some(kind) = self.row_at(position) else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        match kind {
+            PanelRowKind::Cell(cell) => state.cell = cell.min(1),
+            PanelRowKind::Group(_) => {}
+            PanelRowKind::Model(row) => {
+                state.row = row;
+                state.level = 0;
+            }
+            PanelRowKind::Level(level) => state.level = level,
+        }
+    }
+
+    /// Take a press on the open panel: the root cells drill, a row takes its
+    /// value and closes the menu (DSH's `choose`/`chooseEffort`).
+    fn press(&self, position: Vector2F) -> bool {
+        let Some(kind) = self.row_at(position) else {
+            return false;
+        };
+        match kind {
+            PanelRowKind::Cell(cell) => {
+                let mut state = self.state.borrow_mut();
+                state.cell = cell.min(1);
+                state.pane = if cell == 1 && !self.levels().is_empty() {
+                    ModelTrayPane::Effort
+                } else {
+                    ModelTrayPane::Model
+                };
+                true
+            }
+            PanelRowKind::Group(_) => true,
+            PanelRowKind::Model(row) => {
+                *self.open.borrow_mut() = false;
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.row = row;
+                }
+                if let Some(cb) = self.on_select_model.clone() {
+                    (cb.borrow_mut())(row);
+                }
+                true
+            }
+            PanelRowKind::Level(level) => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.level = level;
+                }
+                let level_id = self
+                    .levels()
+                    .get(level)
+                    .cloned()
+                    .unwrap_or_default();
+                *self.open.borrow_mut() = false;
+                if !level_id.is_empty() {
+                    if let Some(cb) = self.on_select_level.clone() {
+                        (cb.borrow_mut())(level_id);
+                    }
+                }
+                true
+            }
+        }
+    }
+}
+
+impl Element for ModelTray {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let trigger_size = self.trigger.layout(constraint, ctx, app);
+        self.size = Some(trigger_size);
+        if *self.open.borrow() {
+            self.seed();
+            let mut panel = self.build_panel();
+            if constraint.max.x.is_finite() {
+                // Keep the whole card inside the width the chip was measured
+                // with, the way DSH clamps its anchored card to the window.
+                panel.origin.x = panel
+                    .origin
+                    .x
+                    .min((constraint.max.x - panel.size.x).max(0.0));
+            }
+            self.panel = Some(panel);
+        } else {
+            self.panel = None;
+        }
+        trigger_size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.trigger.paint(origin, ctx, app);
+        let Some(panel) = self.panel.clone() else {
+            return;
+        };
+        let panel_origin = origin + panel.origin;
+        let card = rectf(
+            panel_origin.x,
+            panel_origin.y,
+            panel.size.x,
+            panel.size.y,
+        );
+        let state = self.state.borrow().clone();
+        let levels = self.levels();
+        let flat = flat_models(&self.harnesses);
+        let radius = CARD_RADIUS;
+        let renderer = match ctx.renderer.as_mut() {
+            Some(renderer) => renderer,
+            None => return,
+        };
+        // DSH's menu surface: one rounded, padded card with a hairline, floated
+        // above the chip. The card is the whole menu; there is no band under it.
+        renderer.fill_rounded_rect(card, app.theme.color(ColorToken::SurfaceRaised), radius);
+        renderer.stroke_rect(card, app.theme.color(ColorToken::Border), 1.0, radius);
+
+        if panel.rows.is_empty() {
+            renderer.draw_text(
+                Vector2F::new(
+                    card.min_x() + CARD_PADDING + ROW_PAD_X,
+                    card.min_y()
+                        + CARD_PADDING
+                        + (STATUS_HEIGHT - MODEL_LINE_HEIGHT).max(0.0) / 2.0,
+                ),
+                NO_EFFORTS.to_string(),
+                LABEL_FONT_SIZE,
+                app.theme.color(ColorToken::Muted),
+                (panel.size.x - CARD_PADDING * 2.0 - ROW_PAD_X * 2.0).max(0.0),
+                MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
+            );
+            return;
+        }
+
+        for row in &panel.rows {
+            let bounds = rectf(
+                panel_origin.x + row.rect.min_x(),
+                panel_origin.y + row.rect.min_y(),
+                row.rect.width(),
+                row.rect.height(),
+            );
+            match row.kind {
+                PanelRowKind::Cell(cell) => {
+                    if state.pane() == ModelTrayPane::Root && state.cell == cell {
+                        renderer.fill_rounded_rect(
+                            bounds,
+                            app.theme.color(ColorToken::Selected),
+                            ROW_RADIUS,
+                        );
+                    }
+                    let (label, value) = if cell == 0 {
+                        (MODEL_CELL_LABEL.to_string(), self.current_model_label())
+                    } else {
+                        (EFFORT_CELL_LABEL.to_string(), self.current_level_label())
+                    };
+                    let value_max = (bounds.width()
+                        - ROW_PAD_X * 2.0
+                        - CHEVRON_SIZE
+                        - ROW_GAP)
+                        .max(0.0);
+                    let value_width = measure_text_family(
+                        &value,
+                        LABEL_FONT_SIZE,
+                        CELL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                        f32::INFINITY,
+                        FontWeight::Regular,
+                        FontFamily::System,
+                        false,
+                    )
+                    .x
+                    .min(value_max);
+                    let chevron_x = bounds.max_x() - ROW_PAD_X - CHEVRON_SIZE;
+                    renderer.draw_text(
+                        Vector2F::new(
+                            bounds.min_x() + ROW_PAD_X,
+                            Self::line_y(bounds, CELL_LINE_HEIGHT),
+                        ),
+                        label,
+                        LABEL_FONT_SIZE,
+                        app.theme.color(ColorToken::Text),
+                        (bounds.width() - ROW_PAD_X * 2.0 - CHEVRON_SIZE - ROW_GAP).max(0.0),
+                        CELL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                    );
+                    renderer.draw_text(
+                        Vector2F::new(
+                            chevron_x - ROW_GAP - value_width,
+                            Self::line_y(bounds, CELL_LINE_HEIGHT),
+                        ),
+                        value,
+                        LABEL_FONT_SIZE,
+                        app.theme.color(ColorToken::Muted),
+                        value_width,
+                        CELL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                    );
+                    renderer.draw_icon(
+                        Vector2F::new(
+                            chevron_x,
+                            bounds.min_y() + (ROW_HEIGHT - CHEVRON_SIZE).max(0.0) / 2.0,
+                        ),
+                        icon_atlas_name("chevron-right"),
+                        CHEVRON_SIZE,
+                        app.theme.color(ColorToken::Muted),
+                    );
+                }
+                PanelRowKind::Group(group) => {
+                    let Some(harness) = self.harnesses.get(group) else {
+                        continue;
+                    };
+                    renderer.draw_text(
+                        Vector2F::new(
+                            bounds.min_x() + GROUP_PAD_X,
+                            bounds.min_y() + GROUP_PAD_TOP,
+                        ),
+                        harness.label.clone(),
+                        GROUP_FONT_SIZE,
+                        app.theme.color(ColorToken::Muted),
+                        (bounds.width() - GROUP_PAD_X * 2.0).max(0.0),
+                        GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
+                    );
+                }
+                PanelRowKind::Model(index) => {
+                    let Some((_, model)) = flat.get(index).copied() else {
+                        continue;
+                    };
+                    if state.row == index {
+                        renderer.fill_rounded_rect(
+                            bounds,
+                            app.theme.color(ColorToken::Selected),
+                            ROW_RADIUS,
+                        );
+                    }
+                    renderer.draw_text(
+                        Vector2F::new(
+                            bounds.min_x() + ROW_PAD_X,
+                            Self::line_y(bounds, MODEL_LINE_HEIGHT),
+                        ),
+                        model.name.clone(),
+                        LABEL_FONT_SIZE,
+                        app.theme.color(ColorToken::Text),
+                        (bounds.width() - ROW_PAD_X * 2.0 - ROW_GAP - CHECK_SIZE).max(0.0),
+                        MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                    );
+                    if model.id == self.current_model {
+                        renderer.draw_icon(
+                            Vector2F::new(
+                                bounds.max_x() - ROW_PAD_X - CHECK_SIZE,
+                                bounds.min_y() + (ROW_HEIGHT - CHECK_SIZE).max(0.0) / 2.0,
+                            ),
+                            icon_atlas_name("check"),
+                            CHECK_SIZE,
+                            app.theme.color(ColorToken::Text),
+                        );
+                    }
+                }
+                PanelRowKind::Level(index) => {
+                    let Some(level) = levels.get(index) else {
+                        continue;
+                    };
+                    if state.level == index {
+                        renderer.fill_rounded_rect(
+                            bounds,
+                            app.theme.color(ColorToken::Selected),
+                            ROW_RADIUS,
+                        );
+                    }
+                    renderer.draw_text(
+                        Vector2F::new(
+                            bounds.min_x() + ROW_PAD_X,
+                            Self::line_y(bounds, MODEL_LINE_HEIGHT),
+                        ),
+                        level_label(level),
+                        LABEL_FONT_SIZE,
+                        app.theme.color(ColorToken::Text),
+                        (bounds.width() - ROW_PAD_X * 2.0 - ROW_GAP - CHECK_SIZE).max(0.0),
+                        MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                    );
+                    if level == &self.current_level {
+                        renderer.draw_icon(
+                            Vector2F::new(
+                                bounds.max_x() - ROW_PAD_X - CHECK_SIZE,
+                                bounds.min_y() + (ROW_HEIGHT - CHECK_SIZE).max(0.0) / 2.0,
+                            ),
+                            icon_atlas_name("check"),
+                            CHECK_SIZE,
+                            app.theme.color(ColorToken::Text),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        let bounds = match self.bounds() {
+            Some(bounds) => bounds,
+            None => return false,
+        };
+        let position = match event {
+            DispatchedEvent::MouseMove { position } => *position,
+            DispatchedEvent::MouseDown { position, .. }
+            | DispatchedEvent::MouseUp { position, .. } => *position,
+            _ => return self.trigger.dispatch_event(event, ctx, app),
+        };
+        if !*self.open.borrow() {
+            return self.trigger.dispatch_event(event, ctx, app);
+        }
+        // The chip stays the control that opens and closes the menu.
+        if contains(bounds, position) {
+            return self.trigger.dispatch_event(event, ctx, app);
+        }
+        if self.panel_bounds().is_some_and(|panel| contains(panel, position)) {
+            match event {
+                DispatchedEvent::MouseMove { .. } => {
+                    self.pointer_move(position);
+                    false
+                }
+                DispatchedEvent::MouseDown { button, .. } => {
+                    if *button == crate::event::BUTTON_PRIMARY {
+                        self.press(position);
+                    }
+                    true
+                }
+                DispatchedEvent::MouseUp { .. } => true,
+                _ => true,
+            }
+        } else {
+            // A primary press anywhere else puts the card away; the press then
+            // belongs to whatever it landed on (the editor takes the caret).
+            if matches!(
+                event,
+                DispatchedEvent::MouseDown {
+                    button: crate::event::BUTTON_PRIMARY,
+                    ..
+                }
+            ) {
+                *self.open.borrow_mut() = false;
+            }
+            false
+        }
+    }
+}
+
+/// What a pane hands a composer: the card's data, the selection the two share,
+/// and the flag the model control toggles.
 ///
-/// The band the [`ModelTray`] draws and the control that opens it are two
-/// elements rebuilt every frame, so everything they have to agree on — which
-/// rows are listed, which one the arrows are on, whether the band is up — lives
-/// in this handle and is cloned into both.
+/// The chip and the card are two elements rebuilt every frame, so everything
+/// they have to agree on — which models are listed, which pane and row the
+/// arrows are on, whether the card is up — lives in this handle and is cloned
+/// into both.
 #[derive(Clone)]
 pub struct ComposerModelTray {
     pub harnesses: Rc<Vec<ModelTrayHarness>>,
     pub state: Rc<RefCell<ModelTrayState>>,
-    /// Whether the tray is open. The model control toggles it, the band reads it.
+    /// Whether the card is open. The model control toggles it, the card reads it.
     pub open: Rc<RefCell<bool>>,
-    /// The model the pane runs and the thinking level in force, so the tray
+    /// The model the pane runs and the thinking level in force, so the card
     /// opens on them and marks them in the lists.
     pub model: String,
     pub level: String,
-    /// A taken model: its flat index in the list the tray drew.
+    /// A taken model: its flat index in the list the card drew.
     pub on_select_model: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     /// A taken thinking level, named by the id its harness reports.
     pub on_select_level: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
@@ -406,519 +1166,27 @@ impl ComposerModelTray {
         self
     }
 
-    /// The band's element, when the control has it open: the same data, the same
-    /// selection, and the callbacks that put it away once a row is taken.
-    pub fn band(&self) -> Option<ModelTray> {
-        if !*self.open.borrow() {
-            return None;
-        }
-        let mut tray = ModelTray::new(
-            self.harnesses.as_ref().clone(),
+    /// The chip wrapped in the card it opens: the same data, the same selection,
+    /// and the callbacks a taken row reports to.
+    pub fn popup(&self, trigger: Box<dyn Element>) -> ModelTray {
+        ModelTray::new(
+            trigger,
+            self.harnesses.clone(),
             self.state.clone(),
+            self.open.clone(),
             self.model.clone(),
             self.level.clone(),
-        );
-        if let Some(cb) = self.on_select_model.clone() {
-            let open = self.open.clone();
-            tray = tray.with_on_select_model(move |row| {
-                (cb.borrow_mut())(row);
-                *open.borrow_mut() = false;
-            });
-        }
-        if let Some(cb) = self.on_select_level.clone() {
-            let open = self.open.clone();
-            tray = tray.with_on_select_level(move |level| {
-                (cb.borrow_mut())(level);
-                *open.borrow_mut() = false;
-            });
-        }
-        Some(tray)
-    }
-}
-
-/// The tray the composer's model control opens: the models a pane can run,
-/// grouped by the harness that runs them, and the thinking levels of the
-/// highlighted one.
-pub struct ModelTray {
-    harnesses: Vec<ModelTrayHarness>,
-    state: Rc<RefCell<ModelTrayState>>,
-    /// The pane's model and level in force, so the tray seeds itself on them and
-    /// marks them in the lists.
-    current_model: String,
-    current_level: String,
-    on_select_model: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
-    on_select_level: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
-    columns: [ColumnBox; 2],
-    rows: Vec<TrayRow>,
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl ModelTray {
-    pub fn new(
-        harnesses: Vec<ModelTrayHarness>,
-        state: Rc<RefCell<ModelTrayState>>,
-        current_model: impl Into<String>,
-        current_level: impl Into<String>,
-    ) -> Self {
-        Self {
-            harnesses,
-            state,
-            current_model: current_model.into(),
-            current_level: current_level.into(),
-            on_select_model: None,
-            on_select_level: None,
-            columns: [
-                ColumnBox {
-                    column: ModelTrayColumn::Model,
-                    x: 0.0,
-                    width: FALLBACK_WIDTH - LEVEL_WIDTH,
-                },
-                ColumnBox {
-                    column: ModelTrayColumn::Level,
-                    x: FALLBACK_WIDTH - LEVEL_WIDTH,
-                    width: LEVEL_WIDTH,
-                },
-            ],
-            rows: Vec::new(),
-            size: None,
-            origin: None,
-        }
+            self.on_select_model.clone(),
+            self.on_select_level.clone(),
+        )
     }
 
-    pub fn with_on_select_model<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
-        self.on_select_model = Some(Rc::new(RefCell::new(callback)));
-        self
-    }
-
-    pub fn with_on_select_level<F: FnMut(String) + 'static>(mut self, callback: F) -> Self {
-        self.on_select_level = Some(Rc::new(RefCell::new(callback)));
-        self
-    }
-
-    /// Place the selection on the pane's own model, once per open.
-    fn seed(&mut self) {
-        let mut state = self.state.borrow_mut();
-        if state.seeded {
-            return;
-        }
-        state.seed(&self.harnesses, &self.current_model, &self.current_level);
-    }
-
-    /// The first model row the list shows: the window never scrolls past the
-    /// end, and the selected row always sits inside it.
-    fn window_start(row: usize, total: usize) -> usize {
-        let span = MODEL_TRAY_ROWS.min(total);
-        if span == 0 {
-            return 0;
-        }
-        row.saturating_sub(MODEL_TRAY_ROWS / 2)
-            .min(total.saturating_sub(span))
-    }
-
-    /// Where the text of a row sits vertically inside it.
-    fn line_offset(font_size: f32) -> f32 {
-        ((font_size * LINE_HEIGHT).max(0.0) + font_size * 0.2) * 0.5
-    }
-
-    /// A row's rect in the band's own coordinates, moved to where the band was
-    /// painted.
-    fn absolute(&self, rect: RectF) -> RectF {
-        match self.origin {
-            Some(origin) => rectf(
-                rect.min_x() + origin.x(),
-                rect.min_y() + origin.y(),
-                rect.width(),
-                rect.height(),
-            ),
-            None => rect,
-        }
-    }
-
-    /// The drawn row under a pointer position, when it is a row that can be
-    /// taken.
-    fn row_at(&self, position: Vector2F) -> Option<RowKind> {
-        self.rows
-            .iter()
-            .find(|row| contains(self.absolute(row.rect), position))
-            .map(|row| row.kind)
-    }
-
-    fn panel_bounds(&self) -> Option<RectF> {
-        let size = self.size?;
-        let origin = self.origin?;
-        Some(rectf(origin.x(), origin.y(), size.x, size.y))
-    }
-
-    /// Take a pointer event: a move places the highlight, a press takes the row
-    /// the highlight is on. A group header is recognition only, so a press on
-    /// one moves nothing.
-    fn pointer(&mut self, event: &DispatchedEvent) {
-        let (position, pressed) = match event {
-            DispatchedEvent::MouseMove { position } => (*position, false),
-            DispatchedEvent::MouseDown { position, .. } => (*position, true),
-            _ => return,
-        };
-        let Some(kind) = self.row_at(position) else {
-            return;
-        };
-        match kind {
-            RowKind::Group(_) => {}
-            RowKind::Model(row) => {
-                let mut state = self.state.borrow_mut();
-                state.column = ModelTrayColumn::Model.index();
-                if state.row != row {
-                    state.row = row;
-                    state.level = 0;
-                }
-                drop(state);
-                if pressed {
-                    if let Some(cb) = self.on_select_model.clone() {
-                        (cb.borrow_mut())(row);
-                    }
-                }
-            }
-            RowKind::Level(level) => {
-                let level_id = {
-                    let mut state = self.state.borrow_mut();
-                    state.column = ModelTrayColumn::Level.index();
-                    let id = state
-                        .model_at(&self.harnesses)
-                        .and_then(|model| model.thinking.get(level))
-                        .cloned()
-                        .unwrap_or_default();
-                    state.level = level;
-                    id
-                };
-                if pressed {
-                    if let Some(cb) = self.on_select_level.clone() {
-                        (cb.borrow_mut())(level_id);
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Element for ModelTray {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        _ctx: &mut LayoutContext,
-        _app: &AppContext,
-    ) -> Vector2F {
-        self.seed();
-        let width = if constraint.max.x.is_finite() && constraint.max.x > 0.0 {
-            constraint.max.x
-        } else {
-            FALLBACK_WIDTH
-        };
-        // The thinking column gives room back when the pane is narrow, but never
-        // so much that the model names lose their list.
-        let mut level_width = (width * 0.32).clamp(0.0, LEVEL_WIDTH);
-        if width - level_width < MODEL_MIN_WIDTH {
-            level_width = (width - MODEL_MIN_WIDTH).max(0.0);
-        }
-        let model_width = (width - level_width).max(0.0);
-        self.columns = [
-            ColumnBox {
-                column: ModelTrayColumn::Model,
-                x: 0.0,
-                width: model_width,
-            },
-            ColumnBox {
-                column: ModelTrayColumn::Level,
-                x: model_width,
-                width: level_width,
-            },
-        ];
-
-        let state = self.state.borrow().clone();
-        let flat = flat_models(&self.harnesses);
-        let total = flat.len();
-        let start = Self::window_start(state.row, total);
-        let end = (start + MODEL_TRAY_ROWS).min(total);
-
-        let mut rows: Vec<TrayRow> = Vec::new();
-        let mut y = HEADER_HEIGHT;
-        let mut group: Option<usize> = None;
-        for index in start..end {
-            let Some((group_index, _)) = flat.get(index).copied() else {
-                continue;
-            };
-            if group != Some(group_index) {
-                group = Some(group_index);
-                rows.push(TrayRow {
-                    kind: RowKind::Group(group_index),
-                    rect: rectf(0.0, y, model_width, GROUP_HEIGHT),
-                });
-                y += GROUP_HEIGHT;
-            }
-            rows.push(TrayRow {
-                kind: RowKind::Model(index),
-                rect: rectf(0.0, y, model_width, ROW_HEIGHT),
-            });
-            y += ROW_HEIGHT;
-        }
-        let model_height = y;
-
-        // The thinking list belongs to the highlighted model, and windows the
-        // same way when a harness reports more levels than fit.
-        let levels = state.level_count(&self.harnesses);
-        let level_start = Self::window_start(state.level, levels);
-        let level_end = (level_start + MODEL_TRAY_ROWS).min(levels);
-        let mut level_y = HEADER_HEIGHT;
-        for level in level_start..level_end {
-            rows.push(TrayRow {
-                kind: RowKind::Level(level),
-                rect: rectf(model_width, level_y, level_width, ROW_HEIGHT),
-            });
-            level_y += ROW_HEIGHT;
-        }
-
-        self.rows = rows;
-        let list_height = model_height.max(level_y).max(HEADER_HEIGHT + ROW_HEIGHT);
-        let size = Vector2F::new(width, list_height + PADDING_BOTTOM);
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        let size = self.size.unwrap_or(Vector2F::zero());
-        let panel = rectf(origin.x, origin.y, size.x, size.y);
-        let state = self.state.borrow().clone();
-        let columns = self.columns;
-        let rows = self.rows.clone();
-        let harnesses = &self.harnesses;
-        let flat = flat_models(harnesses);
-        let levels = state
-            .model_at(harnesses)
-            .map(|model| model.thinking.clone())
-            .unwrap_or_default();
-        let current_model = self.current_model.clone();
-        let current_level = self.current_level.clone();
-        let renderer = match ctx.renderer.as_mut() {
-            Some(renderer) => renderer,
-            None => return,
-        };
-
-        // The input's own card, in the slot above it: the band's width, the
-        // theme's rounding, and the surface every menu here uses.
-        let radius = app.theme.radius_px();
-        renderer.fill_rounded_rect(panel, app.theme.color(ColorToken::SurfaceRaised), radius);
-        renderer.stroke_rect(panel, app.theme.color(ColorToken::Border), 1.0, radius);
-
-        // The column headers, and the hairline that sets them off the lists.
-        for (index, label) in ["MODEL", "THINKING"].into_iter().enumerate() {
-            let column = columns[index];
-            renderer.draw_text(
-                Vector2F::new(
-                    origin.x + column.x + ROW_INSET,
-                    origin.y + Self::line_offset(HEADER_FONT_SIZE),
-                ),
-                label.to_string(),
-                HEADER_FONT_SIZE,
-                app.theme.color(ColorToken::Muted),
-                (column.width - ROW_INSET * 2.0).max(0.0),
-                LINE_HEIGHT,
-            );
-        }
-        renderer.fill_rect(
-            rectf(
-                origin.x + ROW_INSET,
-                origin.y + HEADER_HEIGHT - 1.0,
-                (size.x - ROW_INSET * 2.0).max(0.0),
-                1.0,
-            ),
-            app.theme.color(ColorToken::Border),
-        );
-        // One rule between the lists, inset so it reads as a divider rather than
-        // as the card's own edge.
-        renderer.fill_rect(
-            rectf(
-                origin.x + columns[1].x,
-                origin.y + HEADER_HEIGHT,
-                1.0,
-                (size.y - HEADER_HEIGHT - PADDING_BOTTOM).max(0.0),
-            ),
-            app.theme.color(ColorToken::Border),
-        );
-
-        for row in &rows {
-            let bounds = self.absolute(row.rect);
-            let on_level_list = matches!(row.kind, RowKind::Level(_));
-            let focused = (state.column() == columns[1].column && on_level_list)
-                || (state.column() == columns[0].column && !on_level_list);
-            let selected = match row.kind {
-                RowKind::Group(_) => false,
-                RowKind::Model(index) => state.row == index,
-                RowKind::Level(level) => state.level == level,
-            };
-            if focused && selected {
-                // Inset from the card's edge and rounded with it, so the
-                // highlight reads as a row of this panel.
-                renderer.fill_rounded_rect(
-                    rectf(
-                        bounds.min_x() + 6.0,
-                        bounds.min_y() + 1.0,
-                        (bounds.width() - 12.0).max(0.0),
-                        (bounds.height() - 2.0).max(0.0),
-                    ),
-                    app.theme.color(ColorToken::Selected),
-                    app.theme.radius_px(),
-                );
-            }
-            match row.kind {
-                RowKind::Group(group) => {
-                    let Some(harness) = harnesses.get(group) else {
-                        continue;
-                    };
-                    let spec = goble_core::harness::harness_for(&harness.harness);
-                    let mark = spec.map(|spec| spec.icon).unwrap_or("cpu");
-                    let mark_color = if spec.is_some() {
-                        app.theme.color(ColorToken::Text)
-                    } else {
-                        app.theme.color(ColorToken::Muted)
-                    };
-                    renderer.draw_icon(
-                        Vector2F::new(
-                            bounds.min_x() + ROW_INSET,
-                            bounds.min_y() + (GROUP_HEIGHT - GROUP_MARK_SIZE) / 2.0,
-                        ),
-                        icon_atlas_name(mark),
-                        GROUP_MARK_SIZE,
-                        mark_color,
-                    );
-                    renderer.draw_text(
-                        Vector2F::new(
-                            bounds.min_x() + ROW_INSET + GROUP_MARK_SIZE + MARK_GAP,
-                            bounds.min_y() + Self::line_offset(GROUP_FONT_SIZE),
-                        ),
-                        harness.label.clone(),
-                        GROUP_FONT_SIZE,
-                        app.theme.color(ColorToken::Muted),
-                        (bounds.width() - ROW_INSET * 2.0 - GROUP_MARK_SIZE - MARK_GAP).max(0.0),
-                        LINE_HEIGHT,
-                    );
-                }
-                RowKind::Model(index) => {
-                    let Some((_, model)) = flat.get(index).copied() else {
-                        continue;
-                    };
-                    let current = model.id == current_model;
-                    let color = if current {
-                        app.theme.color(ColorToken::Accent)
-                    } else {
-                        app.theme.color(ColorToken::Text)
-                    };
-                    renderer.draw_text(
-                        Vector2F::new(
-                            bounds.min_x() + ROW_INSET,
-                            bounds.min_y() + Self::line_offset(LABEL_FONT_SIZE),
-                        ),
-                        model.name.clone(),
-                        LABEL_FONT_SIZE,
-                        color,
-                        (bounds.width() - ROW_INSET * 2.0).max(0.0),
-                        LINE_HEIGHT,
-                    );
-                }
-                RowKind::Level(level) => {
-                    let Some(level_id) = levels.get(level) else {
-                        continue;
-                    };
-                    let current = level_id == &current_level;
-                    let color = if current {
-                        app.theme.color(ColorToken::Accent)
-                    } else {
-                        app.theme.color(ColorToken::Text)
-                    };
-                    renderer.draw_text(
-                        Vector2F::new(
-                            bounds.min_x() + ROW_INSET,
-                            bounds.min_y() + Self::line_offset(LABEL_FONT_SIZE),
-                        ),
-                        level_label(level_id),
-                        LABEL_FONT_SIZE,
-                        color,
-                        (bounds.width() - ROW_INSET * 2.0).max(0.0),
-                        LINE_HEIGHT,
-                    );
-                }
-            }
-        }
-
-        // A list with nothing in it says why instead of reading as broken.
-        if flat.is_empty() {
-            renderer.draw_text(
-                Vector2F::new(
-                    origin.x + ROW_INSET,
-                    origin.y + HEADER_HEIGHT + Self::line_offset(LABEL_FONT_SIZE),
-                ),
-                "No models configured",
-                LABEL_FONT_SIZE,
-                app.theme.color(ColorToken::Muted),
-                (columns[0].width - ROW_INSET * 2.0).max(0.0),
-                LINE_HEIGHT,
-            );
-        }
-        if state
-            .model_at(harnesses)
-            .is_some_and(|model| model.thinking.is_empty())
-        {
-            renderer.draw_text(
-                Vector2F::new(
-                    origin.x + columns[1].x + ROW_INSET,
-                    origin.y + HEADER_HEIGHT + Self::line_offset(LABEL_FONT_SIZE),
-                ),
-                "Nothing to choose",
-                LABEL_FONT_SIZE,
-                app.theme.color(ColorToken::Muted),
-                (columns[1].width - ROW_INSET * 2.0).max(0.0),
-                LINE_HEIGHT,
-            );
-        }
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &DispatchedEvent,
-        _ctx: &mut EventContext,
-        _app: &AppContext,
-    ) -> bool {
-        match event {
-            DispatchedEvent::MouseMove { .. } => {
-                self.pointer(event);
-                false
-            }
-            DispatchedEvent::MouseDown { position, .. } => {
-                // A press anywhere on the panel belongs to the tray: it must not
-                // reach the editor behind it and blur the caret the tray is
-                // being picked from.
-                let inside = self
-                    .panel_bounds()
-                    .map(|bounds| contains(bounds, *position))
-                    .unwrap_or(false);
-                if inside {
-                    self.pointer(event);
-                }
-                inside
-            }
-            DispatchedEvent::MouseUp { position, .. } => self
-                .panel_bounds()
-                .map(|bounds| contains(bounds, *position))
-                .unwrap_or(false),
-            _ => false,
-        }
+    /// Kept for the view's band slot. The DSH model menu is a card anchored to
+    /// the chip inside the composer, not a sibling band, so the slot draws
+    /// nothing; a `None` here leaves the host's slot empty instead of stacking a
+    /// second model list over the input.
+    pub fn band(&self) -> Option<ModelTray> {
+        None
     }
 }
 
@@ -937,85 +1205,129 @@ mod tests {
 
     fn harnesses() -> Vec<ModelTrayHarness> {
         vec![
-            ModelTrayHarness::new("goble", "Goble").with_models(vec![
+            ModelTrayHarness::new("deepseek", "DeepSeek").with_models(vec![
                 ModelTrayModel::new("deepseek-flash", "DeepSeek Flash")
                     .with_thinking(vec!["off".to_string(), "on".to_string()]),
                 ModelTrayModel::new("deepseek-pro", "DeepSeek Pro")
                     .with_thinking(vec!["off".to_string(), "on".to_string()]),
             ]),
-            ModelTrayHarness::new("claude", "Anthropic").with_models(vec![
+            ModelTrayHarness::new("anthropic", "Anthropic").with_models(vec![
                 ModelTrayModel::new("claude-sonnet", "Claude Sonnet"),
             ]),
         ]
     }
 
+    /// The card opens on the root pane, placed on the pane's own model and level.
     #[test]
-    fn the_tray_seeds_on_the_pane_model_and_its_level() {
+    fn the_card_seeds_on_the_root_pane_at_the_pane_model() {
         let mut state = ModelTrayState::default();
         state.seed(&harnesses(), "claude-sonnet", "off");
-        assert_eq!(state.column(), ModelTrayColumn::Model);
-        assert_eq!(state.row, 2, "the row is counted across the harnesses");
+        assert_eq!(state.pane(), ModelTrayPane::Root);
+        assert_eq!(state.cell, 0, "the Model cell leads the root pane");
+        assert_eq!(state.row, 2, "the row is counted across the providers");
         assert_eq!(state.level, 0);
         assert!(state.seeded);
     }
 
+    /// The root pane's arrows move between its cells and Enter drills into the
+    /// pane each one names.
     #[test]
-    fn the_arrows_move_through_the_list_and_never_into_an_empty_one() {
-        let harnesses = harnesses();
-        let state = Rc::new(RefCell::new(ModelTrayState::default()));
-        state.borrow_mut().seed(&harnesses, "claude-sonnet", "off");
-        // The last model offers no thinking levels, so the thinking column has
-        // nothing to enter.
-        assert_eq!(
-            handle_tray_key(&key("ArrowRight"), &harnesses, &state),
-            ModelTrayKey::Moved
-        );
-        assert_eq!(state.borrow().column(), ModelTrayColumn::Model);
-        assert_eq!(
-            handle_tray_key(&key("ArrowUp"), &harnesses, &state),
-            ModelTrayKey::Moved
-        );
-        assert_eq!(state.borrow().row, 1);
-        assert_eq!(
-            handle_tray_key(&key("ArrowRight"), &harnesses, &state),
-            ModelTrayKey::Moved
-        );
-        assert_eq!(state.borrow().column(), ModelTrayColumn::Level);
-        assert_eq!(
-            handle_tray_key(&key("ArrowDown"), &harnesses, &state),
-            ModelTrayKey::Moved
-        );
-        assert_eq!(state.borrow().level, 1);
-    }
-
-    #[test]
-    fn enter_takes_a_model_then_a_level() {
+    fn the_root_pane_drills_into_models_and_efforts() {
         let harnesses = harnesses();
         let state = Rc::new(RefCell::new(ModelTrayState::default()));
         state
             .borrow_mut()
             .seed(&harnesses, "deepseek-flash", "off");
         assert_eq!(
-            handle_tray_key(&key("Enter"), &harnesses, &state),
-            ModelTrayKey::AcceptModel(0)
+            handle_tray_key(&key("Enter"), &harnesses, "deepseek-flash", "off", &state),
+            ModelTrayKey::DrillModel
         );
+        assert_eq!(state.borrow().pane(), ModelTrayPane::Model);
         assert_eq!(
-            handle_tray_key(&key("ArrowRight"), &harnesses, &state),
+            handle_tray_key(&key("Escape"), &harnesses, "deepseek-flash", "off", &state),
+            ModelTrayKey::Back
+        );
+        assert_eq!(state.borrow().pane(), ModelTrayPane::Root);
+
+        assert_eq!(
+            handle_tray_key(&key("ArrowDown"), &harnesses, "deepseek-flash", "off", &state),
             ModelTrayKey::Moved
         );
-        assert_eq!(state.borrow().column(), ModelTrayColumn::Level);
+        assert_eq!(state.borrow().cell, 1);
         assert_eq!(
-            handle_tray_key(&key("Enter"), &harnesses, &state),
-            ModelTrayKey::AcceptLevel("off".to_string())
+            handle_tray_key(&key("Enter"), &harnesses, "deepseek-flash", "off", &state),
+            ModelTrayKey::DrillEffort
+        );
+        assert_eq!(state.borrow().pane(), ModelTrayPane::Effort);
+    }
+
+    /// The model pane's arrows walk the flat model list (wrapping) and Enter
+    /// takes the row through the host's index.
+    #[test]
+    fn the_model_pane_moves_and_takes_a_model() {
+        let harnesses = harnesses();
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        state.borrow_mut().seed(&harnesses, "claude-sonnet", "off");
+        state.borrow_mut().pane = ModelTrayPane::Model;
+        assert_eq!(
+            handle_tray_key(&key("ArrowUp"), &harnesses, "claude-sonnet", "off", &state),
+            ModelTrayKey::Moved
+        );
+        assert_eq!(state.borrow().row, 1, "the list wraps from the last row up");
+        assert_eq!(
+            handle_tray_key(&key("Enter"), &harnesses, "claude-sonnet", "off", &state),
+            ModelTrayKey::AcceptModel(1)
+        );
+    }
+
+    /// The effort pane takes the current model's level by the id its harness
+    /// reports, and a model without levels cannot enter it at all.
+    #[test]
+    fn the_effort_pane_moves_and_takes_a_level() {
+        let harnesses = harnesses();
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        state
+            .borrow_mut()
+            .seed(&harnesses, "deepseek-flash", "off");
+        state.borrow_mut().pane = ModelTrayPane::Effort;
+        assert_eq!(
+            handle_tray_key(&key("ArrowDown"), &harnesses, "deepseek-flash", "off", &state),
+            ModelTrayKey::Moved
+        );
+        assert_eq!(state.borrow().level, 1);
+        assert_eq!(
+            handle_tray_key(&key("Enter"), &harnesses, "deepseek-flash", "off", &state),
+            ModelTrayKey::AcceptLevel("on".to_string())
+        );
+
+        let mut dataless = harnesses.clone();
+        dataless[0].models[0].thinking.clear();
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        state.borrow_mut().seed(&dataless, "deepseek-flash", "");
+        assert_eq!(state.borrow().pane(), ModelTrayPane::Root);
+        assert_eq!(
+            handle_tray_key(&key("ArrowDown"), &dataless, "deepseek-flash", "", &state),
+            ModelTrayKey::Moved
         );
         assert_eq!(
-            handle_tray_key(&key("Escape"), &harnesses, &state),
-            ModelTrayKey::Close
+            state.borrow().cell,
+            0,
+            "a model with no levels has no Effort cell to sit in"
         );
     }
 
     #[test]
-    fn a_command_key_never_comes_to_the_tray() {
+    fn escape_from_the_root_pane_closes_the_card() {
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        assert_eq!(
+            handle_tray_key(&key("Escape"), &harnesses(), "deepseek-flash", "", &state),
+            ModelTrayKey::Close
+        );
+    }
+
+    /// A command key never comes to the card: it is the host's own gesture.
+    #[test]
+    fn a_command_key_never_comes_to_the_card() {
         let state = Rc::new(RefCell::new(ModelTrayState::default()));
         let event = DispatchedEvent::KeyDown {
             key: "Enter".to_string(),
@@ -1025,45 +1337,27 @@ mod tests {
             },
         };
         assert_eq!(
-            handle_tray_key(&event, &harnesses(), &state),
-            ModelTrayKey::Ignored,
-            "Cmd+Enter is the host's new-conversation gesture"
+            handle_tray_key(&event, &harnesses(), "m1", "", &state),
+            ModelTrayKey::Ignored
         );
     }
 
+    /// The window keeps the selected model row inside the card even when the
+    /// catalogue is longer than the card.
     #[test]
-    fn the_window_keeps_the_selected_model_and_its_harness_header_visible() {
-        let app = AppContext::default();
+    fn the_window_keeps_the_selected_row_visible() {
         let models: Vec<ModelTrayModel> = (0..20)
             .map(|index| ModelTrayModel::new(format!("m{index}"), format!("Model {index}")))
             .collect();
         let harnesses = vec![
             ModelTrayHarness::new("goble", "Goble").with_models(models),
             ModelTrayHarness::new("claude", "Anthropic").with_models(vec![
-                ModelTrayModel::new("claude-sonnet", "Claude Sonnet")
-                    .with_thinking(vec!["off".to_string()]),
+                ModelTrayModel::new("claude-sonnet", "Claude Sonnet"),
             ]),
         ];
-        let state = Rc::new(RefCell::new(ModelTrayState::default()));
-        state.borrow_mut().seed(&harnesses, "m17", "off");
-        let mut tray = ModelTray::new(harnesses, state.clone(), "m17", "off");
-        tray.layout(
-            SizeConstraint::loose(vec2f(520.0, 400.0)),
-            &mut LayoutContext::default(),
-            &app,
-        );
-        let drawn = tray.rows.clone();
-        assert!(
-            drawn
-                .iter()
-                .any(|row| row.kind == RowKind::Model(17)),
-            "the selected row is drawn"
-        );
-        let first = drawn.first().map(|row| row.kind);
-        assert!(
-            matches!(first, Some(RowKind::Group(0))),
-            "the window opens with the group header that owns the rows under it"
-        );
+        let start = ModelTray::window_start(17, flat_models(&harnesses).len());
+        assert!(start <= 17, "the selected row is inside the window");
+        assert!(start + MODEL_TRAY_ROWS > 17);
     }
 
     #[test]
@@ -1072,5 +1366,40 @@ mod tests {
         assert_eq!(level_label("on"), "On");
         assert_eq!(level_label("medium"), "Medium");
         assert_eq!(level_label(""), "");
+    }
+
+    /// The band slot stays empty now the card lives inside the composer.
+    #[test]
+    fn the_host_slot_draws_no_second_model_list() {
+        let tray = ComposerModelTray::new(
+            harnesses(),
+            Rc::new(RefCell::new(ModelTrayState::default())),
+            Rc::new(RefCell::new(true)),
+        );
+        assert!(tray.band().is_none());
+    }
+
+    /// The card's size stays inside DSH's casing bounds.
+    #[test]
+    fn the_card_stays_inside_its_design_bounds() {
+        let tray = ComposerModelTray::new(
+            harnesses(),
+            Rc::new(RefCell::new(ModelTrayState::default())),
+            Rc::new(RefCell::new(true)),
+        )
+        .with_current("deepseek-flash", "off");
+        let mut menu = tray.popup(Box::new(crate::elements::Empty::new()));
+        menu.layout(
+            SizeConstraint::loose(vec2f(800.0, 600.0)),
+            &mut LayoutContext::default(),
+            &AppContext::default(),
+        );
+        let panel = menu.panel.as_ref().expect("an open card has a panel");
+        assert!(panel.size.x >= MIN_WIDTH && panel.size.x <= MAX_WIDTH);
+        assert!(panel.size.y <= MAX_HEIGHT + CARD_PADDING * 2.0);
+        assert!(
+            panel.origin.y <= -(CARD_GAP),
+            "the card hangs above the chip"
+        );
     }
 }

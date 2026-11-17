@@ -172,11 +172,34 @@ impl HostsFile {
     pub fn path(home: &Path) -> PathBuf {
         home.join(HOSTS_FILE_NAME)
     }
+
+    /// Write this list to `path` through the shared atomic private writer.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        save(path, self)
+    }
 }
 
 /// The seed text `GobleHome::ensure_base` writes when no hosts file exists.
 pub fn empty_toml() -> String {
     format!("{HOSTS_HEADER}\n")
+}
+
+/// The file text: the header, then one `[[hosts]]` table per entry. The same
+/// list always writes the same bytes, so a save after a hand edit touches only
+/// what changed.
+pub fn to_toml_with_header(file: &HostsFile) -> String {
+    if file.hosts.is_empty() {
+        return format!("{HOSTS_HEADER}\n");
+    }
+    let body = toml::to_string(file).expect("a hosts file is strings and numbers");
+    format!("{HOSTS_HEADER}\n{body}")
+}
+
+/// The one writer for the file: the shared atomic private writer, so the saved
+/// file is `0600` and a reader never sees a half-written list.
+pub fn save(path: &Path, file: &HostsFile) -> Result<()> {
+    crate::config::editor::write_atomic_private(path, to_toml_with_header(file).as_bytes())
+        .with_context(|| format!("write {}", path.display()))
 }
 
 /// Expand a leading `~/` against `home`. A path without the prefix is returned

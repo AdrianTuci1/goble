@@ -7,7 +7,13 @@ pub use avatar::{Avatar, AvatarShape};
 pub use button::{Button, ButtonVariant};
 pub use caption::Caption;
 pub use caret::{caret_beam, CaretShape, CARET_HEIGHT};
-pub use chat_composer::{ChatComposer, CommandProposalUi, DiffFileStat, DiffSummary};
+pub use chat_composer::{
+    ChatComposer, CommandProposalUi, DiffFileStat, DiffSummary, COMPOSER_CARD_GUTTER,
+    COMPOSER_CARD_INSET, COMPOSER_CARD_RADIUS, COMPOSER_EDITOR_MAX_HEIGHT,
+    COMPOSER_EDITOR_MIN_HEIGHT, COMPOSER_FOOTER_GAP, COMPOSER_FOOTER_HEIGHT,
+    COMPOSER_INPUT_MIN_HEIGHT,
+    COMPOSER_INPUT_RADIUS, COMPOSER_SEND_SIZE, CONTEXT_SEGMENT_HEIGHT,
+};
 pub use chat_content::{
     tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentPanel,
     SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode, WorkDock, WorkGroup, WorkRow,
@@ -40,8 +46,17 @@ pub use command_approval::{
 pub use composer_button::{ComposerButton, COMPOSER_CONTROL_RADIUS};
 pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
+pub use content_lane::{
+    lane_column, lane_handle_width, lane_is_active, resolve_content_width, ContentLane, LaneEdge,
+    CONTENT_LANE_HANDLE_GAP, CONTENT_LANE_HANDLE_HIDE_GUTTER, CONTENT_LANE_HANDLE_LINE_HEIGHT,
+    CONTENT_LANE_HANDLE_LINE_WIDTH, CONTENT_LANE_HANDLE_WIDTH, CONTENT_LANE_MARGIN_BUDGET,
+    CONTENT_LANE_MIN_ACTIVE_COLUMN, CONTENT_LANE_MIN_CONTENT_WIDTH,
+    CONTENT_LANE_PASSIVE_MAX_WIDTH, CONTENT_LANE_PASSIVE_MIN_WIDTH, CONTENT_LANE_PASSIVE_RATIO,
+};
 pub use container::Container;
-pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT};
+pub use context_pill::{
+    ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT, CONTEXT_PILL_LABEL_SIZE,
+};
 pub use conversation_card::{ConversationCard, ConversationCardStatus, CARD_RAIL_WIDTH};
 pub use divider::Divider;
 pub use drawer::{Drawer, DrawerAnchor};
@@ -63,8 +78,8 @@ pub use label::{Label, LabelSize};
 pub use markdown::parse_markdown;
 pub use modal::Modal;
 pub use model_tray::{
-    handle_tray_key, level_label, ComposerModelTray, ModelTray, ModelTrayColumn, ModelTrayHarness,
-    ModelTrayKey, ModelTrayModel, ModelTrayState, MODEL_TRAY_ROWS,
+    handle_tray_key, level_label, ComposerModelTray, ModelTray, ModelTrayHarness, ModelTrayKey,
+    ModelTrayModel, ModelTrayPane, ModelTrayState, MODEL_TRAY_ROWS,
 };
 pub use padding::Padding;
 pub use page::Page;
@@ -618,6 +633,7 @@ pub mod chat_header;
 pub mod chat_layout;
 pub mod chat_message_bubble;
 pub mod chat_sidebar;
+pub mod chat_typography;
 pub mod checkbox;
 pub mod chip;
 pub mod clipped;
@@ -626,6 +642,7 @@ pub mod command_approval;
 pub mod composer_button;
 pub mod connector_card;
 pub mod constrained_box;
+pub mod content_lane;
 pub mod container;
 pub mod context_pill;
 pub mod conversation_card;

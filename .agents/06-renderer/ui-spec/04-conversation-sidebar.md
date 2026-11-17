@@ -133,7 +133,7 @@ the_menus_star_row_stars_the_conversation_and_closes_the_menu`.
 
 ## Project explorer (Explorer tab)
 
-`app/src/ui/explorer.rs`. The tree is the active pane's working directory, read
+`apps/desktop/src/ui/explorer.rs`. The tree is the active pane's working directory, read
 one level at a time:
 
 - `ExplorerCache` holds the listings of the directories that are open, so a frame
@@ -151,7 +151,7 @@ one level at a time:
 - Clicking a directory expands or collapses it (`UiState::explorer_expanded`).
   It does **not** move the pane's working directory.
 - Clicking a file opens it in a **file-view pane** beside the active one, in the
-  tab on screen (`app/src/ui/file_view.rs`, `PaneKind::File { path }`). A pane
+  tab on screen (`apps/desktop/src/ui/file_view.rs`, `PaneKind::File { path }`). A pane
   already showing a file takes the newly clicked file over rather than splitting
   again, so browsing a directory with the file view focused walks through files
   in one pane. A file view keeps no conversation and no working directory of its
@@ -162,7 +162,7 @@ one level at a time:
 
 ## File view (a `File` pane leaf)
 
-`app/src/ui/file_view.rs`. The text of one file, opened from the explorer tree
+`apps/desktop/src/ui/file_view.rs`. The text of one file, opened from the explorer tree
 or a search result:
 
 - `FileCache` (owned by the root, beside `ExplorerCache`) holds the file each
@@ -182,7 +182,7 @@ or a search result:
 
 ## Global search (Search tab)
 
-`app/src/ui/global_search.rs`. A real recursive content search, run when the
+`apps/desktop/src/ui/global_search.rs`. A real recursive content search, run when the
 query changes and never per frame, over the active pane's working directory
 (`UiState::active_working_directory`, so a file view never moves the search root
 off the pane the user was working in):
@@ -212,11 +212,11 @@ off the pane the user was working in):
 - `crates/goble-ui/src/elements/conversation_list_item.rs` — the card and its menu
 - `crates/goble-ui/src/elements/hover_row.rs` — the row the toolbelt, the section
   headers, the tree and the results are built from
-- `app/src/ui/sidebar.rs` — the toolbelt, the agents view, the section headers
-- `app/src/ui/explorer.rs` — the tree and its per-directory cache
-- `app/src/ui/file_view.rs` — the pane that shows one file, and its file cache
-- `app/src/ui/global_search.rs` — the ripgrep search (with its in-process
+- `apps/desktop/src/ui/sidebar.rs` — the toolbelt, the agents view, the section headers
+- `apps/desktop/src/ui/explorer.rs` — the tree and its per-directory cache
+- `apps/desktop/src/ui/file_view.rs` — the pane that shows one file, and its file cache
+- `apps/desktop/src/ui/global_search.rs` — the ripgrep search (with its in-process
   fallback) and the results view
-- `app/src/ui/types.rs` — `SidebarView`, `ExplorerRow`, `SearchRow`
+- `apps/desktop/src/ui/types.rs` — `SidebarView`, `ExplorerRow`, `SearchRow`
 - `crates/goble-ui/src/elements/search_input.rs` — the field
 - `crates/goble-ui/src/elements/hover_button.rs` — the "New conversation" row

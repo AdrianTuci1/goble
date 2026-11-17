@@ -16,7 +16,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-manifests=(app/Cargo.toml)
+manifests=(apps/desktop/Cargo.toml)
 while IFS= read -r -d '' manifest; do
   manifests+=("$manifest")
 done < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml -print0 | sort -z)

@@ -25,7 +25,7 @@
 
 - The element tree is rebuilt each frame; the platform layer must tolerate that (no stale atlas references after a rebuild).
 - Keep resize + DPI change cheap.
-- The element tree is built in the app crate (`app/src/ui`) against `goble-ui`; there is no separately-linked hot crate.
+- The element tree is built in the app crate (`apps/desktop/src/ui`) against `goble-ui`; there is no separately-linked hot crate.
 
 ## Tasks
 

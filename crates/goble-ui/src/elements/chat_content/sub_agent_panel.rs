@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::color::ColorU;
+use crate::elements::chat_typography;
 use crate::elements::{
     AppContext, Chip, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill,
     Flex, HoverRow, Icon, InlineText, LayoutContext, MainAxisSize, Padding, PaintContext, Point,
@@ -18,19 +19,23 @@ use crate::elements::{
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
-use crate::platform::text_atlas::FontWeight;
-use crate::theme::{ColorToken, FontFamily, SpacingToken};
+use crate::theme::{ColorToken, SpacingToken};
 
 use super::{format_subagent_elapsed, SubAgentRow};
 
-/// The strip's text size: the transcript's message text is 14 px, so the strip
-/// reads at the conversation's size instead of as a caption under it.
-const FONT_SIZE: f32 = 14.0;
+/// The strip's header title: DSH's 14 px announcement title over its 24 px
+/// line.
+const FONT_SIZE: f32 = chat_typography::BODY_SIZE;
+const TITLE_LINE_HEIGHT: f32 = chat_typography::BODY_LH;
 
-/// The model and the elapsed time are the row's detail, a step under the line
-/// they follow.
-const META_FONT_SIZE: f32 = 12.0;
-const LINE_HEIGHT: f32 = 1.2;
+/// A row's line: DSH's 13 / 24 process-row type.
+const ROW_FONT_SIZE: f32 = chat_typography::ROW_SIZE;
+const LINE_HEIGHT: f32 = chat_typography::ROW_LH;
+
+/// The model and the elapsed time are the row's detail, DSH's 12 / 18 small
+/// tier.
+const META_FONT_SIZE: f32 = chat_typography::SMALL_SIZE;
+const META_LINE_HEIGHT: f32 = chat_typography::SMALL_LH;
 
 /// The vertical room a strip row keeps above and below its line, so the text is
 /// not pressed against the bar above it or the row below it.
@@ -149,15 +154,19 @@ impl SubAgentPanel {
             )
             .with_child(
                 Text::new(TITLE)
-                    .with_theme_color(ColorToken::Text, app)
+                    .with_color(chat_typography::chat_ink_quiet(app))
+                    .with_font_family(chat_typography::chat_font(app))
                     .with_font_size(FONT_SIZE)
+                    .with_line_height(TITLE_LINE_HEIGHT)
                     .with_max_lines(1)
                     .finish(),
             )
             .with_child(
                 Text::new(self.rows.len().to_string())
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(FONT_SIZE)
+                    .with_color(chat_typography::chat_ink_quiet(app))
+                    .with_font_family(chat_typography::chat_font(app))
+                    .with_font_size(META_FONT_SIZE)
+                    .with_line_height(META_LINE_HEIGHT)
                     .with_max_lines(1)
                     .finish(),
             )
@@ -177,27 +186,22 @@ impl SubAgentPanel {
     fn row(&self, record: &SubAgentRow, app: &AppContext) -> Box<dyn Element> {
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let (mark, token) = record.status_affordance();
+        let family = chat_typography::chat_font(app);
+        let quiet = chat_typography::chat_ink_quiet(app);
         let run = |text: String, color: ColorU| -> TextSpan {
-            TextSpan::plain(text)
-                .with_color(color)
-                .with_family(FontFamily::Mono)
-                .with_weight(FontWeight::Regular)
+            TextSpan::plain(text).with_color(color).with_family(family)
         };
         // One wrapping flow: a description longer than the pane folds inside
-        // it rather than running under the row's controls.
+        // it rather than running under the row's controls. The strip reads in
+        // DSH's process-row type: one quiet ink, the status mark keeping its
+        // own state colour.
         let line = InlineText::new(vec![
             run(format!("{mark} "), app.theme.color(token)),
-            run("Subagent".to_string(), app.theme.color(ColorToken::Text)),
-            run(
-                format!(" {}", record.description),
-                app.theme.color(ColorToken::Text),
-            ),
-            run(
-                format!(" · {}", record.panel_status()),
-                app.theme.color(ColorToken::Muted),
-            ),
+            run("Subagent".to_string(), quiet),
+            run(format!(" {}", record.description), quiet),
+            run(format!(" · {}", record.panel_status()), quiet),
         ])
-        .with_font_size(FONT_SIZE)
+        .with_font_size(ROW_FONT_SIZE)
         .with_line_height(LINE_HEIGHT)
         .finish();
         let mut row = Flex::row()
@@ -209,16 +213,20 @@ impl SubAgentPanel {
         if !model.is_empty() {
             row = row.with_child(
                 Text::new(model)
-                    .with_theme_color(ColorToken::Muted, app)
+                    .with_color(quiet)
+                    .with_font_family(chat_typography::chat_font(app))
                     .with_font_size(META_FONT_SIZE)
+                    .with_line_height(META_LINE_HEIGHT)
                     .with_max_lines(1)
                     .finish(),
             );
         }
         row = row.with_child(
             Text::new(format_subagent_elapsed(record.elapsed))
-                .with_theme_color(ColorToken::Muted, app)
+                .with_color(quiet)
+                .with_font_family(chat_typography::chat_font(app))
                 .with_font_size(META_FONT_SIZE)
+                .with_line_height(META_LINE_HEIGHT)
                 .with_max_lines(1)
                 .finish(),
         );
@@ -390,26 +398,44 @@ mod tests {
     }
 
     /// Each visual row's runs concatenated, so a line drawn as several runs
-    /// reads as one string.
+    /// reads as one string. Runs are clustered by baseline: a row's leading
+    /// glyph sits a few points off its words' baseline.
     fn row_texts(commands: &[RenderCommand]) -> Vec<String> {
-        let mut runs: Vec<(i32, f32, String)> = commands
+        let mut runs: Vec<(f32, f32, String)> = commands
             .iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawText { text, origin, .. } => {
-                    Some(((origin.y * 10.0).round() as i32, origin.x, text.clone()))
+                    Some((origin.y, origin.x, text.clone()))
                 }
                 _ => None,
             })
             .collect();
-        runs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-        let mut rows: Vec<(i32, String)> = Vec::new();
-        for (y, _, text) in runs {
-            match rows.last_mut() {
-                Some((last_y, line)) if *last_y == y => line.push_str(&text),
-                _ => rows.push((y, text)),
+        runs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let mut clusters: Vec<(f32, Vec<(f32, String)>)> = Vec::new();
+        for (y, x, text) in runs {
+            match clusters.last_mut() {
+                Some((last_y, row)) if (y - *last_y).abs() <= 6.0 => row.push((x, text)),
+                _ => clusters.push((y, vec![(x, text)])),
             }
         }
-        rows.into_iter().map(|(_, line)| line).collect()
+        clusters
+            .into_iter()
+            .map(|(_, mut row)| {
+                row.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let mut line = String::new();
+                let mut previous: Option<f32> = None;
+                for (x, text) in row {
+                    if let Some(last_x) = previous {
+                        if x - last_x >= 8.0 && !line.ends_with(' ') {
+                            line.push(' ');
+                        }
+                    }
+                    previous = Some(x);
+                    line.push_str(&text);
+                }
+                line
+            })
+            .collect()
     }
 
     /// Where a drawn icon's centre is, which is what a click lands on.

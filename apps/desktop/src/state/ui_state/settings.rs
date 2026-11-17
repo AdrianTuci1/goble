@@ -1,0 +1,787 @@
+use super::*;
+
+use goble_core::config::RemoteMode;
+use goble_ui::theme::ThemePreset;
+
+impl UiState {
+    pub fn refresh_crons(&mut self, desktop: &DesktopState) {
+        // The drawer's "last run" is the newest recorded run, so read the run
+        // ledger first; a workflow with no run says so instead of "unknown".
+        self.refresh_workflow_runs(desktop);
+        self.crons = desktop
+            .list_workflows()
+            .into_iter()
+            .map(|wf| {
+                let schedule = match wf.trigger {
+                    Trigger::Cron { expression } => expression,
+                    _ => "manual".to_string(),
+                };
+                let last_run = self
+                    .latest_run(&wf.id)
+                    .map(|run| format!("{} ({})", run.started_at, run.status))
+                    .unwrap_or_else(|| "never".to_string());
+                CronEntry::new(wf.id, wf.name, schedule, last_run).with_enabled(wf.enabled)
+            })
+            .collect();
+    }
+
+    pub fn refresh_agent_name(&mut self, desktop: &DesktopState) {
+        if let Some(name) = desktop.list_agents().first().map(|a| a.name.clone()) {
+            self.agent_name = name;
+        }
+    }
+
+    /// Reload settings data (workers, cluster, vault, LLM) from the backend.
+    pub fn refresh_settings(&mut self, desktop: &DesktopState) {
+        // Theme is persisted in `~/.goble/config.toml`.
+        let theme = desktop.config().theme;
+        self.settings_dark_mode = theme.dark;
+        self.theme_primary = theme.primary;
+        self.theme_secondary = theme.secondary;
+        self.theme_accent = theme.accent;
+        self.theme_bg = theme.bg;
+        self.theme_surface = theme.surface;
+        self.theme_preset = theme.preset;
+        self.settings_workers = desktop
+            .list_workers()
+            .into_iter()
+            .map(|w| (w.id.clone(), w.name.clone(), w.url.clone(), w.paired))
+            .collect();
+        if let Some(identity) = desktop.get_cluster_identity() {
+            self.settings_cluster_name = identity.cluster_name.clone();
+            self.settings_cluster_configured = true;
+        } else {
+            self.settings_cluster_configured = false;
+        }
+        self.settings_vault_unlocked = desktop.is_vault_unlocked();
+        self.vim_mode = desktop.get_vim_mode();
+        self.auto_save_on_close = desktop.get_auto_save_on_close();
+        // The models are what the key is resolved against, so they come first.
+        self.refresh_llm_models(desktop);
+        // The setting in force is the one a turn would run with, model and all:
+        // a `[model.<slug>]` entry in `~/.goble/config.toml` carries its own
+        // `api_key`, and reading only the store's per-provider row here told a
+        // user who had set a key in the file to go and configure a key.
+        let provider = if self.settings_llm_provider.trim().is_empty() {
+            "openai".to_string()
+        } else {
+            self.settings_llm_provider.clone()
+        };
+        let model = if self.selected_model.trim().is_empty() {
+            self.settings_llm_model.clone()
+        } else {
+            self.selected_model.clone()
+        };
+        if let Some(s) = desktop.effective_llm_setting(&provider, &model) {
+            self.settings_llm_provider = provider.clone();
+            self.settings_llm_model = s.model;
+            self.settings_llm_api_key = s.api_key;
+            self.settings_llm_base_url = s.base_url.unwrap_or_default();
+            if let Some(t) = s.temperature {
+                self.settings_llm_temperature = t.to_string();
+            }
+        }
+        self.refresh_llm_models(desktop);
+        self.settings_default_model = desktop.default_model(&provider);
+        if self.settings_field_edit_start.is_none() {
+            self.settings_profile_name = desktop.get_friendly_name();
+        }
+        self.share_telemetry = goble_telemetry::global()
+            .map(|telemetry| telemetry.consent().upload)
+            .unwrap_or(false);
+        self.refresh_remote_agents(Some(desktop));
+        self.refresh_environment_groups(Some(desktop));
+    }
+
+    /// Copy the `[remote_agents.<name>]` tables out of the in-memory config the
+    /// desktop state read. This is the page's whole view of them: nothing here
+    /// provisions a sandbox or reaches a provider.
+    pub fn refresh_remote_agents(&mut self, desktop: Option<&DesktopState>) {
+        let Some(desktop) = desktop else {
+            return;
+        };
+        let config = desktop.config();
+        self.remote_agents = config
+            .remote_agents
+            .iter()
+            .map(|(name, agent)| RemoteAgentEntry::from_config(name, agent))
+            .collect();
+        // `[remote]` names how Remote is reached: a sandbox platform from the
+        // tables above, or a gateway server. It is read here beside them so
+        // the configured state and the page see one answer. The page also
+        // names the YAML file the desktop service reads them from.
+        self.remote_mode = config.remote.mode;
+        self.remote_gateway_url = config.remote.gateway_url().unwrap_or_default().to_string();
+        self.remote_gateway_token = config.remote.worker_token().unwrap_or_default().to_string();
+        self.remote_config_path = desktop
+            .config_path()
+            .or_else(|| {
+                goble_core::app_home::GobleHome::locate()
+                    .ok()
+                    .map(|home| home.config_path())
+            })
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        // A reload can shorten the pane's order; keep the focused slot inside
+        // it instead of leaving it past the end.
+        let len = self.settings_pane_controls().len();
+        if len > 0 {
+            self.settings_pane_focus = self.settings_pane_focus.min(len - 1);
+        }
+    }
+
+    /// Whether Remote has somewhere to run: a gateway that is named and
+    /// tokened, a ready `[remote_agents.<name>]` table, or a paired worker.
+    /// Until one of them exists, choosing Remote opens its configuration in
+    /// Settings instead of a pane that can only report "no paired worker".
+    pub fn remote_configured(&self) -> bool {
+        if self.remote_mode == RemoteMode::Gateway
+            && !self.remote_gateway_url.trim().is_empty()
+            && !self.remote_gateway_token.trim().is_empty()
+        {
+            return true;
+        }
+        if self
+            .remote_agents
+            .iter()
+            .any(|agent| agent.enabled && agent.missing.is_empty())
+        {
+            return true;
+        }
+        self.settings_workers.iter().any(|worker| worker.3)
+    }
+
+    /// What the settings page says about Remote under its heading: the
+    /// configuration's own answer, unless a deploy started from the cloud-agent
+    /// action is in flight or has reported.
+    pub fn remote_status_line(&self) -> String {
+        match &self.remote_deploy {
+            RemoteDeploy::Idle => self.remote_config_line(),
+            RemoteDeploy::Deploying { agent, provider } => {
+                format!("Deploying {agent} on {provider} · this takes a moment")
+            }
+            // `sandbox` is already `provider · sandbox_name`, read back from the
+            // binding the deploy persisted.
+            RemoteDeploy::Ready { sandbox } => format!("Sandbox ready · {sandbox}"),
+            RemoteDeploy::Failed { message } => format!("Deploy failed · {message}"),
+        }
+    }
+
+    /// The configuration line the page draws when nothing is deploying: the
+    /// `[remote]` gateway, or the `[remote_agents.*]` tables and their status.
+    fn remote_config_line(&self) -> String {
+        if self.remote_mode == RemoteMode::Gateway {
+            return if self.remote_gateway_url.trim().is_empty() {
+                "Gateway server · not configured".to_string()
+            } else if self.remote_gateway_token.trim().is_empty() {
+                format!(
+                    "Gateway server · {} · missing worker token",
+                    self.remote_gateway_url
+                )
+            } else {
+                format!("Gateway server · {}", self.remote_gateway_url)
+            };
+        }
+        if self.remote_agents.is_empty() {
+            return "Turns run on this machine. Add a [remote] gateway or a \
+                    [remote_agents.<name>] table to config.toml to run them elsewhere."
+                .to_string();
+        }
+        self.remote_agents
+            .iter()
+            .map(|agent| format!("{} · {}", agent.name, agent.status))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// A cloud-agent deploy the action just started: the Remote row says so
+    /// until the service reports the sandbox or what stopped it.
+    pub fn begin_remote_deploy(&mut self, agent: &RemoteAgentEntry) {
+        self.remote_deploy = RemoteDeploy::Deploying {
+            agent: agent.name.clone(),
+            provider: agent.provider.clone(),
+        };
+    }
+
+    /// Apply a `remote:deploy` report: the binding's `provider · sandbox_name`,
+    /// or the sentence naming what stopped the deploy.
+    pub fn apply_remote_deploy(&mut self, payload: &serde_json::Value) {
+        let field = |name: &str| {
+            payload
+                .get(name)
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+        };
+        match field("status") {
+            "ready" => {
+                let (provider, sandbox_name) = (field("provider"), field("sandbox_name"));
+                if !provider.is_empty() && !sandbox_name.is_empty() {
+                    self.remote_deploy = RemoteDeploy::Ready {
+                        sandbox: format!("{provider} · {sandbox_name}"),
+                    };
+                }
+            }
+            "failed" => {
+                let message = match field("message") {
+                    "" => "the deploy stopped before the sandbox existed".to_string(),
+                    message => message.to_string(),
+                };
+                self.remote_deploy = RemoteDeploy::Failed { message };
+            }
+            _ => {}
+        }
+    }
+
+    /// Open Settings on Agent & Approval, where the Remote configuration and
+    /// the file that holds it are named. Every chooser that names Remote
+    /// before anything is configured lands here.
+    pub fn open_remote_settings_tab(&mut self, desktop: Option<&DesktopState>) {
+        self.open_settings_tab(desktop);
+        self.settings_set_page(SettingsCategory::AgentApproval);
+        let controls = self.settings_pane_controls();
+        if let Some(index) = controls
+            .iter()
+            .position(|control| matches!(control, SettingsControl::ReloadRemoteAgents))
+        {
+            self.settings_focus = SettingsFocus::Pane;
+            self.settings_pane_focus = index;
+            self.settings_pane_field_active = false;
+            self.settings_field_edit_start = None;
+        }
+        // The page travels in the leaf, so pointing an existing tab at Agent &
+        // Approval is a layout change like any other.
+        if let Some(desktop) = desktop {
+            self.save_panes(desktop);
+        }
+    }
+
+    /// Populate the composer's model dropdown from the configured provider and
+    /// default the selected model. The selection is only set on first load, so
+    /// a user's per-session model choice survives subsequent refreshes.
+    ///
+    /// The same provider answer fills the model tray's columns, and each pane's
+    /// thinking level is read back from its conversation's stored setting, so
+    /// the tray opens on the level the turns actually run at.
+    pub fn refresh_llm_models(&mut self, desktop: &DesktopState) {
+        self.models = desktop.available_models(&self.settings_llm_provider);
+        if self.selected_model.trim().is_empty() {
+            self.selected_model = desktop.default_model(&self.settings_llm_provider);
+        }
+        self.model_groups = desktop.model_groups(&self.settings_llm_provider);
+        // The harness's own answer to "what can this draft list": the commands
+        // and skills behind `/` and `$`, and the models behind the tray.
+        self.composer_catalog = desktop.composer_catalog(&self.settings_llm_provider);
+        let conversations: Vec<(u64, String)> = self
+            .pane_sessions
+            .iter()
+            .map(|(pane_id, session)| (*pane_id, session.conversation_id.clone()))
+            .collect();
+        for (pane_id, chat_id) in conversations {
+            if chat_id.trim().is_empty() {
+                continue;
+            }
+            let level = if desktop.get_chat_reasoning(&chat_id) {
+                "on"
+            } else {
+                "off"
+            };
+            self.pane_controls_mut(pane_id).thinking = level.to_string();
+        }
+    }
+
+    /// Copy the current LLM settings into the dialog's editable fields, so the
+    /// model-provider dialog opens pre-filled with what's configured (empty on
+    /// first run) and with no field focused.
+    pub fn prime_llm_form(&self) {
+        *self.llm_dialog_provider.borrow_mut() = self.settings_llm_provider.clone();
+        *self.llm_dialog_model.borrow_mut() = self.settings_llm_model.clone();
+        *self.llm_dialog_api_key.borrow_mut() = self.settings_llm_api_key.clone();
+        *self.llm_dialog_base_url.borrow_mut() = self.settings_llm_base_url.clone();
+        *self.llm_dialog_temperature.borrow_mut() = self.settings_llm_temperature.clone();
+        *self.llm_dialog_focus.borrow_mut() = None;
+    }
+
+    // ---- The settings tab's two-region keyboard model ----------------------
+    //
+    // The rail and the content pane are the two regions; `settings_focus` says
+    // which holds the keyboard, `settings_pane_focus` which pane control it is
+    // on. `apps/desktop/src/ui/settings.rs` documents the key map and draws the ring.
+    // The page the pane shows is not a field of its own: it rides in the
+    // settings leaf (see [`UiState::settings_page`]).
+
+    /// The pane's focus order for the page the settings pane shows, from the
+    /// same rules the pane draws its rows with.
+    pub fn settings_pane_controls(&self) -> Vec<SettingsControl> {
+        crate::ui::settings::pane_controls(
+            self.settings_page(),
+            &self.settings_environment_groups,
+            self.settings_environment_open_group.as_deref(),
+            self.settings_ssh_hosts.as_ref(),
+        )
+    }
+
+    /// The pane control the keyboard is on, when the pane holds the keyboard.
+    pub fn settings_focused_control(&self) -> Option<SettingsControl> {
+        if self.settings_focus != SettingsFocus::Pane {
+            return None;
+        }
+        self.settings_pane_controls()
+            .get(self.settings_pane_focus)
+            .cloned()
+    }
+
+    /// Select a category from the rail and reset the pane's focus to that
+    /// pane's first control: the keys that got here belong to the rail. The
+    /// page is written into the settings leaf, so it travels with the pane.
+    pub fn settings_select_category(&mut self, category: SettingsCategory) {
+        self.settings_set_page(category);
+        self.settings_pane_focus = 0;
+        self.settings_clear_field_edit();
+    }
+
+    /// Step the active category by `delta`, wrapping, and reset the pane's
+    /// focus to that pane's first control.
+    pub fn settings_category_step(&mut self, delta: i32) {
+        let all = SettingsCategory::ALL;
+        let count = all.len() as i32;
+        if count == 0 {
+            return;
+        }
+        let pos = all
+            .iter()
+            .position(|c| *c == self.settings_page())
+            .unwrap_or(0) as i32;
+        self.settings_select_category(all[(pos + delta).rem_euclid(count) as usize]);
+    }
+
+    /// Step the keyboard's slot inside the region that holds it.
+    pub fn settings_focus_step(&mut self, delta: i32) {
+        match self.settings_focus {
+            SettingsFocus::Rail => self.settings_category_step(delta),
+            SettingsFocus::Pane => self.settings_pane_step(delta),
+        }
+    }
+
+    /// Move the pane's focused control by `delta`, clamped at the ends. A caret
+    /// in a field is let go: the keys are navigating again.
+    pub fn settings_pane_step(&mut self, delta: i32) {
+        let len = self.settings_pane_controls().len();
+        if len == 0 {
+            return;
+        }
+        self.settings_pane_focus =
+            (self.settings_pane_focus as i32 + delta).clamp(0, len as i32 - 1) as usize;
+        self.settings_clear_field_edit();
+    }
+
+    /// Move the keyboard into the pane, on its first control. A pane with
+    /// nothing interactive does not take it.
+    pub fn settings_focus_into_pane(&mut self) {
+        if self.settings_pane_controls().is_empty() {
+            return;
+        }
+        self.settings_focus = SettingsFocus::Pane;
+        self.settings_pane_focus = 0;
+        self.settings_clear_field_edit();
+    }
+
+    /// Move the keyboard back to the rail.
+    pub fn settings_focus_out_of_pane(&mut self) {
+        self.settings_focus = SettingsFocus::Rail;
+        self.settings_clear_field_edit();
+    }
+
+    /// Leave the caret wherever it is, forgetting the edit it belonged to. What
+    /// the user typed stays in the field — this is the path for a key that
+    /// navigates away, not for `Escape`, which puts the field back.
+    fn settings_clear_field_edit(&mut self) {
+        self.settings_pane_field_active = false;
+        self.settings_field_edit_start = None;
+    }
+
+    /// The text field a control names, if it names one.
+    fn settings_field_mut(&mut self, control: &SettingsControl) -> Option<&mut String> {
+        match control {
+            SettingsControl::FriendlyName => Some(&mut self.settings_profile_name),
+            SettingsControl::EnvironmentGroupName => {
+                Some(&mut self.settings_environment_group_draft)
+            }
+            SettingsControl::EnvironmentSecretName => {
+                Some(&mut self.settings_environment_secret_name)
+            }
+            SettingsControl::EnvironmentSecretValue => {
+                Some(&mut self.settings_environment_secret_value)
+            }
+            _ => None,
+        }
+    }
+
+    /// `Enter` on a text field: the first press puts the caret in it and
+    /// remembers what it held, the second commits what was typed.
+    pub fn settings_activate_field(&mut self) {
+        let Some(control) = self.settings_focused_control() else {
+            return;
+        };
+        if !control.is_text_field() {
+            return;
+        }
+        if self.settings_pane_field_active {
+            self.settings_commit_field();
+            return;
+        }
+        self.settings_field_edit_start =
+            self.settings_field_mut(&control).map(|value| value.clone());
+        self.settings_pane_field_active = true;
+    }
+
+    /// Commit the field's text: it stays, the caret goes.
+    pub fn settings_commit_field(&mut self) {
+        self.settings_clear_field_edit();
+    }
+
+    /// `Escape` in a field: put back what it held when the caret went in, so a
+    /// cancelled edit leaves nothing behind, and keep the sheet open.
+    pub fn settings_cancel_field(&mut self) {
+        if let Some(start) = self.settings_field_edit_start.take() {
+            if let Some(control) = self.settings_focused_control() {
+                if let Some(value) = self.settings_field_mut(&control) {
+                    *value = start;
+                }
+            }
+        }
+        self.settings_pane_field_active = false;
+    }
+
+    /// The Profile name field took (`true`) or lost the caret.
+    ///
+    /// Taking it remembers what the field held; losing it without a commit is
+    /// the click-outside path, which abandons the edit and puts the stored name
+    /// back. `Enter` commits through [`Self::settings_commit_field`], which
+    /// clears the remembered value, so a later blur has nothing to undo.
+    pub fn settings_profile_name_focus(&mut self, gained: bool) {
+        if gained {
+            if self.settings_field_edit_start.is_none() {
+                self.settings_field_edit_start = Some(self.settings_profile_name.clone());
+            }
+            self.settings_pane_field_active = true;
+            return;
+        }
+        if let Some(start) = self.settings_field_edit_start.take() {
+            self.settings_profile_name = start;
+        }
+        self.settings_pane_field_active = false;
+    }
+
+    /// Activate the focused pane control. The controls whose behaviour already
+    /// exists as an action (the switches, the routing choice, the model reload)
+    /// are dispatched there by the action layer; this is the half that belongs
+    /// to the state: the environment rows, the SSH connection rows and a text
+    /// field taking the caret.
+    pub fn settings_activate_control(&mut self, desktop: Option<&DesktopState>) {
+        match self.settings_focused_control() {
+            Some(control) if control.is_text_field() => self.settings_activate_field(),
+            Some(SettingsControl::EnvironmentCreateGroup) => {
+                self.environment_create_group(desktop);
+            }
+            Some(SettingsControl::EnvironmentGroup(id)) => self.environment_open_group(&id),
+            Some(SettingsControl::EnvironmentDeleteGroup(id)) => {
+                self.environment_delete_group(&id, desktop);
+            }
+            Some(SettingsControl::EnvironmentSaveSecret) => {
+                self.environment_save_secret(desktop);
+            }
+            Some(SettingsControl::EnvironmentSecret(id)) => self.environment_edit_secret(&id),
+            Some(SettingsControl::EnvironmentDeleteSecret(id)) => {
+                self.environment_delete_secret(&id, desktop);
+            }
+            // Enter on a connection names it and stops there: the row is the
+            // source of a target, while a saved host pane opens from
+            // Cmd+Shift+N or the palette.
+            Some(SettingsControl::SshHost(alias)) => self.ssh_select_host(&alias),
+            Some(SettingsControl::ReloadSshHosts) => self.reload_ssh_hosts(),
+            Some(SettingsControl::CheckForUpdates) => self.check_for_updates(),
+            Some(SettingsControl::InstallUpdate) => self.install_available_update(),
+            _ => {}
+        }
+    }
+
+    /// Adjust the focused pane control by `delta` when it holds a discrete
+    /// value. The steppers are dispatched by the action layer, which owns the
+    /// shared zoom cell; the theme-channel column belongs here.
+    pub fn settings_adjust_control(&mut self, delta: i32) {
+        let Some(SettingsControl::ThemeChannel(_)) = self.settings_focused_control() else {
+            return;
+        };
+        let order = crate::ui::color_picker::COLOR_TARGET_ORDER;
+        let pos = order
+            .iter()
+            .position(|t| *t == self.theme_color_target)
+            .unwrap_or(0) as i32;
+        self.theme_color_target = order[(pos + delta).rem_euclid(order.len() as i32) as usize];
+    }
+
+    /// The base palette one step along the Themes stepper: the Default base
+    /// first, then the presets in [`ThemePreset::ALL`] order, wrapping at both
+    /// ends. The caller applies it, so a step persists like a picked base.
+    pub fn theme_preset_stepped(&self, delta: i32) -> Option<ThemePreset> {
+        let all = ThemePreset::ALL;
+        let current = self
+            .theme_preset
+            .as_deref()
+            .and_then(ThemePreset::from_key);
+        let index = current
+            .and_then(|preset| all.iter().position(|candidate| *candidate == preset))
+            .map(|position| position as i32 + 1)
+            .unwrap_or(0);
+        let next = (index + delta).rem_euclid(all.len() as i32 + 1);
+        (next > 0).then(|| all[(next - 1) as usize])
+    }
+
+    // ---- Settings -> Environment -------------------------------------------
+
+    /// Reload the grouped secrets from the store. Every change the pane makes
+    /// goes through the store first and then comes back through here, so what
+    /// is drawn is what is persisted.
+    pub fn refresh_environment_groups(&mut self, desktop: Option<&DesktopState>) {
+        let Some(desktop) = desktop else {
+            return;
+        };
+        match desktop.environment_groups() {
+            Ok(groups) => {
+                // A group that vanished elsewhere closes the pane's view of it.
+                if let Some(open) = &self.settings_environment_open_group {
+                    if !groups.iter().any(|g| &g.id == open) {
+                        self.settings_environment_open_group = None;
+                        self.settings_environment_editing = None;
+                    }
+                }
+                self.settings_environment_groups = groups;
+            }
+            Err(e) => log::warn!("environment_groups failed: {e}"),
+        }
+        // Removing the row the keyboard was on shortens the pane's order: keep
+        // the focused slot inside it instead of leaving it past the end.
+        let len = self.settings_pane_controls().len();
+        if len > 0 {
+            self.settings_pane_focus = self.settings_pane_focus.min(len - 1);
+        }
+    }
+
+    /// Create the group the name field holds and open it.
+    pub fn environment_create_group(&mut self, desktop: Option<&DesktopState>) {
+        let name = self.settings_environment_group_draft.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let Some(desktop) = desktop else {
+            return;
+        };
+        match desktop.create_environment_group(&name) {
+            Ok(group) => {
+                self.settings_environment_group_draft.clear();
+                self.settings_environment_open_group = Some(group.id);
+                self.settings_environment_editing = None;
+                self.refresh_environment_groups(Some(desktop));
+            }
+            Err(e) => log::warn!("create_environment_group failed: {e}"),
+        }
+    }
+
+    /// Open a group (its secrets join the pane), or close the open one.
+    pub fn environment_open_group(&mut self, id: &str) {
+        if self.settings_environment_open_group.as_deref() == Some(id) {
+            self.settings_environment_open_group = None;
+        } else {
+            self.settings_environment_open_group = Some(id.to_string());
+        }
+        self.settings_environment_editing = None;
+        self.settings_environment_secret_name.clear();
+        self.settings_environment_secret_value.clear();
+    }
+
+    /// Delete a group and everything in it.
+    pub fn environment_delete_group(&mut self, id: &str, desktop: Option<&DesktopState>) {
+        let Some(desktop) = desktop else {
+            return;
+        };
+        match desktop.delete_environment_group(id) {
+            Ok(_) => {
+                if self.settings_environment_open_group.as_deref() == Some(id) {
+                    self.settings_environment_open_group = None;
+                }
+                self.settings_environment_editing = None;
+                self.refresh_environment_groups(Some(desktop));
+            }
+            Err(e) => log::warn!("delete_environment_group failed: {e}"),
+        }
+    }
+
+    /// Load one entry back into the fields, so the next save edits it.
+    pub fn environment_edit_secret(&mut self, id: &str) {
+        let Some(entry) = self
+            .settings_environment_open_group
+            .as_deref()
+            .and_then(|group| {
+                self.settings_environment_groups
+                    .iter()
+                    .find(|g| g.id == group)
+            })
+            .and_then(|group| group.entries.iter().find(|e| e.id == id))
+        else {
+            return;
+        };
+        self.settings_environment_secret_name = entry.name.clone();
+        self.settings_environment_secret_value = entry.value.clone();
+        self.settings_environment_editing = Some(entry.name.clone());
+    }
+
+    /// Remove one secret from the open group.
+    pub fn environment_delete_secret(&mut self, id: &str, desktop: Option<&DesktopState>) {
+        let Some(desktop) = desktop else {
+            return;
+        };
+        match desktop.delete_environment_secret(id) {
+            Ok(_) => {
+                self.settings_environment_editing = None;
+                self.refresh_environment_groups(Some(desktop));
+            }
+            Err(e) => log::warn!("delete_environment_secret failed: {e}"),
+        }
+    }
+
+    /// Store the secret the two fields hold into the open group. An entry the
+    /// fields were loaded from is edited in place, and renamed too when its
+    /// name changed; otherwise this adds a new one.
+    pub fn environment_save_secret(&mut self, desktop: Option<&DesktopState>) {
+        let Some(group_id) = self.settings_environment_open_group.clone() else {
+            return;
+        };
+        let name = self.settings_environment_secret_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let Some(desktop) = desktop else {
+            return;
+        };
+        let renamed_from = self.settings_environment_editing.clone();
+        match desktop.save_environment_secret(
+            &group_id,
+            renamed_from.as_deref(),
+            &name,
+            &self.settings_environment_secret_value,
+        ) {
+            Ok(_) => {
+                self.settings_environment_secret_name.clear();
+                self.settings_environment_secret_value.clear();
+                self.settings_environment_editing = None;
+                self.refresh_environment_groups(Some(desktop));
+            }
+            Err(e) => log::warn!("save_environment_secret failed: {e}"),
+        }
+    }
+
+    // ---- Settings -> Connections -------------------------------------------
+
+    /// Read `~/.ssh` if the Connections page is showing and the cache is still
+    /// empty. Called once per frame from the rebuild, before the snapshot is
+    /// taken, so the page never reads the directory while it draws and a frame
+    /// that changes nothing reads nothing.
+    pub fn ensure_ssh_hosts(&mut self) {
+        if self.settings_page() != SettingsCategory::Connections || self.settings_ssh_read {
+            return;
+        }
+        self.reload_ssh_hosts();
+    }
+
+    /// Re-read `~/.ssh` and replace the cache. The read is a plain function of
+    /// the home directory, so the page and the action layer share this one path.
+    pub fn reload_ssh_hosts(&mut self) {
+        self.settings_ssh_read = true;
+        self.settings_ssh_hosts = self
+            .ssh_home()
+            .map(|home| goble_core::ssh_hosts::read_ssh_hosts(&home));
+        // The same page lists the saved hosts the picker offers, so Reload
+        // refreshes both files rather than only `~/.ssh`.
+        self.reload_saved_hosts();
+        // A host that is no longer in the config cannot stay selected: the row
+        // the keyboard would be on is gone.
+        let selected = self.settings_ssh_selected.take();
+        if let Some(alias) = selected {
+            if self
+                .settings_ssh_hosts
+                .as_ref()
+                .is_some_and(|ssh| ssh.hosts.iter().any(|h| h.alias == alias))
+            {
+                self.settings_ssh_selected = Some(alias);
+            }
+        }
+        // Re-reading can shorten the pane's order: keep the focused slot inside
+        // it instead of leaving it past the end.
+        let len = self.settings_pane_controls().len();
+        if len > 0 {
+            self.settings_pane_focus = self.settings_pane_focus.min(len - 1);
+        }
+    }
+
+    /// The `~/.ssh` read a submitted command's host is resolved against, from
+    /// the home directory the Connections page reads under. Read fresh rather
+    /// than out of that page's cache: the page fills its own when it is shown,
+    /// and a command must not make the page's read stale any more than the page
+    /// may hand a command an older one.
+    pub fn ssh_hosts_for_command(&self) -> Option<SshHosts> {
+        self.ssh_home()
+            .map(|home| goble_core::ssh_hosts::read_ssh_hosts(&home))
+    }
+
+    /// Select a connection by alias: `Enter` names it for whatever consumes the
+    /// target next. The row records a target; Cmd+Shift+N opens a saved host in
+    /// a pane.
+    pub fn ssh_select_host(&mut self, alias: &str) {
+        let known = self
+            .settings_ssh_hosts
+            .as_ref()
+            .is_some_and(|ssh| ssh.hosts.iter().any(|h| h.alias == alias));
+        if known {
+            self.settings_ssh_selected = Some(alias.to_string());
+        }
+    }
+
+    /// Attach the update checker and replay what its state file already knows.
+    /// Called once, from the shell that built the service.
+    pub fn attach_update_service(&mut self, service: std::sync::Arc<crate::update::UpdateService>) {
+        self.update_view = service.snapshot();
+        self.update = Some(service);
+    }
+
+    /// Pull what the checker published into the value the page draws. Called
+    /// once per frame from the rebuild, so the page never waits on a thread.
+    pub fn refresh_update_view(&mut self) {
+        if let Some(service) = &self.update {
+            self.update_view = service.snapshot();
+        }
+    }
+
+    /// The page's "Check now", and the startup check's manual twin.
+    pub fn check_for_updates(&mut self) {
+        if let Some(service) = &self.update {
+            service.check_now();
+            self.update_view = service.snapshot();
+        }
+    }
+
+    /// Install the offered release: download, verify, stage, swap, restart.
+    pub fn install_available_update(&mut self) {
+        if let Some(service) = &self.update {
+            service.install_available();
+            self.update_view = service.snapshot();
+        }
+    }
+
+    /// The home directory `~/.ssh` is read under: the injected one when there is
+    /// one, else the user's own.
+    fn ssh_home(&self) -> Option<std::path::PathBuf> {
+        self.settings_ssh_home
+            .clone()
+            .or_else(|| crate::state::paths::home_directory().map(std::path::PathBuf::from))
+    }
+}

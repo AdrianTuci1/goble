@@ -138,7 +138,7 @@ pub(crate) fn icon_atlas_name(name: IconName) -> IconName {
         "prompt" => "prompt",
         "image" | "photo" => "image",
         "folder" | "dir" | "directory" | "working-dir" => "folder",
-        "git-branch" | "branch" => "git-branch",
+        "git-branch" => "git-branch",
         "code" | "code-block" => "code",
         "link" | "url" => "link",
         "stop" | "stop-generation" => "stop",
@@ -184,6 +184,10 @@ mod tests {
         assert_eq!(icon_atlas_name("threads"), "message-chat-square");
         assert_eq!(icon_atlas_name("x"), "x-close");
         assert_eq!(icon_atlas_name("settings"), "settings");
+        // The DSH fork mark is its own glyph: only the git-graph name keeps the
+        // old branch asset.
+        assert_eq!(icon_atlas_name("branch"), "branch");
+        assert_eq!(icon_atlas_name("git-branch"), "git-branch");
     }
 
     #[test]

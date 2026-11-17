@@ -208,5 +208,5 @@ cargo test -p goble-mcp       # initialize/tools/list/tools/call, a mock backend
 cargo test -p goble-cli       # ctl parsing and the ctl -> command mapping
 ```
 
-The app-side dispatch lives in `app/src/control/mod.rs`; the shared vocabulary
+The app-side dispatch lives in `apps/desktop/src/control/mod.rs`; the shared vocabulary
 and transport live in `crates/goble-control`.

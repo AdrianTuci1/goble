@@ -18,7 +18,7 @@ second *shell*, not a second implementation.
 - `crates/goble-web` — **removed**. Its `/app/` URL stays; the gateway serves the
   Expo web export there instead of a wasm bundle.
 
-`crates/goble-ui`, `crates/goble-desktop-*` and `app/` are the **native desktop
+`crates/goble-ui`, `crates/goble-desktop-*` and `apps/desktop/` are the **native desktop
 app** and are out of scope: that surface is Rust and stays Rust.
 
 ## Waves

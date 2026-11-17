@@ -30,6 +30,13 @@ pub struct Code {
     text: String,
     language: Option<String>,
     font_size: f32,
+    /// The fence's language banner size. Defaults to the element's own dense
+    /// caption size; a chat fence asks for DSH's 11 px banner.
+    language_font_size: f32,
+    /// The banner's line height multiplier. A body and its banner share the
+    /// element's line height by default; a chat fence asks for DSH's banner
+    /// line (18 / 11) while the body keeps 19 / 11.
+    language_line_height: f32,
     color: ColorU,
     language_color: ColorU,
     line_height: f32,
@@ -53,6 +60,8 @@ impl Code {
             text: text.into(),
             language: None,
             font_size: DEFAULT_FONT_SIZE,
+            language_font_size: DEFAULT_LANGUAGE_FONT_SIZE,
+            language_line_height: DEFAULT_LINE_HEIGHT,
             color: ColorU::default(),
             language_color: ColorU::default(),
             line_height: DEFAULT_LINE_HEIGHT,
@@ -75,6 +84,19 @@ impl Code {
 
     pub fn with_font_size(mut self, size: f32) -> Self {
         self.font_size = size;
+        self
+    }
+
+    /// Set the fence's language banner size. Only block code shows it.
+    pub fn with_language_font_size(mut self, size: f32) -> Self {
+        self.language_font_size = size;
+        self
+    }
+
+    /// Set the fence's language banner line height. The body keeps the
+    /// element's own line height; only the banner row changes.
+    pub fn with_language_line_height(mut self, line_height: f32) -> Self {
+        self.language_line_height = line_height;
         self
     }
 
@@ -198,8 +220,8 @@ impl Code {
         self.label().map(|label| {
             measure_text_family(
                 label,
-                DEFAULT_LANGUAGE_FONT_SIZE,
-                self.line_height,
+                self.language_font_size,
+                self.language_line_height,
                 max_width,
                 FontWeight::Regular,
                 FontFamily::Mono,
@@ -261,10 +283,10 @@ impl Element for Code {
                 renderer.draw_text_with_font(
                     vec2f(origin.x, y),
                     label.to_string(),
-                    DEFAULT_LANGUAGE_FONT_SIZE,
+                    self.language_font_size,
                     self.language_color,
                     max_width,
-                    self.line_height,
+                    self.language_line_height,
                     FontWeight::Regular,
                     FontFamily::Mono,
                     false,

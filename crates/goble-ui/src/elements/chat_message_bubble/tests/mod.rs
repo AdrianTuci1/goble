@@ -11,7 +11,7 @@ use crate::elements::{Element, SizeConstraint};
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
 use crate::geometry::vec2f;
-use crate::platform::text_atlas::FontWeight;
+use crate::platform::text_atlas::{advance_width, FontWeight};
 use crate::render::{RenderCommand, Renderer};
 use crate::test_util::{command_counts, render_element};
 use crate::theme::{ColorToken, FontFamily};
@@ -24,6 +24,7 @@ mod pill;
 mod sub_agent;
 mod tool_body;
 mod tool_call;
+mod typography;
 
 /// A fence draws no horizontal scroll, so a line longer than the pane must
 /// fold inside it: nothing it paints may end past the row's right edge where
@@ -422,11 +423,12 @@ fn transcript_rows_are_full_width_bands_not_pills() {
         "the user's band runs across the pane"
     );
 
-    // The agent's reply keeps the transcript's padding at the edge.
+    // The agent's reply keeps DSH's 16 px band inset at the edge (the vertical
+    // inset is 10 px).
     let reply_x = drawn_text_x(&reply, "Salut!");
     assert!(
-        (10.0..=15.0).contains(&reply_x),
-        "the agent's reply keeps 10-15 px of padding, got {reply_x}"
+        (14.0..=17.0).contains(&reply_x),
+        "the agent's reply keeps its 16 px band inset, got {reply_x}"
     );
 
     // The user's row draws the prompt marker on its first line, and the
@@ -447,7 +449,7 @@ fn transcript_rows_are_full_width_bands_not_pills() {
         )),
         "the agent's reply draws no prompt marker"
     );
-    let first_line = 14.0 * 1.2;
+    let first_line = 14.0 * crate::elements::chat_typography::USER_LH;
     let message_y = message
         .iter()
         .find_map(|command| match command {
@@ -677,42 +679,95 @@ fn drawn_texts(commands: &[RenderCommand]) -> Vec<String> {
         .collect()
 }
 
-/// How many distinct rows (by text baseline) the commands draw.
-fn drawn_rows(commands: &[RenderCommand]) -> usize {
-    let mut rows: Vec<i32> = commands
-        .iter()
-        .filter_map(|c| match c {
-            RenderCommand::DrawText { origin, .. } => Some((origin.y * 10.0).round() as i32),
-            _ => None,
-        })
-        .collect();
-    rows.sort_unstable();
-    rows.dedup();
-    rows.len()
+/// A painted run's origin, text and advance, for the row helpers below.
+fn drawn_run(command: &RenderCommand) -> Option<(f32, f32, String, f32)> {
+    let RenderCommand::DrawText {
+        origin,
+        text,
+        font_size,
+        font_weight,
+        font_family,
+        font_italic,
+        ..
+    } = command
+    else {
+        return None;
+    };
+    Some((
+        origin.y,
+        origin.x,
+        text.clone(),
+        advance_width(text, *font_size, *font_weight, *font_family, *font_italic),
+    ))
 }
 
-/// The drawn text of each visual row, its runs concatenated left to right,
-/// so a line painted as several runs (highlighted code) reads as one
-/// string.
-fn drawn_row_texts(commands: &[RenderCommand]) -> Vec<String> {
-    let mut runs: Vec<(i32, f32, String)> = commands
+/// Runs painted within this many points of each other's baseline belong to the
+/// same visual row. A row's leading glyph sits a few points off the words it
+/// leads (the 16 px box is centred on a 24 px line), while stacked rows are at
+/// least a line height apart.
+const ROW_BASELINE_SLACK: f32 = 6.0;
+
+/// How many distinct rows (by text baseline) the commands draw.
+fn drawn_rows(commands: &[RenderCommand]) -> usize {
+    let mut baselines: Vec<f32> = commands
         .iter()
-        .filter_map(|c| match c {
-            RenderCommand::DrawText { text, origin, .. } => {
-                Some(((origin.y * 10.0).round() as i32, origin.x, text.clone()))
-            }
-            _ => None,
-        })
+        .filter_map(|c| drawn_run(c).map(|(y, ..)| y))
         .collect();
-    runs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap()));
-    let mut rows: Vec<(i32, String)> = Vec::new();
-    for (y, _, text) in runs {
-        match rows.last_mut() {
-            Some((last_y, line)) if *last_y == y => line.push_str(&text),
-            _ => rows.push((y, text)),
+    baselines.sort_by(f32::total_cmp);
+    let mut rows = 0usize;
+    let mut last: Option<f32> = None;
+    for baseline in baselines {
+        if last.is_none_or(|last| baseline - last > ROW_BASELINE_SLACK) {
+            rows += 1;
+            last = Some(baseline);
         }
     }
-    rows.into_iter().map(|(_, line)| line).collect()
+    rows
+}
+
+/// The drawn text of each visual row, its runs concatenated left to right, so
+/// a line painted as several runs (highlighted code) reads as one string. A
+/// run that starts visibly past the previous run's advance — a row's leading
+/// glyph in its own box, say — reads with the space the layout put there.
+fn drawn_row_texts(commands: &[RenderCommand]) -> Vec<String> {
+    let mut runs: Vec<(f32, f32, String, f32)> =
+        commands.iter().filter_map(drawn_run).collect();
+    runs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    // Cluster by baseline first, then read each cluster left to right: a row's
+    // leading glyph sits a few points off its words' baseline.
+    let mut clusters: Vec<(f32, Vec<(f32, String, f32)>)> = Vec::new();
+    for (y, x, text, advance) in runs {
+        match clusters.last_mut() {
+            Some((last_y, row)) if (y - *last_y).abs() <= ROW_BASELINE_SLACK => {
+                row.push((x, text, advance));
+            }
+            _ => clusters.push((y, vec![(x, text, advance)])),
+        }
+    }
+    clusters
+        .into_iter()
+        .map(|(_, mut row)| {
+            row.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut line = String::new();
+            let mut previous: Option<(f32, bool)> = None;
+            for (x, text, _advance) in row {
+                if let Some((last_x, glyph_run)) = previous {
+                    if glyph_run && x - last_x >= 8.0 && !line.ends_with(' ') {
+                        line.push(' ');
+                    }
+                }
+                // A Goble mark (◆ ◈ ❯ · and the spinner frames) is one
+                // non-ASCII glyph painted in its own leading box; it reads
+                // with the space the layout put between it and the words.
+                let glyph_run = text.chars().count() <= 3
+                    && text.chars().any(|ch| !ch.is_ascii())
+                    && !text.chars().any(|ch| ch.is_ascii_alphanumeric());
+                previous = Some((x, glyph_run));
+                line.push_str(&text);
+            }
+            line
+        })
+        .collect()
 }
 
 /// The drawn text runs as `(text, colour, family, size)`, so two elements
@@ -852,12 +907,20 @@ fn paint_sub_agent_with_fold(
 
 /// The top-left corner of the run `label` was painted at.
 fn run_origin(commands: &[RenderCommand], label: &str) -> crate::geometry::Vector2F {
-    commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if text == label => Some(*origin),
+    let trimmed = label.trim_end();
+    let find = |predicate: &dyn Fn(&str) -> bool| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if predicate(text) => Some(*origin),
             _ => None,
         })
+    };
+    // A run's style may now merge words that used to be separate runs (a tool
+    // row draws in one ink at one weight), so a label matches the run that
+    // contains it as well as an exact run.
+    find(&|text| text == label)
+        .or_else(|| find(&|text| text == trimmed))
+        .or_else(|| find(&|text| text.starts_with(trimmed)))
+        .or_else(|| find(&|text| text.contains(trimmed)))
         .unwrap_or_else(|| {
             panic!("the paragraph must draw the run {label:?}, got {commands:?}")
         })

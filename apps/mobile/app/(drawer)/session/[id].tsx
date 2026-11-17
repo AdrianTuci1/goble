@@ -979,16 +979,17 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: palette.text,
   },
+  // The user's message is a full-width band, the same column and left edge as
+  // the agent's text: the role is told by the raised fill and border, never by
+  // a narrower box or a right-aligned row.
   userRow: {
-    alignItems: "flex-end",
+    alignItems: "stretch",
   },
   userBubble: {
     backgroundColor: palette.raised,
     borderColor: palette.border,
-    borderRadius: 20,
-    borderTopRightRadius: 6,
+    borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    maxWidth: "86%",
     paddingHorizontal: space.lg,
     paddingVertical: space.md,
   },
@@ -1002,12 +1003,14 @@ const styles = StyleSheet.create({
   userText: {
     ...typography.body,
     color: palette.text,
+    textAlign: "left",
   },
   assistantText: {
     ...typography.body,
     color: palette.text,
     fontSize: 15,
     lineHeight: 22,
+    textAlign: "left",
   },
   workingRow: {
     alignItems: "center",

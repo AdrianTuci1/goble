@@ -86,6 +86,73 @@ impl Store {
         }
     }
 
+    /// Record or clear a conversation's archive stamp. `Some(ts)` is when the
+    /// user archived it (the sidebar's archived filter reads this: `NULL` is a
+    /// normally listed conversation); `None` restores it. The sidebar row keeps
+    /// its order slot while archived, so restoring needs no other write.
+    pub fn set_chat_archived(&self, id: &str, archived_at: Option<&str>) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET archived_at = ?1 WHERE id = ?2",
+            params![archived_at, id],
+        )?;
+        Ok(())
+    }
+
+    /// Record a conversation's archive stamp, or `None` when it is listed
+    /// normally.
+    pub fn get_chat_archived(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT archived_at FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get::<_, Option<String>>(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Persist a conversation's Star/pin state (the sidebar's Starred block).
+    pub fn set_chat_starred(&self, id: &str, starred: bool) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE chats SET starred = ?1 WHERE id = ?2",
+            params![starred as i64, id],
+        )?;
+        Ok(())
+    }
+
+    /// Whether a conversation is starred. An unknown id is not.
+    pub fn get_chat_starred(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT starred FROM chats WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get::<_, i64>(0)? != 0)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Every archived top-level conversation id. A sub-agent's own row carries
+    /// `parent_chat_id` and is never listed, so it is not one of these; the
+    /// sidebar loads this once per refresh and filters its rows with it.
+    pub fn archived_chat_ids(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM chats WHERE archived_at IS NOT NULL AND parent_chat_id IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Every starred top-level conversation id (the persisted pin block).
+    pub fn starred_chat_ids(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT id FROM chats WHERE starred != 0 AND parent_chat_id IS NULL")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// One stored conversation's row — child or top-level — or `None` when the
     /// id is unknown. The transcript is read separately with
     /// [`Self::list_chat_messages`], which returns a child's own messages too.

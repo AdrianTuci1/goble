@@ -262,7 +262,7 @@ crate's `web/` directory. If the bundle is absent, `/app/` returns a build page.
 ## Cloud agents in the desktop app
 
 A conversation routed to Remote is a viewer pane: the transcript and the
-composer, with the worker connection's state over them (`app/src/ui/worker.rs`).
+composer, with the worker connection's state over them (`apps/desktop/src/ui/worker.rs`).
 The ways in:
 
 - the "▾" environment menu's **Cloud agent** row (after "New terminal" and "New

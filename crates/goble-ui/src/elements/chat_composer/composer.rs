@@ -3,17 +3,16 @@ use std::rc::Rc;
 
 use super::proposal::CommandProposalUi;
 use crate::elements::{
-    harness_bar_mark, AppContext, ApprovalMode, Chip, Clipped, ComposerButton, ComposerModelTray,
-    ConstrainedBox, Container, ContextPill,
-    CrossAxisAlignment, DiffSummary, EdgeInsets, Element, Flex, Icon, LayoutContext, MainAxisSize,
-    ModelTrayKey, Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
-    PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Text, TextArea,
-    Tooltip, TooltipPosition, Wrap, COMPOSER_CONTROL_RADIUS, CONTEXT_PILL_HEIGHT,
-    MENU_MAX_VISIBLE_ROWS,
+    harness_bar_mark, AppContext, ApprovalMode, Border, Clipped, ComposerButton,
+    ComposerModelTray, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, DiffSummary,
+    EdgeInsets, Element, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, ModelTrayKey,
+    Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
+    PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Spacer, Text,
+    TextArea, Tooltip, TooltipPosition, Wrap, COMPOSER_CONTROL_RADIUS, CONTEXT_PILL_HEIGHT,
+    CONTEXT_PILL_LABEL_SIZE, MENU_MAX_VISIBLE_ROWS,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
-use crate::geometry::{PointF, Vector2F};
-use crate::platform::text_atlas::FontWeight;
+use crate::geometry::{vec2f, PointF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 use crate::vim::{Clipboard, VimMode, VimState};
 use goble_core::harness::CommandDecision;
@@ -33,17 +32,78 @@ const SESSION_CHIP_MAX_WIDTH: f32 = 280.0;
 /// empty until a model is configured), and this covers the label it passes.
 pub const MODEL_NOT_CONFIGURED: &str = "not configured";
 
-/// The rich input's footer controls share one label size and one side inset,
-/// so every button in the row — the model, the attach and stop controls, the
+/// The rich input's controls share one label size and one side inset, so every
+/// button in the band and footer — the model, the attach and stop controls, the
 /// directory, environment and branch pills — reads as part of one compact
 /// strip. The height itself is [`CONTEXT_PILL_HEIGHT`], the pill's own.
-const CONTROL_TEXT_SIZE: f32 = 11.0;
+const CONTROL_TEXT_SIZE: f32 = CONTEXT_PILL_LABEL_SIZE;
 const CONTROL_H_PAD: f32 = 8.0;
 
-/// The diff menu is wider than the other dropdowns: its rows are repository
-/// paths with line counts at the far edge, so the default 220 pt would leave
-/// little of the path readable.
-const DIFF_MENU_WIDTH: f32 = 340.0;
+/// The composer card's corner radius. The card is the rounded panel every
+/// surface draws — agent chat, shell bar, thread view, custom harness. The
+/// reference photo's arc is far rounder than a conventional card: measured at
+/// 26-30 logical, and the input segment is concentric with it.
+pub const COMPOSER_CARD_RADIUS: f32 = 26.0;
+/// The input segment's radius: concentric with the card one inset in (card 26
+/// minus the 6pt casing inset), so the two curves read as one rounded panel
+/// holding a field.
+pub const COMPOSER_INPUT_RADIUS: f32 = 20.0;
+/// How far the input segment is inset from the card's sides and bottom.
+pub const COMPOSER_CARD_INSET: f32 = 6.0;
+/// The card's horizontal gutter from the surface it is drawn on, and the margin
+/// it keeps under itself. Every surface draws the same card, so the shell bar
+/// and the agent input sit the same distance from the pane's edges.
+pub const COMPOSER_CARD_GUTTER: f32 = 12.0;
+/// The context band's resting height: 8 above the controls, the controls' own
+/// [`CONTEXT_PILL_HEIGHT`], and 8 below them before the input segment.
+pub const CONTEXT_SEGMENT_HEIGHT: f32 = 40.0;
+/// The footer row's height. The row reserves it so the card's layout is the
+/// same whether or not a control sits at its right end: the send circle was
+/// removed, and only the stop circle (and the optional trailing action) use the
+/// row now.
+pub const COMPOSER_FOOTER_HEIGHT: f32 = 32.0;
+/// The diameter of the stop circle. It used to size the send circle too; the
+/// owner removed the send button, and the stop control keeps the round slot.
+pub const COMPOSER_SEND_SIZE: f32 = 32.0;
+/// The gap between the editor and the footer row under it.
+pub const COMPOSER_FOOTER_GAP: f32 = 10.0;
+/// The editor's resting height: one 14pt line (line height 1.4) and the room
+/// the field keeps around it.
+pub const COMPOSER_EDITOR_MIN_HEIGHT: f32 = 24.0;
+/// The tallest the editor grows with a draft before it scrolls.
+pub const COMPOSER_EDITOR_MAX_HEIGHT: f32 = 160.0;
+/// The input segment's height at rest, with one line of draft and no
+/// attachments or hints: 14 above + the editor + the footer gap + the footer +
+/// 8 below. (The card and the segment are filled, not stroked, so no outline
+/// adds to the height.) A host that reserves the bar's height uses this.
+pub const COMPOSER_INPUT_MIN_HEIGHT: f32 =
+    14.0 + COMPOSER_EDITOR_MIN_HEIGHT + COMPOSER_FOOTER_GAP + COMPOSER_FOOTER_HEIGHT + 8.0;
+/// The instruction strip's own height when a host passes hints inside the
+/// input: the capped key's box, whose 11pt label is a 13.2pt line (11 x 1.2).
+/// A host that reserves the bar's height adds this row and the footer gap above
+/// it, exactly as the element lays them out.
+pub const COMPOSER_HINTS_ROW_HEIGHT: f32 = 13.2;
+/// The height a host reserves for this card when it draws a context band and one
+/// instruction row: the shell pane tells its pty this, so the rows the program
+/// paints are the rows the user can see. It must equal the height the element
+/// lays out for that configuration; the composer test
+/// `the_reserved_bar_height_is_the_cards_own_height` pins the two together.
+pub const COMPOSER_BAR_RESERVED_HEIGHT: f32 = COMPOSER_CARD_GUTTER
+    + COMPOSER_CARD_INSET
+    + CONTEXT_SEGMENT_HEIGHT
+    + COMPOSER_INPUT_MIN_HEIGHT
+    + COMPOSER_FOOTER_GAP
+    + COMPOSER_HINTS_ROW_HEIGHT;
+/// The environment menu is wider than the other dropdowns: its rows carry a
+/// description line under the label ("Clones this repo in a cloud
+/// environment…"), and the reference shows it cut with an ellipsis on one line
+/// rather than wrapped inside the row.
+const ENVIRONMENT_MENU_WIDTH: f32 = 308.0;
+
+/// The branch menu is nearly as wide as the environment's: the reference's
+/// branch tray is a long casing too, and a branch name is a deeper path than a
+/// model or a medium label.
+const BRANCH_MENU_WIDTH: f32 = 292.0;
 
 pub struct ChatComposer {
     pub(super) value: Rc<RefCell<String>>,
@@ -83,14 +143,6 @@ pub struct ChatComposer {
     /// this composer the only typing surface of its pane (the terminal pane):
     /// clicking the output above the bar must leave the caret where it was.
     blur_on_outside_click: bool,
-    /// Draw the context row (the harness/directory/branch pills) above the
-    /// editor instead of under it. A shell pane's bar keeps its own context
-    /// over the draft, where the command it describes is typed.
-    context_above_editor: bool,
-    /// Draw the bar with no horizontal gutter of its own: the card's edge is
-    /// the pane's edge. A host that pins the bar to the bottom of a pane uses
-    /// it so the input spans the pane instead of sitting in an inset card.
-    edge_to_edge: bool,
     /// The instructions drawn in the rich input's own bottom row, under the
     /// editor and the action row — the gestures this surface answers that the
     /// host keeps inside the input. An empty list draws nothing.
@@ -117,9 +169,10 @@ pub struct ChatComposer {
     /// and the git branch, each with its own dropdown selector. The working
     /// directory reuses `path_label` (set via `with_path_label`) as its label.
     harness_label: Option<String>,
-    /// The glyph beside the environment label: the computer for a local
-    /// environment and the cloud for a worker. The host names it, so the pill
-    /// says where the work runs as well as what it is called.
+    /// The glyph beside the environment label: T3 Code's computer for a local
+    /// environment and its cloud for a worker. The host names it, so the pill
+    /// says where the work runs as well as what it is called; the default is
+    /// the local environment's mark.
     harness_icon: &'static str,
     harness_menu_items: Vec<PopupMenuItem>,
     harness_menu_open: Rc<RefCell<bool>>,
@@ -141,16 +194,6 @@ pub struct ChatComposer {
     /// The branch tray's keyboard highlight, app-owned like its open flag.
     branch_menu_highlight: Rc<RefCell<Option<usize>>>,
     on_select_branch_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
-    /// The working tree's changed files, or `None` when the pane is not in a
-    /// repository (or has nothing changed). The control shows the totals and
-    /// opens a menu of the files.
-    diff_summary: Option<DiffSummary>,
-    diff_menu_open: Rc<RefCell<bool>>,
-    diff_menu_scroll: PanelScroll,
-    /// What a chosen row of the diff menu opens: the review panel, optionally
-    /// on one file (`None` opens it on every file). A host that has a review
-    /// surface sets this; the shell bar and the agent view both do.
-    diff_open: Option<Rc<RefCell<dyn FnMut(Option<String>) + 'static>>>,
     /// The command the harness is waiting on an approval for (A6). The approval
     /// card itself is drawn by the transcript at the end of the agent's output;
     /// the composer keeps the proposal so its keys answer the decision.
@@ -188,6 +231,13 @@ pub struct ChatComposer {
     on_link: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_stop: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
+    /// The documented trailing seat on the footer row, where an optional host
+    /// control (the live-speech button the owner will enable from Settings) can
+    /// sit. The rich input draws no send control, so `None` leaves the row's
+    /// right end empty and nothing replaces the removed circle. A factory, not
+    /// an element: the composer rebuilds its tree every frame, so the seat has
+    /// to produce a fresh element for each one.
+    footer_action: Option<Rc<RefCell<dyn FnMut() -> Box<dyn Element> + 'static>>>,
     model_menu_items: Vec<PopupMenuItem>,
     model_menu_open: Rc<RefCell<bool>>,
     on_select_model_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
@@ -233,8 +283,6 @@ impl ChatComposer {
             waiting: false,
             queued_prompt_present: false,
             blur_on_outside_click: true,
-            context_above_editor: false,
-            edge_to_edge: false,
             hints: Vec::new(),
             slash_enabled: false,
             slash_items: Vec::new(),
@@ -258,6 +306,7 @@ impl ChatComposer {
             on_link: None,
             on_stop: None,
             on_focus_change: None,
+            footer_action: None,
             model_menu_items: Vec::new(),
             model_menu_open: Rc::new(RefCell::new(false)),
             on_select_model_item: None,
@@ -267,7 +316,7 @@ impl ChatComposer {
             clipboard: None,
             anchor: None,
             harness_label: None,
-            harness_icon: "computer",
+            harness_icon: "environment-computer",
             harness_menu_items: Vec::new(),
             harness_menu_open: Rc::new(RefCell::new(false)),
             on_select_harness_item: None,
@@ -281,10 +330,6 @@ impl ChatComposer {
             branch_menu_open: Rc::new(RefCell::new(false)),
             branch_menu_highlight: Rc::new(RefCell::new(None)),
             on_select_branch_item: None,
-            diff_summary: None,
-            diff_menu_open: Rc::new(RefCell::new(false)),
-            diff_menu_scroll: PanelScroll::default(),
-            diff_open: None,
             proposal: None,
             proposal_selected: Rc::new(RefCell::new(0)),
             on_decision: None,
@@ -351,8 +396,9 @@ impl ChatComposer {
     }
 
     /// The glyph that names the environment beside its label (see
-    /// [`Self::with_harness_label`]): a computer for a local environment and a
-    /// cloud for a worker. The host knows which; the composer only draws it.
+    /// [`Self::with_harness_label`]): T3 Code's computer (`environment-computer`)
+    /// for a local environment and its cloud (`environment-cloud`) for a worker.
+    /// The host knows which; the composer only draws it.
     pub fn with_harness_icon(mut self, icon: &'static str) -> Self {
         self.harness_icon = icon;
         self
@@ -400,13 +446,13 @@ impl ChatComposer {
         self
     }
 
-    /// Label for the git-branch context pill.
+    /// Label for the fork/branch context pill.
     pub fn with_branch_label(mut self, label: impl Into<String>) -> Self {
         self.branch_label = Some(label.into());
         self
     }
 
-    /// Set the git-branch dropdown (items, open flag, select callback).
+    /// Set the branch dropdown (items, open flag, select callback).
     pub fn with_branch_menu<F: FnMut(usize) + 'static>(
         mut self,
         items: Vec<PopupMenuItem>,
@@ -426,31 +472,27 @@ impl ChatComposer {
         self
     }
 
-    /// Show the working tree's diff control: the number of changed files,
-    /// lines added and lines removed, opening a menu of the files. The host
-    /// supplies the summary only when the pane is in a repository with
-    /// changes; an empty summary draws nothing.
-    pub fn with_diff_menu(mut self, summary: DiffSummary, open: Rc<RefCell<bool>>) -> Self {
-        self.diff_summary = (!summary.is_empty()).then_some(summary);
-        self.diff_menu_open = open;
+    /// Kept only so the hosts that still pass the working tree's changed-file
+    /// summary (the chat view and the desktop app) keep compiling. The rich
+    /// input no longer draws a diff control: the owner moved "Open changes" to
+    /// the app topbar, so the summary is accepted and ignored here. Remove this
+    /// shim once those call sites stop passing it.
+    #[doc(hidden)]
+    pub fn with_diff_menu(self, _summary: DiffSummary, _open: Rc<RefCell<bool>>) -> Self {
         self
     }
 
-    /// Share the diff menu's scroll offset with the app, like the directory
-    /// tray's, so a long list keeps the position the wheel left it at.
-    pub fn with_diff_menu_scroll(mut self, scroll: PanelScroll) -> Self {
-        self.diff_menu_scroll = scroll;
+    /// Kept for the same call sites as [`Self::with_diff_menu`]: there is no
+    /// diff menu left to scroll, so the offset is accepted and ignored.
+    #[doc(hidden)]
+    pub fn with_diff_menu_scroll(self, _scroll: PanelScroll) -> Self {
         self
     }
 
-    /// What a diff-menu row opens: the host's review panel, on the chosen file
-    /// or on every file when the row is "Open all changes". Without it the menu
-    /// lists the files and a click only closes it.
-    pub fn with_diff_open<F: FnMut(Option<String>) + 'static>(
-        mut self,
-        callback: F,
-    ) -> Self {
-        self.diff_open = Some(Rc::new(RefCell::new(callback)));
+    /// Kept for the same call sites as [`Self::with_diff_menu`]: no diff menu
+    /// row is drawn, so the review-panel callback is accepted and ignored.
+    #[doc(hidden)]
+    pub fn with_diff_open<F: FnMut(Option<String>) + 'static>(self, _callback: F) -> Self {
         self
     }
 
@@ -511,7 +553,10 @@ impl ChatComposer {
     /// The command list takes the keys while it is up: the two bands share one
     /// slot over the input, and the draft's own list is the one that holds it.
     fn handle_model_key(&mut self, event: &DispatchedEvent) -> bool {
-        if !*self.model_menu_open.borrow()
+        // Only the composer whose pane is active holds the keyboard: a band
+        // left open in a background pane must not take the keys of the pane the
+        // user is typing in.
+        if !self.focused || !*self.model_menu_open.borrow()
             || self.on_select_model_item.is_none()
             || self.slash_band_open()
         {
@@ -559,11 +604,11 @@ impl ChatComposer {
         }
     }
 
-    /// The keys the tray takes while it is up: Left/Right move between the
-    /// model list and the thinking levels, Up/Down move inside the list, Enter
-    /// or Tab takes the row and Escape puts the tray away. The tray never holds
-    /// the keyboard — the editor keeps the caret — so the key routing is here,
-    /// next to the control that opens it.
+    /// The keys the DSH model card takes while it is up: Up/Down move the
+    /// highlight (root cells, model rows, effort rows), Enter/Tab drill or take
+    /// a row, Escape/Shift+Tab leave the drilled pane first and otherwise close.
+    /// The editor keeps the caret — the composer routes the keys, next to the
+    /// chip that opens the card.
     ///
     /// The command list wins the slot while the draft is a command, exactly as
     /// it does over the flat model list.
@@ -571,12 +616,25 @@ impl ChatComposer {
         let Some(tray) = self.model_tray.clone() else {
             return false;
         };
-        if !*tray.open.borrow() || self.slash_band_open() {
+        // As with the flat list: a background pane's card never takes the
+        // active pane's keys.
+        if !self.focused || !*tray.open.borrow() || self.slash_band_open() {
             return false;
         }
-        match crate::elements::handle_tray_key(event, tray.harnesses.as_slice(), &tray.state) {
+        let model = tray.model.clone();
+        let level = tray.level.clone();
+        match crate::elements::handle_tray_key(
+            event,
+            tray.harnesses.as_slice(),
+            &model,
+            &level,
+            &tray.state,
+        ) {
             ModelTrayKey::Ignored => false,
-            ModelTrayKey::Moved => true,
+            ModelTrayKey::Moved
+            | ModelTrayKey::DrillModel
+            | ModelTrayKey::DrillEffort
+            | ModelTrayKey::Back => true,
             ModelTrayKey::AcceptModel(row) => {
                 *tray.open.borrow_mut() = false;
                 if let Some(cb) = tray.on_select_model.clone() {
@@ -605,6 +663,11 @@ impl ChatComposer {
     /// menu away. Every other key belongs to the editor, because what it types
     /// is the menu's query — which is why the menu is not a modal.
     fn handle_slash_key(&mut self, event: &DispatchedEvent) -> bool {
+        // The draft's command list answers the keys of the pane that owns the
+        // caret, not of a background pane whose draft happens to be a command.
+        if !self.focused {
+            return false;
+        }
         if !self.slash_enabled
             || !crate::elements::slash_menu_open(
                 &self.value.borrow(),
@@ -663,6 +726,12 @@ impl ChatComposer {
     /// belongs to the host, which owns the routing the cloud means. Shift is
     /// not part of the gesture, and a host that wired no callback keeps the key.
     fn handle_send_to_cloud_key(&mut self, event: &DispatchedEvent) -> bool {
+        // The chord belongs to the pane that holds the caret: a background
+        // composer must not route its stale draft to the cloud under the keys
+        // meant for the active pane.
+        if !self.focused {
+            return false;
+        }
         let DispatchedEvent::KeyDown { key, modifiers } = event else {
             return false;
         };
@@ -720,16 +789,17 @@ impl ChatComposer {
         self
     }
 
-    /// Draw the context row above the editor rather than under it.
-    pub fn with_context_above_editor(mut self, above: bool) -> Self {
-        self.context_above_editor = above;
+    /// Kept for hosts that still pass it: the unified composer card always
+    /// draws its context band over the input segment, so the flag changes
+    /// nothing. The terminal bar and the agent input are the same card.
+    pub fn with_context_above_editor(self, _above: bool) -> Self {
         self
     }
 
-    /// Draw the bar with no horizontal gutter of its own, so it spans the
-    /// surface that pins it. The composer's rows keep their vertical padding.
-    pub fn with_edge_to_edge(mut self, edge_to_edge: bool) -> Self {
-        self.edge_to_edge = edge_to_edge;
+    /// Kept for hosts that still pass it: the unified composer card always
+    /// keeps the same gutter from the surface it is drawn on, so the flag
+    /// changes nothing.
+    pub fn with_edge_to_edge(self, _edge_to_edge: bool) -> Self {
         self
     }
 
@@ -843,6 +913,21 @@ impl ChatComposer {
         self
     }
 
+    /// Seat an optional host control at the footer's trailing edge: the
+    /// documented place for the live-speech button the owner will enable from
+    /// Settings (its design is owned by a separate change). The rich input never
+    /// draws a send control, so this seat is the only trailing affordance and
+    /// stays empty unless a host fills it. The builder runs once per frame, the
+    /// way every other child of the composer's rebuilt tree is produced, and the
+    /// card's footer still reserves [`COMPOSER_FOOTER_HEIGHT`] either way.
+    pub fn with_footer_action<F>(mut self, build: F) -> Self
+    where
+        F: FnMut() -> Box<dyn Element> + 'static,
+    {
+        self.footer_action = Some(Rc::new(RefCell::new(build)));
+        self
+    }
+
     /// Draw the pane's approval mode beside the model select: the control opens
     /// the four-mode menu, and Shift+Tab cycles them from the keyboard.
     pub fn with_approval_mode(mut self, mode: ApprovalMode) -> Self {
@@ -925,163 +1010,166 @@ impl ChatComposer {
         &self.attachments
     }
 
-    /// The context controls, left to right: what the draft will run on, as one
-    /// wrapping row. Drawn above the editor when the host asked for it (a
-    /// terminal pane keeps the shell's own context over the bar), below it
-    /// otherwise.
-    fn context_row(&self, app: &AppContext, sm: f32) -> Option<Box<dyn Element>> {
-        let children = self.context_children(app);
-        if children.is_empty() {
+    /// The context band: the card's top segment, over the input segment. One
+    /// row — borderless controls on the left (a bound shell's chip, the
+    /// working directory, the branch) and the environment control at the right
+    /// end — 16 horizontal padding inside the card, 12 above and 6 below. `None`
+    /// when the host set no context control at all (a bare thread input), so the
+    /// card is just the input segment.
+    fn context_band(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+        let left = self.context_children(app);
+        let environment = self.environment_control(app);
+        if left.is_empty() && environment.is_none() {
             return None;
         }
-        Some(
-            Wrap::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(sm)
-                .with_run_spacing(sm)
-                .with_children(children)
-                .finish(),
-        )
-    }
-
-    /// The action controls, left to right: the model the draft runs on, stop
-    /// while a turn streams, and the modal-editing badge. They stay under the
-    /// editor: they describe the turn, not the text being typed.
-    fn action_row(&self, app: &AppContext, sm: f32) -> Option<Box<dyn Element>> {
-        let children = self.action_children(app);
-        if children.is_empty() {
-            return None;
-        }
-        Some(
-            Wrap::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(sm)
-                .with_run_spacing(sm)
-                .with_children(children)
-                .finish(),
-        )
-    }
-
-    /// The footer under the editor with everything on it: the context controls
-    /// and the actions. They share the row (and wrap together) unless the host
-    /// keeps the context above the editor, in which case the two are drawn apart
-    /// — see `rebuild`.
-    fn footer_row(&self, app: &AppContext, sm: f32) -> Option<Box<dyn Element>> {
-        let mut children = self.context_children(app);
-        children.extend(self.action_children(app));
-        if children.is_empty() {
-            return None;
-        }
-        Some(
-            Wrap::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(sm)
-                .with_run_spacing(sm)
-                .with_children(children)
-                .finish(),
-        )
-    }
-
-    /// The diff control: the changed-file count and the lines added and
-    /// removed. Clicking it opens the review pane on the whole tree when the
-    /// host supplies one; without a host it lists the changed files instead.
-    /// It is square-cornered, like the review surface it opens, and reads as
-    /// one more item in the context row.
-    fn diff_control(&self, app: &AppContext, summary: &DiffSummary) -> Box<dyn Element> {
-        let added = summary.added();
-        let removed = summary.removed();
-        let mut content = Flex::row()
+        let sm = app.theme.spacing_px(SpacingToken::Sm);
+        let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(4.0)
-            .with_child(
-                Icon::new("file")
-                    .with_size(14.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_child(
-                Text::new(summary.files_changed().to_string())
-                    .with_theme_color(ColorToken::Text, app)
-                    .with_font_size(CONTROL_TEXT_SIZE)
-                    .with_weight(FontWeight::SemiBold)
-                    .finish(),
-            );
-        if added > 0 || removed > 0 {
-            content = content.with_child(
-                Text::new("•")
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_font_size(CONTROL_TEXT_SIZE)
-                    .with_weight(FontWeight::SemiBold)
-                    .finish(),
-            );
-        }
-        if added > 0 {
-            content = content.with_child(
-                Text::new(format!("+{added}"))
-                    .with_theme_color(ColorToken::Success, app)
-                    .with_font_size(CONTROL_TEXT_SIZE)
-                    .with_weight(FontWeight::SemiBold)
-                    .finish(),
-            );
-        }
-        if removed > 0 {
-            content = content.with_child(
-                Text::new(format!("-{removed}"))
-                    .with_theme_color(ColorToken::Error, app)
-                    .with_font_size(CONTROL_TEXT_SIZE)
-                    .with_weight(FontWeight::SemiBold)
-                    .finish(),
-            );
-        }
-        let button = ComposerButton::new(content.finish())
-            .with_height(CONTEXT_PILL_HEIGHT)
-            .with_h_pad(CONTROL_H_PAD)
-            .with_radius(0.0);
-        // The control's whole job is the review pane: one click opens it on
-        // every change. The files are already listed and navigable inside the
-        // pane, so making the click open a menu first only adds a step.
-        if let Some(open) = self.diff_open.clone() {
-            let button = button
-                .with_on_click(move || (open.borrow_mut())(None))
+            .with_spacing(sm);
+        if left.is_empty() {
+            row = row.with_child(Spacer::new().finish());
+        } else {
+            let left = Wrap::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(sm)
+                .with_run_spacing(sm)
+                .with_children(left)
                 .finish();
-            return Tooltip::new(button, "Open changes")
+            row = row.with_child(Expanded::new(left).finish());
+        }
+        if let Some(environment) = environment {
+            row = row.with_child(environment);
+        }
+        Some(row.finish())
+    }
+
+    /// The footer row under the editor: the borderless controls on the left
+    /// (attach, the model chip, the approval mode, the modal badge), the stop
+    /// circle while a turn streams, and the documented trailing-action seat
+    /// where the optional live-speech control will sit. The row keeps
+    /// [`COMPOSER_FOOTER_HEIGHT`] so the card's layout is the same whether or
+    /// not anything sits at its right end; the left group wraps on a narrow
+    /// pane instead of running past the input's edge.
+    ///
+    /// **There is no send control.** The owner removed the circular send button:
+    /// a draft is sent with Enter, Cmd/Ctrl+Enter or Cmd/Ctrl+Alt+Enter (the
+    /// keyboard paths below and in the editor), never with a press on the bar.
+    fn footer_row(&mut self, app: &AppContext) -> Option<Box<dyn Element>> {
+        let left = self.action_children(app);
+        let right = self.stop_control(app);
+        // A submit surface keeps the footer row even when every control in it is
+        // absent: the row is what reserves [`COMPOSER_FOOTER_HEIGHT`] inside the
+        // card, and the hosts size their panes from that height (the shell pane's
+        // pty rows, `COMPOSER_BAR_RESERVED_HEIGHT`). Removing the send circle
+        // must not shrink the card.
+        let submits = self.on_send.is_some() || self.on_cmd_enter.is_some();
+        if left.is_empty() && right.is_none() && self.footer_action.is_none() && !submits {
+            return None;
+        }
+        let sm = app.theme.spacing_px(SpacingToken::Sm);
+        let wrap = Wrap::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm)
+            .with_run_spacing(sm)
+            .with_children(left)
+            .finish();
+        let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm)
+            .with_child(Expanded::new(wrap).finish());
+        if let Some(right) = right {
+            row = row.with_child(right);
+        }
+        // The optional trailing control's seat: the live-speech button will sit
+        // here, at the footer's right end, when the owner enables it from
+        // Settings. Nothing is wired today, so the seat is empty.
+        if let Some(build) = self.footer_action.clone() {
+            row = row.with_child((build.borrow_mut())());
+        }
+        Some(
+            ConstrainedBox::new(row.finish())
+                .with_min_height(COMPOSER_FOOTER_HEIGHT)
+                .finish(),
+        )
+    }
+
+    /// The stop circle at the footer's right end, while a turn streams. A
+    /// surface with no stop keeps the footer text-only. The error-red circle is
+    /// the only round control left in the bar: the send circle it used to swap
+    /// with was removed by the owner.
+    fn stop_control(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+        if !self.stop_visible {
+            return None;
+        }
+        let on_stop = self.on_stop.clone()?;
+        let circle = ComposerButton::new(
+            Icon::new("stop")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Bg, app)
+                .finish(),
+        )
+        .with_height(COMPOSER_SEND_SIZE)
+        .with_h_pad((COMPOSER_SEND_SIZE - 14.0) / 2.0)
+        .with_radius(COMPOSER_SEND_SIZE / 2.0)
+        .with_fill(ColorToken::Error)
+        .with_fill_alpha(0.9)
+        .with_on_click(move || (on_stop.borrow_mut())())
+        .finish();
+        Some(
+            Tooltip::new(circle, "Stop")
                 .with_position(TooltipPosition::Above)
-                .finish();
-        }
-        // A host without a review pane still gets the file list, so a bare
-        // composer shows what changed rather than a control that does nothing.
-        let trigger = Tooltip::new(button.finish(), "View changed files")
+                .finish(),
+        )
+    }
+
+    /// The environment control at the context band's right end: icon-only,
+    /// naming where the draft's turn runs (a computer, a cloud). The host's
+    /// label is the tooltip, and the tray opens leftwards from the band's edge.
+    fn environment_control(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+        let label = self
+            .harness_label
+            .clone()
+            .filter(|label| !label.trim().is_empty())?;
+        let icon = ComposerButton::new(
+            Icon::new(self.harness_icon)
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_height(CONTEXT_PILL_HEIGHT)
+        .with_h_pad(6.0)
+        .with_radius(COMPOSER_CONTROL_RADIUS)
+        .finish();
+        let trigger = Tooltip::new(icon, format!("Environment · {label}"))
             .with_position(TooltipPosition::Above)
             .finish();
-        let items = summary
-            .files
-            .iter()
-            .map(|file| {
-                PopupMenuItem::new(file.path.clone())
-                    .with_icon("file")
-                    .with_diff(file.added, file.removed)
-            })
-            .collect();
-        PopupMenu::new(trigger, items)
-            .with_open(self.diff_menu_open.clone())
-            .with_position(PopupMenuPosition::Above)
-            .with_max_visible_rows(MENU_MAX_VISIBLE_ROWS)
-            .with_panel_scroll(self.diff_menu_scroll.clone())
-            .with_max_width(DIFF_MENU_WIDTH)
-            .with_corner_radius(0.0)
-            .finish()
+        let Some(cb) = self.on_select_harness_item.clone() else {
+            return Some(trigger);
+        };
+        Some(
+            PopupMenu::new(trigger, self.harness_menu_items.clone())
+                .with_open(self.harness_menu_open.clone())
+                .with_position(PopupMenuPosition::AboveEnd)
+                .with_max_width(ENVIRONMENT_MENU_WIDTH)
+                // The trigger is the icon-only control inside the band's own
+                // padding: nudging the casing right puts its edge ~6pt inside
+                // the card, the reference's alignment, instead of 16 in.
+                .with_panel_offset(vec2f(10.0, 0.0))
+                .with_on_select(move |idx| (cb.borrow_mut())(idx))
+                .finish(),
+        )
     }
 
-    /// The context controls, left to right: what the draft will run on. Each is
-    /// drawn only when the surface set it, so a terminal composer that sets
-    /// only the directory and the branch shows exactly those two, and a
-    /// composer with no context at all contributes nothing.
-    ///
-    /// The environment (medium) pill leads the row and is drawn the same way:
-    /// only a host that sets its label gets it, which is the conversation whose
-    /// turn runs somewhere the user has to pick — a conversation on a worker. A
-    /// local conversation is never given one, so it draws no environment
-    /// control at all.
+    /// The context band's left group, left to right: where the shell is (an
+    /// SSH session's chip), the working directory and the branch. Each is drawn
+    /// only when the surface set it, so a terminal composer that sets only the
+    /// directory and the branch shows exactly those two, and a composer with no
+    /// context at all contributes nothing. The environment control is not in
+    /// this group: it sits at the band's right end, where the reference puts
+    /// it. The working tree's diff control is not here either: the owner moved
+    /// "Open changes" to the app topbar.
     fn context_children(&self, app: &AppContext) -> Vec<Box<dyn Element>> {
         let mut children: Vec<Box<dyn Element>> = Vec::new();
         // The session chip leads the row: where the shell *is* frames the
@@ -1089,26 +1177,6 @@ impl ChatComposer {
         // running there. A local session contributes nothing.
         if let Some(session) = self.ssh_session.as_ref() {
             children.push(self.session_chip(app, &session.chip_label()));
-        }
-        // What the draft runs on, when its host makes that a choice: the
-        // environment the turn is submitted on. It frames the directory and the
-        // branch that follow it, which describe the work inside it. A host that
-        // names no environment draws no control.
-        if let Some(label) = self
-            .harness_label
-            .clone()
-            .filter(|label| !label.trim().is_empty())
-        {
-            children.push(self.context_pill(
-                app,
-                self.harness_icon,
-                &label,
-                &self.harness_menu_items,
-                self.harness_menu_open.clone(),
-                None,
-                &self.on_select_harness_item,
-                "Select environment",
-            ));
         }
         if let Some(path) = self.path_label.clone() {
             // The directory pill is capped rather than flex-grown: a long path
@@ -1138,17 +1206,23 @@ impl ChatComposer {
                         .with_max_width(DIR_PILL_MAX_WIDTH)
                         .finish(),
                     )
+                    .with_child(
+                        Icon::new("chevron-down")
+                            .with_size(12.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
                     .finish()
             };
-            let trigger = Tooltip::new(
-                ComposerButton::new(dir_child())
-                    .with_height(CONTEXT_PILL_HEIGHT)
-                    .with_h_pad(CONTROL_H_PAD)
-                    .finish(),
-                "Select working directory",
-            )
-            .with_position(TooltipPosition::Above)
-            .finish();
+            let button = ComposerButton::new(dir_child())
+                .with_height(CONTEXT_PILL_HEIGHT)
+                .with_h_pad(CONTROL_H_PAD)
+                .with_radius(COMPOSER_CONTROL_RADIUS)
+                .with_outline(false)
+                .finish();
+            let trigger = Tooltip::new(button, "Select working directory")
+                .with_position(TooltipPosition::Above)
+                .finish();
             // The menu is the host's when it wired a select callback, rows or
             // not: the directory list is read when the menu opens, so it is
             // empty while closed and gating on the rows would leave the pill
@@ -1170,72 +1244,106 @@ impl ChatComposer {
         if let Some(label) = self.branch_label.clone() {
             children.push(self.context_pill(
                 app,
-                "git-branch",
+                "branch",
                 &label,
                 &self.branch_menu_items,
                 self.branch_menu_open.clone(),
                 Some(self.branch_menu_highlight.clone()),
                 &self.on_select_branch_item,
                 "Select branch",
+                Some(BRANCH_MENU_WIDTH),
             ));
-        }
-        if let Some(summary) = self.diff_summary.as_ref() {
-            children.push(self.diff_control(app, summary));
-        }
-        if let Some(cb) = self.on_attach.clone() {
-            let attach = ComposerButton::new(
-                Icon::new("plus")
-                    .with_size(14.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_height(CONTEXT_PILL_HEIGHT)
-            .with_h_pad(CONTROL_H_PAD)
-            .with_on_click(move || (cb.borrow_mut())())
-            .finish();
-            children.push(
-                Tooltip::new(attach, "Attach")
-                    .with_position(TooltipPosition::Above)
-                    .finish(),
-            );
         }
         children
     }
 
-    /// The model control: the model the draft runs on, which opens the list of
-    /// the models this pane can run.
+    /// The model control: the model the draft runs on, which opens the DSH-style
+    /// two-level menu anchored above it (see `elements::model_tray`).
     ///
-    /// The control is the label alone. It named the model in words, and the
-    /// icon it carried beside them read as decoration on a value: what the
-    /// control does is already said by the list it opens. A pane with no model
-    /// configured reads [`MODEL_NOT_CONFIGURED`] rather than a model name, so
-    /// the control never claims a turn would run on something nobody chose.
+    /// The chip is DeepSeek Harness's model seat: the model name in the label
+    /// tone, the effort in the caption tone, a 4pt gap and a 12pt chevron that
+    /// points up while the card is open (`ModelSelect.module.css`'s
+    /// `.trigger`). A pane with no model configured reads
+    /// [`MODEL_NOT_CONFIGURED`] rather than a model name, so the control never
+    /// claims a turn would run on something nobody chose.
     fn model_control(&self, app: &AppContext, label: String) -> Box<dyn Element> {
         let text = if label.trim().is_empty() {
             MODEL_NOT_CONFIGURED.to_string()
         } else {
             label
         };
-        let button = ComposerButton::new(
-            Text::new(text)
+        // The card is open, so the chip's value reads in the text colour: the
+        // name being picked is the one the card above is about.
+        let open = *self.model_menu_open.borrow()
+            || self
+                .model_tray
+                .as_ref()
+                .is_some_and(|tray| *tray.open.borrow());
+        let label_color = if open {
+            ColorToken::Text
+        } else {
+            ColorToken::Muted
+        };
+        // The effort the chip shows: the level in force, or the provider default
+        // when the model offers levels but none is set — DSH's caption after the
+        // model name.
+        let effort = self.model_tray.as_ref().and_then(|tray| {
+            if !tray.level.trim().is_empty() {
+                Some(crate::elements::level_label(&tray.level))
+            } else {
+                let has_levels = tray
+                    .harnesses
+                    .iter()
+                    .flat_map(|group| group.models.iter())
+                    .any(|model| model.id == tray.model && !model.thinking.is_empty());
+                has_levels.then(|| "Default".to_string())
+            }
+        });
+        let mut content = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(4.0)
+            .with_child(
+                Text::new(text)
+                    .with_theme_color(label_color, app)
+                    .with_font_size(CONTROL_TEXT_SIZE)
+                    .finish(),
+            );
+        if let Some(effort) = effort {
+            content = content.with_child(
+                Text::new(effort)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(CONTROL_TEXT_SIZE)
+                    .finish(),
+            );
+        }
+        content = content.with_child(
+            Icon::new(if open { "chevron-up" } else { "chevron-down" })
+                .with_size(12.0)
                 .with_theme_color(ColorToken::Muted, app)
-                .with_font_size(CONTROL_TEXT_SIZE)
                 .finish(),
-        )
-        .with_height(CONTEXT_PILL_HEIGHT)
-        .with_h_pad(CONTROL_H_PAD);
+        );
+        // DSH's chip padding is asymmetric — 8pt before the label, 4pt after the
+        // chevron — so the content carries the inset and the button's own
+        // symmetric pad is zero.
+        let content = Padding::new(content.finish(), EdgeInsets::new(8.0, 0.0, 4.0, 0.0)).finish();
+        let button = ComposerButton::new(content)
+            .with_height(28.0)
+            .with_h_pad(0.0)
+            .with_radius(COMPOSER_CONTROL_RADIUS)
+            .with_outline(false)
+            .with_hover_fill(ColorToken::Selected);
         let button = if let Some(tray) = self.model_tray.clone() {
-            // The tray is the host's band over the input: the control toggles
-            // it, and a second press puts it away the way Escape does.
+            // The chip toggles the host's open flag; the card it opens is the
+            // one the composer wraps the chip in below.
             let dismissed = self.slash_dismissed.clone();
             button
                 .with_on_click(move || {
                     let mut open = tray.open.borrow_mut();
                     if !*open {
-                        // The tray opens on the pane's own model and level, so
+                        // The card opens on the pane's own model and level, so
                         // the first row it marks is the one in force.
                         tray.state.borrow_mut().seeded = false;
-                        // One band at a time: opening the tray puts the draft's
+                        // One band at a time: opening the card puts the draft's
                         // command list away, so the keys that follow belong to
                         // this band alone.
                         *dismissed.borrow_mut() = true;
@@ -1281,9 +1389,15 @@ impl ChatComposer {
                 },
             }
         };
-        Tooltip::new(button, "Select model")
+        let trigger = Tooltip::new(button, "Select model")
             .with_position(TooltipPosition::Above)
-            .finish()
+            .finish();
+        // The DSH menu is a card anchored to this chip, not a sibling band: the
+        // chip is wrapped in the menu element, which draws the card above it.
+        match self.model_tray.as_ref() {
+            Some(tray) => tray.popup(trigger),
+            None => trigger,
+        }
     }
 
     /// The approval-mode control: the mode the pane runs under, next to the
@@ -1296,6 +1410,7 @@ impl ChatComposer {
         let mut pill = ContextPill::new("sliders", mode.label())
             .without_icon()
             .with_label_color(mode.color())
+            .with_hover_fill(ColorToken::Selected)
             .with_tooltip(format!(
                 "Approval mode · {} · shift+tab to cycle",
                 mode.description()
@@ -1341,15 +1456,39 @@ impl ChatComposer {
         true
     }
 
-    /// The action controls, left to right: the model the draft runs on, stop
-    /// while a turn streams, and the modal-editing badge. A plain shell command
-    /// runs no model, so a terminal composer contributes nothing here. A custom
-    /// harness owns its own model and approvals, so its mark stands alone where
-    /// those two controls would be.
+    /// The footer's left group, left to right: the attach control, the model
+    /// chip or the custom harness's own mark, the approval mode and the modal
+    /// badge. A plain shell command runs no model, so a terminal composer
+    /// contributes only what its host wired. A custom harness owns its own model
+    /// and approvals, so its mark stands alone where those two controls would
+    /// be. The stop circle (and the optional trailing action) is not in this
+    /// group: it is the footer's right end (see `stop_control`); the send
+    /// circle was removed from the rich input entirely.
     fn action_children(&self, app: &AppContext) -> Vec<Box<dyn Element>> {
         let mut children: Vec<Box<dyn Element>> = Vec::new();
-        let has_stop = self.stop_visible && self.on_stop.is_some();
         let badge = self.vim.as_ref().map(|vim| self.mode_badge(app, vim));
+        if let Some(cb) = self.on_attach.clone() {
+            let attach = ComposerButton::new(
+                Icon::new("plus")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_height(CONTEXT_PILL_HEIGHT)
+            // No side inset: the `+` is the footer's left edge, the reference's
+            // first glyph on the row.
+            .with_h_pad(0.0)
+            .with_radius(COMPOSER_CONTROL_RADIUS)
+            .with_outline(false)
+            .with_hover_fill(ColorToken::Selected)
+            .with_on_click(move || (cb.borrow_mut())())
+            .finish();
+            children.push(
+                Tooltip::new(attach, "Attach")
+                    .with_position(TooltipPosition::Above)
+                    .finish(),
+            );
+        }
         if let Some(harness) = self.agent_harness {
             let name = goble_core::harness::harness_for(harness)
                 .map(|spec| spec.name)
@@ -1368,25 +1507,6 @@ impl ChatComposer {
             }
             if let Some(mode) = self.approval_mode {
                 children.push(self.approval_control(app, mode));
-            }
-        }
-        if has_stop {
-            if let Some(cb) = self.on_stop.clone() {
-                let stop = ComposerButton::new(
-                    Icon::new("stop")
-                        .with_size(14.0)
-                        .with_theme_color(ColorToken::Error, app)
-                        .finish(),
-                )
-                .with_height(CONTEXT_PILL_HEIGHT)
-                .with_h_pad(CONTROL_H_PAD)
-                .with_on_click(move || (cb.borrow_mut())())
-                .finish();
-                children.push(
-                    Tooltip::new(stop, "Stop")
-                        .with_position(TooltipPosition::Above)
-                        .finish(),
-                );
             }
         }
         if let Some(badge) = badge {
@@ -1422,7 +1542,7 @@ impl ChatComposer {
         Tooltip::new(
             Text::new(text)
                 .with_theme_color(color, app)
-                .with_font_size(11.0)
+                .with_font_size(CONTROL_TEXT_SIZE)
                 .finish(),
             tooltip,
         )
@@ -1446,10 +1566,14 @@ impl ChatComposer {
         highlight: Option<Rc<RefCell<Option<usize>>>>,
         on_select: &Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
         tooltip: &str,
+        menu_max_width: Option<f32>,
     ) -> Box<dyn Element> {
         let mut pill = ContextPill::new(icon, label.to_string())
             .with_tooltip(tooltip)
             .with_tray_side(PillTraySide::Above);
+        if let Some(width) = menu_max_width {
+            pill = pill.with_menu_max_width(width);
+        }
         // The callback, not the rows, is what says the host wired a menu: a
         // pill whose rows are read when it opens has none while it is closed.
         if let Some(cb) = on_select.clone() {
@@ -1464,8 +1588,8 @@ impl ChatComposer {
     /// The session chip: the host a bound SSH session put this pane's shell on,
     /// as a flat row of an icon and the session's own words — no card, no
     /// outline, no tray. It is chrome beside the input rather than a control,
-    /// so it draws the same muted 11 px text the working-directory pill's label
-    /// uses, capped the same way.
+    /// so it draws the same muted control-size text the working-directory
+    /// pill's label uses, capped the same way.
     fn session_chip(&self, app: &AppContext, label: &str) -> Box<dyn Element> {
         Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -1481,7 +1605,7 @@ impl ChatComposer {
                     Clipped::new(
                         Text::new(label.to_string())
                             .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(11.0)
+                            .with_font_size(CONTROL_TEXT_SIZE)
                             .with_max_lines(1)
                             .finish(),
                     )
@@ -1493,79 +1617,102 @@ impl ChatComposer {
             .finish()
     }
 
-    /// Rebuild the rich-input tree. The composer hugs its content: the editor
-    /// leads it, the context pills sit above the editor when the host asked for
-    /// them there (a shell bar keeps its directory and branch over the draft)
-    /// and under it otherwise, and the action row (model, stop) below it, so the
-    /// rich input never fills the whole pane. This keeps the message transcript
-    /// visible and lets the user see the terminal/agent surface instead of a
-    /// tall input box. The instructions the host keeps inside the input close
-    /// the block, under the action row.
+    /// Rebuild the rich-input tree.
+    ///
+    /// One card, two segments, whichever surface this is: the **context band**
+    /// on top (the schema/SSH chip, directory, branch, and the environment
+    /// control at the right end) and the **input segment** under it
+    /// (the editor, the footer row with the attach/model/approval controls and
+    /// the circular send, and the host's instruction strip when it has one).
+    /// The terminal bar, the agent input, the thread input and the custom
+    /// harness's composer all draw this same card — only the set of controls
+    /// differs — so switching a pane between its shell and its agent view moves
+    /// nothing but the text in the editor.
     fn rebuild(&mut self, app: &AppContext) {
-        let sm = app.theme.spacing_px(SpacingToken::Sm);
-
-        let mut column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_spacing(sm);
-
-        if !self.attachments.is_empty() {
-            let mut attachment_row = Flex::row().with_spacing(sm);
-            for attachment in &self.attachments {
-                let chip = Chip::new(
-                    Text::new(attachment.clone())
-                        .with_theme_color(ColorToken::Text, app)
-                        .finish(),
-                )
-                .finish();
-                attachment_row = attachment_row.with_child(chip);
-            }
-            column = column.with_child(attachment_row.finish());
-        }
-
-        // Send closure shared between Enter-to-submit and the (removed) send
-        // button path; keeps Enter-to-send working. The submit carries the
-        // Enter key's modifiers so the host can route a plain Enter (terminal
-        // command) vs Cmd/Ctrl+Enter (a NEW agent conversation, warp-new).
+        // The submit closure the editor's Enter path calls: the submit carries
+        // the Enter key's modifiers so the host can route a plain Enter (a
+        // terminal command) vs Cmd/Ctrl+Enter (a NEW agent conversation). The
+        // rich input draws no send control — the keyboard is the whole send
+        // gesture — so this closure is reached from the editor alone.
         let value_for_send = self.value.clone();
         let on_send = self.on_send.clone();
         let on_cmd_enter = self.on_cmd_enter.clone();
-        let send = Rc::new(RefCell::new(move |modifiers: ModifiersState| {
-            let text = value_for_send.borrow().clone();
-            let agent_submit = (modifiers.command || modifiers.ctrl) && !modifiers.shift;
-            if agent_submit {
-                // Cmd/Ctrl+Enter is the way into the agent, not only a submit:
-                // the host opens the pane's agent view even with an empty draft
-                // (warp-new's gesture), so the callback fires either way. An
-                // empty draft is the host's own no-op to define.
-                if let Some(cb) = on_cmd_enter.as_ref() {
-                    (cb.borrow_mut())(text.clone());
+        let send: Rc<RefCell<dyn FnMut(ModifiersState)>> =
+            Rc::new(RefCell::new(move |modifiers: ModifiersState| {
+                let text = value_for_send.borrow().clone();
+                let agent_submit = (modifiers.command || modifiers.ctrl) && !modifiers.shift;
+                if agent_submit {
+                    // Cmd/Ctrl+Enter is the way into the agent, not only a
+                    // submit: the host opens the pane's agent view even with an
+                    // empty draft (warp-new's gesture), so the callback fires
+                    // either way. An empty draft is the host's own no-op.
+                    if let Some(cb) = on_cmd_enter.as_ref() {
+                        (cb.borrow_mut())(text.clone());
+                    }
+                    *value_for_send.borrow_mut() = String::new();
+                } else {
+                    // An empty submit is the host's own gesture: while a prompt
+                    // is queued it is the second Enter that sends it now, and
+                    // every other host treats it as a no-op.
+                    if let Some(cb) = on_send.as_ref() {
+                        (cb.borrow_mut())(text.clone());
+                    }
+                    *value_for_send.borrow_mut() = String::new();
                 }
-                *value_for_send.borrow_mut() = String::new();
-            } else {
-                // An empty submit is the host's own gesture: while a prompt is
-                // queued it is the second Enter that sends it now, and every
-                // other host treats it as a no-op.
-                if let Some(cb) = on_send.as_ref() {
-                    (cb.borrow_mut())(text.clone());
-                }
-                *value_for_send.borrow_mut() = String::new();
-            }
-        }));
+            }));
 
-        if self.context_above_editor {
-            if let Some(row) = self.context_row(app, sm) {
-                column = column.with_child(row);
+        // The draft's command band owns the input while it is up: the card's
+        // top segment — the context band with the session, directory, branch and
+        // environment controls — steps out of the way, so the surface is the
+        // slash menu over the input segment (DSH's slash state), and it comes
+        // back the moment the query is cleared or the band is dismissed. A card
+        // whose host set no context control is `None` either way.
+        let slash_open = self.slash_band_open();
+        let context = if slash_open {
+            None
+        } else {
+            self.context_band(app)
+        };
+        let has_context = context.is_some();
+
+        // The input segment's own column: the draft's attachments, the editor,
+        // the footer row, and the host's instruction strip.
+        let mut input = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_spacing(COMPOSER_FOOTER_GAP);
+        if !self.attachments.is_empty() {
+            let mut attachment_row = Wrap::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(6.0)
+                .with_run_spacing(6.0);
+            for attachment in &self.attachments {
+                // A chip is one more rounded control: 24pt tall, its own 1px
+                // outline, the raised fill, so it reads as part of the field it
+                // belongs to rather than as a loose label.
+                let chip = Container::new(
+                    Text::new(attachment.clone())
+                        .with_theme_color(ColorToken::Text, app)
+                        .with_font_size(CONTROL_TEXT_SIZE)
+                        .with_max_lines(1)
+                        .finish(),
+                )
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Hover)))
+                .with_border(
+                    Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)),
+                )
+                .with_corner_radius(COMPOSER_CONTROL_RADIUS)
+                .with_padding(EdgeInsets::new(8.0, 3.0, 8.0, 3.0))
+                .finish();
+                attachment_row = attachment_row.with_child(chip);
             }
+            input = input.with_child(attachment_row.finish());
         }
 
-        // Neither band is drawn here: the host puts them over the whole input
-        // block (its own width), above the instruction strip. What the composer
-        // keeps of them is the key routing — see `handle_slash_key` and
-        // `handle_model_key`.
-
-        // The textarea fills the whole composer width and is visually part of
-        // the rich-input bar (no separate box).
+        // Neither host band is drawn here: the slash-command list and the model
+        // list are the host's, drawn over the whole input block above it. What
+        // the composer keeps of them is the key routing — see `handle_slash_key`
+        // and `handle_model_key`.
         let value = self.value.clone();
         let on_change = self.on_change.clone();
         let on_focus_change = self.on_focus_change.clone();
@@ -1590,15 +1737,19 @@ impl ChatComposer {
             } else {
                 self.placeholder.clone()
             })
-            .with_min_height(48.0)
+            .with_min_height(COMPOSER_EDITOR_MIN_HEIGHT)
+            // The composer's draft is the rich input's body text: 15pt at 1.4
+            // line height, the reference's editor size.
+            .with_font_size(15.0)
+            .with_line_height(1.4)
             .with_focused(self.focused && !self.disabled)
             .with_blur_on_outside_click(self.blur_on_outside_click)
             // The editor owns its whole line: a press to the right of the text
             // is a press in the editor and puts the beam at the end.
             .with_full_width(true)
-            // A long draft folds inside the bar: the editor stays one text
+            // A long draft folds inside the field: the editor stays one text
             // field, and its caret follows the row the index lands in instead
-            // of running past the bar's edge.
+            // of running past the field's edge.
             .with_wrapping(true)
             .with_caret(self.caret.clone())
             .with_vim_opt(self.vim.clone())
@@ -1620,84 +1771,116 @@ impl ChatComposer {
             })
             .with_on_submit(move |mods| (send_for_submit.borrow_mut())(mods))
             .finish();
-        // Cap the textarea so the rich input hugs its content (a few lines of
-        // draft + the footer pills) instead of expanding to fill the pane.
-        column = column.with_child(
+        input = input.with_child(
             ConstrainedBox::new(textarea)
-                .with_min_height(48.0)
-                .with_max_height(160.0)
+                .with_min_height(COMPOSER_EDITOR_MIN_HEIGHT)
+                .with_max_height(COMPOSER_EDITOR_MAX_HEIGHT)
                 .finish(),
         );
 
-        // The rest of the input's controls sit under the editor: the context
-        // pills (when the host keeps them here) and the actions the draft runs
-        // with.
-        if self.context_above_editor {
-            // The context is over the editor, so what is left under it is the
-            // actions.
-            if let Some(row) = self.action_row(app, sm) {
-                column = column.with_child(row);
-            }
-        } else if let Some(row) = self.footer_row(app, sm) {
-            column = column.with_child(row);
+        // The footer row: the borderless controls on the left and the circular
+        // send (or stop) on the right, both inside the input segment.
+        if let Some(footer) = self.footer_row(app) {
+            input = input.with_child(footer);
         }
 
         // The instructions the host keeps inside the input close it, under the
-        // action row: the shell bar's `⌘↵ new conversation` is the entry the
-        // pane shows here rather than over the separator, where the rest of a
-        // pane's strip goes.
+        // footer: the shell bar's `⌘↵ new conversation` is the entry the pane
+        // shows here rather than over the separator, where the rest of a pane's
+        // strip goes.
         if !self.hints.is_empty() {
-            column = column.with_child(ShortcutHints::new(self.hints.clone()).finish(app));
+            input = input.with_child(ShortcutHints::new(self.hints.clone()).finish(app));
         }
 
-        // The composer card keeps only its gutters/padding; the raised
-        // background and 1px border are dropped so the rich input has no gray
-        // inset box behind the textarea and pills. Its horizontal padding is
-        // `md` — the same inset a message bubble gives its text — so the
-        // editor's text lines up with the conversation's text column, while the
-        // vertical is `xs`: the rows hug the card instead of floating in a
-        // gutter of their own.
-        let card = self.into_card(column.finish(), app);
+        // The segment is borderless (owner feedback: the rich input and its
+        // outer ring read cleaner without one). It is a flat `SurfaceRaised`
+        // card over the `Surface` card, separated by tone and its radius alone.
+        let input_segment = Container::new(input.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_corner_radius(COMPOSER_INPUT_RADIUS)
+            // 16 on the text side, 8 on the trailing side: the footer's
+            // controls keep the reference's inset from the segment's edge.
+            .with_padding(EdgeInsets::new(16.0, 14.0, 8.0, 8.0))
+            .finish();
+
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_spacing(0.0);
+        if let Some(context) = context {
+            // The card's own inset is 6; the band's controls sit 10 further in,
+            // which is the reference's 16 horizontal padding. 12 above them and
+            // 6 below close the band at [`CONTEXT_SEGMENT_HEIGHT`].
+            column = column.with_child(
+                Padding::new(context, EdgeInsets::new(10.0, 8.0, 10.0, 8.0)).finish(),
+            );
+        }
+        column = column.with_child(input_segment);
+
+        let card = self.into_card(column.finish(), app, has_context);
         // The two bands share one slot over the input, and both are the host's
         // to draw (the command list and the model list, in that order): while
-        // the draft is a command that list holds the slot, so the model band is
+        // the draft is a command that list holds the slot, so the model card is
         // put away rather than drawn beside it — and does not come back when the
         // draft stops being one, because the user never opened it again.
-        if self.slash_band_open() {
+        if slash_open {
             *self.model_menu_open.borrow_mut() = false;
+            if let Some(tray) = self.model_tray.as_ref() {
+                *tray.open.borrow_mut() = false;
+            }
         }
         // A waiting decision puts both bands away: the card above the input is
         // the surface the next key belongs to.
         if self.disabled {
             *self.model_menu_open.borrow_mut() = false;
             *self.approval_menu_open.borrow_mut() = false;
+            if let Some(tray) = self.model_tray.as_ref() {
+                *tray.open.borrow_mut() = false;
+            }
         }
         self.root = Some(card);
     }
 
-    /// Wrap the rich input in the composer's own card: the gutters and radius
-    /// the input lives in, with no background or border. The approval is drawn
-    /// by the transcript at the end of the agent's output, so the input keeps
-    /// this shape whether or not a command is waiting.
-    fn into_card(&self, content: Box<dyn Element>, app: &AppContext) -> Box<dyn Element> {
-        let md = app.theme.spacing_px(SpacingToken::Md);
-        let xs = app.theme.spacing_px(SpacingToken::Xs);
-        let horizontal = if self.edge_to_edge { 0.0 } else { md };
+    /// Wrap the segments in the composer's card: radius 26, the `Surface` fill,
+    /// no outline (owner feedback: the rich input's outer ring reads cleaner
+    /// without a border), and a 6pt inset that holds the input segment and the
+    /// card's bottom edge. The card and its segment are flat surfaces separated
+    /// by tone alone. The context band is drawn at the card's own top edge (its
+    /// padding opens it 12pt down); a card with no context band insets the input
+    /// segment from the top too, so the shape stays a rounded box.
+    ///
+    /// The card sits in the surface's own gutter ([`COMPOSER_CARD_GUTTER`]) on
+    /// every host, so the shell bar, the agent input and the thread input are
+    /// the same object in the same place.
+    fn into_card(
+        &self,
+        content: Box<dyn Element>,
+        app: &AppContext,
+        has_context: bool,
+    ) -> Box<dyn Element> {
+        let top = if has_context { 0.0 } else { COMPOSER_CARD_INSET };
         let card = Container::new(content)
-            .with_padding(EdgeInsets::new(horizontal, xs, horizontal, xs))
-            .with_corner_radius(COMPOSER_CONTROL_RADIUS)
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .with_corner_radius(COMPOSER_CARD_RADIUS)
+            .with_padding(EdgeInsets::new(
+                COMPOSER_CARD_INSET,
+                top,
+                COMPOSER_CARD_INSET,
+                COMPOSER_CARD_INSET,
+            ))
             .finish();
-        // The input's own horizontal margin is the transcript rows' margin
-        // (`xs`), so the block sits as close to the pane's side edges as the
-        // conversation does; it carries no vertical margin of its own, so the
-        // rows are only `xs` from the top and bottom of the block. A bar pinned
-        // edge to edge has no such margin.
-        if self.edge_to_edge {
-            card
-        } else {
-            Padding::new(card, EdgeInsets::new(xs, 0.0, xs, 0.0)).finish()
-        }
+        Padding::new(
+            card,
+            EdgeInsets::new(
+                COMPOSER_CARD_GUTTER,
+                0.0,
+                COMPOSER_CARD_GUTTER,
+                COMPOSER_CARD_GUTTER,
+            ),
+        )
+        .finish()
     }
+
 }
 
 impl Default for ChatComposer {
@@ -1722,6 +1905,11 @@ impl Element for ChatComposer {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.root.as_mut().unwrap().paint(origin, ctx, app);
+        // The card draws no focus ring: the owner asked for no blue border or
+        // margin around the rich input, so the caret is the only focus signal.
+        // The card is borderless too (owner: cleaner flat look), so it paints
+        // nothing around itself whether it is focused or not;
+        // `the_card_draws_no_focus_ring_when_focused` pins the removal.
     }
 
     fn size(&self) -> Option<Vector2F> {

@@ -138,43 +138,13 @@ pub fn to_toml_with_header(groups: &EnvironmentFile) -> String {
     format!("{ENVIRONMENT_HEADER}{body}")
 }
 
-/// The one writer for the file, so its mode is set in one place: on Unix it is
-/// `0600`, because a group's values are a session's secrets.
+/// The one writer for the file. It goes through the shared settings-file writer
+/// (`config::editor::write_atomic_private`), so the mode is `0600`, the write is
+/// a temp-file-plus-rename and a reader never sees a half-written group list —
+/// the same guarantee `config.toml` and `hosts.toml` get.
 pub fn save(path: &Path, groups: &EnvironmentFile) -> Result<()> {
-    write_private(path, to_toml_with_header(groups).as_bytes())
-}
-
-#[cfg(unix)]
-fn write_private(path: &Path, text: &[u8]) -> Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("write {}", path.display()))?;
-    file.write_all(text)
-        .with_context(|| format!("write {}", path.display()))?;
-
-    // `mode` applies only to a file this call created; an existing file keeps the
-    // mode it had, so it is set here too.
-    let mut permissions = file
-        .metadata()
-        .with_context(|| format!("stat {}", path.display()))?
-        .permissions();
-    permissions.set_mode(0o600);
-    file.set_permissions(permissions)
-        .with_context(|| format!("chmod 0600 {}", path.display()))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, text: &[u8]) -> Result<()> {
-    fs::write(path, text).with_context(|| format!("write {}", path.display()))?;
-    Ok(())
+    crate::config::editor::write_atomic_private(path, to_toml_with_header(groups).as_bytes())
+        .with_context(|| format!("write {}", path.display()))
 }
 
 #[cfg(test)]

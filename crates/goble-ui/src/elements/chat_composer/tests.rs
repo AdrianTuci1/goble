@@ -6,7 +6,6 @@ use crate::elements::Element;
 use crate::elements::LayoutContext;
 use crate::elements::PopupMenuItem;
 use crate::elements::SizeConstraint;
-use crate::elements::COMPOSER_CONTROL_RADIUS;
 use crate::event::DispatchedEvent;
 use crate::event::ModifiersState;
 use crate::geometry::vec2f;
@@ -46,125 +45,142 @@ fn composer_keeps_value_and_attachments() {
     assert_eq!(composer.attachments(), &["doc.md".to_string()]);
 }
 
-/// Every control the rich input owns sits in one footer row under the editor:
-/// the context pill and attach, then the model and stop, then the mode badge,
-/// left to right. Nothing but the draft is above the editor.
+/// The composer is one rounded card with two rounded segments: the context
+/// band on top (borderless controls at 16 from the card's edge) and the input
+/// segment under it (inset 6, radius 20, `SurfaceRaised`). Neither the card nor
+/// the segment paints an outline — owner feedback: "rich input-ul si inelul
+/// exterior pot sta fara border, mi se pare mai clean" — so their fills and
+/// radii alone draw them. The editor leads the input segment and the footer row
+/// (attach, model) sits under it, inside the segment.
 #[test]
-fn composer_puts_every_control_in_the_footer_below_the_editor() {
-    use crate::elements::PaintContext;
-    use crate::render::{RenderCommand, Renderer};
+fn the_composer_card_is_two_rounded_segments() {
+    use crate::elements::{
+        COMPOSER_CARD_GUTTER, COMPOSER_CARD_INSET, COMPOSER_CARD_RADIUS, COMPOSER_INPUT_RADIUS,
+        CONTEXT_SEGMENT_HEIGHT,
+    };
+    use crate::render::RenderCommand;
 
     let app = AppContext::default();
+    let surface = app.theme.color(ColorToken::Surface);
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
     let mut composer = ChatComposer::new()
         .with_value("hi")
         .with_model_label("gpt-4o")
         .with_path_label("~/Projects/goble")
         .with_on_attach(|| {})
         .with_on_select_model(|| {})
-        .with_on_stop(|| {})
-        .with_stop_visible(true);
+        .with_on_send(|_| {});
+    let (size, commands) = paint_composer_in(&app, &mut composer, vec2f(800.0, 600.0));
 
-    let size = composer.layout(
-        SizeConstraint::loose(vec2f(400.0, 400.0)),
-        &mut LayoutContext::default(),
-        &app,
-    );
-    assert!(size.x > 0.0);
-    assert!(size.y > 0.0);
-
-    let mut paint_ctx = PaintContext::new(Renderer::new());
-    composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-    let commands = paint_ctx
-        .renderer
-        .take()
-        .map(|r| r.commands().to_vec())
-        .unwrap_or_default();
-
-    let icon_y = |name: &str| -> Option<f32> {
-        commands.iter().find_map(|c| match c {
-            RenderCommand::DrawIcon { origin, name: n, .. } if n == name => Some(origin.y),
-            _ => None,
-        })
+    let fill = |radius: f32| {
+        commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if (*corner_radius - radius).abs() < 0.01 => Some((*rect, *color)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the {radius}pt rounded box is filled: {commands:?}"))
     };
-    let text_y = |text: &str| -> Option<f32> {
-        commands.iter().find_map(|c| match c {
-            RenderCommand::DrawText { origin, text: t, .. } if t == text => Some(origin.y),
-            _ => None,
-        })
-    };
-
-    let plus = icon_y("plus").expect("attach pill icon");
-    let model = text_y("gpt-4o").expect("model control label");
-    let editor = text_y("hi").expect("editor text");
-    let folder = icon_y("folder").expect("directory pill icon");
-
-    assert!(
-        editor < folder,
-        "the directory pill sits below the editor: {folder} vs {editor}"
+    let (card, card_color) = fill(COMPOSER_CARD_RADIUS);
+    assert_eq!(
+        card_color, surface,
+        "the card is filled with the Surface token: {commands:?}"
+    );
+    assert_eq!(
+        card.min_x(),
+        COMPOSER_CARD_GUTTER,
+        "the card keeps the surface gutter on the left"
     );
     assert!(
-        editor < plus,
-        "the attach button sits below the editor: {plus} vs {editor}"
-    );
-    assert!(
-        editor < model,
-        "the model control sits below the editor: {model} vs {editor}"
-    );
-    // One row: the directory pill, attach and the model share the footer's
-    // line, within the few pixels their different heights account for.
-    assert!(
-        (plus - folder).abs() < 20.0,
-        "attach is on the directory pill's line: {folder} vs {plus}"
-    );
-    assert!(
-        (model - folder).abs() < 20.0,
-        "the model is on the directory pill's line: {folder} vs {model}"
+        (card.width() - (size.x - COMPOSER_CARD_GUTTER * 2.0)).abs() < 0.5,
+        "and on the right: {:?} in {size:?}",
+        card
     );
 
-    // The account button is gone from the rich input.
-    assert!(icon_y("user").is_none(), "no account icon in the rich input");
-
-    // Every control in the row is a card: the directory pill, attach, the model
-    // and stop each outline their own box in the theme's grey, at the theme's
-    // corner radius, and none of them fills it while the pointer is away.
-    let borders: Vec<(crate::color::ColorU, f32, f32)> = commands
+    let (input, input_color) = fill(COMPOSER_INPUT_RADIUS);
+    assert_eq!(
+        input_color, raised,
+        "the input segment is one step lighter than the card: {commands:?}"
+    );
+    assert!(
+        (input.min_x() - card.min_x() - COMPOSER_CARD_INSET).abs() < 0.5,
+        "the input segment is inset {COMPOSER_CARD_INSET} from the card's left edge"
+    );
+    assert!(
+        (card.max_x() - input.max_x() - COMPOSER_CARD_INSET).abs() < 0.5,
+        "and from its right edge"
+    );
+    assert!(
+        (card.max_y() - input.max_y() - COMPOSER_CARD_INSET).abs() < 0.5,
+        "and from its bottom edge"
+    );
+    // Neither surface paints an outline: the card and its segment are flat
+    // fills separated by tone alone, and the composer's box draws no stroke at
+    // all in this scene.
+    let outlines: Vec<f32> = commands
         .iter()
         .filter_map(|c| match c {
-            RenderCommand::StrokeRect {
-                color,
-                width,
-                corner_radius,
-                ..
-            } => Some((*color, *width, *corner_radius)),
+            RenderCommand::StrokeRect { corner_radius, .. } => Some(*corner_radius),
             _ => None,
         })
         .collect();
-    assert_eq!(
-        borders.len(),
-        4,
-        "the directory pill, attach, the model and stop are four cards, got {borders:?}"
-    );
-    for (color, width, radius) in &borders {
-        assert_eq!(
-            *color,
-            app.theme.color(ColorToken::Border),
-            "a card is outlined in the theme's grey"
-        );
-        assert_eq!(*width, 1.0, "the outline is 1px");
-        assert_eq!(*radius, COMPOSER_CONTROL_RADIUS, "at the input's own corner radius");
-    }
     assert!(
-        !commands.iter().any(|c| matches!(
-            c,
-            RenderCommand::FillRect { color, .. } if *color == app.theme.color(ColorToken::Hover)
-        )),
-        "a card draws no fill until the pointer is over it: {commands:?}"
+        outlines.is_empty(),
+        "the card and its input segment are borderless: {outlines:?} in {commands:?}"
+    );
+    // The context band is the whole top segment: its controls start 12 under the
+    // card's top and the input segment starts 6 under them.
+    let folder = icon_origin(&commands, "folder").expect("the directory control draws");
+    // 8 of band padding, then the 14pt glyph centred in the 24pt control.
+    let expected_folder_y = card.min_y() + 8.0 + (24.0 - 14.0) / 2.0;
+    assert!(
+        (folder.y - expected_folder_y).abs() < 1.0,
+        "the context controls sit 12 under the card's top: {} against {}",
+        folder.y,
+        expected_folder_y
+    );
+    assert!(
+        input.min_y() >= card.min_y() + CONTEXT_SEGMENT_HEIGHT - 2.0,
+        "the input segment starts under the context band: {:?} in {:?}",
+        input,
+        card
+    );
+
+    // The editor leads the input segment and the footer controls (attach, model)
+    // are under it, inside the same segment.
+    let text_y = |text: &str| -> f32 {
+        commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => {
+                    Some(origin.y)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{text:?} is drawn: {commands:?}"))
+    };
+    let editor = text_y("hi");
+    let model = text_y("gpt-4o");
+    let plus = icon_origin(&commands, "plus").expect("the attach control draws").y;
+    assert!(editor < model, "the model control is under the editor");
+    assert!(editor < plus, "the attach control is under the editor");
+    assert!(
+        (model - plus).abs() < 8.0,
+        "the footer controls share one line: {model} against {plus}"
+    );
+    assert!(
+        model < input.max_y() && input.min_y() < editor,
+        "the editor and the footer both live inside the input segment: {input:?}"
     );
 }
 
 /// The environment pill's glyph is the host's to name, so the pill can say
-/// where the work runs: a cloud for a worker and the computer for a local
-/// environment.
+/// where the work runs: T3 Code's cloud (`environment-cloud`) for a worker and
+/// its computer (`environment-computer`) for a local environment.
 #[test]
 fn composer_draws_the_environment_glyph_its_host_names() {
     use crate::render::RenderCommand;
@@ -182,69 +198,74 @@ fn composer_draws_the_environment_glyph_its_host_names() {
 
     let mut remote = ChatComposer::new()
         .with_harness_label("Remote (worker)")
-        .with_harness_icon("cloud");
+        .with_harness_icon("environment-cloud");
     let drawn = icons(&paint_composer(&app, &mut remote));
     assert!(
-        drawn.iter().any(|name| name == "cloud"),
+        drawn.iter().any(|name| name == "environment-cloud"),
         "the host's cloud is the pill's glyph: {drawn:?}"
     );
 
     let mut local = ChatComposer::new()
         .with_harness_label("Local")
-        .with_harness_icon("conversation-local");
+        .with_harness_icon("environment-computer");
     let drawn = icons(&paint_composer(&app, &mut local));
     assert!(
-        drawn.iter().any(|name| name == "conversation-local"),
+        drawn.iter().any(|name| name == "environment-computer"),
         "the host's computer is the pill's glyph: {drawn:?}"
     );
-}
 
-/// The agent and the shell bars span the surface they pin to: the edge-to-edge
-/// composer drops the gutter the default card keeps, so both surfaces space
-/// their input the same way.
-#[test]
-fn an_edge_to_edge_composer_drops_its_outer_gutter() {
-    use crate::render::RenderCommand;
-
-    let app = AppContext::default();
-    let first_pill_x = |composer: &mut ChatComposer| -> f32 {
-        paint_composer(&app, composer)
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, .. } if name == "folder" => {
-                    Some(origin.x)
-                }
-                _ => None,
-            })
-            .expect("the directory pill draws")
-    };
-    let mut default = ChatComposer::new().with_path_label("/work/project");
-    let mut spanning = ChatComposer::new()
-        .with_path_label("/work/project")
-        .with_edge_to_edge(true);
+    // A host that names no glyph gets the local environment's computer: the
+    // composer's default is the mark that reads as "this machine".
+    let mut default = ChatComposer::new().with_harness_label("Local");
+    let drawn = icons(&paint_composer(&app, &mut default));
     assert!(
-        first_pill_x(&mut spanning) < first_pill_x(&mut default),
-        "the edge-to-edge bar starts at the surface, the default card keeps its gutter"
+        drawn.iter().any(|name| name == "environment-computer"),
+        "the default environment glyph is the computer: {drawn:?}"
     );
 }
 
-/// The environment pill is the host's to give. A composer whose host wires a
-/// label and a menu draws it as the first context pill — the environment the
-/// draft's turn runs on, ahead of the directory and the branch that describe
-/// the work inside it — and a host that wires none draws no environment control
-/// at all. That second half is what keeps a local conversation free of the
-/// control: the app gives the label to the conversation that runs on a worker
-/// and to no other (see `ui::chat::agent`).
+/// The old host flags — context above the editor, an edge-to-edge bar — no
+/// longer produce a different card: the terminal bar, the agent input and the
+/// thread input draw the same gutter, the same context band and the same input
+/// segment, so switching a pane between its shell and its agent view moves
+/// nothing but the text in the editor.
 #[test]
-fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
-    use crate::elements::PaintContext;
-    use crate::render::{RenderCommand, Renderer};
+fn the_old_host_flags_do_not_change_the_card() {
+    let app = AppContext::default();
+    let paint = |composer: &mut ChatComposer| {
+        let (size, commands) = paint_composer_in(&app, composer, vec2f(700.0, 500.0));
+        let folder = icon_origin(&commands, "folder").expect("the directory control draws");
+        (size, folder, commands)
+    };
+    let mut plain = ChatComposer::new().with_path_label("/work/project");
+    let mut edge_to_edge = ChatComposer::new()
+        .with_path_label("/work/project")
+        .with_edge_to_edge(true);
+    let mut shell_bar = ChatComposer::new()
+        .with_path_label("/work/project")
+        .with_context_above_editor(true)
+        .with_edge_to_edge(true);
+    let (plain_size, plain_folder, _) = paint(&mut plain);
+    for other in [&mut edge_to_edge, &mut shell_bar] {
+        let (size, folder, _) = paint(other);
+        assert_eq!(size, plain_size, "the card is the same size");
+        assert_eq!(folder, plain_folder, "and its band is in the same place");
+    }
+}
+
+/// The environment control is the host's to give, and it is icon-only at the
+/// context band's right end: the reference's monitor/cloud glyph, with the
+/// environment's name in its tooltip. A host that wires no label draws no
+/// environment control at all — that is what keeps a local conversation free of
+/// the control, since the app gives the label to the conversation that runs on
+/// a worker and to no other (see `ui::chat::agent`).
+#[test]
+fn the_environment_control_is_icon_only_at_the_bands_right_end() {
+    use crate::render::RenderCommand;
 
     let app = AppContext::default();
     let mut composer = ChatComposer::new()
         .with_harness_label("Remote (worker)")
-        .with_path_label("/work/project")
-        .with_branch_label("main")
         .with_harness_menu(
             vec![
                 PopupMenuItem::new("Local"),
@@ -253,86 +274,51 @@ fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
             Rc::new(RefCell::new(false)),
             |_| {},
         )
+        .with_path_label("/work/project")
         .with_dir_menu(
             vec![PopupMenuItem::new("/work/project")],
             Rc::new(RefCell::new(false)),
             |_| {},
         )
+        .with_branch_label("main")
         .with_branch_menu(
             vec![PopupMenuItem::new("main")],
             Rc::new(RefCell::new(false)),
             |_| {},
         );
 
-    let size = composer.layout(
-        SizeConstraint::loose(vec2f(600.0, 400.0)),
-        &mut LayoutContext::default(),
-        &app,
+    let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 400.0));
+    let env =
+        icon_origin(&commands, "environment-computer").expect("the environment control draws");
+    let folder = icon_origin(&commands, "folder").expect("the directory control draws");
+    let branch = icon_origin(&commands, "branch").expect("the branch control draws");
+    assert!(
+        folder.x < branch.x && branch.x < env.x,
+        "the environment control is the band's right end: folder {folder:?}, branch {branch:?}, env {env:?}"
     );
-    assert!(size.x > 0.0);
-    assert!(size.y > 0.0);
-
-    let mut paint_ctx = PaintContext::new(Renderer::new());
-    composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-    let commands = paint_ctx
-        .renderer
-        .take()
-        .map(|r| r.commands().to_vec())
-        .unwrap_or_default();
-
-    let icons: Vec<String> = commands
+    // Icon-only: the host's label is the tooltip, not a text run beside the
+    // glyph.
+    assert!(
+        !drawn_texts(&commands).iter().any(|t| t == "Remote (worker)"),
+        "the environment control draws no label at rest: {:?}",
+        drawn_texts(&commands)
+    );
+    // The three context controls are borderless, and so are the card and its
+    // concentric input segment: this closed-band composer draws no stroke.
+    let outlines: Vec<f32> = commands
         .iter()
         .filter_map(|c| match c {
-            RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
+            RenderCommand::StrokeRect { corner_radius, .. } => Some(*corner_radius),
             _ => None,
         })
         .collect();
-    // The environment pill (`computer` -> the agentmode glyph), the working
-    // directory and the branch are the three context pills the host set.
-    for expected in ["agentmode", "folder", "git-branch"] {
-        assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
-    }
-    let pill_x = |name: &str| -> f32 {
-        commands
-            .iter()
-            .find_map(|c| match c {
-                RenderCommand::DrawIcon { origin, name: n, .. } if n == name => Some(origin.x),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the {name} pill is drawn"))
-    };
     assert!(
-        pill_x("agentmode") < pill_x("folder"),
-        "the environment leads the context row: {} vs {}",
-        pill_x("agentmode"),
-        pill_x("folder")
+        outlines.is_empty(),
+        "the borderless card and controls draw no outline: {outlines:?}"
     );
-    assert!(
-        drawn_texts(&commands).iter().any(|t| t == "Remote (worker)"),
-        "the pill names the environment the turn runs on: {:?}",
-        drawn_texts(&commands)
-    );
-    // Its control is the same card every other pill is: the theme's grey
-    // outline at the input's own corner radius, so the environment cannot read
-    // as something other than the selectors beside it.
-    let pill = card_of(&commands, "agentmode");
-    let outlined = commands.iter().any(|c| matches!(
-        c,
-        RenderCommand::StrokeRect { rect, color, width, corner_radius }
-            if *rect == pill
-                && *color == app.theme.color(ColorToken::Border)
-                && *width == 1.0
-                && *corner_radius == COMPOSER_CONTROL_RADIUS
-    ));
-    assert!(outlined, "the environment pill outlines its own card");
 
-    // A press on the pill opens the host's menu — the same dispatch path the
-    // directory and the branch pills take. The flag is the host's, so the
-    // click that flips it is proven where every other pill's is
-    // (`integration_testing::menu_flow`); what is asserted here is that the
-    // environment control is the same popup: its open flag draws the panel,
-    // with the environments the host listed in it.
-    let open = Rc::new(RefCell::new(true));
+    // The open environment menu is the host's panel: it draws the mediums the
+    // host listed and stamps the one in force with the trailing check.
     let mut wired = ChatComposer::new()
         .with_harness_label("Remote (worker)")
         .with_harness_menu(
@@ -340,7 +326,7 @@ fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
                 PopupMenuItem::new("Local"),
                 PopupMenuItem::new("Remote (worker)").selected(),
             ],
-            open,
+            Rc::new(RefCell::new(true)),
             |_| {},
         );
     let commands = paint_composer(&app, &mut wired);
@@ -349,23 +335,313 @@ fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
         "the open environment menu draws the environments the host listed: {:?}",
         drawn_texts(&commands)
     );
+    assert!(
+        icon_origin(&commands, "check").is_some(),
+        "the environment in force is stamped with the check: {commands:?}"
+    );
 
-    // The host that wires no environment draws none: the directory and the
-    // branch are the two cards, and no environment glyph or label is painted.
+    // The environment menu is the reference's wider casing: the worker's row
+    // carries a description that must stay on one line, cut with an ellipsis.
+    let described = vec![
+        PopupMenuItem::new("This Computer").selected(),
+        PopupMenuItem::new("Remote")
+            .with_icon("environment-cloud")
+            .with_description("Clones this repo in a cloud environment, then hands it to the agent"),
+    ];
+    let mut env_menu = ChatComposer::new()
+        .with_harness_label("This Computer")
+        .with_harness_menu(
+            described,
+            Rc::new(RefCell::new(true)),
+            |_| {},
+        );
+    let (_, commands) = paint_composer_in(&app, &mut env_menu, vec2f(900.0, 600.0));
+    let description = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::DrawText { text, .. }
+                if text.starts_with("Clones this repo in a cloud environment") =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .expect("the environment menu draws its description");
+    assert!(
+        description.ends_with('…') && description.lines().count() == 1,
+        "the description is one ellipsized line: {description:?}"
+    );
+    // The panel is the environment menu's own 308pt casing, not the shared
+    // default. It opens above the band, so its rect is above the composer's own
+    // origin.
+    let panel = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - 12.0).abs() < 0.01
+                && rect.min_y() < 0.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the environment menu paints its panel above the band");
+    assert!(
+        (panel.width() - 308.0).abs() < 0.5,
+        "the environment menu is the wider casing: {panel:?}"
+    );
+
+    // A host that wires no environment draws none.
     let mut plain = ChatComposer::new()
         .with_path_label("/work/project")
+        .with_branch_label("main");
+    let (_, commands) = paint_composer_in(&app, &mut plain, vec2f(600.0, 400.0));
+    assert!(
+        icon_origin(&commands, "environment-computer").is_none()
+            && icon_origin(&commands, "environment-cloud").is_none(),
+        "a host that wires no environment draws no environment control"
+    );
+
+    // The env icon is the host's own medium glyph: a worker's control draws the
+    // cloud, a local one the computer, never both.
+    let mut worker = ChatComposer::new()
+        .with_harness_label("Remote (worker)")
+        .with_harness_icon("environment-cloud");
+    let (_, commands) = paint_composer_in(&app, &mut worker, vec2f(600.0, 400.0));
+    assert!(
+        icon_origin(&commands, "environment-cloud").is_some(),
+        "a worker's environment control draws the cloud: {commands:?}"
+    );
+}
+
+/// The composer's trays use the reference casing widths, and the environment
+/// tray's trailing edge sits a few points inside the card rather than a full
+/// band inset in: 308 for the environment (its description needs the room),
+/// 292 for the branch list, right edge ≈ card right − 6.
+#[test]
+fn the_composer_trays_use_the_reference_casing_widths() {
+    use crate::elements::COMPOSER_CARD_RADIUS;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+
+    // The environment tray: 308 wide, anchored under the icon-only control so
+    // its trailing edge ends 6pt inside the card.
+    let mut env = ChatComposer::new()
+        .with_harness_label("Remote (worker)")
+        .with_harness_icon("environment-cloud")
+        .with_harness_menu(
+            vec![
+                PopupMenuItem::new("Local"),
+                PopupMenuItem::new("Remote (worker)").selected(),
+            ],
+            Rc::new(RefCell::new(true)),
+            |_| {},
+        );
+    let (_, commands) = paint_composer_in(&app, &mut env, vec2f(900.0, 600.0));
+    // The card is borderless now: its rounded fill is what marks its rect.
+    let card = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::Surface)
+                && (*corner_radius - COMPOSER_CARD_RADIUS).abs() < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the card fills its rounded rect");
+    let panel = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - 12.0).abs() < 0.01
+                && rect.min_y() < 0.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the environment tray paints above the band");
+    assert!(
+        (panel.width() - 308.0).abs() < 0.5,
+        "the environment tray is the reference's 308pt casing: {panel:?}"
+    );
+    assert!(
+        (panel.max_x() - (card.max_x() - 6.0)).abs() < 0.5,
+        "its trailing edge sits 6pt inside the card: panel {panel:?}, card {card:?}"
+    );
+
+    // The branch tray: 292 wide, the reference's long branch casing.
+    let mut branch = ChatComposer::new()
+        .with_path_label("/work/goble")
         .with_branch_label("main")
+        .with_branch_menu(
+            vec![PopupMenuItem::new("main").selected()],
+            Rc::new(RefCell::new(true)),
+            |_| {},
+        );
+    let (_, commands) = paint_composer_in(&app, &mut branch, vec2f(900.0, 600.0));
+    let panel = commands
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - 12.0).abs() < 0.01
+                && rect.min_y() < 0.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the branch tray paints above the band");
+    assert!(
+        (panel.width() - 292.0).abs() < 0.5,
+        "the branch tray is the reference's 292pt casing: {panel:?}"
+    );
+}
+
+/// A rich-input control is borderless: at rest it is only its glyph and label,
+/// and the pointer over it paints the soft rounded hover fill. The card and the
+/// input segment carry no outline either — the whole composer is flat surfaces.
+#[test]
+fn a_rich_input_control_is_borderless_and_fills_on_hover() {
+    use crate::elements::COMPOSER_CONTROL_RADIUS;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    // The footer controls sit on the raised input segment, where the theme's
+    // `Hover` is the segment's own fill: the visible step above it is `Selected`.
+    let hover = app.theme.color(ColorToken::Selected);
+    let mut composer = ChatComposer::new()
+        .with_path_label("~/Projects/goble")
+        .with_on_attach(|| {});
+
+    let rest = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0)).1;
+    // The card's own Surface fill and the input segment's raised fill are the
+    // only fills at rest: no control draws its own rounded fill until the
+    // pointer is over it.
+    let control_fills = |commands: &[crate::render::RenderCommand]| {
+        commands
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    RenderCommand::FillRect {
+                        corner_radius, ..
+                    } if (*corner_radius - 6.0).abs() < 0.01
+                )
+            })
+            .count()
+    };
+    assert_eq!(
+        control_fills(&rest),
+        0,
+        "nothing fills until the pointer is over it: {rest:?}"
+    );
+    let outlines: Vec<f32> = rest
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::StrokeRect { corner_radius, .. } => Some(*corner_radius),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        outlines.is_empty(),
+        "the borderless composer draws no outline: {outlines:?}"
+    );
+
+    // The pointer onto the attach control: its hover fill is the control's own
+    // rounded box — 24pt tall, the control radius — inside the input segment.
+    let plus = icon_origin(&rest, "plus").expect("the attach control draws");
+    let over = paint_composer_with_pointer(
+        &app,
+        &mut composer,
+        vec2f(600.0, 500.0),
+        Some(vec2f(plus.x + 4.0, plus.y + 4.0)),
+    );
+    let (rect, radius) = over
+        .iter()
+        .find_map(|c| match c {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == hover
+                && (*corner_radius - COMPOSER_CONTROL_RADIUS).abs() < 0.01 =>
+            {
+                Some((*rect, *corner_radius))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the pointer over the control fills it: {over:?}"));
+    assert_eq!(
+        radius, COMPOSER_CONTROL_RADIUS,
+        "the hover fill is the control's own rounded box"
+    );
+    assert!(
+        (rect.height() - 24.0).abs() < 0.5,
+        "the control is one 24pt row: {rect:?}"
+    );
+    assert!(
+        rect.min_x() <= plus.x && plus.x <= rect.max_x(),
+        "the fill sits around the glyph it holds: {rect:?} against {plus:?}"
+    );
+}
+
+/// Every control that opens a tray says so with the reference's trailing
+/// chevron-down: the directory, the branch and the model. A control that opens
+/// nothing (attach) carries none, and the environment's icon-only control names
+/// its tray with the glyph itself.
+#[test]
+fn the_menu_backed_controls_draw_a_trailing_chevron() {
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let mut composer = ChatComposer::new()
+        .with_path_label("~/Projects/goble")
         .with_dir_menu(
-            vec![PopupMenuItem::new("/work/project")],
+            vec![PopupMenuItem::new("~/Projects/goble")],
             Rc::new(RefCell::new(false)),
             |_| {},
         )
+        .with_branch_label("main")
         .with_branch_menu(
             vec![PopupMenuItem::new("main")],
             Rc::new(RefCell::new(false)),
             |_| {},
-        );
-    let (_, commands) = paint_composer_in(&app, &mut plain, vec2f(600.0, 400.0));
+        )
+        .with_model_label("gpt-4o")
+        .with_model_menu(
+            vec![PopupMenuItem::new("gpt-4o")],
+            Rc::new(RefCell::new(false)),
+            |_| {},
+        )
+        .with_harness_label("Local")
+        .with_harness_icon("computer")
+        .with_harness_menu(
+            vec![PopupMenuItem::new("Local")],
+            Rc::new(RefCell::new(false)),
+            |_| {},
+        )
+        .with_on_attach(|| {});
+
+    let commands = paint_composer_in(&app, &mut composer, vec2f(760.0, 500.0)).1;
     let icons: Vec<String> = commands
         .iter()
         .filter_map(|c| match c {
@@ -373,157 +649,43 @@ fn composer_draws_the_environment_pill_only_when_its_host_wires_one() {
             _ => None,
         })
         .collect();
-    for expected in ["folder", "git-branch"] {
-        assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
-    }
-    assert!(
-        !icons.iter().any(|n| n == "agentmode"),
-        "a host that wires no environment draws no environment control: {icons:?}"
+    assert_eq!(
+        icons.iter().filter(|name| name.as_str() == "chevron-down").count(),
+        3,
+        "the directory, the branch and the closed model chip point down: {icons:?}"
     );
-    assert!(
-        !drawn_texts(&commands).iter().any(|t| t == "Remote (worker)"),
-        "and no environment label either: {:?}",
-        drawn_texts(&commands)
+    assert_eq!(
+        icons.iter().filter(|name| name.as_str() == "chevron-up").count(),
+        0,
+        "a closed model chip points down, DSH's trigger before its card opens: {icons:?}"
     );
-
-    // The directory and branch pills are two cards: each outlines its own box
-    // in the theme's grey, at the theme's corner radius.
-    let borders: Vec<(crate::color::ColorU, f32, f32)> = commands
-        .iter()
-        .filter_map(|c| match c {
-            RenderCommand::StrokeRect {
-                color,
-                width,
-                corner_radius,
-                ..
-            } => Some((*color, *width, *corner_radius)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(borders.len(), 2, "one card per pill, got {borders:?}");
-    for (color, width, radius) in &borders {
-        assert_eq!(
-            *color,
-            app.theme.color(ColorToken::Border),
-            "a card is outlined in the theme's grey"
-        );
-        assert_eq!(*width, 1.0, "the outline is 1px");
-        assert_eq!(*radius, COMPOSER_CONTROL_RADIUS, "at the input's own corner radius");
-    }
-}
-
-/// A rich-input control is a card: the row's own box outlined in the theme's
-/// grey border while the pointer is away, and the theme's hover fill once the
-/// pointer is over it. The outline is all it draws at rest.
-#[test]
-fn a_rich_input_control_is_a_card_that_fills_on_hover() {
-    use crate::render::RenderCommand;
-
-    let app = AppContext::default();
-    let border = app.theme.color(ColorToken::Border);
-    let hover = app.theme.color(ColorToken::Hover);
-    let mut composer = ChatComposer::new().with_path_label("~/Projects/goble");
-
-    let rest = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0)).1;
-    let card = card_of(&rest, "folder");
-    let (color, width, radius) = rest
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::StrokeRect {
-                rect,
-                color,
-                width,
-                corner_radius,
-            } if *rect == card => Some((*color, *width, *corner_radius)),
-            _ => None,
-        })
-        .expect("the directory pill outlines its own box");
-    assert_eq!(color, border, "the card's outline is the theme's grey");
-    assert_eq!(width, 1.0, "the outline is 1px");
-    assert_eq!(radius, COMPOSER_CONTROL_RADIUS, "at the input's own corner radius");
-    assert!(
-        !rest.iter().any(|c| matches!(
-            c,
-            RenderCommand::FillRect { color, .. } if *color == hover
-        )),
-        "a card fills only under the pointer: {rest:?}"
-    );
-
-    // The pointer onto the card: the same box fills with the hover grey, inside
-    // the outline that is still drawn around it.
-    let cursor = vec2f(
-        (card.min_x() + card.max_x()) / 2.0,
-        (card.min_y() + card.max_y()) / 2.0,
-    );
-    let over = paint_composer_with_pointer(&app, &mut composer, vec2f(600.0, 500.0), Some(cursor));
-    assert!(
-        over.iter().any(|c| matches!(
-            c,
-            RenderCommand::FillRect { rect, color, corner_radius }
-                if *rect == card && *color == hover && *corner_radius == COMPOSER_CONTROL_RADIUS
-        )),
-        "the pointer over the card fills it with the hover grey: {over:?}"
-    );
-}
-
-/// The rich input's controls carry no drop-down chevron: the card itself is the
-/// trigger, and the tray still opens from a click on it. Each control is still
-/// drawn by its own glyph — and the model control by none at all: it names the
-/// model the draft runs on, so an icon beside the name would be decoration.
-#[test]
-fn the_rich_input_controls_draw_no_drop_down_chevron() {
-    use crate::render::RenderCommand;
-
-    let app = AppContext::default();
-    let mut composer = ChatComposer::new()
-        .with_harness_label("Remote (worker)")
-        .with_path_label("~/Projects/goble")
-        .with_branch_label("main")
+    // Open, the DSH chip flips its chevron up: the card above it is showing.
+    let mut opened = ChatComposer::new()
         .with_model_label("gpt-4o")
-        .with_on_attach(|| {})
-        .with_harness_menu(
-            vec![PopupMenuItem::new("Remote (worker)")],
-            Rc::new(RefCell::new(false)),
-            |_| {},
-        )
-        .with_dir_menu(
-            vec![PopupMenuItem::new("~/Projects/goble")],
-            Rc::new(RefCell::new(false)),
-            |_| {},
-        )
-        .with_branch_menu(
-            vec![PopupMenuItem::new("main")],
-            Rc::new(RefCell::new(false)),
-            |_| {},
-        )
         .with_model_menu(
             vec![PopupMenuItem::new("gpt-4o")],
-            Rc::new(RefCell::new(false)),
+            Rc::new(RefCell::new(true)),
             |_| {},
         );
-
-    let commands = paint_composer_in(&app, &mut composer, vec2f(760.0, 500.0)).1;
-    let mut icons: Vec<String> = commands
+    let commands = paint_composer_in(&app, &mut opened, vec2f(760.0, 500.0)).1;
+    let opened_icons: Vec<String> = commands
         .iter()
         .filter_map(|c| match c {
             RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
             _ => None,
         })
         .collect();
-    icons.sort();
     assert_eq!(
-        icons,
-        [
-            "agentmode",  // the environment pill
-            "folder",     // the working-directory pill
-            "git-branch", // the branch pill
-            "plus",       // attach
-        ],
-        "every control draws its own glyph and none of them a chevron"
+        opened_icons.iter().filter(|name| name.as_str() == "chevron-up").count(),
+        1,
+        "the open model chip points up: {opened_icons:?}"
     );
+    for expected in ["folder", "branch", "agentmode", "plus"] {
+        assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
+    }
     assert!(
         !icons.iter().any(|name| name == "sparkle"),
-        "the model control carries no icon: it reads as the model's own name"
+        "the model control carries no icon but the chevron: it reads as the model's name"
     );
 }
 
@@ -561,7 +723,7 @@ fn the_session_chip_names_the_bound_host_and_a_local_session_draws_none() {
             _ => None,
         })
     };
-    let cards = |commands: &[RenderCommand]| {
+    let outlines = |commands: &[RenderCommand]| {
         commands
             .iter()
             .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
@@ -588,8 +750,13 @@ fn the_session_chip_names_the_bound_host_and_a_local_session_draws_none() {
                 if name == "conversation-remote")),
         "the chip draws the remote mark: {commands:?}"
     );
-    // A chip, not a card: the only card on this composer is the directory pill.
-    assert_eq!(cards(&commands), 1, "the chip outlines no box of its own: {commands:?}");
+    // A chip, not a card: the composer is borderless (no outline around the
+    // card, the segment or the chip), so the chip adds none of its own.
+    assert_eq!(
+        outlines(&commands),
+        0,
+        "the chip outlines no box of its own: {commands:?}"
+    );
 
     // A name no block declares is the host itself.
     let (_, commands) = paint(Some(bounds("server.example.com", "ada", None)));
@@ -613,9 +780,9 @@ fn the_session_chip_names_the_bound_host_and_a_local_session_draws_none() {
         "and no remote mark either: {commands:?}"
     );
     assert_eq!(
-        cards(&commands),
-        1,
-        "the row is the same one card the directory pill draws: {commands:?}"
+        outlines(&commands),
+        0,
+        "the local row is the same borderless card it always draws: {commands:?}"
     );
     assert_eq!(
         bound_size.y, local_size.y,
@@ -623,31 +790,55 @@ fn the_session_chip_names_the_bound_host_and_a_local_session_draws_none() {
     );
 }
 
-/// The box the control that drew `text` outlines: the border around the text's
-/// own origin, the way [`card_of`] finds a control's box from its icon.
-fn card_of_text(commands: &[crate::render::RenderCommand], text: &str) -> crate::geometry::RectF {
+/// The origin of the glyph `icon` in a painted frame.
+fn icon_origin(
+    commands: &[crate::render::RenderCommand],
+    icon: &str,
+) -> Option<crate::geometry::Vector2F> {
     use crate::render::RenderCommand;
-    let origin = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => Some(*origin),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the {text} control is drawn"));
-    commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::StrokeRect { rect, .. }
-                if rect.min_x() <= origin.x
-                    && origin.x <= rect.max_x()
-                    && rect.min_y() <= origin.y
-                    && origin.y <= rect.max_y() =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the {text} control outlines its own box"))
+    commands.iter().find_map(|c| match c {
+        RenderCommand::DrawIcon { origin, name, .. } if name == icon => Some(*origin),
+        _ => None,
+    })
+}
+
+/// The origin of the run `text` in a painted frame.
+fn text_origin(
+    commands: &[crate::render::RenderCommand],
+    text: &str,
+) -> Option<crate::geometry::Vector2F> {
+    use crate::render::RenderCommand;
+    commands.iter().find_map(|c| match c {
+        RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => Some(*origin),
+        _ => None,
+    })
+}
+
+/// A release at `position`: a control in this tree takes its click on the
+/// release, and the point is inside the control when it was read from the
+/// control's own glyph.
+fn click_point(composer: &mut ChatComposer, app: &AppContext, position: crate::geometry::Vector2F) -> bool {
+    composer.dispatch_event(
+        &DispatchedEvent::MouseUp {
+            position,
+            button: 0,
+        },
+        &mut crate::elements::EventContext::default(),
+        app,
+    )
+}
+
+/// Click the control that drew `text`: the point of its label, plus a couple of
+/// points, which is inside the borderless control's own box.
+fn click_text(
+    composer: &mut ChatComposer,
+    app: &AppContext,
+    commands: &[crate::render::RenderCommand],
+    text: &str,
+) -> bool {
+    let origin = text_origin(commands, text)
+        .unwrap_or_else(|| panic!("{text:?} is drawn: {commands:?}"));
+    click_point(composer, app, vec2f(origin.x + 2.0, origin.y + 4.0))
 }
 
 /// Whether the model list is the band on the input. Its rows are the models,
@@ -915,7 +1106,6 @@ fn the_model_control_opens_the_models_the_host_draws() {
 
     // Closed, the control is its label and the list is not drawn.
     let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
-    let control = card_of_text(&commands, "gpt-4o");
     assert!(
         !commands
             .iter()
@@ -924,7 +1114,10 @@ fn the_model_control_opens_the_models_the_host_draws() {
     );
 
     let mut ctx = EventContext::default();
-    assert!(click_at(&mut composer, &app, control), "the press reaches the control");
+    assert!(
+        click_text(&mut composer, &app, &commands, "gpt-4o"),
+        "the press reaches the control"
+    );
     assert!(*open.borrow(), "the control opens the model list");
 
     // Open, the input still draws the list nowhere: the rows belong to the
@@ -965,8 +1158,12 @@ fn the_model_control_opens_the_models_the_host_draws() {
         })
         .expect("the band is a panel of its own");
     assert!(
-        panel.min_x().abs() < 0.5 && (panel.width() - size.x).abs() < 0.5,
-        "the band spans the input's whole width: {panel:?} in {size:?}"
+        (panel.min_x() - crate::elements::COMPOSER_CARD_GUTTER).abs() < 0.5
+            && (panel.width()
+                - (size.x - crate::elements::COMPOSER_CARD_GUTTER * 2.0))
+                .abs()
+                < 0.5,
+        "the DSH card lines up with the input card under it: {panel:?} in {size:?}"
     );
     let editor = commands
         .iter()
@@ -988,22 +1185,25 @@ fn the_model_control_opens_the_models_the_host_draws() {
         );
     }
     assert!(
-        commands.iter().any(|c| matches!(
-            c,
-            RenderCommand::DrawText { text, color, .. }
-                if text == "gpt-4o" && *color == app.theme.color(ColorToken::Accent)
-        )),
-        "the model in force is the row that reads in the accent colour: {commands:?}"
+        commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name == "check")),
+        "the model in force is the row with DSH's trailing check: {commands:?}"
     );
 
     // A second press on the control puts the list away, the way Escape does.
     // The band over the input moves the composer down, so the control's box is
     // read from the frame the composer is drawn at its own origin again.
     let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
-    let control = card_of_text(&commands, "gpt-4o");
-    assert!(click_at(&mut composer, &app, control), "the press reaches the control");
+    assert!(
+        click_text(&mut composer, &app, &commands, "gpt-4o"),
+        "the press reaches the control"
+    );
     assert!(!*open.borrow(), "a second press puts the band away");
-    assert!(click_at(&mut composer, &app, control), "a third press opens it again");
+    assert!(
+        click_text(&mut composer, &app, &commands, "gpt-4o"),
+        "a third press opens it again"
+    );
     assert!(*open.borrow(), "the control holds the list open or shut");
 
     // The band holds the keys that take a row from it; the editor keeps every
@@ -1132,8 +1332,10 @@ fn typing_a_command_takes_the_slot_from_the_model_band() {
     // The model band is up over a draft that is not a command, and it is the
     // only band on the input.
     let (_, closed) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
-    let control = card_of_text(&closed, "gpt-4o");
-    assert!(click_at(&mut composer, &app, control), "the control takes the press");
+    assert!(
+        click_text(&mut composer, &app, &closed, "gpt-4o"),
+        "the control takes the press"
+    );
     assert!(*open.borrow(), "the model list is up");
     let frame = paint_host_frame(
         &app,
@@ -1263,8 +1465,10 @@ fn opening_the_model_band_puts_the_command_list_away() {
     assert!(!model_band_drawn(&frame), "and the model band is not drawn: {frame:?}");
 
     // Opening the models puts that list away: one band, and it is this one.
-    let control = card_of_text(&frame, "gpt-4o");
-    assert!(click_at(&mut composer, &app, control), "the control takes the press");
+    assert!(
+        click_text(&mut composer, &app, &frame, "gpt-4o"),
+        "the control takes the press"
+    );
     assert!(*open.borrow(), "the model list is up");
     assert!(
         !slash_menu_open(&composer.value(), *dismissed.borrow()),
@@ -1432,56 +1636,12 @@ fn paint_composer_with_pointer(
         .unwrap_or_default()
 }
 
-/// The box the control that drew `icon` outlines: the border around the icon's
-/// own origin. Every rich-input control is a card of its own, so the border
-/// that encloses the glyph is the control's.
-fn card_of(commands: &[crate::render::RenderCommand], icon: &str) -> crate::geometry::RectF {
-    use crate::render::RenderCommand;
-    let origin = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::DrawIcon { origin, name, .. } if name == icon => Some(*origin),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the {icon} control is drawn"));
-    commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::StrokeRect { rect, .. }
-                if rect.min_x() <= origin.x
-                    && origin.x <= rect.max_x()
-                    && rect.min_y() <= origin.y
-                    && origin.y <= rect.max_y() =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the {icon} control outlines its own box"))
-}
-
 /// Dispatch a key the way the window does.
 fn press(composer: &mut ChatComposer, app: &AppContext, name: &str) -> bool {
     composer.dispatch_event(
         &DispatchedEvent::KeyDown {
             key: name.to_string(),
             modifiers: ModifiersState::none(),
-        },
-        &mut crate::elements::EventContext::default(),
-        app,
-    )
-}
-
-/// A release of the primary button at the middle of `rect`, which is when a
-/// control in this tree takes a click.
-fn click_at(composer: &mut ChatComposer, app: &AppContext, rect: crate::geometry::RectF) -> bool {
-    composer.dispatch_event(
-        &DispatchedEvent::MouseUp {
-            position: vec2f(
-                rect.min_x() + rect.width() / 2.0,
-                rect.min_y() + rect.height() / 2.0,
-            ),
-            button: 0,
         },
         &mut crate::elements::EventContext::default(),
         app,
@@ -1763,13 +1923,21 @@ fn the_approval_mode_menu_lists_words_without_icons() {
             mode
         );
     }
-    let mode_icons = ["check", "user", "prompt", "sparkle"];
+    // The rows carry no glyph of their own; the only icon in the panel is the
+    // trailing check that stamps the mode in force.
+    let mode_icons = ["user", "prompt", "sparkle"];
     assert!(
         !commands.iter().any(|command| matches!(
             command,
             RenderCommand::DrawIcon { name, .. } if mode_icons.contains(&name.as_str())
         )),
         "the mode rows draw no icons: {commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, RenderCommand::DrawIcon { name, .. } if name == "check")),
+        "the mode in force is stamped with the check: {commands:?}"
     );
 }
 
@@ -2084,7 +2252,7 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
     let advance = |ch: &str| {
         crate::platform::text_atlas::advance_width(
             ch,
-            12.0,
+            15.0,
             crate::platform::text_atlas::FontWeight::Regular,
             crate::theme::FontFamily::System,
             false,
@@ -2128,54 +2296,185 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
     );
 }
 
-/// The rich input hugs its own rows: the card's vertical padding is `xs` and
-/// the block carries no vertical margin, so the first content row is `xs` under
-/// the composer's top edge and the last one is `xs` above its bottom edge —
-/// about 4pt where it used to be `md` + `xs`, 16pt. The horizontal stays `md`
-/// on the card, so the editor's text keeps the conversation's text column.
+/// No focus ring: the owner asked for no blue border or margin around the rich
+/// input, so keyboard focus is shown by the editor's beam alone. The card is
+/// borderless (owner: flatter, cleaner), so it paints no outline at all —
+/// focused or not — and no `Focus`-coloured stroke is painted. The caret is a
+/// fill, not a stroke, so the beam still shows the focus blue inside the editor.
+///
+/// a11y tradeoff: the card no longer marks "this surface owns the keyboard"
+/// with an outline; the visibly blinking caret inside it is the only signal
+/// (recorded in the owner-feedback report).
 #[test]
-fn the_rich_input_keeps_only_xs_above_and_below_its_rows() {
+fn the_card_draws_no_focus_ring_when_focused() {
     use crate::render::RenderCommand;
-    use crate::theme::SpacingToken;
 
     let app = AppContext::default();
-    let xs = app.theme.spacing_px(SpacingToken::Xs);
-    // The context row rides above the editor here, so the first card drawn is
-    // the top row and the model card is the bottom one. The composer paints
-    // from its own origin: its top edge is 0 and its bottom edge is `size.y`.
+    let focus = app.theme.color(ColorToken::Focus);
+    let has_focus_stroke = |commands: &[crate::render::RenderCommand]| {
+        commands.iter().any(|command| match command {
+            RenderCommand::StrokeRect { color, .. } => *color == focus,
+            _ => false,
+        })
+    };
+    let has_outline = |commands: &[crate::render::RenderCommand]| {
+        commands
+            .iter()
+            .any(|command| matches!(command, RenderCommand::StrokeRect { .. }))
+    };
+
+    // Focused: the editor's beam is the whole signal; the card is ringless.
+    let mut focused = ChatComposer::new().with_value("hi").with_focused(true);
+    let commands = paint_composer(&app, &mut focused);
+    assert!(
+        !has_focus_stroke(&commands),
+        "a focused card draws no blue focus ring: {commands:?}"
+    );
+    assert!(
+        !has_outline(&commands),
+        "the focused card is borderless: it paints no outline at all: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. } if *color == focus
+        )),
+        "the caret stays the focus indicator: {commands:?}"
+    );
+
+    // Blurred: the same plain casing, still no ring.
+    let mut blurred = ChatComposer::new().with_value("hi");
+    let commands = paint_composer(&app, &mut blurred);
+    assert!(
+        !has_focus_stroke(&commands),
+        "a blurred card draws no focus ring: {commands:?}"
+    );
+    assert!(
+        !has_outline(&commands),
+        "the blurred card is borderless too: it paints no outline at all: {commands:?}"
+    );
+
+    // A menu opened from the card paints no ring either.
+    let mut focused_with_menu = ChatComposer::new()
+        .with_focused(true)
+        .with_path_label("/work/project")
+        .with_dir_menu(
+            vec![PopupMenuItem::new("/work/project")],
+            Rc::new(RefCell::new(true)),
+            |_| {},
+        );
+    let commands = paint_composer(&app, &mut focused_with_menu);
+    assert!(
+        !has_focus_stroke(&commands),
+        "a focused editor with a menu up still draws no focus ring: {commands:?}"
+    );
+}
+
+/// The rich input draws **no send control**: the owner removed the circular
+/// send button, so the footer paints no send glyph and no 32pt `Selected`
+/// circle, and a press anywhere on the bar never submits. The keyboard is the
+/// whole send gesture (Enter / Cmd+Enter / Cmd+Alt+Enter, covered by their own
+/// tests), while the footer row keeps its height so the card's layout — and the
+/// height a shell host reserves for it — does not change. The stop circle
+/// remains the only round control, while a turn streams.
+#[test]
+fn the_rich_input_draws_no_send_control() {
+    use crate::elements::COMPOSER_SEND_SIZE;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let sent: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = sent.clone();
     let mut composer = ChatComposer::new()
-        .with_context_above_editor(true)
-        .with_path_label("~/Projects/goble")
-        .with_model_label("gpt-4o")
-        .with_on_select_model(|| {});
+        .with_value("ship it")
+        .with_focused(true)
+        .with_on_send(move |text| sink.borrow_mut().push(text));
     let (size, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
 
-    let cards: Vec<crate::geometry::RectF> = commands
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "arrow-right" || name == "send"
+        )),
+        "no send glyph is drawn: {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Selected)
+                    && (rect.width() - COMPOSER_SEND_SIZE).abs() < 0.5
+                    && (rect.height() - COMPOSER_SEND_SIZE).abs() < 0.5
+        )),
+        "no 32pt Selected circle (the old send button) is drawn: {commands:?}"
+    );
+    assert!(
+        (size.y
+            - (crate::elements::COMPOSER_INPUT_MIN_HEIGHT
+                + crate::elements::COMPOSER_CARD_INSET * 2.0
+                + crate::elements::COMPOSER_CARD_GUTTER))
+            .abs()
+            < 0.5,
+        "the card keeps the input's reserved height with an empty footer: {size:?}"
+    );
+
+    // No press on the bar sends: the keyboard owns the gesture.
+    for y in [0.2, 0.5, 0.8] {
+        let _ = click_point(&mut composer, &app, vec2f(size.x - 20.0, size.y * y));
+    }
+    assert!(
+        sent.borrow().is_empty(),
+        "a press on the bar never sends the draft"
+    );
+    let _ = press(&mut composer, &app, "Enter");
+    assert_eq!(
+        *sent.borrow(),
+        vec!["ship it".to_string()],
+        "Enter is the send gesture"
+    );
+
+    // The stop circle stays while a turn streams: error red at 90%, 32pt round.
+    let stopped = Rc::new(RefCell::new(false));
+    let flag = stopped.clone();
+    let mut streaming = ChatComposer::new()
+        .with_value("a draft")
+        .with_stop_visible(true)
+        .with_on_stop(move || *flag.borrow_mut() = true);
+    let (_, commands) = paint_composer_in(&app, &mut streaming, vec2f(600.0, 500.0));
+    let stop_fill = commands
         .iter()
-        .filter_map(|command| match command {
-            RenderCommand::StrokeRect { rect, .. } => Some(*rect),
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == {
+                let mut error = app.theme.color(ColorToken::Error);
+                error.a = 230;
+                error
+            } => Some((*rect, *corner_radius)),
             _ => None,
         })
-        .collect();
-    let top = cards
-        .iter()
-        .map(|rect| rect.min_y())
-        .fold(f32::INFINITY, f32::min);
-    let bottom = cards
-        .iter()
-        .map(|rect| rect.max_y())
-        .fold(f32::NEG_INFINITY, f32::max);
-
+        .expect("the stop circle fills with the error colour at 90%");
     assert!(
-        (top - xs).abs() < 0.5,
-        "the first row is {xs} under the composer's top edge, got {top}"
+        (stop_fill.0.width() - COMPOSER_SEND_SIZE).abs() < 0.5
+            && (stop_fill.1 - COMPOSER_SEND_SIZE / 2.0).abs() < 0.5,
+        "the stop circle is the 32pt round control the send circle used to swap with: {:?}",
+        stop_fill.0
     );
     assert!(
-        (size.y - bottom - xs).abs() < 0.5,
-        "the last row is {xs} above the composer's bottom edge, got {} of {}",
-        size.y - bottom,
-        size.y
+        icon_origin(&commands, "stop").is_some(),
+        "the stop glyph is drawn: {commands:?}"
     );
+    let center = vec2f(
+        stop_fill.0.min_x() + COMPOSER_SEND_SIZE / 2.0,
+        stop_fill.0.min_y() + COMPOSER_SEND_SIZE / 2.0,
+    );
+    assert!(
+        click_point(&mut streaming, &app, center),
+        "the stop circle takes the press"
+    );
+    assert!(*stopped.borrow(), "and reports the stop");
 }
 
 /// `⌘⌥⏎` is the cloud gesture (warp-new's `CMD+ALT+ENTER`): the host's own
@@ -2343,10 +2642,10 @@ fn the_directory_tray_is_capped_and_clips_the_rows_it_cannot_show() {
     );
 }
 
-/// The rich input's controls are one compact strip: the environment, model and
-/// attach controls of the agent input and the shell bar's directory and branch
-/// pills draw at the pill's height with the same 11px label. The agent input
-/// and the terminal bar therefore space their buttons the same way.
+/// The composer's controls are one compact strip: the context band's pills and
+/// the footer's model and attach controls draw at the pill's 24pt height with
+/// the same 12px label, so the agent input and the shell bar space their
+/// buttons the same way.
 #[test]
 fn the_rich_input_controls_share_one_compact_size() {
     use crate::elements::CONTEXT_PILL_HEIGHT;
@@ -2355,13 +2654,6 @@ fn the_rich_input_controls_share_one_compact_size() {
     let app = AppContext::default();
     let painted = |composer: &mut ChatComposer| {
         let (_, commands) = paint_composer_in(&app, composer, vec2f(720.0, 500.0));
-        let cards: Vec<f32> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::StrokeRect { rect, .. } => Some(rect.height()),
-                _ => None,
-            })
-            .collect();
         let labels: Vec<f32> = commands
             .iter()
             .filter_map(|command| match command {
@@ -2377,159 +2669,557 @@ fn the_rich_input_controls_share_one_compact_size() {
                 _ => None,
             })
             .collect();
-        (cards, labels)
+        let outlined: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::StrokeRect { corner_radius, .. } => Some(*corner_radius),
+                _ => None,
+            })
+            .collect();
+        (labels, outlined)
     };
 
     // The agent input: its own model and attach controls beside the shared
     // directory and branch pills.
     let mut agent = ChatComposer::new()
-        .with_context_above_editor(true)
         .with_path_label("~/Projects/goble")
         .with_branch_label("terminal-first")
         .with_model_label("gpt-4o")
         .with_on_attach(|| {})
         .with_on_select_model(|| {});
-    let (agent_cards, agent_labels) = painted(&mut agent);
-    assert!(!agent_cards.is_empty(), "the controls draw their cards");
-    for height in &agent_cards {
-        assert!(
-            (height - CONTEXT_PILL_HEIGHT).abs() < 0.5,
-            "every control is one row tall: {height} against {CONTEXT_PILL_HEIGHT}"
-        );
-    }
+    let (agent_labels, agent_outlines) = painted(&mut agent);
     assert_eq!(agent_labels.len(), 3, "the three labels are drawn");
     for size in agent_labels {
         assert!(
-            (size - 11.0).abs() < f32::EPSILON,
-            "the labels share one 11px size, got {size}"
+            (size - crate::elements::CONTEXT_PILL_LABEL_SIZE).abs() < f32::EPSILON,
+            "the labels share one {}px size, got {size}",
+            crate::elements::CONTEXT_PILL_LABEL_SIZE
         );
     }
+    assert!(
+        agent_outlines.is_empty(),
+        "the agent input is borderless, no outlines at all: {agent_outlines:?}"
+    );
 
     // The shell bar: the same directory and branch pills at the same height,
     // with no model or attach control of its own.
     let mut shell = ChatComposer::new()
-        .with_context_above_editor(true)
         .with_path_label("~/Projects/goble")
         .with_branch_label("terminal-first");
-    let (shell_cards, _) = painted(&mut shell);
+    let (shell_labels, shell_outlines) = painted(&mut shell);
     assert!(
-        shell_cards.iter().all(|height| agent_cards.contains(height)),
-        "the shell bar draws its pills at the agent input's height: {shell_cards:?} against {agent_cards:?}"
+        shell_outlines.is_empty(),
+        "the shell bar is borderless too: {shell_outlines:?}"
+    );
+    assert!(
+        shell_labels
+            .iter()
+            .all(|size| (size - crate::elements::CONTEXT_PILL_LABEL_SIZE).abs() < f32::EPSILON),
+        "the shell bar draws its labels at the agent input's size: {shell_labels:?}"
+    );
+    assert_eq!(
+        CONTEXT_PILL_HEIGHT, 24.0,
+        "the control row is the pill's 24pt height"
     );
 }
 
-/// The diff control reads the summary it is handed: file count, additions and
-/// deletions, with square corners on both the control and the menu it opens.
-/// The menu is the summary's own rows, each with its counts.
+/// The bar a host reserves for this card (the shell pane's pty rows are sized
+/// from it) is the height the card actually lays out for that configuration:
+/// the context band, the input segment with one line of editor, the footer row
+/// and the one instruction row the shell bar carries. A composer change that
+/// grows the card must move the reserve with it.
 #[test]
-fn the_diff_control_shows_the_totals_and_opens_the_changed_files() {
-    use crate::elements::{DiffFileStat, DiffSummary};
+fn the_reserved_bar_height_is_the_cards_own_height() {
+    use crate::elements::{PopupMenuItem, ShortcutHint};
+
+    let app = AppContext::default();
+    // The shell bar's own set of controls: a context band (directory, branch),
+    // a working editor, the send/stop circle, and one instruction row.
+    let items = vec![PopupMenuItem::new("main")];
+    let mut composer = ChatComposer::new()
+        .with_focused(true)
+        .with_blur_on_outside_click(false)
+        .with_path_label("~/Projects/goble")
+        .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
+        .with_on_change(|_| {})
+        .with_on_send(|_| {})
+        .with_on_cmd_enter(|_| {})
+        .with_on_focus_change(|_| {})
+        .with_on_stop(|| {})
+        .with_dir_menu(items.clone(), Rc::new(RefCell::new(false)), |_| {})
+        .with_branch_label("main")
+        .with_branch_menu(items, Rc::new(RefCell::new(false)), |_| {})
+        .with_slash_menu(vec![], Rc::new(RefCell::new(0)), Rc::new(RefCell::new(false)))
+        .with_on_slash_move(|_| {})
+        .with_on_slash_accept(|_| {})
+        .with_on_slash_dismiss(|| {});
+    let size = composer.layout(
+        SizeConstraint::loose(vec2f(900.0, 600.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    assert!(
+        (size.y - super::COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.01,
+        "the reserved bar height {} is the card's own {size:?}",
+        super::COMPOSER_BAR_RESERVED_HEIGHT
+    );
+}
+
+/// A background composer never takes the keys of the pane the user is typing
+/// in: the chords its bands answer (and the cloud submit) belong to the
+/// focused card alone. Before this, a pane whose draft was a `/` command could
+/// swallow Enter/Up/Down/Escape from the active pane, and `⌘⌥↵` in a stale
+/// composer could route its old draft to the cloud.
+#[test]
+fn a_background_composer_keeps_the_bands_keys_for_the_focused_one() {
+    use crate::elements::ShortcutHint;
+
+    let app = AppContext::default();
+    let mut composer = ChatComposer::new()
+        .with_value("/")
+        .with_focused(false)
+        .with_hints(vec![ShortcutHint::new(&["/"], "commands")])
+        .with_on_send(|_| {})
+        .with_on_send_to_cloud(|_| {})
+        .with_slash_menu(vec![], Rc::new(RefCell::new(0)), Rc::new(RefCell::new(false)))
+        .with_on_slash_move(|_| {})
+        .with_on_slash_accept(|_| {})
+        .with_on_slash_dismiss(|| {})
+        .with_model_menu(
+            vec![],
+            Rc::new(RefCell::new(true)),
+            |_| {},
+        )
+        .with_model_menu_index(Rc::new(RefCell::new(0)));
+    composer.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut ctx = crate::elements::EventContext;
+    let down = DispatchedEvent::KeyDown {
+        key: "ArrowDown".to_string(),
+        modifiers: ModifiersState::none(),
+    };
+    let enter = DispatchedEvent::KeyDown {
+        key: "Enter".to_string(),
+        modifiers: ModifiersState::none(),
+    };
+    let escape = DispatchedEvent::KeyDown {
+        key: "Escape".to_string(),
+        modifiers: ModifiersState::none(),
+    };
+    let cloud = DispatchedEvent::KeyDown {
+        key: "Enter".to_string(),
+        modifiers: ModifiersState {
+            command: true,
+            alt: true,
+            ..ModifiersState::none()
+        },
+    };
+    for key in [&down, &enter, &escape, &cloud] {
+        assert!(
+            !composer.dispatch_event(key, &mut ctx, &app),
+            "a background composer keeps {key:?} for the focused pane"
+        );
+    }
+    // The commands still run in the composer whose pane is the one on screen:
+    // the same keys are handled once it holds the caret.
+    let mut focused = ChatComposer::new()
+        .with_value("/")
+        .with_focused(true)
+        .with_slash_menu(vec![], Rc::new(RefCell::new(0)), Rc::new(RefCell::new(false)))
+        .with_on_slash_move(|_| {})
+        .with_on_slash_accept(|_| {})
+        .with_on_slash_dismiss(|| {});
+    focused.layout(
+        SizeConstraint::loose(vec2f(600.0, 400.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    assert!(
+        focused.dispatch_event(&down, &mut ctx, &app),
+        "the focused composer takes the band's arrow key"
+    );
+}
+
+/// The model chip opens the DSH two-level card, wired to the host's state: the
+/// root pane drills into the model list and the effort list, the model list
+/// takes the row the arrows moved to through the host's callback, the effort
+/// list reports the level by the id its harness names, Escape backs out of a
+/// drilled pane and then closes, and a background composer's card takes none of
+/// the keys — they belong to the pane whose composer holds the caret.
+#[test]
+fn the_model_card_reports_the_model_and_level_the_host_wires() {
+    use crate::elements::{
+        ComposerModelTray, EventContext, ModelTrayHarness, ModelTrayModel, ModelTrayPane,
+        ModelTrayState,
+    };
+
+    let app = AppContext::default();
+    let harness = || {
+        vec![ModelTrayHarness::new("goble", "Goble").with_models(vec![
+            ModelTrayModel::new("m1", "Model One")
+                .with_thinking(vec!["on".to_string(), "off".to_string()]),
+            ModelTrayModel::new("m2", "Model Two"),
+        ])]
+    };
+    let key = |name: &str| DispatchedEvent::KeyDown {
+        key: name.to_string(),
+        modifiers: ModifiersState::none(),
+    };
+
+    // A background composer keeps its card's keys for the pane on screen.
+    let mut background = ChatComposer::new()
+        .with_model_label("Model One")
+        .with_model_tray(ComposerModelTray::new(
+            harness(),
+            Rc::new(RefCell::new(ModelTrayState::default())),
+            Rc::new(RefCell::new(true)),
+        ));
+    let _ = background.layout(
+        SizeConstraint::loose(vec2f(600.0, 500.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut ctx = EventContext::default();
+    assert!(
+        !background.dispatch_event(&key("Enter"), &mut ctx, &app),
+        "a background composer does not take the card's Enter"
+    );
+
+    // The focused composer routes the card's keys to the host's callbacks.
+    let open = Rc::new(RefCell::new(true));
+    let chosen: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let levels: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let tray_state = Rc::new(RefCell::new(ModelTrayState::default()));
+    let log = chosen.clone();
+    let level_log = levels.clone();
+    let tray = ComposerModelTray::new(harness(), tray_state.clone(), open.clone())
+        .with_current("m1", "on")
+        .with_on_select_model(move |row| log.borrow_mut().push(row))
+        .with_on_select_level(move |level| level_log.borrow_mut().push(level));
+    let mut composer = ChatComposer::new()
+        .with_model_label("Model One")
+        .with_focused(true)
+        .with_model_tray(tray);
+    let _ = composer.layout(
+        SizeConstraint::loose(vec2f(600.0, 500.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    // Root pane: Enter drills into the model list, the arrows move the row, and
+    // Enter takes it through the host's callback.
+    assert!(
+        composer.dispatch_event(&key("Enter"), &mut ctx, &app),
+        "the root pane drills on Enter"
+    );
+    assert_eq!(tray_state.borrow().pane(), ModelTrayPane::Model);
+    assert!(
+        composer.dispatch_event(&key("ArrowDown"), &mut ctx, &app),
+        "the model pane takes the arrow key"
+    );
+    assert_eq!(tray_state.borrow().row, 1, "the highlight moved one row down");
+    assert!(
+        composer.dispatch_event(&key("Enter"), &mut ctx, &app),
+        "the model pane takes Enter"
+    );
+    assert_eq!(
+        chosen.borrow().as_slice(),
+        &[1],
+        "Enter takes the row the arrows moved to, through the host's callback"
+    );
+    assert!(!*open.borrow(), "the pick closes the card");
+
+    // Escape backs out of a drilled pane first (no selection), then closes.
+    *open.borrow_mut() = true;
+    *tray_state.borrow_mut() = ModelTrayState::default();
+    let _ = composer.layout(
+        SizeConstraint::loose(vec2f(600.0, 500.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    assert!(composer.dispatch_event(&key("Enter"), &mut ctx, &app));
+    assert_eq!(tray_state.borrow().pane(), ModelTrayPane::Model);
+    assert!(composer.dispatch_event(&key("Escape"), &mut ctx, &app));
+    assert_eq!(
+        tray_state.borrow().pane(),
+        ModelTrayPane::Root,
+        "Escape leaves the drilled pane for the root menu"
+    );
+    assert!(*open.borrow(), "and does not close the card yet");
+    assert!(composer.dispatch_event(&key("Escape"), &mut ctx, &app));
+    assert!(!*open.borrow(), "Escape from the root pane closes the card");
+
+    // The effort pane reports the level by the id its harness names: re-open on
+    // the root, walk to the Effort cell, drill and take the level in force.
+    *open.borrow_mut() = true;
+    *tray_state.borrow_mut() = ModelTrayState::default();
+    let _ = composer.layout(
+        SizeConstraint::loose(vec2f(600.0, 500.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    assert!(composer.dispatch_event(&key("ArrowDown"), &mut ctx, &app));
+    assert_eq!(tray_state.borrow().cell, 1, "the root highlight is on Effort");
+    assert!(composer.dispatch_event(&key("Enter"), &mut ctx, &app));
+    assert_eq!(tray_state.borrow().pane(), ModelTrayPane::Effort);
+    assert!(composer.dispatch_event(&key("Enter"), &mut ctx, &app));
+    assert_eq!(
+        levels.borrow().as_slice(),
+        &["on".to_string()],
+        "the level is reported by its harness id"
+    );
+    assert!(!*open.borrow(), "and the pick closes the card");
+}
+
+/// The context band — the session chip, the working directory, the branch and
+/// the environment control — is the card's second section. While the draft's
+/// command band is open it steps out of the way, so the surface is the slash
+/// menu over the input segment alone (DSH's slash state), and it comes back the
+/// moment the query is cleared or Escape dismisses the band. The card shrinks by
+/// the band's height (less the top inset it no longer needs), not by the input's.
+#[test]
+fn the_context_band_hides_while_a_slash_command_is_typed() {
+    use crate::elements::{COMPOSER_CARD_INSET, CONTEXT_SEGMENT_HEIGHT, SlashMenuItem};
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
-    let open = Rc::new(RefCell::new(false));
-    let summary = DiffSummary::new(vec![
-        DiffFileStat::new("src/lib.rs", 9, 2),
-        DiffFileStat::new("README.md", 3, 0),
-    ]);
-    let mut composer = ChatComposer::new()
-        .with_context_above_editor(true)
-        .with_path_label("/work/goble")
-        .with_branch_label("terminal-first")
-        .with_diff_menu(summary, open.clone());
+    let build = |value: &str, dismissed: bool| {
+        ChatComposer::new()
+            .with_value(value)
+            .with_focused(true)
+            .with_path_label("brindlepad-web")
+            .with_branch_label("main")
+            .with_harness_label("This Computer")
+            .with_harness_icon("environment-computer")
+            .with_on_send(|_| {})
+            .with_slash_menu(
+                vec![SlashMenuItem::new("new", "Start a fresh conversation")],
+                Rc::new(RefCell::new(0)),
+                Rc::new(RefCell::new(dismissed)),
+            )
+            .with_on_slash_move(|_| {})
+            .with_on_slash_accept(|_| {})
+            .with_on_slash_dismiss(|| {})
+    };
+    let frame = |composer: &mut ChatComposer| {
+        let (size, commands) = paint_composer_in(&app, composer, vec2f(760.0, 500.0));
+        let mut tokens = drawn_texts(&commands);
+        tokens.extend(commands.iter().filter_map(|command| match command {
+            RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
+            _ => None,
+        }));
+        (size, tokens)
+    };
+    let has_band = |tokens: &[String]| {
+        tokens.iter().any(|token| {
+            matches!(
+                token.as_str(),
+                "brindlepad-web"
+                    | "main"
+                    | "This Computer"
+                    | "folder"
+                    | "branch"
+                    | "environment-computer"
+            )
+        })
+    };
 
-    let commands = paint_composer(&app, &mut composer);
-    let texts = drawn_texts(&commands);
-    for expected in ["2", "+12", "-2"] {
-        assert!(
-            texts.iter().any(|text| text == expected),
-            "the control draws {expected:?}: {texts:?}"
-        );
-    }
+    // The band is up for a `/` draft: the context controls are not drawn at
+    // all, so the card is the input segment plus the command list.
+    let mut slash = build("/", false);
+    let (slash_size, slash_frame) = frame(&mut slash);
     assert!(
-        !texts.iter().any(|text| text == "src/lib.rs"),
-        "the menu starts closed"
+        !has_band(&slash_frame),
+        "the context band is hidden while a slash command is typed: {slash_frame:?}"
+    );
+    assert!(
+        slash_frame.iter().any(|token| token == "new"),
+        "the input still holds the draft under the list: {slash_frame:?}"
     );
 
-    let button = card_of(&commands, "file");
+    // The same composer with a plain draft draws the band, and is taller by it.
+    let mut plain = build("hi", false);
+    let (plain_size, plain_frame) = frame(&mut plain);
     assert!(
-        (button.height() - crate::elements::CONTEXT_PILL_HEIGHT).abs() < 0.5,
-        "the control is one context-row item tall"
+        has_band(&plain_frame),
+        "a plain draft keeps the context band: {plain_frame:?}"
     );
-    let radius = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::StrokeRect {
-                rect,
-                corner_radius,
-                ..
-            } if *rect == button => Some(*corner_radius),
-            _ => None,
-        })
-        .expect("the diff control outlines its box");
-    assert_eq!(radius, 0.0, "the diff control has square corners");
-
-    // A release inside the control opens the menu the app owns.
-    assert!(click_at(&mut composer, &app, button));
-    assert!(*open.borrow(), "the click opens the changed-files menu");
-
-    let commands = paint_composer(&app, &mut composer);
-    let texts = drawn_texts(&commands);
-    for expected in ["src/lib.rs", "README.md", "+9", "+3"] {
-        assert!(
-            texts.iter().any(|text| text == expected),
-            "the open menu draws {expected:?}: {texts:?}"
-        );
-    }
-    let panel_corners = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::StrokeRect { corner_radius, .. } => Some(*corner_radius),
-            _ => None,
-        })
-        .filter(|radius| *radius == 0.0)
-        .count();
     assert!(
-        panel_corners >= 2,
-        "the control and its menu panel are square: {panel_corners}"
+        (plain_size.y
+            - slash_size.y
+            - (CONTEXT_SEGMENT_HEIGHT - COMPOSER_CARD_INSET))
+            .abs()
+            < 1.0,
+        "hiding the band shrinks the card by exactly the band's section: \\
+         {} against {}",
+        plain_size.y,
+        slash_size.y
+    );
+
+    // Clearing the query restores the band.
+    let mut cleared = build("", false);
+    let (cleared_size, cleared_frame) = frame(&mut cleared);
+    assert!(
+        has_band(&cleared_frame),
+        "clearing the draft brings the context band back: {cleared_frame:?}"
+    );
+    assert!(
+        (cleared_size.y - plain_size.y).abs() < 0.5,
+        "the restored card is the plain card: {cleared_size:?} against {plain_size:?}"
+    );
+
+    // Escape dismissing the band restores it while the draft still reads `/`.
+    let mut dismissed = build("/", true);
+    let (_, dismissed_frame) = frame(&mut dismissed);
+    assert!(
+        has_band(&dismissed_frame),
+        "an Escape-dismissed band lets the context band return: {dismissed_frame:?}"
     );
 }
 
-/// One click on the control opens the review pane on every change: no menu
-/// stands between the chip and the diffs.
+/// The two bands cannot be up together: opening the model card puts the draft's
+/// command band away, so the composer is the input segment plus one overlay. The
+/// slash draft keeps the context band hidden — the model card is the band that
+/// was opened, not a reason to bring the context controls back.
 #[test]
-fn the_diff_control_opens_the_review_pane_on_every_change() {
-    use crate::elements::{DiffFileStat, DiffSummary};
+fn opening_the_model_card_puts_the_slash_band_away() {
+    use crate::elements::{
+        ComposerModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState, SlashMenuItem,
+    };
 
     let app = AppContext::default();
-    let open = Rc::new(RefCell::new(false));
-    let summary = DiffSummary::new(vec![
-        DiffFileStat::new("src/lib.rs", 9, 2),
-        DiffFileStat::new("README.md", 3, 0),
-    ]);
-    let opened: Rc<RefCell<Vec<Option<String>>>> = Rc::new(RefCell::new(Vec::new()));
-    let callback = Rc::clone(&opened);
+    let tray_open = Rc::new(RefCell::new(false));
+    let tray = ComposerModelTray::new(
+        vec![
+            ModelTrayHarness::new("goble", "Goble").with_models(vec![
+                ModelTrayModel::new("m1", "Model One").with_thinking(vec!["off".to_string()]),
+            ]),
+        ],
+        Rc::new(RefCell::new(ModelTrayState::default())),
+        tray_open.clone(),
+    )
+    .with_current("m1", "off")
+    .with_on_select_model(|_| {})
+    .with_on_select_level(|_| {});
     let mut composer = ChatComposer::new()
-        .with_context_above_editor(true)
-        .with_path_label("/work/goble")
-        .with_diff_menu(summary, Rc::clone(&open))
-        .with_diff_open(move |file| callback.borrow_mut().push(file));
-
+        .with_value("/")
+        .with_focused(true)
+        .with_path_label("brindlepad-web")
+        .with_model_label("Model One")
+        .with_model_tray(tray)
+        .with_slash_menu(
+            vec![SlashMenuItem::new("new", "Start a fresh conversation")],
+            Rc::new(RefCell::new(0)),
+            Rc::new(RefCell::new(false)),
+        )
+        .with_on_slash_move(|_| {})
+        .with_on_slash_accept(|_| {})
+        .with_on_slash_dismiss(|| {});
+    // The chip opens the card; the draft's `/` band owns the overlay, so the
+    // next rebuild must put the freshly opened model card away again.
+    *tray_open.borrow_mut() = true;
+    let _ = composer.layout(
+        SizeConstraint::loose(vec2f(760.0, 500.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    assert!(
+        !*tray_open.borrow(),
+        "the slash band wins the one overlay slot over the model card"
+    );
     let commands = paint_composer(&app, &mut composer);
+    let tokens = drawn_texts(&commands);
     assert!(
-        !drawn_texts(&commands).iter().any(|text| text == "src/lib.rs"),
-        "the file list does not stand between the click and the pane"
+        !tokens.iter().any(|token| token == "brindlepad-web"),
+        "the context band stays hidden while the slash draft is active: {tokens:?}"
     );
-    let button = card_of(&commands, "file");
-    assert!(
-        click_at(&mut composer, &app, button),
-        "the control takes the click"
-    );
-    assert_eq!(
-        opened.borrow().as_slice(),
-        &[None],
-        "the control asks for the whole tree"
-    );
-    assert!(!*open.borrow(), "no menu was opened on the way");
 }
 
+/// The model chip opens the DSH card inside the composer's own frame: the root
+/// pane's `Model` and `Effort` cells with their current values and right
+/// chevrons, drawn as a 240pt menu card anchored above the chip — not as a
+/// full-width band over the input.
+#[test]
+fn the_model_chip_opens_the_dsh_card_above_it() {
+    use crate::elements::{ComposerModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState};
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let open = Rc::new(RefCell::new(true));
+    let tray = ComposerModelTray::new(
+        vec![
+            ModelTrayHarness::new("deepseek", "DeepSeek").with_models(vec![
+                ModelTrayModel::new("deepseek-flash", "DeepSeek Flash")
+                    .with_thinking(vec!["off".to_string(), "on".to_string()]),
+            ]),
+        ],
+        Rc::new(RefCell::new(ModelTrayState::default())),
+        open.clone(),
+    )
+    .with_current("deepseek-flash", "on")
+    .with_on_select_model(|_| {})
+    .with_on_select_level(|_| {});
+    let mut composer = ChatComposer::new()
+        .with_model_label("DeepSeek Flash")
+        .with_focused(true)
+        .with_model_tray(tray)
+        .with_on_send(|_| {});
+    let (size, commands) = paint_composer_in(&app, &mut composer, vec2f(900.0, 600.0));
+
+    // The root pane's two cells: labels left, current values right.
+    let texts = drawn_texts(&commands);
+    for label in ["Model", "Effort", "DeepSeek Flash", "On"] {
+        assert!(
+            texts.iter().any(|text| text == label),
+            "the root pane draws {label:?}: {texts:?}"
+        );
+    }
+
+    // The card is the raised 240pt casing above the chip, not a band.
+    let card = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - 8.0).abs() < 0.01
+                && rect.min_y() < 0.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the model card paints its raised casing above the chip");
+    assert!(
+        (card.width() - 240.0).abs() < 0.5,
+        "the root pane is DSH's 240pt settings menu: {card:?}"
+    );
+    assert!(
+        card.width() < size.x,
+        "the card is a menu, not a band over the whole input: {card:?} in {size:?}"
+    );
+
+    // DSH's drill chevrons on the cells, and the chip's chevron flipped up.
+    assert!(
+        commands
+            .iter()
+            .filter(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "chevron-right"
+            ))
+            .count()
+            >= 2,
+        "each root cell carries its drill chevron: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "chevron-up"
+        )),
+        "the open chip points up: {commands:?}"
+    );
+}

@@ -58,6 +58,12 @@ impl Store {
                 usage_input INTEGER NOT NULL DEFAULT 0,
                 usage_output INTEGER NOT NULL DEFAULT 0,
                 usage_cached INTEGER,
+                -- The sidebar's archived filter and its Star/Unstar menu row:
+                -- `archived_at` is when the user archived the conversation
+                -- (NULL = listed normally, the archived row keeps its order
+                -- accounting slot) and `starred` is the persisted pin.
+                archived_at TEXT,
+                starred INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             ) STRICT;
@@ -371,6 +377,28 @@ impl Store {
             ("usage_input", "INTEGER NOT NULL DEFAULT 0"),
             ("usage_output", "INTEGER NOT NULL DEFAULT 0"),
             ("usage_cached", "INTEGER"),
+        ] {
+            let present: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = ?1",
+                    [column],
+                    |r| r.get(0),
+                )
+                .with_context(|| format!("failed to check for chats.{column}"))?;
+            if !present {
+                conn.execute(&format!("ALTER TABLE chats ADD COLUMN {column} {ty}"), [])
+                    .with_context(|| format!("failed to add chats.{column}"))?;
+            }
+        }
+
+        // Same idiom for the sidebar session menu's two pieces of durable
+        // state: `archived_at` is when the conversation was archived (NULL
+        // while it is listed normally) and `starred` is the persisted pin.
+        // Both live beside the title so they survive a restart the way a
+        // rename does.
+        for (column, ty) in [
+            ("archived_at", "TEXT"),
+            ("starred", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             let present: bool = conn
                 .query_row(

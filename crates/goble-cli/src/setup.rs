@@ -13,8 +13,8 @@ use anyhow::{bail, Context, Result};
 use goble_core::app_home::GobleHome;
 use goble_core::config::{
     apply_ops, seed_default_document, ConfigEditor, ConfigError, ConfigFile, ConfigOp,
-    ConfigValue, GobleConfig, HubConfig, RemoteAgentConfig, RemoteAgentProvider, RemoteMode,
-    SetupStatus, SetupTarget,
+    ConfigValue, GobleConfig, HubConfig, RemoteAgentConfig, RemoteAgentProvider, SetupStatus,
+    SetupTarget,
 };
 
 use crate::cli::{SetupAction, SetupTargetArg};
@@ -291,7 +291,7 @@ fn clean(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goble_core::config::RemoteAgentProvider;
+    use goble_core::config::{RemoteAgentProvider, RemoteMode};
 
     /// A temp home: the two files setup reads and writes, and nothing else.
     fn home() -> (tempfile::TempDir, PathBuf, PathBuf) {

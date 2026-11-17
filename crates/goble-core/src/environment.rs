@@ -7,7 +7,6 @@
 //! never resolves it.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -150,6 +149,7 @@ pub fn save(path: &Path, groups: &EnvironmentFile) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::PathBuf;
 
     /// A private scratch directory. Tests run in parallel, so the name carries

@@ -12,7 +12,7 @@ use goble_ui::theme::{ColorToken, TabColor};
 use super::topbar::{
     build_live_indicator, insertion_index, left_padding, reorder_target_index, tab_fillet_bottom,
     tab_hint, tab_merge_bottom, tab_pill_bottom, tab_top_radius, WorkspaceChip, WorkspaceChipParts,
-    MIN_CONTENTS_FOR_CLOSE, TAB_EDGE_INSET, TAB_FLARE_RADIUS, TAB_MERGE_DROP, TAB_TOP_INSET,
+    MIN_CONTENTS_FOR_CLOSE, TAB_EDGE_INSET, TAB_FLARE_RADIUS, TAB_TOP_INSET,
     TAB_TOP_RADIUS, TOPBAR_BOTTOM_BAND, TOPBAR_BOTTOM_BAND_RADIUS, TOPBAR_FULLSCREEN_PADDING,
     TOPBAR_ICON_BUTTON_SIZE, TOPBAR_RIGHT_PADDING, TOPBAR_TRAFFIC_INSET,
 };

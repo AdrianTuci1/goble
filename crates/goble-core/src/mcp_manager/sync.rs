@@ -246,6 +246,7 @@ pub fn probe_stdio(
 ) -> Result<Vec<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let command = command.to_string();
+    let timeout_message = command.clone();
     let args = args.to_vec();
     std::thread::Builder::new()
         .name("goble-mcp-probe".to_string())
@@ -267,7 +268,7 @@ pub fn probe_stdio(
     match rx.recv_timeout(timeout) {
         Ok(result) => result,
         Err(_) => Err(format!(
-            "{command} did not answer within {}s",
+            "{timeout_message} did not answer within {}s",
             timeout.as_secs()
         )),
     }

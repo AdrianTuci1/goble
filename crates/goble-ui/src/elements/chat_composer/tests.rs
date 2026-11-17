@@ -3035,8 +3035,8 @@ fn the_context_band_hides_while_a_slash_command_is_typed() {
         "the context band is hidden while a slash command is typed: {slash_frame:?}"
     );
     assert!(
-        slash_frame.iter().any(|token| token == "new"),
-        "the input still holds the draft under the list: {slash_frame:?}"
+        slash_frame.iter().any(|token| token == "/"),
+        "the input still holds the slash draft, so the band has its query: {slash_frame:?}"
     );
 
     // The same composer with a plain draft draws the band, and is taller by it.

@@ -666,8 +666,9 @@ pub fn problems_for(file: ConfigFile, text: &str) -> Vec<ConfigProblem> {
 }
 
 /// The serde shape `hosts.toml` rows parse through, mirroring
-/// [`HostEntry`]'s required fields.
+/// [`HostEntry`]'s required fields. The fields are read by serde, not by code.
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct HostsWireEntry {
     name: String,
     host: String,

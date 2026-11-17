@@ -222,8 +222,10 @@ impl ConfigEditor {
 
         // 2. Parse. A file we cannot parse is never overwritten.
         let mut doc: DocumentMut = raw
-            .parse()
-            .map_err(|error| ConfigError::RefusedUnparseable(error.to_string(), file))?;
+            .parse::<DocumentMut>()
+            .map_err(|error: toml_edit::TomlError| {
+                ConfigError::RefusedUnparseable(error.to_string(), file)
+            })?;
         let before_problems = problems_for(file, &raw);
 
         // 3. The caller's change.
@@ -347,11 +349,15 @@ impl ConfigEditor {
         // A file we cannot parse is a file we do not understand: refuse rather
         // than replace the user's edits with our typed copy.
         raw.parse::<DocumentMut>()
-            .map_err(|error| ConfigError::RefusedUnparseable(error.to_string(), file))?;
+            .map_err(|error: toml_edit::TomlError| {
+                ConfigError::RefusedUnparseable(error.to_string(), file)
+            })?;
 
         let replacement: DocumentMut = text
-            .parse()
-            .map_err(|error| ConfigError::RefusedUnparseable(error.to_string(), file))?;
+            .parse::<DocumentMut>()
+            .map_err(|error: toml_edit::TomlError| {
+                ConfigError::RefusedUnparseable(error.to_string(), file)
+            })?;
         let errors = schema::validate(file, &replacement);
         if !errors.is_empty() {
             return Err(ConfigError::Invalid(errors));

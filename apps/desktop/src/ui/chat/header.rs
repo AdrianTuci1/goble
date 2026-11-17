@@ -46,8 +46,6 @@ pub(crate) enum HeaderRowWidth {
     /// width and this preference (`None` = the ratio model, `Some` = the
     /// pane's committed width), centred in the band.
     Lane(Option<f32>),
-    /// The row is bounded to an explicit width, centred in the band.
-    Exact(f32),
 }
 
 /// The pane's topbar band: a square `Surface` band painted flush with the
@@ -98,7 +96,6 @@ impl HeaderBand {
         let width = match self.row_width {
             HeaderRowWidth::Full => return None,
             HeaderRowWidth::Lane(preference) => lane_column(available, preference).1,
-            HeaderRowWidth::Exact(width) => width.min(available).max(0.0),
         };
         Some((((available - width) / 2.0).max(0.0), width))
     }
@@ -1908,11 +1905,13 @@ mod tests {
 
     fn pane_rect(state: &Rc<RefCell<UiState>>) -> RectF {
         let s = state.borrow();
-        s.pane_bounds
+        let bounds = s
+            .pane_bounds
             .borrow()
             .get(&s.active_pane_id)
             .copied()
-            .expect("the pane recorded its bounds")
+            .expect("the pane recorded its bounds");
+        bounds
     }
 
     /// The pane's topbar band is flush with the pane's slot: it paints past the
@@ -1997,11 +1996,11 @@ mod tests {
         let close = rightmost_icon(&cmds, "x-close");
         assert!(
             close.0 < lane_right,
-            "the close X is inside the lane column: {close} vs lane right {lane_right}"
+            "the close X is inside the lane column: {close:?} vs lane right {lane_right}"
         );
         assert!(
             close.0 > lane_right - 40.0,
-            "and hugs its trailing edge: {close} vs lane right {lane_right}"
+            "and hugs its trailing edge: {close:?} vs lane right {lane_right}"
         );
 
         // The work chip is bounded by the same column.
@@ -2036,7 +2035,7 @@ mod tests {
         let narrow_close = rightmost_icon(&narrow_cmds, "x-close");
         assert!(
             narrow_close.0 > narrow_pane.max_x() - 40.0,
-            "a narrow pane's controls keep the pane's trailing edge: {narrow_close} vs {:?}",
+            "a narrow pane's controls keep the pane's trailing edge: {narrow_close:?} vs {:?}",
             narrow_pane
         );
     }

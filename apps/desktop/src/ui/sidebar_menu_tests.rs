@@ -49,10 +49,11 @@ fn seeded() -> (
     tempfile::TempDir,
 ) {
     let dir = tempfile::tempdir().expect("temp thread-store dir");
-    let desktop = Arc::new(DesktopState::new(
+    // `DesktopState::new` already hands back the shared handle the app uses.
+    let desktop = DesktopState::new(
         Store::open_in_memory().expect("in-memory store"),
         ThreadStore::new(dir.path()).expect("thread store"),
-    ));
+    );
     let first = desktop
         .create_chat("Redesign the sidebar", None, None)
         .expect("create the first conversation");
@@ -143,7 +144,7 @@ fn open_row_menu(
     app: &AppContext,
     id: &str,
 ) -> Vec<RenderCommand> {
-    state.borrow_mut().sidebar_hover_row.borrow_mut() = Some(format!("session:{id}"));
+    *state.borrow_mut().sidebar_hover_row.borrow_mut() = Some(format!("session:{id}"));
     let commands = render(root, app);
     let at = commands
         .iter()
@@ -211,11 +212,19 @@ fn click_menu_label(
     click(root, app, at);
 }
 
+/// Every run of text the sidebar list draws. The topbar's tab label also names
+/// the selected conversation, so the region (left of the sidebar column, below
+/// the bar) is what tells a row run apart from the tab's.
 fn drawn_texts(commands: &[RenderCommand]) -> Vec<String> {
     commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            RenderCommand::DrawText { text, origin, .. }
+                if origin.x < crate::ui::SIDEBAR_WIDTH
+                    && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+            {
+                Some(text.clone())
+            }
             _ => None,
         })
         .collect()
@@ -718,7 +727,7 @@ fn the_hovered_session_row_does_not_move_the_rows_below_it() {
         })
         .expect("the row below is drawn");
 
-    state.borrow_mut().sidebar_hover_row.borrow_mut() =
+    *state.borrow_mut().sidebar_hover_row.borrow_mut() =
         Some(format!("session:{hovered}"));
     let hovered_frame = render(&mut root, &app);
     let below_hover = hovered_frame

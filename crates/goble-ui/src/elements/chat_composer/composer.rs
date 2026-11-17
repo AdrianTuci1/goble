@@ -5,7 +5,7 @@ use super::proposal::CommandProposalUi;
 use crate::elements::{
     harness_bar_mark, AppContext, ApprovalMode, Border, Clipped, ComposerButton,
     ComposerModelTray, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, DiffSummary,
-    EdgeInsets, Element, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, ModelTrayKey,
+    EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, ModelTrayKey,
     Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
     PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Spacer, Text,
     TextArea, Tooltip, TooltipPosition, Wrap, COMPOSER_CONTROL_RADIUS, CONTEXT_PILL_HEIGHT,
@@ -1068,6 +1068,17 @@ impl ChatComposer {
             return None;
         }
         let sm = app.theme.spacing_px(SpacingToken::Sm);
+        // The row reserves its height even when it holds no control at all: the
+        // footer's 32pt is what keeps the card — and the height a shell pane
+        // reserves for its pty bar — stable now that the send circle is gone.
+        // The invisible zero-width strut is the tallest child of the row's wrap,
+        // so it is the row's cross-axis height.
+        let mut left = left;
+        left.push(
+            Empty::new()
+                .with_size(vec2f(0.0, COMPOSER_FOOTER_HEIGHT))
+                .finish(),
+        );
         let wrap = Wrap::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
@@ -1395,7 +1406,7 @@ impl ChatComposer {
         // The DSH menu is a card anchored to this chip, not a sibling band: the
         // chip is wrapped in the menu element, which draws the card above it.
         match self.model_tray.as_ref() {
-            Some(tray) => tray.popup(trigger),
+            Some(tray) => Box::new(tray.popup(trigger)),
             None => trigger,
         }
     }

@@ -212,6 +212,7 @@ struct BandRow {
 
 /// One drawn row: the row it shows, where it sits relative to the band's
 /// origin, and its own pointer state.
+#[derive(Clone)]
 struct DrawnRow {
     row: usize,
     rect: RectF,
@@ -965,7 +966,7 @@ mod tests {
             "and ends on the card's other edge: {card:?}"
         );
         assert!(
-            (*card.1 - CARD_RADIUS).abs() < 0.01,
+            (card.1 - CARD_RADIUS).abs() < 0.01,
             "the card is rounded, not a slab"
         );
         assert!(

@@ -707,7 +707,7 @@ fn unset_path(doc: &mut DocumentMut, path: &[String]) {
     let Some((leaf, parents)) = path.split_last() else {
         return;
     };
-    let Some(mut item) = get_item(doc, parents) else {
+    let Some(item) = get_item(doc, parents) else {
         return;
     };
     let Some(table) = item.as_table_like_mut() else {
@@ -839,13 +839,13 @@ fn validate_models(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
     for (slug, item) in models.iter() {
         if !is_valid_map_key(slug) {
             errors.push(FieldError::new(
-                &["model", slug.as_str()],
+                &["model", slug],
                 "a model slug may only use letters, digits, '-' and '_'",
             ));
         }
         let Some(table) = item.as_table_like() else {
             errors.push(FieldError::new(
-                &["model", slug.as_str()],
+                &["model", slug],
                 "expected a table of model settings",
             ));
             continue;
@@ -872,7 +872,7 @@ fn validate_models(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
         if let Some(model) = table.get("model").and_then(|item| item.as_str()) {
             if model.trim().is_empty() {
                 errors.push(FieldError::new(
-                    &["model", slug.as_str(), "model"],
+                    &["model", slug, "model"],
                     "a model id cannot be blank (leave the key out to use the slug)",
                 ));
             }
@@ -880,7 +880,7 @@ fn validate_models(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
         if let Some(env) = table.get("api_key_env").and_then(|item| item.as_str()) {
             if !is_valid_env_name(env) {
                 errors.push(FieldError::new(
-                    &["model", slug.as_str(), "api_key_env"],
+                    &["model", slug, "api_key_env"],
                     "an environment variable name is letters, digits and '_'",
                 ));
             }
@@ -902,7 +902,7 @@ fn validate_mcp(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
         }
         let Some(table) = item.as_table_like() else {
             errors.push(FieldError::new(
-                &["mcp_servers", name.as_str()],
+                &["mcp_servers", name],
                 "expected a table of server settings",
             ));
             continue;
@@ -915,18 +915,18 @@ fn validate_mcp(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
         ] {
             if let Some(value) = table.get(key) {
                 if let Some(message) = kind.check(value) {
-                    errors.push(FieldError::new(&["mcp_servers", name.as_str(), key], message));
+                    errors.push(FieldError::new(&["mcp_servers", name, key], message));
                 }
             }
         }
         if let Some(args) = table.get("args") {
             if let Some(message) = check_string_array(args) {
-                errors.push(FieldError::new(&["mcp_servers", name.as_str(), "args"], message));
+                errors.push(FieldError::new(&["mcp_servers", name, "args"], message));
             }
         }
         if table.get("url").is_none() && table.get("command").is_none() {
             errors.push(FieldError::new(
-                &["mcp_servers", name.as_str()],
+                &["mcp_servers", name],
                 "an MCP server needs either a url or a command",
             ));
         }
@@ -940,41 +940,41 @@ fn validate_harness(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
     for (id, item) in harnesses.iter() {
         if !is_valid_map_key(id) {
             errors.push(FieldError::new(
-                &["harness", id.as_str()],
+                &["harness", id],
                 "a harness id may only use letters, digits, '-' and '_'",
             ));
             continue;
         }
         let Some(table) = item.as_table_like() else {
             errors.push(FieldError::new(
-                &["harness", id.as_str()],
+                &["harness", id],
                 "expected a table of harness settings",
             ));
             continue;
         };
         if let Some(enabled) = table.get("enabled") {
             if let Some(message) = FieldKind::Bool.check(enabled) {
-                errors.push(FieldError::new(&["harness", id.as_str(), "enabled"], message));
+                errors.push(FieldError::new(&["harness", id, "enabled"], message));
             }
         }
         if let Some(command) = table.get("command") {
             if let Some(message) = FieldKind::Text.check(command) {
-                errors.push(FieldError::new(&["harness", id.as_str(), "command"], message));
+                errors.push(FieldError::new(&["harness", id, "command"], message));
             } else if command.as_str().is_some_and(|value| value.trim().is_empty()) {
                 errors.push(FieldError::new(
-                    &["harness", id.as_str(), "command"],
+                    &["harness", id, "command"],
                     "a command cannot be blank",
                 ));
             }
         }
         if let Some(args) = table.get("args") {
             if let Some(message) = check_string_array(args) {
-                errors.push(FieldError::new(&["harness", id.as_str(), "args"], message));
+                errors.push(FieldError::new(&["harness", id, "args"], message));
             }
         }
         if let Some(env) = table.get("env") {
             if let Some(message) = check_string_table(env) {
-                errors.push(FieldError::new(&["harness", id.as_str(), "env"], message));
+                errors.push(FieldError::new(&["harness", id, "env"], message));
             }
         }
     }
@@ -1006,7 +1006,7 @@ fn validate_remote_agents(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
     for (name, item) in agents.iter() {
         let Some(table) = item.as_table_like() else {
             errors.push(FieldError::new(
-                &["remote_agents", name.as_str()],
+                &["remote_agents", name],
                 "expected a table of agent settings",
             ));
             continue;
@@ -1018,18 +1018,18 @@ fn validate_remote_agents(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
                     .iter()
                     .any(|known| known.as_str() == provider) => {}
             Some(provider) => errors.push(FieldError::new(
-                &["remote_agents", name.as_str(), "provider"],
+                &["remote_agents", name, "provider"],
                 format!("{provider:?} is not a provider this build knows"),
             )),
             None => errors.push(FieldError::new(
-                &["remote_agents", name.as_str(), "provider"],
+                &["remote_agents", name, "provider"],
                 "an agent table needs a provider",
             )),
         }
         for key in ["enabled"] {
             if let Some(value) = table.get(key) {
                 if let Some(message) = FieldKind::Bool.check(value) {
-                    errors.push(FieldError::new(&["remote_agents", name.as_str(), key], message));
+                    errors.push(FieldError::new(&["remote_agents", name, key], message));
                 }
             }
         }
@@ -1043,13 +1043,13 @@ fn validate_remote_agents(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
         ] {
             if let Some(value) = table.get(key) {
                 if let Some(message) = FieldKind::Text.check(value) {
-                    errors.push(FieldError::new(&["remote_agents", name.as_str(), key], message));
+                    errors.push(FieldError::new(&["remote_agents", name, key], message));
                 }
             }
         }
         if let Some(value) = table.get("api_url") {
             if let Some(message) = FieldKind::Url.check(value) {
-                errors.push(FieldError::new(&["remote_agents", name.as_str(), "api_url"], message));
+                errors.push(FieldError::new(&["remote_agents", name, "api_url"], message));
             }
         }
     }
@@ -1062,7 +1062,7 @@ fn validate_environment(doc: &DocumentMut) -> Vec<FieldError> {
     };
     for (group, item) in groups.iter() {
         let Some(table) = item.as_table_like() else {
-            errors.push(FieldError::new(&["groups", group.as_str()], "expected a table"));
+            errors.push(FieldError::new(&["groups", group], "expected a table"));
             continue;
         };
         for (name, value) in table.iter() {
@@ -1075,7 +1075,7 @@ fn validate_environment(doc: &DocumentMut) -> Vec<FieldError> {
                     });
             if !ok {
                 errors.push(FieldError::new(
-                    &["groups", group.as_str(), name.as_str()],
+                    &["groups", group, name],
                     "expected a string or { vault = \"key\" }",
                 ));
             }
@@ -1297,19 +1297,19 @@ pub fn view_for(file: ConfigFile, document: &ConfigDocument) -> ConfigView {
     }
 }
 
-fn app_view(app: &GobleConfig) -> AppView {
+fn app_view(app: &crate::config::AppConfig) -> AppView {
     AppView {
-        friendly_name: app.app.friendly_name.clone(),
-        usage: app.app.usage.clone(),
-        telemetry: app.app.telemetry,
-        in_app_notifications: app.app.in_app_notifications,
-        invert_scroll: app.app.invert_scroll,
-        scroll_speed: app.app.scroll_speed,
-        font_size: app.app.font_size,
-        auto_save_on_close: app.app.auto_save_on_close,
-        approval_mode: app.app.approval_mode.clone(),
-        auto_approve: app.app.auto_approve,
-        vim_mode: app.app.vim_mode,
+        friendly_name: app.friendly_name.clone(),
+        usage: app.usage.clone(),
+        telemetry: app.telemetry,
+        in_app_notifications: app.in_app_notifications,
+        invert_scroll: app.invert_scroll,
+        scroll_speed: app.scroll_speed,
+        font_size: app.font_size,
+        auto_save_on_close: app.auto_save_on_close,
+        approval_mode: app.approval_mode.clone(),
+        auto_approve: app.auto_approve,
+        vim_mode: app.vim_mode,
     }
 }
 
@@ -1353,7 +1353,7 @@ fn model_views(config: &GobleConfig) -> Vec<ModelView> {
                 max_completion_tokens: model.max_completion_tokens,
                 context_window: model.context_window,
                 hidden: model.hidden.unwrap_or(false),
-                is_default: config.models.default.as_deref() == Some(slug.as_str()),
+                is_default: config.models.default.as_deref() == Some(slug),
             }
         })
         .collect()

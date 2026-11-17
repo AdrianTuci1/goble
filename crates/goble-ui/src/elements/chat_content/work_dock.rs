@@ -24,7 +24,7 @@ use crate::elements::{
     TextSpan,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{rectf, Vector2F};
+use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 
 /// A group header's title size. DSH's announcement card draws its title at the

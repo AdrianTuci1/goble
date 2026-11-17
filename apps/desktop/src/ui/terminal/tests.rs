@@ -2619,7 +2619,7 @@ fn the_conversation_card_runs_the_panes_whole_width() {
     use goble_ui::theme::{ColorToken, SpacingToken};
 
     let app = AppContext::default();
-    let mut session = session_that_ran("echo hi", "hi");
+    let session = session_that_ran("echo hi", "hi");
     session.push_agent_view_block("c1", "Fix the build");
     let (pane, _terminal) = view_over(
         session,
@@ -2690,7 +2690,7 @@ fn a_conversation_card_draws_only_once_the_agent_has_answered() {
     let unanswered = "cb48cc15-1a2b-4c3d-9e4f-5a6b7c8d9e0f";
     let window = vec2f(900.0, 500.0);
     let pane_over = |info: HashMap<String, CardInfo>| -> Box<dyn Element> {
-        let mut session = session_that_ran("echo hi", "hi");
+        let session = session_that_ran("echo hi", "hi");
         session.push_agent_view_block(answered, answered);
         session.push_agent_view_block(unanswered, unanswered);
         let (pane, _terminal) = view_over(

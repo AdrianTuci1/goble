@@ -32,7 +32,7 @@ use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{rectf, RectF, Vector2F};
+use crate::geometry::{rectf, vec2f, RectF, Vector2F};
 use crate::platform::text_atlas::{measure_text_family, FontWeight};
 use crate::theme::{ColorToken, FontFamily};
 
@@ -159,8 +159,9 @@ pub fn level_label(level: &str) -> String {
 
 /// Which pane of the two-level menu the card shows: DSH's root menu, or one of
 /// the two lists it drills into.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ModelTrayPane {
+    #[default]
     Root,
     Model,
     Effort,
@@ -712,16 +713,25 @@ impl ModelTray {
         )
     }
 
-    /// The drawn panel's bounds in the frame's coordinates.
-    fn panel_bounds(&self) -> Option<RectF> {
+    /// Where the panel actually lands in the frame: DSH anchors the card above
+    /// the chip with its trailing edge on the chip's, so it opens leftwards.
+    /// A chip near the pane's leading edge would put the card off that edge, so
+    /// the card falls back to the chip's leading edge and opens rightwards —
+    /// DSH's own position-try fallback for a card that does not fit leftwards.
+    fn placed_panel(&self) -> Option<(Vector2F, Vector2F)> {
         let origin = self.origin?;
         let panel = self.panel.as_ref()?;
-        Some(rectf(
-            origin.x() + panel.origin.x,
-            origin.y() + panel.origin.y,
-            panel.size.x,
-            panel.size.y,
-        ))
+        let mut x = origin.x() + panel.origin.x;
+        if x < origin.x() {
+            x = origin.x();
+        }
+        Some((vec2f(x, origin.y() + panel.origin.y), panel.size))
+    }
+
+    /// The drawn panel's bounds in the frame's coordinates.
+    fn panel_bounds(&self) -> Option<RectF> {
+        let (origin, size) = self.placed_panel()?;
+        Some(rectf(origin.x, origin.y, size.x, size.y))
     }
 
     /// One line of `font_size` vertically centred in a row.
@@ -732,15 +742,15 @@ impl ModelTray {
     /// The row the pointer is in, when it is over the open panel.
     fn row_at(&self, position: Vector2F) -> Option<PanelRowKind> {
         let panel = self.panel.as_ref()?;
-        let origin = self.origin?;
+        let (origin, _) = self.placed_panel()?;
         panel
             .rows
             .iter()
             .find(|row| {
                 contains(
                     rectf(
-                        origin.x() + panel.origin.x + row.rect.min_x(),
-                        origin.y() + panel.origin.y + row.rect.min_y(),
+                        origin.x + row.rect.min_x(),
+                        origin.y + row.rect.min_y(),
                         row.rect.width(),
                         row.rect.height(),
                     ),
@@ -852,7 +862,9 @@ impl Element for ModelTray {
         let Some(panel) = self.panel.clone() else {
             return;
         };
-        let panel_origin = origin + panel.origin;
+        let Some((panel_origin, _panel_size)) = self.placed_panel() else {
+            return;
+        };
         let card = rectf(
             panel_origin.x,
             panel_origin.y,

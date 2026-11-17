@@ -48,7 +48,7 @@ impl ToastTone {
 }
 
 /// Box a plain closure as a toast action's run callback.
-fn toast_run(mut action: impl FnMut() + 'static) -> Rc<RefCell<dyn FnMut()>> {
+fn toast_run(action: impl FnMut() + 'static) -> Rc<RefCell<dyn FnMut()>> {
     Rc::new(RefCell::new(action))
 }
 
@@ -58,6 +58,7 @@ pub(crate) struct ToastAction {
     pub run: Rc<RefCell<dyn FnMut()>>,
 }
 
+#[cfg(test)]
 impl ToastAction {
     pub(crate) fn new(
         label: impl Into<String>,

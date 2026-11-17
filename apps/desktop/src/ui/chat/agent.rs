@@ -1668,7 +1668,7 @@ mod composer_wiring_tests {
     use crate::media::MediaState;
     use crate::root_view::RootView;
     use crate::state::UiState;
-    use crate::ui::{UiActions, SIDEBAR_WIDTH};
+    use crate::ui::UiActions;
 
     /// The window the app is laid out at: the pane area is split in two, so a
     /// control on the left pane can be used while the right one is active.

@@ -329,8 +329,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontFamily: typography.mono.fontFamily,
     fontSize: 13,
-    outlineColor: "transparent",
-    outlineStyle: "solid",
     paddingHorizontal: 12,
     paddingVertical: 10,
   },

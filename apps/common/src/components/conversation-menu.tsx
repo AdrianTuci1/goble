@@ -213,8 +213,6 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: palette.text,
     fontSize: 14,
-    outlineColor: "transparent",
-    outlineStyle: "solid",
     padding: 0,
   },
   body: {
@@ -268,7 +266,7 @@ const styles = StyleSheet.create({
   },
   destructiveLabel: {
     ...typography.caption,
-    color: palette.white,
+    color: palette.bg,
     fontSize: 11,
     fontWeight: "600",
   },

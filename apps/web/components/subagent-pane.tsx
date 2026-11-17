@@ -106,7 +106,12 @@ export function SubagentPane({
           onPress={onBack}
           style={({ pressed }) => [styles.back, pressed && styles.pressed]}
         >
-          <Ionicons color={palette.muted} name="arrow-back" size={15} />
+          <Ionicons
+            aria-hidden
+            color={palette.muted}
+            name="arrow-back"
+            size={15}
+          />
           <Text style={styles.backLabel}>Back</Text>
         </Pressable>
         <View style={styles.barText}>
@@ -157,6 +162,7 @@ export function SubagentPane({
       ) : (
         <View style={styles.state}>
           <Ionicons
+            aria-hidden
             color={palette.muted}
             name="alert-circle-outline"
             size={22}

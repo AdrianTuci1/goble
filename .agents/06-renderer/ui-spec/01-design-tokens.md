@@ -1,26 +1,69 @@
 # 01 — Design Tokens
 
-Source of truth: `crates/goble-ui/src/theme.rs`.
+There are two palettes, each owned by the client it styles:
 
-## Color tokens
+- `crates/goble-ui/src/theme.rs` is the source of truth **for the Rust desktop app**. Its `ColorToken` enum is the only colour API components should use.
+- `apps/common/src/lib/theme.ts` is the source of truth **for the TS clients** (`apps/web` and `apps/mobile`). Components consume the exported `palette` by name.
+
+The two files are edited independently: a token change belongs in the file for the client it targets. The Rust theme also defines light, midnight and preset schemes; **only the dark palette exists in the TS clients (there is no light variant)**.
+
+## Color tokens — Rust desktop (dark)
 
 Use `ColorToken` everywhere; do not hardcode hex values in components.
 
-| Token | Dark | Light | Usage |
-|-------|------|-------|-------|
-| `Bg` | `#0f1115` | `#f6f7f9` | Window background |
-| `Surface` | `#181b21` | `#ffffff` | Panels, sidebars, cards |
-| `SurfaceRaised` | `#21252e` | `#f3f4f6` | Inputs, composer, raised cards |
-| `Border` | `#2a2e36` | `#e2e4e9` | Dividers, borders |
-| `Text` | `#e4e6eb` | `#1f2937` | Primary text |
-| `Muted` | `#8b949e` | `#6b7280` | Timestamps, descriptions, placeholders |
-| `Hover` | `#21252e` | `#f3f4f6` | Hover background |
-| `Selected` | `#2a2e36` | `#e5e7eb` | Selected card / menu item |
-| `Accent` | `#2563eb` | `#2563eb` | Active buttons, links, unread dots |
-| `Success` | `#10b981` | `#10b981` | Running / ok status |
-| `Warning` | `#f59e0b` | `#f59e0b` | Warnings |
-| `Error` | `#ef4444` | `#ef4444` | Errors, delete |
-| `Badge` | `#e01e5a` | `#e01e5a` | Notification badges |
+| Token | Dark | Usage |
+|-------|------|-------|
+| `Bg` | `#0e0e0e` | Window background |
+| `Surface` | `#161616` | Panels, sidebars, cards |
+| `SurfaceRaised` | `#1e1e1e` | Inputs, composer, raised cards |
+| `Border` | `#262626` | Dividers, borders |
+| `Text` | `#e8e8e8` | Primary text |
+| `Muted` | `#8e8e8e` | Timestamps, descriptions, placeholders |
+| `Hover` | `#1e1e1e` | Hover background |
+| `Selected` | `#2a2a2a` | Selected card / menu item |
+| `Focus` | `#19aad8` | Focused input ring and caret |
+| `Accent` | `#9a9a9a` | Active buttons, links, unread dots (neutral grey) |
+| `Success` | `#10b981` | Running / ok status |
+| `Warning` | `#f59e0b` | Warnings |
+| `Path` | `#ff9e64` | Tool row's file path |
+| `Command` | `#e0af68` | Tool row's shell command |
+| `Error` | `#ef4444` | Errors, delete |
+| `Badge` | `#e01e5a` | Notification badges |
+
+## Color tokens — TS clients (dark)
+
+Use `palette.*`; do not hardcode hex values in components.
+
+| Token | Dark | Usage |
+|-------|------|-------|
+| `bg` | `#0e0e0e` | Window background |
+| `surface` | `#161616` | Panels, sidebars, cards |
+| `raised` | `#1e1e1e` | Inputs, composer, raised cards |
+| `overlay` | `#242424` | Popovers, menus, segmented controls |
+| `border` | `#262626` | Decorative dividers and borders |
+| `borderInteractive` | `#6a6a6a` | Border that is a control's only affordance (WCAG 3:1) |
+| `borderStrong` | `#343434` | Emphasised decorative border |
+| `text` | `#e8e8e8` | Primary text |
+| `muted` | `#a0a0a0` | Timestamps, descriptions, placeholders |
+| `subtle` | `#8b8b8b` | 10–12 px footnotes, helper labels, disabled glyphs |
+| `primary` | `#f1f1ef` | Primary foreground on accent surfaces |
+| `accent` | `#19aad8` | Active buttons, links, unread dots |
+| `success` | `#10b981` | Running / ok status |
+| `warning` | `#f59e0b` | Warnings |
+| `error` | `#f87171` | Errors, delete |
+| `path` | `#ff9e64` | Tool row's file path |
+| `command` | `#e0af68` | Tool row's shell command |
+
+## Contrast
+
+Normal text in the TS palette must clear WCAG 2.1 AA, 4.5:1. `scripts/check-contrast.mjs` (`npm run a11y:contrast`) parses `apps/common/src/lib/theme.ts` and enforces:
+
+- `text`, `muted`, `subtle`, `accent`, `success`, `warning`, `error` ≥ **4.5:1** against each of `bg`, `surface`, `raised`, `overlay`;
+- the tinted pairs `error`/`errorSoft`, `success`/`successSoft`, `warning`/`warningSoft`, `accent`/`accentSoft` and `text`/`accentSoft` ≥ **4.5:1**;
+- the destructive button's dark label on its red fill (`bg` on `error`) ≥ **4.5:1**;
+- `borderInteractive` ≥ **3.0:1** against each of `bg`, `surface`, `raised`. `border` is decorative and exempt.
+
+The script fails on a missing expected token instead of skipping it, prints every `token × background` ratio, and names each failing pair. CI runs it in the `js / typecheck + web build` job, and `scripts/check-contrast.mjs` is in that job's `paths` triggers. This gate is for the TS dark palette only; the Rust desktop palette is not read by the script.
 
 ## Fonts
 

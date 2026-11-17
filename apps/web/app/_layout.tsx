@@ -8,7 +8,11 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { connection, palette } from "@goble/common";
 
+import { useFocusVisible } from "../lib/focus";
+
 export default function RootLayout() {
+  useFocusVisible();
+
   useEffect(() => {
     void connection.hydrate().then(() => {
       // Served by the gateway at `/app/`, the browser is already behind its

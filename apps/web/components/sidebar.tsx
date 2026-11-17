@@ -64,6 +64,7 @@ export function Sidebar({
         ]}
       >
         <Ionicons
+          aria-hidden
           color={canShell ? palette.bg : palette.subtle}
           name="add"
           size={15}

@@ -182,6 +182,8 @@ export default function SignInScreen() {
               />
 
               <Pressable
+                accessibilityHint="Skips pairing and opens the demo workspace on this phone."
+                accessibilityLabel="Continue with the demo workspace"
                 accessibilityRole="button"
                 hitSlop={8}
                 onPress={() => void useDemo()}

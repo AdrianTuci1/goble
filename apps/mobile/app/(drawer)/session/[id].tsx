@@ -535,6 +535,7 @@ function SessionView() {
         right={
           <View style={styles.topActions}>
             <Pressable
+              accessibilityHint="Starts a fresh conversation."
               accessibilityLabel="New session"
               accessibilityRole="button"
               hitSlop={8}
@@ -547,6 +548,7 @@ function SessionView() {
               <Ionicons name="create-outline" size={18} color={palette.text} />
             </Pressable>
             <Pressable
+              accessibilityHint="Opens star, rename and delete for this conversation."
               accessibilityLabel="Session actions"
               accessibilityRole="button"
               hitSlop={8}
@@ -621,6 +623,7 @@ function SessionView() {
             <View style={styles.askCard} testID="agent-command">
               <View style={styles.askHeader}>
                 <Ionicons
+                  accessible={false}
                   color={palette.warning}
                   name="terminal-outline"
                   size={15}
@@ -631,8 +634,10 @@ function SessionView() {
                 <View style={styles.askReplies}>
                   {proposal.candidates.map((candidate) => (
                     <Pressable
+                      accessibilityHint="Fills the command field with this command."
                       accessibilityLabel={`Use ${candidate}`}
                       accessibilityRole="button"
+                      hitSlop={7}
                       key={candidate}
                       onPress={() => {
                         tapFeedback();
@@ -665,9 +670,12 @@ function SessionView() {
               </Text>
               <View style={styles.cmdActions}>
                 <Pressable
+                  accessibilityHint="Runs the command shown in the field."
                   accessibilityLabel="Run command"
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: !command.trim() }}
                   disabled={!command.trim()}
+                  hitSlop={5}
                   onPress={() =>
                     decideCommand(
                       proposal.candidates.includes(command)
@@ -684,8 +692,10 @@ function SessionView() {
                   <Text style={styles.cmdRunText}>Run</Text>
                 </Pressable>
                 <Pressable
+                  accessibilityHint="Rejects the proposal without running it."
                   accessibilityLabel="Skip command"
                   accessibilityRole="button"
+                  hitSlop={5}
                   onPress={() =>
                     decideCommand({
                       type: "reject",
@@ -706,6 +716,7 @@ function SessionView() {
             <View style={styles.askCard} testID="agent-question">
               <View style={styles.askHeader}>
                 <Ionicons
+                  accessible={false}
                   color={palette.warning}
                   name="help-circle-outline"
                   size={15}
@@ -719,6 +730,7 @@ function SessionView() {
                     <Pressable
                       accessibilityLabel={`Answer ${reply}`}
                       accessibilityRole="button"
+                      hitSlop={7}
                       key={reply}
                       onPress={() => answerQuestion(reply)}
                       style={({ pressed }) => [
@@ -745,7 +757,9 @@ function SessionView() {
                 <Pressable
                   accessibilityLabel="Send answer"
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: !answer.trim() }}
                   disabled={!answer.trim()}
+                  hitSlop={6}
                   onPress={() => answerQuestion(answer)}
                   style={({ pressed }) => [
                     styles.askSend,
@@ -760,7 +774,12 @@ function SessionView() {
           ) : null}
           {conversation.temporary ? (
             <View style={styles.tempNote}>
-              <Ionicons color={palette.accent} name="eye-off-outline" size={13} />
+              <Ionicons
+                accessible={false}
+                color={palette.accent}
+                name="eye-off-outline"
+                size={13}
+              />
               <Text style={styles.tempNoteText}>
                 Temporary · this chat is discarded when you leave
               </Text>

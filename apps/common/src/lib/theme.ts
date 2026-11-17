@@ -13,10 +13,14 @@ export const palette = {
   raised: "#1e1e1e",
   overlay: "#242424",
   border: "#262626",
+  // Use `borderInteractive` when a border is a control's only affordance
+  // (for example an unlabelled swatch or a bare toggle). `border` stays
+  // decorative and is not required to meet 3:1.
+  borderInteractive: "#6a6a6a",
   borderStrong: "#343434",
   text: "#e8e8e8",
-  muted: "#8e8e8e",
-  subtle: "#666666",
+  muted: "#a0a0a0",
+  subtle: "#8b8b8b",
   primary: "#f1f1ef",
   accent: "#19aad8",
   accentSoft: "#10262d",
@@ -24,7 +28,7 @@ export const palette = {
   successSoft: "#0d2a20",
   warning: "#f59e0b",
   warningSoft: "#2b2111",
-  error: "#ef4444",
+  error: "#f87171",
   errorSoft: "#2b1416",
   path: "#ff9e64",
   command: "#e0af68",

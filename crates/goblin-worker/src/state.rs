@@ -9,6 +9,7 @@ use goble_harness_runtime::HarnessRegistry;
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
+use crate::dsh_runner::DshRuns;
 use crate::file_vault::FileVault;
 use crate::leader::LeaderState;
 use crate::pty::PtyManager;
@@ -66,6 +67,10 @@ pub struct AppState {
     /// Guards the single daemon-event -> `WorkerMessage` translator task so it
     /// is spawned exactly once per `AppState`.
     daemon_translator_spawned: std::sync::Arc<AtomicBool>,
+    /// The live remote-DSH runs, keyed by trace id, so a `cancel_run` frame
+    /// can stop the harness process group behind a turn. Empty (and unused)
+    /// on a worker that runs the native harness.
+    pub dsh_runs: Arc<DshRuns>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +121,7 @@ impl AppState {
             daemon_state: Mutex::new(None),
             daemon_client: Mutex::new(None),
             daemon_translator_spawned: Arc::new(AtomicBool::new(false)),
+            dsh_runs: DshRuns::new(),
         })
     }
 

@@ -16,4 +16,4 @@ mod tests;
 
 pub use content::build_main;
 pub use layout::SidebarLayout;
-pub use topbar::{build_topbar, TOPBAR_BOTTOM_BAND, TOPBAR_BOTTOM_BAND_RADIUS, TOPBAR_HEIGHT};
+pub use topbar::{build_topbar, TOPBAR_BOTTOM_BAND, TOPBAR_HEIGHT};

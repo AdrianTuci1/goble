@@ -20,6 +20,11 @@ pub struct TextInput {
     /// Whether the field draws as a bare prompt line: no surface, border or
     /// focus ring, so it reads as the harness's own input under an arrow.
     plain: bool,
+    /// Whether the value is drawn write-only: the text is replaced by one dot
+    /// per character, so a secret the field holds is never painted into a
+    /// frame. A placeholder is still drawn as written — it is the call site's
+    /// sentence, not the value.
+    masked: bool,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_submit: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -36,6 +41,7 @@ impl TextInput {
             focused: false,
             full_width: false,
             plain: false,
+            masked: false,
             on_change: None,
             on_focus_change: None,
             on_submit: None,
@@ -88,6 +94,14 @@ impl TextInput {
         self
     }
 
+    /// Draw the value write-only: one dot per character, never the text. The
+    /// placeholder still says what to type, and the caret still moves with the
+    /// value the field holds (the mask has the same length).
+    pub fn with_masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
+        self
+    }
+
     pub fn with_on_submit<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_submit = Some(Rc::new(RefCell::new(callback)));
         self
@@ -102,6 +116,8 @@ impl TextInput {
         let empty = self.value.is_empty();
         let display = if empty && !self.placeholder.is_empty() {
             self.placeholder.clone()
+        } else if self.masked && !empty {
+            "\u{2022}".repeat(self.value.chars().count())
         } else {
             self.value.clone()
         };

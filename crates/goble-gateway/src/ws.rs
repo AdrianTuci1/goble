@@ -71,6 +71,10 @@ async fn handle_worker(socket: WebSocket, state: Arc<GatewayState>, worker_id: S
         tokio::select! {
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
+                    // The relay stays opaque; the control plane reads just the
+                    // `kind` and `trace_id` of a frame so a run it started can
+                    // record the turn's events and settle.
+                    state.tap_worker_text(&text);
                     if !state.relay_from_worker(
                         &worker_id,
                         &connection_id,
@@ -101,6 +105,9 @@ async fn handle_worker(socket: WebSocket, state: Arc<GatewayState>, worker_id: S
     }
 
     state.disconnect_worker(&worker_id, &connection_id);
+    // No frame from this worker can settle a control-plane run any more; make
+    // sure none is left looking `running`.
+    state.remote_worker_disconnected(&worker_id);
     settle(sink_task).await;
 }
 

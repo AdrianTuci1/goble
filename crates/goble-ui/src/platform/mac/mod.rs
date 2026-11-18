@@ -36,6 +36,31 @@ pub fn pick_file() -> Option<String> {
         .map(|path| path.to_string())
 }
 
+/// Open the OS directory picker — AppKit's `NSOpenPanel` in directory mode —
+/// and return the absolute path of the folder the user chose, or `None` when
+/// they cancelled or there is no panel to open.
+///
+/// The add-workspace flow calls this from the "+" button's handler, which runs
+/// on the UI thread, so the modal answer is available before the next frame.
+/// Off the main thread it answers `None` for the same reason as
+/// [`pick_file`]: AppKit panels are main-thread only.
+pub fn pick_directory() -> Option<String> {
+    let mtm = objc2::MainThreadMarker::new()?;
+    let panel = objc2_app_kit::NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(false);
+    panel.setCanChooseDirectories(true);
+    panel.setAllowsMultipleSelection(false);
+    // Like the file panel: modal, so the chosen folder is this call's return.
+    if panel.runModal() != objc2_app_kit::NSModalResponseOK {
+        return None;
+    }
+    panel
+        .URLs()
+        .firstObject()
+        .and_then(|url| url.path())
+        .map(|path| path.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,5 +74,16 @@ mod tests {
             "the test runs on a worker thread, so the panel is never opened here"
         );
         assert_eq!(pick_file(), None);
+    }
+
+    /// The workspace flow's directory picker follows the same rule: a test
+    /// thread gets no panel and no path.
+    #[test]
+    fn pick_directory_returns_none_off_the_main_thread() {
+        assert!(
+            objc2::MainThreadMarker::new().is_none(),
+            "the test runs on a worker thread, so the panel is never opened here"
+        );
+        assert_eq!(pick_directory(), None);
     }
 }

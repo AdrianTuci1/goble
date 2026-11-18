@@ -347,183 +347,87 @@ pub enum AppTab {
     Mcps,
 }
 
-/// Settings tab pages, mirroring the grok-build settings pages.
+/// Settings tab pages: the DSH information architecture.
 ///
 /// Serialized with the pane that shows one: the page rides in the leaf (see
-/// `PaneKind::Settings`), so it survives a save/load and a pane lift.
+/// `PaneKind::Settings`), so it survives a save/load and a pane lift. The order
+/// of [`Self::ALL`] is the rail's order; [`crate::ui::settings::rail_groups`]
+/// adds the headings on top of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SettingsCategory {
-    /// The friendly name, the default model and the telemetry choice the
-    /// onboarding flow also edits.
-    Profile,
+    /// Profile, notifications and the behavioural switches.
+    General,
+    /// Theme, palette, text scale and the editor's save choice.
     Appearance,
-    Mouse,
-    EditorInput,
-    AgentApproval,
-    /// Groups of secrets a remote session is meant to start with. The rail no
-    /// longer offers the page (it is not in [`Self::ALL`]); the variant stays
-    /// so a pane or a saved layout that still carries it reads back and keeps
-    /// its rows in the focus order.
-    Environment,
-    /// The SSH connections this machine already knows, read from `~/.ssh`. It
-    /// is read-only and never stored by goble, so it draws no database state of
-    /// its own.
-    Connections,
-    Models,
-    /// The installed version, the last check, the offered release and the
-    /// install button. The checker itself lives in `crate::update`.
+    /// The models `[model.*]` declare, plus the agent CLIs `[harness.*]`.
+    Providers,
+    /// The MCP servers `[mcp_servers.*]` declare.
+    Connectors,
+    /// Approval policy, input mode and the remote configuration.
+    Agent,
+    /// The groups in `environment.toml`.
+    Environments,
+    /// The saved hosts in `hosts.toml`, plus the read-only `~/.ssh` view.
+    Hosts,
+    /// The encrypted vault's secrets.
+    Secrets,
+    /// The keyboard's bindings (read-only in this build).
+    Shortcuts,
+    /// This build, the last check and the offered release.
     Updates,
+    /// The settings files themselves: path, mode, revision, parse problems.
     Advanced,
+    /// The version, the home directory and the files.
+    About,
 }
 
 impl SettingsCategory {
+    /// Every page the settings surface can open, in rail order.
     pub const ALL: &'static [SettingsCategory] = &[
-        SettingsCategory::Profile,
+        SettingsCategory::General,
         SettingsCategory::Appearance,
-        SettingsCategory::Mouse,
-        SettingsCategory::EditorInput,
-        SettingsCategory::AgentApproval,
-        SettingsCategory::Connections,
-        SettingsCategory::Models,
+        SettingsCategory::Providers,
+        SettingsCategory::Connectors,
+        SettingsCategory::Agent,
+        SettingsCategory::Environments,
+        SettingsCategory::Hosts,
+        SettingsCategory::Secrets,
+        SettingsCategory::Shortcuts,
         SettingsCategory::Updates,
         SettingsCategory::Advanced,
+        SettingsCategory::About,
     ];
 
+    /// The label the rail and the header breadcrumb show.
     pub fn label(self) -> &'static str {
         match self {
-            SettingsCategory::Profile => "Profile",
+            SettingsCategory::General => "General",
             SettingsCategory::Appearance => "Appearance",
-            SettingsCategory::Mouse => "Mouse",
-            SettingsCategory::EditorInput => "Editor & Input",
-            SettingsCategory::AgentApproval => "Agent & Approval",
-            SettingsCategory::Environment => "Environment",
-            SettingsCategory::Connections => "Connections",
-            SettingsCategory::Models => "Models",
+            SettingsCategory::Providers => "Providers",
+            SettingsCategory::Connectors => "Connectors",
+            SettingsCategory::Agent => "Agent",
+            SettingsCategory::Environments => "Environments",
+            SettingsCategory::Hosts => "Hosts",
+            SettingsCategory::Secrets => "Secrets",
+            SettingsCategory::Shortcuts => "Shortcuts",
             SettingsCategory::Updates => "Updates",
             SettingsCategory::Advanced => "Advanced",
+            SettingsCategory::About => "About",
         }
     }
-}
 
-/// Which of the settings overlay's two regions holds the keyboard: the
-/// category rail on the left, or the content pane beside it. Opening the
-/// overlay starts in the rail.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SettingsFocus {
-    #[default]
-    Rail,
-    Pane,
-}
-
-/// One focusable control inside a settings pane, in the pane's focus order.
-///
-/// The pane's order is produced by
-/// [`crate::ui::settings::pane_controls`], which the pane itself walks while
-/// drawing its rows, so the order and the drawn rows cannot drift apart.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SettingsControl {
-    /// Profile: the friendly name the onboarding flow asks for.
-    FriendlyName,
-    /// Profile: whether anonymous crash reports and usage counts may be sent.
-    DataSharing,
-    /// Agent & Approval: the model new agents start on, chosen from a menu
-    /// anchored to its own field.
-    DefaultModel,
-    /// Agent & Approval: the app-wide command-approval policy.
-    ApprovalMode,
-    /// Appearance: one channel of the colour-target column.
-    ThemeChannel(super::color_picker::ColorTarget),
-    /// Appearance: the Themes stepper. `Left`/`Right` and the two arrow
-    /// buttons walk the Default base and the presets in order.
-    ThemeStepper,
-    /// Appearance: clear the five colour overrides, keeping the base palette.
-    ResetThemeColors,
-    /// Appearance: the colour wheel; it is a drag surface, so it takes a focus
-    /// stop and the ring but no arrow adjustment.
-    ColorWheel,
-    /// Mouse: invert the scroll direction.
-    InvertScroll,
-    /// Mouse: the scroll-speed stepper.
-    ScrollSpeed,
-    /// Editor & Input: the font-size stepper.
-    FontSize,
-    /// Editor & Input: save a dirty file view when its pane is closed, instead
-    /// of asking whether to save.
-    AutoSaveOnClose,
-    /// Agent & Approval: the auto-approve switch of the active pane.
-    AutoApprove,
-    /// Agent & Approval: the vim-mode switch.
-    VimMode,
-    /// Models: reload the list from `~/.goble/config.toml`.
-    ReloadModels,
-    /// Agent & Approval: re-read `[remote_agents.<name>]` from the config file.
-    ReloadRemoteAgents,
-    /// Agent & Approval: talk Remote through with the agent, which asks for
-    /// what is missing and writes it with `goble-cli setup`.
-    SetupRemoteWithAgent,
-    /// Agent & Approval: the same conversation for the hub's own settings.
-    SetupHubWithAgent,
-    /// Agent & Approval, Connections, Models and Advanced: open
-    /// `~/.goble/config.toml` in a file pane beside this one.
-    OpenConfigFile,
-    /// Environment: the new-group name field.
-    EnvironmentGroupName,
-    /// Environment: create the group the name field holds.
-    EnvironmentCreateGroup,
-    /// Environment: one group in the list; Enter opens it.
-    EnvironmentGroup(String),
-    /// Environment: delete a group and its secrets.
-    EnvironmentDeleteGroup(String),
-    /// Environment: the secret-name field.
-    EnvironmentSecretName,
-    /// Environment: the secret-value field.
-    EnvironmentSecretValue,
-    /// Environment: add the secret the fields hold, or save the edited one.
-    EnvironmentSaveSecret,
-    /// Environment: one secret of the open group; Enter loads it for editing.
-    EnvironmentSecret(String),
-    /// Environment: remove one secret.
-    EnvironmentDeleteSecret(String),
-    /// Connections: one concrete host from `~/.ssh/config`; Enter selects the
-    /// row and names it. The row records a target, while a saved host from
-    /// `~/.goble/hosts.toml` opens in a pane from Cmd+Shift+N.
-    SshHost(String),
-    /// Connections: re-read `~/.ssh` and replace the cached read.
-    ReloadSshHosts,
-    /// Updates: ask the release host now.
-    CheckForUpdates,
-    /// Updates: download, verify and install the offered release, then
-    /// restart. This is also the button the withdrawn-version banner offers.
-    InstallUpdate,
-}
-
-impl SettingsControl {
-    /// Whether the control holds a discrete value, so Left/Right change it
-    /// (a stepper, the theme-channel column, the Local/Remote choice). A
-    /// control that does not hands the keyboard back to the rail on
-    /// `ArrowLeft` instead. The colour wheel is deliberately not one of these:
-    /// it is a drag surface, and there is no keyboard value to step.
-    pub fn has_discrete_values(&self) -> bool {
-        matches!(
-            self,
-            SettingsControl::ScrollSpeed
-                | SettingsControl::FontSize
-                | SettingsControl::ThemeChannel(_)
-                | SettingsControl::ThemeStepper
-                | SettingsControl::ApprovalMode
-        )
-    }
-
-    /// Whether the control is a text field, so Enter/Space puts the caret in it
-    /// and every key the overlay does not reserve reaches it.
-    pub fn is_text_field(&self) -> bool {
-        matches!(
-            self,
-            SettingsControl::FriendlyName
-                | SettingsControl::EnvironmentGroupName
-                | SettingsControl::EnvironmentSecretName
-                | SettingsControl::EnvironmentSecretValue
-        )
+    /// The old spelling of a page, so a layout saved before the rework reads
+    /// back to the page it meant.
+    pub fn from_legacy(name: &str) -> Option<Self> {
+        match name {
+            "Profile" => Some(Self::General),
+            "Mouse" | "EditorInput" | "Editor & Input" => Some(Self::Appearance),
+            "AgentApproval" | "Agent & Approval" => Some(Self::Agent),
+            "Environment" => Some(Self::Environments),
+            "Connections" => Some(Self::Hosts),
+            "Models" => Some(Self::Providers),
+            label => Self::ALL.iter().copied().find(|page| page.label() == label),
+        }
     }
 }
 

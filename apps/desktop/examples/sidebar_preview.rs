@@ -19,8 +19,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::conversation_list_item::{
-    SidebarActionRow, SidebarDrag, SidebarGroupRow, SidebarIconButton, SidebarMenuItem,
-    SidebarSessionRow,
+    SidebarActionRow, SidebarDrag, SidebarGroupRow, SidebarGroupUi, SidebarIconButton,
+    SidebarMenuItem, SidebarSessionRow,
     SIDEBAR_GROUP_GAP, SIDEBAR_HEADER_BUTTON, SIDEBAR_HEADER_HEIGHT, SIDEBAR_HEADER_ICON,
     SIDEBAR_HEADER_PADDING_START, SIDEBAR_ICON_NEW_CHAT, SIDEBAR_ICON_PIN_FILL,
     SIDEBAR_ICON_PROJECT_ADD, SIDEBAR_ICON_SLIDERS, SIDEBAR_LIST_BOTTOM_PAD, SIDEBAR_ROW_GAP,
@@ -49,6 +49,8 @@ enum Scene {
     SelectedRunning,
     Hover,
     HoverCard,
+    WorkspaceHover,
+    WorkspaceMenu,
     Menu,
     ViewOptions,
     Drag,
@@ -75,9 +77,56 @@ fn row_ui() -> Rc<RefCell<AgentCardUi>> {
     Rc::new(RefCell::new(AgentCardUi::default()))
 }
 
+/// The workspace rows' tray rows: DSH's workspace context menu (Rename, then
+/// Delete behind a separator). The app supplies these per row.
+fn workspace_menu_items() -> Vec<SidebarMenuItem> {
+    vec![
+        SidebarMenuItem::new("Rename workspace", "edit", || {}),
+        SidebarMenuItem::new("Delete workspace", "trash-02", || {})
+            .with_separator_before(true)
+            .with_danger(true),
+    ]
+}
+
+/// One workspace row, exactly the widget the app builds: the folder/triangle
+/// leading slot, its label, and the hover strip (More + New session) with the
+/// app-owned tray.
 fn group(label: &str, expanded: bool, active: bool) -> Box<dyn Element> {
     SidebarGroupRow::new(label, expanded)
         .with_active(active)
+        .with_ui(Rc::new(RefCell::new(SidebarGroupUi::default())))
+        .with_viewport_height(SIDEBAR_H)
+        .with_menu_items(workspace_menu_items())
+        .with_on_create_session(|| {})
+        .finish()
+}
+
+/// The same workspace row with the pointer on it (DSH's folder->chevron swap
+/// plus the action strip).
+fn hovered_group(label: &str, expanded: bool, active: bool) -> Box<dyn Element> {
+    SidebarGroupRow::new(label, expanded)
+        .with_active(active)
+        .with_hovered(true)
+        .with_ui(Rc::new(RefCell::new(SidebarGroupUi::default())))
+        .with_viewport_height(SIDEBAR_H)
+        .with_menu_items(workspace_menu_items())
+        .with_on_create_session(|| {})
+        .finish()
+}
+
+/// A workspace row whose tray is open: DSH keeps the row's hover fill and the
+/// strip shown while the menu is up (`menuOpen`).
+fn open_menu_group(label: &str, expanded: bool) -> Box<dyn Element> {
+    let ui = Rc::new(RefCell::new(SidebarGroupUi {
+        menu_open: true,
+        highlight: 0,
+    }));
+    SidebarGroupRow::new(label, expanded)
+        .with_hovered(true)
+        .with_ui(ui)
+        .with_viewport_height(SIDEBAR_H)
+        .with_menu_items(workspace_menu_items())
+        .with_on_create_session(|| {})
         .finish()
 }
 
@@ -96,6 +145,10 @@ fn session(
         .with_harness("claude")
         .with_directory("/Users/adrian.tucicovencogmail.com/Projects/goble")
         .with_viewport_height(SIDEBAR_H)
+        // The app's rows carry both quick actions, so a hovered row draws the
+        // full DSH strip: More, Archive, Pin.
+        .with_on_quick_pin(|| {})
+        .with_on_quick_archive(|| {})
         .with_ui(row_ui())
         .finish()
 }
@@ -299,6 +352,31 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
                 session("s3", "Open-source project for a self-hosted VPS", "22h", ConversationStatus::Error, false, false),
             ]));
         }
+        Scene::WorkspaceHover => {
+            // A workspace row under the pointer: the folder swaps to the
+            // disclosure triangle and the strip shows More + New session.
+            rows.push(block(vec![
+                hovered_group("goble", true, false),
+                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Success, false, false),
+                session("s2", "Automate Instagram posting", "17h", ConversationStatus::Success, false, false),
+            ]));
+            rows.push(block(vec![
+                group("Projects", true, false),
+                session("s3", "Open-source project for a self-hosted VPS", "22h", ConversationStatus::Success, false, false),
+            ]));
+        }
+        Scene::WorkspaceMenu => {
+            // The workspace row's tray open: DSH's workspace context menu.
+            rows.push(block(vec![
+                open_menu_group("goble", true),
+                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Success, false, false),
+                session("s2", "Automate Instagram posting", "17h", ConversationStatus::Success, false, false),
+            ]));
+            rows.push(block(vec![
+                group("Projects", true, false),
+                session("s3", "Open-source project for a self-hosted VPS", "22h", ConversationStatus::Success, false, false),
+            ]));
+        }
         Scene::HoverCard => {
             let mut card_ui = AgentCardUi::default();
             card_ui.hover = true;
@@ -355,6 +433,7 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
                     .with_directory("/Users/adrian.tucicovencogmail.com/Projects/goble")
                     .with_updated_at(updated_at)
                     .with_viewport_height(SIDEBAR_H)
+                    .with_on_quick_archive(|| {})
                     .with_ui(Rc::new(RefCell::new(card_ui)))
                     .finish(),
                 SidebarSessionRow::new("s3", "Public key for the VPS server", "1y")
@@ -586,6 +665,8 @@ fn main() -> anyhow::Result<()> {
         ("selected-running", Scene::SelectedRunning, SIDEBAR_W, SIDEBAR_H),
         ("hover", Scene::Hover, SIDEBAR_W, SIDEBAR_H),
         ("hover-card", Scene::HoverCard, 560.0, SIDEBAR_H),
+        ("workspace-hover", Scene::WorkspaceHover, SIDEBAR_W, SIDEBAR_H),
+        ("workspace-menu", Scene::WorkspaceMenu, SIDEBAR_W, SIDEBAR_H),
         ("menu", Scene::Menu, SIDEBAR_W, SIDEBAR_H),
         ("archived", Scene::Archived, 560.0, SIDEBAR_H),
         ("view-options", Scene::ViewOptions, 680.0, 840.0),

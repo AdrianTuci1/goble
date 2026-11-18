@@ -100,8 +100,8 @@ fn setting_up_the_hub_opens_its_own_conversation() {
     assert_eq!(title, "Hub setup");
 }
 
-/// The two rows are focus stops on Agent & Approval, in the order the page
-/// draws them, so the keyboard can reach the agent-led path.
+/// The two setup rows are on the Agent page and are focus stops, in the order
+/// the page draws them, so the keyboard can reach the agent-led path.
 #[test]
 fn the_setup_rows_are_in_the_agent_page_focus_order() {
     let (desktop, _dir) = common::desktop_state();
@@ -109,16 +109,28 @@ fn the_setup_rows_are_in_the_agent_page_focus_order() {
     {
         let mut s = state.borrow_mut();
         s.open_settings_tab(Some(&desktop));
-        s.settings_set_page(goble_app::ui::SettingsCategory::AgentApproval);
+        s.settings_set_page(goble_app::ui::SettingsCategory::Agent);
+        s.refresh_settings(&desktop);
+        s.settings.region = goble_app::ui::settings::SettingsRegion::Page;
+        s.settings.row_index = 0;
     }
-    let controls = state.borrow().settings_pane_controls();
-    let remote = controls
+    let state = state.borrow();
+    let model = goble_app::ui::settings::pages::page_model(
+        goble_app::ui::SettingsCategory::Agent,
+        &state.settings,
+    );
+    let ids: Vec<&str> = model
+        .interactive_rows()
         .iter()
-        .position(|control| *control == goble_app::ui::SettingsControl::SetupRemoteWithAgent)
-        .expect("the Remote row is a focus stop");
-    let hub = controls
+        .map(|row| row.id.as_str())
+        .collect();
+    let remote = ids
         .iter()
-        .position(|control| *control == goble_app::ui::SettingsControl::SetupHubWithAgent)
-        .expect("the hub row is a focus stop");
-    assert_eq!(hub, remote + 1, "Remote, then the hub, then the file");
+        .position(|id| *id == "setup.remote")
+        .expect("the Remote setup row is a focus stop");
+    let hub = ids
+        .iter()
+        .position(|id| *id == "setup.hub")
+        .expect("the hub setup row is a focus stop");
+    assert_eq!(hub, remote + 1, "Remote, then the hub");
 }

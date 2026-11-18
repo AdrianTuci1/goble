@@ -170,6 +170,11 @@ fn build_scene(
         // A pane snapshot is what makes the pane draw its own chat view (and
         // with it the work dock); every scene gives its panes one.
         let pane_id = s.active_pane_id;
+        if scene == Scene::OnePane {
+            // The owner's scene: agent mode with the width dragged narrower —
+            // the header stays full width while the darker column narrows.
+            s.content_lane_prefs.insert(pane_id, 700.0);
+        }
         s.pane_sessions.entry(pane_id).or_insert_with(chat_session);
         let runtime = s.pane_runtime.entry(pane_id).or_default();
         runtime
@@ -220,6 +225,16 @@ fn pane_bounds(state: &Rc<RefCell<UiState>>) -> Vec<(u64, RectF)> {
     entries
 }
 
+/// A `#rrggbb` form of a theme colour, for the printed geometry.
+fn card_color_hex(color: goble_ui::ColorU) -> String {
+    format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
+}
+
+/// Relative luminance, enough to state that the lane column is darker.
+fn luminance(color: goble_ui::ColorU) -> f32 {
+    0.2126 * color.r as f32 + 0.7152 * color.g as f32 + 0.0722 * color.b as f32
+}
+
 fn print_geometry(state: &Rc<RefCell<UiState>>, commands: &[RenderCommand], app: &AppContext) {
     let s = state.borrow();
     for (id, pane) in pane_bounds(state) {
@@ -251,6 +266,75 @@ fn print_geometry(state: &Rc<RefCell<UiState>>, commands: &[RenderCommand], app:
                 band.min_y(),
                 band.max_y(),
                 band.height()
+            );
+        }
+        // The lane column's fill vs the pane card's surface: the column must
+        // be the darker token, and the header controls must stay on the pane's
+        // edges (not on the column's).
+        let surface = app.theme.color(goble_ui::theme::ColorToken::Surface);
+        let card = commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == surface
+                    && (rect.width() - pane.width()).abs() < 0.5
+                    && rect.height() > 300.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        });
+        let column = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if rect.width() < pane.width() - 1.0
+                        && rect.height() > 300.0
+                        && rect.min_x() >= pane.min_x()
+                        && rect.max_x() <= pane.max_x() =>
+                {
+                    Some((*rect, *color))
+                }
+                _ => None,
+            })
+            .max_by(|a, b| (a.0.width() * a.0.height()).total_cmp(&(b.0.width() * b.0.height())));
+        if let (Some(card), Some((column_rect, column_color))) = (card, column) {
+            println!(
+                "     pane surface {:?} (x {:.1}..{:.1}) | lane column {:?} (x {:.1}..{:.1}, w {:.1}) -> darker? {}",
+                card_color_hex(surface),
+                card.min_x(),
+                card.max_x(),
+                card_color_hex(column_color),
+                column_rect.min_x(),
+                column_rect.max_x(),
+                column_rect.width(),
+                luminance(column_color) < luminance(surface)
+            );
+        }
+        // Header row extents: the esc hint sits on the pane's leading edge, the
+        // close X on its trailing edge, even with a narrower lane.
+        let close = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { origin, name, size, .. } if name == "x-close" => {
+                    Some((origin.x + size / 2.0, origin.y + size / 2.0))
+                }
+                _ => None,
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        let esc = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
+                _ => None,
+            })
+            .min_by(|a, b| a.x.total_cmp(&b.x));
+        if let (Some(close), Some(esc)) = (close, esc) {
+            println!(
+                "     topbar row: esc hint x {:.1} (pane left {:.1}) | close X x {:.1} (pane right {:.1}) -> full width? {}",
+                esc.x,
+                pane.min_x(),
+                close.0,
+                pane.max_x(),
+                esc.x < pane.min_x() + 60.0 && close.0 > pane.max_x() - 40.0
             );
         }
     }

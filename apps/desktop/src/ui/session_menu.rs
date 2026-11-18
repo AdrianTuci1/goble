@@ -74,6 +74,10 @@ impl ToastAction {
 /// Everything the Rename dialog needs to draw and act: the draft, whether the
 /// field has the keyboard focus, an inline error, and the three callbacks.
 pub(crate) struct RenameDialogState<'a> {
+    /// The dialog's heading ("Rename conversation" / "Rename workspace").
+    pub title: &'a str,
+    /// The name field's placeholder ("Conversation name" / "Workspace name").
+    pub placeholder: &'a str,
     pub draft: &'a str,
     pub focused: bool,
     pub error: Option<&'a str>,
@@ -101,7 +105,7 @@ pub(crate) fn build_rename_dialog(
 
     let field = TextInput::new()
         .with_value(state.draft)
-        .with_placeholder("Conversation name")
+        .with_placeholder(state.placeholder)
         .with_focused(state.focused)
         .with_full_width(true)
         .with_on_change(move |value| (on_change.borrow_mut())(value))
@@ -150,7 +154,7 @@ pub(crate) fn build_rename_dialog(
         .finish();
 
     let modal = Modal::new(
-        "Rename conversation",
+        state.title,
         body.finish(),
         Some(footer),
         app,
@@ -403,12 +407,43 @@ pub(crate) fn build_rename_dialog_surface(
     build_rename_dialog(
         app,
         RenameDialogState {
+            title: "Rename conversation",
+            placeholder: "Conversation name",
             draft: &rename.draft,
             focused: rename.focused,
             error: rename.error.as_deref(),
             on_change: actions.on_session_rename_draft.clone(),
             on_submit: actions.on_session_rename_commit.clone(),
             on_cancel: actions.on_session_rename_cancel.clone(),
+        },
+    )
+}
+
+/// The Workspaces list's "Rename workspace" dialog as the root view mounts it:
+/// an inert, zero-size dialog unless the state holds one. It is the session
+/// Rename dialog's casing with the workspace copy — DSH's `Rename workspace`
+/// modal, the same one-field form.
+pub(crate) fn build_workspace_rename_dialog_surface(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let Some(rename) = state.sidebar_workspace_rename.as_ref() else {
+        return Dialog::new(Empty::new().finish())
+            .with_open(false)
+            .finish();
+    };
+    build_rename_dialog(
+        app,
+        RenameDialogState {
+            title: "Rename workspace",
+            placeholder: "Workspace name",
+            draft: &rename.draft,
+            focused: rename.focused,
+            error: rename.error.as_deref(),
+            on_change: actions.on_sidebar_workspace_rename_draft.clone(),
+            on_submit: actions.on_sidebar_workspace_rename_commit.clone(),
+            on_cancel: actions.on_sidebar_workspace_rename_cancel.clone(),
         },
     )
 }
@@ -519,6 +554,8 @@ mod tests {
         let mut dialog = build_rename_dialog(
             &app,
             RenameDialogState {
+                title: "Rename conversation",
+                placeholder: "Conversation name",
                 draft: "Redesign the sidebar",
                 focused: true,
                 error: None,

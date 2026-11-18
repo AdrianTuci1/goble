@@ -170,18 +170,21 @@ impl Element for SplitNode {
         self.first.paint(origin + self.axis_offset(0.0, 0.0), ctx, app);
         self.second.paint(origin + self.axis_offset(boundary, 0.0), ctx, app);
 
-        let cross = self.size.map(|s| s.along(self.axis.invert())).unwrap_or(0.0);
-        let color = if self.dragging {
-            app.theme.color(ColorToken::Accent)
-        } else {
-            app.theme.color(ColorToken::Border)
-        };
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            let rule = match self.axis {
-                Axis::Horizontal => rectf(origin.x + boundary - 0.5, origin.y, 1.0, cross),
-                Axis::Vertical => rectf(origin.x, origin.y + boundary - 0.5, cross, 1.0),
-            };
-            renderer.fill_rounded_rect(rule, color, 0.0);
+        // A split draws its rule only while the divider is being dragged, as
+        // the drag affordance. At rest the panes keep their own separation: the
+        // app wears one accent outline around each tab and leaves the window's
+        // `Bg` between them, so a rule here would be a third line inside that
+        // gutter.
+        if self.dragging {
+            let cross = self.size.map(|s| s.along(self.axis.invert())).unwrap_or(0.0);
+            let color = app.theme.color(ColorToken::Accent);
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                let rule = match self.axis {
+                    Axis::Horizontal => rectf(origin.x + boundary - 0.5, origin.y, 1.0, cross),
+                    Axis::Vertical => rectf(origin.x, origin.y + boundary - 0.5, cross, 1.0),
+                };
+                renderer.fill_rounded_rect(rule, color, 0.0);
+            }
         }
     }
 

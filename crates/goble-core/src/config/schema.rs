@@ -96,6 +96,9 @@ pub enum FieldKind {
     Colour,
     /// An `http://` or `https://` URL.
     Url,
+    /// A URL that may also be a WebSocket endpoint (`ws://` / `wss://`): the
+    /// gateway URL is what a worker dials, and goble's is a WebSocket URL.
+    GatewayUrl,
     /// A filesystem path; any non-empty string is accepted.
     Path,
     /// A TOML table written key-by-key.
@@ -126,7 +129,9 @@ impl FieldKind {
                 None => Some("expected an integer".to_string()),
             },
             FieldKind::Float { min, max } => {
-                let value = item.as_float().or_else(|| item.as_integer().map(|v| v as f64));
+                let value = item
+                    .as_float()
+                    .or_else(|| item.as_integer().map(|v| v as f64));
                 match value {
                     Some(value) if value >= *min && value <= *max => None,
                     Some(_) => Some(format!("expected a number in {min}..={max}")),
@@ -135,10 +140,7 @@ impl FieldKind {
             }
             FieldKind::Enum(options) => match item.as_str() {
                 Some(value) if options.contains(&value) => None,
-                Some(value) => Some(format!(
-                    "{value:?} is not one of: {}",
-                    options.join(", ")
-                )),
+                Some(value) => Some(format!("{value:?} is not one of: {}", options.join(", "))),
                 None => Some("expected a string".to_string()),
             },
             FieldKind::Colour => match item.as_str() {
@@ -149,6 +151,11 @@ impl FieldKind {
             FieldKind::Url => match item.as_str() {
                 Some(value) if is_http_url(value) => None,
                 Some(_) => Some("expected an http:// or https:// URL".to_string()),
+                None => Some("expected a URL string".to_string()),
+            },
+            FieldKind::GatewayUrl => match item.as_str() {
+                Some(value) if is_gateway_url(value) => None,
+                Some(_) => Some("expected an http://, https://, ws:// or wss:// URL".to_string()),
                 None => Some("expected a URL string".to_string()),
             },
             FieldKind::Table => match item.as_table_like() {
@@ -216,7 +223,8 @@ pub const FIELDS: &[ConfigFieldSpec] = &[
     ConfigFieldSpec {
         path: &["app", "in_app_notifications"],
         label: "In-app announcements",
-        description: "The turn-finished banner. System notifications are not available in this build.",
+        description:
+            "The turn-finished banner. System notifications are not available in this build.",
         kind: FieldKind::Bool,
         default: Some("true"),
         page: SettingsPage::General,
@@ -535,7 +543,7 @@ pub const FIELDS: &[ConfigFieldSpec] = &[
         path: &["remote", "gateway_url"],
         label: "Gateway URL",
         description: "The gateway workers connect to.",
-        kind: FieldKind::Url,
+        kind: FieldKind::GatewayUrl,
         default: None,
         page: SettingsPage::Agent,
         secret: false,
@@ -617,7 +625,9 @@ fn item_matches_default(item: &Item, kind: FieldKind, default: &str) -> bool {
             .as_integer()
             .is_some_and(|value| default.parse::<i64>() == Ok(value)),
         FieldKind::Float { .. } => {
-            let value = item.as_float().or_else(|| item.as_integer().map(|v| v as f64));
+            let value = item
+                .as_float()
+                .or_else(|| item.as_integer().map(|v| v as f64));
             value.is_some_and(|value| default.parse::<f64>() == Ok(value))
         }
         _ => item.as_str().is_some_and(|value| value == default),
@@ -656,7 +666,11 @@ fn invalid_path(path: &[String], message: &str) -> ConfigError {
     }])
 }
 
-fn set_path(doc: &mut DocumentMut, path: &[String], value: &ConfigValue) -> Result<(), ConfigError> {
+fn set_path(
+    doc: &mut DocumentMut,
+    path: &[String],
+    value: &ConfigValue,
+) -> Result<(), ConfigError> {
     let (leaf, parents) = path
         .split_last()
         .ok_or_else(|| invalid_path(path, "a setting path cannot be empty"))?;
@@ -679,10 +693,34 @@ fn set_path(doc: &mut DocumentMut, path: &[String], value: &ConfigValue) -> Resu
                 }])
             })?;
     }
-    let item = match value {
+    // Replace a scalar's value in place: the `Item` (and so the comment above
+    // the key and the key's own decor) stays, while only the value changes. A
+    // save changes the setting and nothing else — the comment above a key is
+    // part of the file's documentation.
+    if let Some(Item::Value(old)) = table.get_mut(leaf) {
+        if !matches!(value, ConfigValue::Table(_)) {
+            *old = value.to_toml_value();
+            return Ok(());
+        }
+    }
+    let mut item = match value {
         ConfigValue::Table(entries) => Item::Table(table_value(entries)),
         other => Item::Value(other.to_toml_value()),
     };
+    if let Some(existing) = table.get(leaf) {
+        match (&existing, &mut item) {
+            (Item::Table(old), Item::Table(new)) => {
+                new.decor_mut().clone_from(old.decor());
+            }
+            (Item::Value(old), Item::Table(new)) => {
+                new.decor_mut().clone_from(old.decor());
+            }
+            (Item::Table(old), Item::Value(new)) => {
+                new.decor_mut().clone_from(old.decor());
+            }
+            _ => {}
+        }
+    }
     table.insert(leaf, item);
     Ok(())
 }
@@ -762,7 +800,10 @@ fn validate_config(doc: &DocumentMut) -> Vec<FieldError> {
     }
     if let Some(item) = doc.get("harness") {
         if item.as_table_like().is_none() {
-            errors.push(FieldError::new(&["harness"], "expected a table of harnesses"));
+            errors.push(FieldError::new(
+                &["harness"],
+                "expected a table of harnesses",
+            ));
         }
     }
     if let Some(item) = doc.get("remote_agents") {
@@ -786,11 +827,7 @@ fn validate_config(doc: &DocumentMut) -> Vec<FieldError> {
 
 /// Check an `[app]` or `[theme]` table against the field table: every known key
 /// is checked, every unknown key is preserved untouched.
-fn validate_table_fields(
-    doc: &DocumentMut,
-    section: &str,
-    errors: &mut Vec<FieldError>,
-) {
+fn validate_table_fields(doc: &DocumentMut, section: &str, errors: &mut Vec<FieldError>) {
     let Some(item) = doc.get(section) else {
         return;
     };
@@ -830,7 +867,10 @@ fn validate_models(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
         .and_then(|table| table.get("default"))
     {
         if default.as_str().is_none() {
-            errors.push(FieldError::new(&["models", "default"], "expected a model slug"));
+            errors.push(FieldError::new(
+                &["models", "default"],
+                "expected a model slug",
+            ));
         }
     }
     let Some(models) = doc.get("model").and_then(|item| item.as_table_like()) else {
@@ -960,7 +1000,10 @@ fn validate_harness(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
         if let Some(command) = table.get("command") {
             if let Some(message) = FieldKind::Text.check(command) {
                 errors.push(FieldError::new(&["harness", id, "command"], message));
-            } else if command.as_str().is_some_and(|value| value.trim().is_empty()) {
+            } else if command
+                .as_str()
+                .is_some_and(|value| value.trim().is_empty())
+            {
                 errors.push(FieldError::new(
                     &["harness", id, "command"],
                     "a command cannot be blank",
@@ -1000,7 +1043,10 @@ fn validate_remote(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
 }
 
 fn validate_remote_agents(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
-    let Some(agents) = doc.get("remote_agents").and_then(|item| item.as_table_like()) else {
+    let Some(agents) = doc
+        .get("remote_agents")
+        .and_then(|item| item.as_table_like())
+    else {
         return;
     };
     for (name, item) in agents.iter() {
@@ -1049,7 +1095,10 @@ fn validate_remote_agents(doc: &DocumentMut, errors: &mut Vec<FieldError>) {
         }
         if let Some(value) = table.get("api_url") {
             if let Some(message) = FieldKind::Url.check(value) {
-                errors.push(FieldError::new(&["remote_agents", name, "api_url"], message));
+                errors.push(FieldError::new(
+                    &["remote_agents", name, "api_url"],
+                    message,
+                ));
             }
         }
     }
@@ -1067,12 +1116,9 @@ fn validate_environment(doc: &DocumentMut) -> Vec<FieldError> {
         };
         for (name, value) in table.iter() {
             let ok = value.as_str().is_some()
-                || value
-                    .as_table_like()
-                    .is_some_and(|table| {
-                        table.len() == 1
-                            && table.get("vault").and_then(|item| item.as_str()).is_some()
-                    });
+                || value.as_table_like().is_some_and(|table| {
+                    table.len() == 1 && table.get("vault").and_then(|item| item.as_str()).is_some()
+                });
             if !ok {
                 errors.push(FieldError::new(
                     &["groups", group, name],
@@ -1187,6 +1233,13 @@ fn is_http_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
 }
 
+/// The gateway URL is dialled by the worker, so a WebSocket URL is the normal
+/// form; a plain HTTP(S) URL is accepted for a gateway behind a proxy.
+fn is_gateway_url(value: &str) -> bool {
+    let value = value.trim();
+    is_http_url(value) || value.starts_with("ws://") || value.starts_with("wss://")
+}
+
 /// Build the redacted, typed view of the three settings files. `config` is the
 /// primary document (it carries the revision and the path); `environment` and
 /// `hosts` supply their own sections. An unreadable secondary file contributes
@@ -1203,10 +1256,7 @@ pub fn redacted_view(
         Some(document) => match document.typed_environment() {
             Ok(groups) => group_views(&groups),
             Err(error) => {
-                problems.push(ConfigProblem::new(
-                    "environment.toml",
-                    error.to_string(),
-                ));
+                problems.push(ConfigProblem::new("environment.toml", error.to_string()));
                 Vec::new()
             }
         },
@@ -1370,7 +1420,9 @@ fn harness_views(config: &GobleConfig) -> Vec<HarnessView> {
                 configured: configured.is_some(),
                 enabled: configured.map(|entry| entry.enabled).unwrap_or(true),
                 command: configured.and_then(|entry| entry.command.clone()),
-                args: configured.map(|entry| entry.args.clone()).unwrap_or_default(),
+                args: configured
+                    .map(|entry| entry.args.clone())
+                    .unwrap_or_default(),
                 env: configured
                     .map(|entry| {
                         entry
@@ -1413,9 +1465,17 @@ fn remote_agent_views(config: &GobleConfig) -> Vec<RemoteAgentView> {
             name: name.clone(),
             provider: agent.provider.as_str().to_string(),
             enabled: agent.enabled,
-            api_key: SecretState::set(agent.api_key.as_deref().is_some_and(|v| !v.trim().is_empty())),
+            api_key: SecretState::set(
+                agent
+                    .api_key
+                    .as_deref()
+                    .is_some_and(|v| !v.trim().is_empty()),
+            ),
             token_id: SecretState::set(
-                agent.token_id.as_deref().is_some_and(|v| !v.trim().is_empty()),
+                agent
+                    .token_id
+                    .as_deref()
+                    .is_some_and(|v| !v.trim().is_empty()),
             ),
             token_secret: SecretState::set(
                 agent
@@ -1458,9 +1518,7 @@ mod tests {
     }
 
     fn errors(text: &str) -> Vec<String> {
-        let doc = document(ConfigFile::Config, text)
-            .document()
-            .clone();
+        let doc = document(ConfigFile::Config, text).document().clone();
         validate(ConfigFile::Config, &doc)
             .into_iter()
             .map(|error| format!("{}: {}", error.dotted(), error.message))
@@ -1630,7 +1688,10 @@ api_url = "example"
             "[[hosts]]\nname = \"prod\"\nhost = \"prod.example.com\"\nport = 70000\n[[hosts]]\nhost = \"missing-name\"\n",
         );
         let found = validate(ConfigFile::Hosts, hosts.document());
-        assert!(found.iter().any(|error| error.dotted().contains("port")), "{found:?}");
+        assert!(
+            found.iter().any(|error| error.dotted().contains("port")),
+            "{found:?}"
+        );
         assert!(
             found.iter().any(|error| error.message.contains("name")),
             "{found:?}"
@@ -1740,18 +1801,34 @@ api_key = "e2b-api-key-secret"
 
     #[test]
     fn a_secret_field_never_returns_its_value() {
-        let doc = document(
-            ConfigFile::Config,
-            "[model.x]\napi_key = \"sk-live\"\n",
-        );
+        let doc = document(ConfigFile::Config, "[model.x]\napi_key = \"sk-live\"\n");
         let document = doc.document();
-        let spec = field_spec(&[
-            "model".to_string(),
-            "x".to_string(),
-            "api_key".to_string(),
-        ])
-        .expect("spec");
+        let spec = field_spec(&["model".to_string(), "x".to_string(), "api_key".to_string()])
+            .expect("spec");
         assert!(spec.secret);
         assert_eq!(display_value(document, spec), None);
+    }
+
+    #[test]
+    fn a_websocket_gateway_url_is_accepted() {
+        // The worker dials the gateway over WebSocket, so `wss://` is the
+        // normal config value; validation must not call it invalid.
+        let text = r#"
+[remote]
+mode = "gateway"
+gateway_url = "wss://gateway.example/ws/worker"
+worker_token = "wt-1"
+"#;
+        assert!(errors(text).is_empty(), "{:?}", errors(text));
+
+        let plain = text.replace(
+            "wss://gateway.example/ws/worker",
+            "ws://127.0.0.1:8788/ws/worker",
+        );
+        assert!(errors(&plain).is_empty(), "{:?}", errors(&plain));
+
+        // Any other scheme is still refused.
+        let other = text.replace("wss://gateway.example/ws/worker", "ftp://gateway/ws");
+        assert!(!errors(&other).is_empty(), "ftp is not a gateway URL");
     }
 }

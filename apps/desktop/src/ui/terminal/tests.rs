@@ -551,20 +551,28 @@ fn type_line(root: &mut Box<dyn Element>, app: &AppContext, text: &str) {
 }
 
 /// R5: the shell pane's bottom bar is the chat surface's own composer, not a
-/// bespoke second one. It draws the shared `ChatComposer`'s placeholder —
-/// the very string the chat pane's composer draws — and the pty-only `❯`
-/// input line this replaces is gone.
+/// bespoke second one. Both draw the shared `ChatComposer`, each naming its own
+/// surface in the placeholder: the shell asks for a command ("Run any
+/// command"), the chat asks for a prompt (the composer default), and the
+/// pty-only `❯` input line this replaces is gone.
 #[test]
 fn the_shells_bottom_bar_is_the_shared_composer() {
+    use goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER;
+
     let app = AppContext::default();
     let (mut root, _state, _dir) = shell_root();
     let (mut chat, _chat_dir) = chat_root();
-    let placeholder = ChatComposer::new().placeholder().to_string();
+    let shell_placeholder = TERMINAL_COMPOSER_PLACEHOLDER.to_string();
+    let chat_placeholder = ChatComposer::new().placeholder().to_string();
 
     let shell_runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&shell_runs, &placeholder),
-        "the shell pane draws the shared composer's placeholder {placeholder:?}: {shell_runs:?}"
+        pane_has(&shell_runs, &shell_placeholder),
+        "the shell pane draws the shared composer's command placeholder {shell_placeholder:?}: {shell_runs:?}"
+    );
+    assert!(
+        !pane_has(&shell_runs, &chat_placeholder),
+        "the shell bar does not read as the agent prompt input: {shell_runs:?}"
     );
     assert!(
         !pane_has(&shell_runs, "❯"),
@@ -573,8 +581,12 @@ fn the_shells_bottom_bar_is_the_shared_composer() {
 
     let chat_runs = pane_runs(&mut chat, &app);
     assert!(
-        pane_has(&chat_runs, &placeholder),
-        "the chat pane draws that same composer: {chat_runs:?}"
+        pane_has(&chat_runs, &chat_placeholder),
+        "the chat pane draws that same composer with its prompt placeholder {chat_placeholder:?}: {chat_runs:?}"
+    );
+    assert!(
+        !pane_has(&chat_runs, &shell_placeholder),
+        "the chat input never asks for a shell command: {chat_runs:?}"
     );
 
     // The bar carries the one instruction that applies to a command line:
@@ -625,12 +637,14 @@ fn the_shells_bottom_bar_is_the_shared_composer() {
 /// or long, and the bar stays on the last row either way.
 #[test]
 fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
+    use goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER;
+
     let app = AppContext::default();
     let (mut root, _state, _dir) = shell_root();
-    let placeholder = ChatComposer::new().placeholder().to_string();
+    let shell_placeholder = TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     let y = pane_runs(&mut root, &app)
         .into_iter()
-        .find(|(text, _)| *text == placeholder)
+        .find(|(text, _)| *text == shell_placeholder)
         .map(|(_, origin)| origin.y)
         .expect("the shell draws the shared composer");
     assert!(
@@ -639,9 +653,10 @@ fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
     );
 
     let (mut chat, _chat_dir) = chat_root();
+    let chat_placeholder = ChatComposer::new().placeholder().to_string();
     let y = pane_runs(&mut chat, &app)
         .into_iter()
-        .find(|(text, _)| *text == placeholder)
+        .find(|(text, _)| *text == chat_placeholder)
         .map(|(_, origin)| origin.y)
         .expect("the chat draws the shared composer");
     assert!(
@@ -657,7 +672,8 @@ fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
 fn the_rich_input_steps_aside_while_a_full_screen_agent_owns_the_pane() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
-    let placeholder = ChatComposer::new().placeholder().to_string();
+    let placeholder =
+        goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     assert!(
         pane_has(&pane_runs(&mut root, &app), &placeholder),
         "a shell pane draws its rich input"
@@ -786,7 +802,8 @@ fn an_inline_cli_agent_keeps_the_rich_input_below_its_screen() {
 
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
-    let placeholder = ChatComposer::new().placeholder().to_string();
+    let placeholder =
+        goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     let _ = pane_runs(&mut root, &app);
 
     // The shell reports an `agy` the app did not launch. The CLI paints an
@@ -893,7 +910,8 @@ fn a_bootstrapped_shell_with_no_command_keeps_its_composer_at_the_bottom() {
             .sessions
             .insert(1, TerminalSession::with_emulator(emulator));
     }
-    let placeholder = ChatComposer::new().placeholder().to_string();
+    let placeholder =
+        goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     let y = pane_runs(&mut root, &app)
         .into_iter()
         .find(|(text, _)| *text == placeholder)
@@ -924,7 +942,7 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
         "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
     )
     .expect("fixture config");
-    state.borrow_mut().settings_ssh_home = Some(home.path().to_path_buf());
+    state.borrow_mut().settings.ssh_home_override = Some(home.path().to_path_buf());
 
     // A local shell: no chip anywhere in the pane.
     let runs = pane_runs(&mut root, &app);
@@ -1408,7 +1426,8 @@ fn an_active_shell_pane_keeps_the_keys_in_its_bar() {
     // bar was laid out with, and the placeholder's own origin is a point
     // inside the editor that drew it.
     let runs = pane_runs(&mut root, &app);
-    let placeholder = ChatComposer::new().placeholder().to_string();
+    let placeholder =
+        goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     let editor = runs
         .iter()
         .find(|(text, _)| text == &placeholder)
@@ -1683,8 +1702,11 @@ fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view
     // shell's input mirror stays empty.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, ChatComposer::new().placeholder()),
-        "the shell's bar is back at the bottom: {runs:?}"
+        pane_has(
+            &runs,
+            goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER
+        ),
+        "the shell's bar is back at the bottom with its command placeholder: {runs:?}"
     );
     assert!(press(&mut root, &app, "l"));
     assert!(press(&mut root, &app, "s"));
@@ -1839,7 +1861,7 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
         "Host web\n    HostName web.example.com\n    User deploy\n    Port 2222\n",
     )
     .expect("fixture config");
-    state.borrow_mut().settings_ssh_home = Some(home.path().to_path_buf());
+    state.borrow_mut().settings.ssh_home_override = Some(home.path().to_path_buf());
     let _ = pane_runs(&mut root, &app);
 
     // The line binds the pane to the host it names ...
@@ -2027,7 +2049,7 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
     .expect("fixture config");
     {
         let mut s = state.borrow_mut();
-        s.settings_ssh_home = Some(home.path().to_path_buf());
+        s.settings.ssh_home_override = Some(home.path().to_path_buf());
         s.terminal
             .borrow_mut()
             .sessions

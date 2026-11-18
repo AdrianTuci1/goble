@@ -14,10 +14,9 @@ use crate::emulator::VisibleBlock;
 use crate::state::PaneControls;
 
 use super::super::{UiActions, UiSnapshot};
-use super::header::build_agent_header_in_lane;
 use super::{
-    build_agent_error, build_sub_agent_child_view, chat_action_relay, pane_session_snapshot,
-    PaneChatSnapshot, PaneHeading,
+    build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay,
+    pane_session_snapshot, PaneChatSnapshot, PaneHeading,
 };
 
 /// If `pane_id` has a live PTY session with output, draw its newest command as
@@ -289,14 +288,11 @@ pub fn build_agent_chat(
     // answers instead.
     let native_harness = surface_harness.is_none_or(|spec| spec.id == "goble");
     // This pane's committed content-lane width, if the user dragged one. The
-    // pane's topbar and work dock are drawn full-pane-width as square chrome
-    // bands; their inner text/cards are bounded to this lane's column — the
-    // same width the `ChatView` under them centres its content in — so the
-    // chrome lines up with the conversation.
+    // lane only meters this pane's conversation column (drawn on the darker
+    // `Bg`); the topbar and the work dock stay full-pane-width chrome bands and
+    // never follow the adjustable width.
     let content_lane_pref = state.content_lane_prefs.get(&pane_id).copied();
-    // The topbar's band spans the whole pane (the `HeaderBand` bleeds it to the
-    // pane's slot); only its row is bounded to the content lane.
-    let header = build_agent_header_in_lane(
+    let header = build_agent_header(
         app,
         state,
         actions,
@@ -304,7 +300,6 @@ pub fn build_agent_chat(
         on_escape.clone(),
         surface_harness,
         Some(PaneHeading::Agent(heading)),
-        content_lane_pref,
     );
 
     // The rich-input controls belong to this pane, not to the workspace: two

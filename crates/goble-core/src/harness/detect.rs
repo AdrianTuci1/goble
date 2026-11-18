@@ -232,14 +232,15 @@ pub async fn probe_version(path: &Path) -> Result<String, String> {
         return Err(format!(
             "{} --version exited with {code}: {}",
             path.display(),
-            if line.is_empty() { "(no output)" } else { &line }
+            if line.is_empty() {
+                "(no output)"
+            } else {
+                &line
+            }
         ));
     }
     if line.is_empty() {
-        return Err(format!(
-            "{} --version printed no version",
-            path.display()
-        ));
+        return Err(format!("{} --version printed no version", path.display()));
     }
     Ok(line)
 }

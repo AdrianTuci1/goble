@@ -145,6 +145,12 @@ impl McpManager {
         let mut outcome = McpSyncOutcome::default();
         let mut declared: HashMap<String, Declaration> = HashMap::new();
         for (name, server) in &config.mcp_servers {
+            // `enabled = false` keeps the declaration in the file but takes the
+            // server out of the runtime registry: the file still says what it
+            // is, the app just does not serve it.
+            if !server.enabled {
+                continue;
+            }
             let Some(declaration) = declaration_for(name, server) else {
                 log::warn!("[mcp_servers.{name}] declares no url or command; skipped");
                 continue;

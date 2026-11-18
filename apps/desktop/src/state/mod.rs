@@ -33,7 +33,7 @@ use crate::terminal::TerminalRegistry;
 use crate::ui::{
     AgentDashboardState, AppTab, CostEntry, CronEntry, ExecutionEntry, FloatingDrag, HarnessEntry,
     LayoutKind,
-    LlmFormField, Pane, PaneChatSnapshot, PaneDropTarget, PaneKind, RemoteAgentEntry, RemoteDeploy, SearchRow, SettingsCategory, SettingsControl, SettingsFocus, SidebarView,
+    LlmFormField, Pane, PaneChatSnapshot, PaneDropTarget, PaneKind, RemoteAgentEntry, RemoteDeploy, SearchRow, SettingsCategory, SidebarView,
     Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry,
     WorkflowStepEntry, WorkerPaneSnapshot,
     WorkspaceRouting, SIDEBAR_WIDTH,

@@ -2,7 +2,8 @@
 
 use goble_terminal::blocks::BlockView;
 use goble_ui::elements::terminal_block::toggle_terminal_filter;
-use goble_ui::event::DispatchedEvent;
+use goble_ui::elements::MenuPointer;
+use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY};
 use goble_ui::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint, Vector2F,
 };
@@ -30,10 +31,57 @@ impl Element for RootView {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        // The menu that was open on the previous frame owns the pointer over its
+        // own surface: seed the gate before anything paints, so the rows, pills
+        // and tooltips behind it are told the pointer is not over them. The
+        // menus paint-report their surface below, for the frame after this one.
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        app.open_menus.begin_paint();
+        // Paint-time hover is gated by the context, but a few cells are written
+        // by pointer *events* as well (a workspace tab's hover, a pane header's
+        // chip). While the pointer is on the open menu those cells belong to the
+        // menu too, so they are cleared here, after this frame's events and
+        // before anything paints from them: the surface behind the menu rests.
+        if ctx.pointer_on_open_menu() {
+            let mut state = self.state.borrow_mut();
+            state.space_hover = None;
+            for hover in state.pane_hover.values() {
+                *hover.borrow_mut() = false;
+            }
+        }
         self.element.paint(origin, ctx, app);
         // The chips hovered this frame go last, after the panes and after every
         // overlay the tree mounted, so nothing the tree painted covers them.
+        // They are a menu's own top-layer surfaces too (a row's tray, the usage
+        // panel), so while the pointer is on the open menu they paint inside its
+        // surface: the menu keeps its own hover when its last layer draws it,
+        // instead of reading its own rows as the elements behind it.
+        if ctx.pointer_on_open_menu() {
+            ctx.enter_menu_surface();
+        }
         self.hover_chips.paint(origin, ctx, app);
+        if ctx.menu_surface_depth > 0 {
+            ctx.leave_menu_surface();
+        }
+        // Reconcile what painted open with the one open menu (adopting an
+        // action-driven open, closing stragglers), then mirror the result into
+        // the app state the rest of the desktop reads.
+        app.open_menus.end_paint();
+        ctx.open_menu_surfaces.clear();
+        let open = app.open_menus.id();
+        let mut changed = false;
+        {
+            let mut state = self.state.borrow_mut();
+            if state.open_menu != open {
+                state.open_menu = open;
+                changed = true;
+            }
+        }
+        if changed {
+            // A menu that closed itself while the tree painted (or one adopted
+            // after an action) needs the frame that shows its absence.
+            self.redraw_requested = true;
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -130,6 +178,12 @@ impl Element for RootView {
         // before the shortcuts, so the frame this key lands in already draws
         // the hint, and tracked whatever the tree does with the event below.
         self.track_chord_modifier(event);
+        // The open menu has the window's pointer and Escape before any element
+        // behind it does: a press outside it is the one dismiss path for every
+        // menu, and a move over its surface is not a move over what it covers.
+        if self.guard_open_menu(event, app) {
+            return true;
+        }
         // Global shortcuts (warp-new style pane splitting + pane focus
         // navigation + the command palette). These are handled before the tree
         // so a focused composer cannot swallow the keys.
@@ -264,6 +318,75 @@ impl Element for RootView {
             }
         }
         self.element.dispatch_event(event, ctx, app)
+    }
+}
+
+impl RootView {
+    /// The open menu's claim on the window, before the tree sees the event.
+    ///
+    /// Returns true when the event was the menu's and must not reach anything
+    /// else. The rules are the native counterpart of a portal-rendered menu in
+    /// the web:
+    ///
+    /// * an `Escape` closes the menu and goes no further;
+    /// * a press on the menu's own surface is left to the tree (the menu's
+    ///   elements handle it);
+    /// * a press on the menu's own trigger is left alone as well — the menu
+    ///   toggles itself through it, the way a drop-down's trigger does;
+    /// * a press anywhere else closes the menu first, and then goes on to what
+    ///   it landed on (the web's document `pointerdown` listener does not
+    ///   swallow the click either: the page still reacts, the menu only steps
+    ///   out of the way);
+    /// * a pointer move over the surface of a paint-hover menu is the menu's
+    ///   and is not passed on, so nothing behind it updates hover from the
+    ///   event stream. Menus that move their own highlight from pointer events
+    ///   (the composer's model card, the slash card) still receive them.
+    fn guard_open_menu(&mut self, event: &DispatchedEvent, app: &AppContext) -> bool {
+        if !app.open_menus.is_open() {
+            return false;
+        }
+        match event {
+            DispatchedEvent::KeyDown { key, modifiers } => {
+                // Plain Escape only: a chorded Escape belongs to whatever binds
+                // it. Menu keyboard navigation (arrows, Enter) is untouched.
+                if key == "Escape"
+                    && !modifiers.command
+                    && !modifiers.ctrl
+                    && !modifiers.alt
+                    && !modifiers.shift
+                {
+                    app.open_menus.close();
+                    self.redraw_requested = true;
+                    return true;
+                }
+                false
+            }
+            DispatchedEvent::MouseDown { position, button } => {
+                // Only the primary button dismisses: a right press is a gesture
+                // of its own (it is what opens a context menu, and on the tab a
+                // context menu already belongs to it closes that menu through
+                // its own toggle), so treating it as a dismissal would have the
+                // two cancel out.
+                if *button != BUTTON_PRIMARY {
+                    return false;
+                }
+                if app.open_menus.pointer_on_surface(*position)
+                    || app.open_menus.pointer_on_anchor(*position)
+                {
+                    return false;
+                }
+                app.open_menus.close();
+                self.redraw_requested = true;
+                // The press itself is not the menu's: let the control or row it
+                // landed on take it, now that the menu is out of the way.
+                false
+            }
+            DispatchedEvent::MouseMove { position } => {
+                app.open_menus.pointer() == MenuPointer::Paint
+                    && app.open_menus.pointer_on_surface(*position)
+            }
+            _ => false,
+        }
     }
 }
 

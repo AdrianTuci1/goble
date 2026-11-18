@@ -77,6 +77,7 @@ pub use key_handler::KeyHandler;
 pub use label::{Label, LabelSize};
 pub use markdown::parse_markdown;
 pub use modal::Modal;
+pub use open_menu::{MenuClose, MenuId, MenuPointer, OpenMenus, DEFAULT_MENU_ID};
 pub use model_tray::{
     handle_tray_key, level_label, ComposerModelTray, ModelTray, ModelTrayHarness, ModelTrayKey,
     ModelTrayModel, ModelTrayPane, ModelTrayState, MODEL_TRAY_ROWS,
@@ -96,6 +97,16 @@ pub use select::{Select, SelectOption};
 pub use sheet::{Sheet, SHEET_DEFAULT_WIDTH};
 pub use shell::{ActiveView, SettingsTab, ShellState, ShellView, SidebarMode};
 pub use shortcut_hints::{key_has_icon, ShortcutHint, ShortcutHints};
+pub use settings::{
+    SettingsButton, SettingsFold, SettingsNav, SettingsNavGroup, SettingsNavItem,
+    SettingsNotice, SettingsNoticeKind, SettingsPathField, SettingsRow, SettingsRowStatus,
+    SettingsRowStatusKind, SettingsSecretField, SettingsSection, SettingsSelect, SettingsSlider,
+    SettingsTextField, SettingsToggle, SETTINGS_CONTROL_HEIGHT, SETTINGS_CONTROL_MIN_WIDTH,
+    SETTINGS_CONTROL_RADIUS, SETTINGS_GROUP_RADIUS, SETTINGS_NAV_ROW_HEIGHT,
+    SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING, SETTINGS_RAIL_WIDTH, SETTINGS_ROW_HINT_SIZE,
+    SETTINGS_ROW_HINT_LINE_HEIGHT, SETTINGS_ROW_H_PADDING, SETTINGS_ROW_LABEL_SIZE,
+    SETTINGS_ROW_V_PADDING, SETTINGS_SECTION_GAP,
+};
 pub use slash_menu::{
     slash_menu_open, DraftTrigger, ModelMenu, SlashMenu, SlashMenuItem, SLASH_MENU_ROWS,
 };
@@ -192,6 +203,18 @@ pub struct PaintContext {
     /// Whether the pointer is currently over the window. When the pointer
     /// leaves the window there is no hover.
     pub cursor_inside: bool,
+    /// The rectangles the open menu painted on the last frame, seeded by the
+    /// root view before the tree paints. While the pointer is on one of them the
+    /// menu owns it: hovering belongs to the menu, and nothing painted behind it
+    /// (a row, a pill, a tooltip) may read the pointer as being over it. This is
+    /// the immediate-mode counterpart of the web's topmost hit-testing for a
+    /// portal-rendered menu.
+    pub open_menu_surfaces: Vec<RectF>,
+    /// How deep inside the open menu's own paint the current query is. The
+    /// menu's panel, rows and tray paint with this raised so `hovered` still
+    /// answers true for them; everything painted before it (the elements it
+    /// covers) sees zero and is told the pointer is not over it.
+    pub menu_surface_depth: u32,
 }
 
 impl PaintContext {
@@ -200,13 +223,47 @@ impl PaintContext {
             renderer: Some(renderer),
             cursor_position: vec2f(0.0, 0.0),
             cursor_inside: false,
+            open_menu_surfaces: Vec::new(),
+            menu_surface_depth: 0,
         }
     }
 
     /// True when the given bounds contain the current pointer. Used at paint
     /// time for hover overlays; returns false when the pointer is outside.
+    ///
+    /// The open menu owns the pointer over its own surface: elements painted
+    /// behind it (rows, pills, tooltips) are told the pointer is not over them,
+    /// however their bounds overlap the menu. Elements painting *inside* the
+    /// menu raise [`Self::enter_menu_surface`] first, so the menu itself keeps
+    /// its hover.
     pub fn hovered(&self, bounds: RectF) -> bool {
-        self.cursor_inside && crate::elements::interactive::contains(bounds, self.cursor_position)
+        if !self.cursor_inside
+            || !crate::elements::interactive::contains(bounds, self.cursor_position)
+        {
+            return false;
+        }
+        !(self.menu_surface_depth == 0 && self.pointer_on_open_menu())
+    }
+
+    /// Whether the pointer is on the open menu's surface.
+    pub fn pointer_on_open_menu(&self) -> bool {
+        self.cursor_inside
+            && self
+                .open_menu_surfaces
+                .iter()
+                .any(|surface| crate::elements::interactive::contains(*surface, self.cursor_position))
+    }
+
+    /// Mark the start of painting an open menu's own surface. While raised,
+    /// `hovered` answers for the menu instead of treating the surface as an
+    /// obstacle. Balanced by [`Self::leave_menu_surface`].
+    pub fn enter_menu_surface(&mut self) {
+        self.menu_surface_depth = self.menu_surface_depth.saturating_add(1);
+    }
+
+    /// Mark the end of painting an open menu's own surface.
+    pub fn leave_menu_surface(&mut self) {
+        self.menu_surface_depth = self.menu_surface_depth.saturating_sub(1);
     }
 }
 
@@ -216,6 +273,8 @@ impl Default for PaintContext {
             renderer: Some(crate::render::Renderer::new()),
             cursor_position: vec2f(0.0, 0.0),
             cursor_inside: false,
+            open_menu_surfaces: Vec::new(),
+            menu_surface_depth: 0,
         }
     }
 }
@@ -254,6 +313,11 @@ pub struct AppContext {
     /// dispatches pointer input; an element that is rebuilt every frame reads
     /// it to know a press that started on it is still dragging.
     pub pointer_down: Rc<Cell<bool>>,
+    /// The window's one open-menu state: which menu is up, how to close it and
+    /// the surface it owns. Shared (`Rc`) so every menu element, the root view
+    /// and the app state that mirrors it see the same state. See
+    /// [`OpenMenus`](crate::elements::OpenMenus).
+    pub open_menus: OpenMenus,
 }
 
 impl Default for AppContext {
@@ -265,7 +329,15 @@ impl Default for AppContext {
             hover_chips: Rc::new(RefCell::new(hover_chip::HoverChipRegistry::default())),
             scroll_moves: Rc::new(Cell::new(0)),
             pointer_down: Rc::new(Cell::new(false)),
+            open_menus: OpenMenus::default(),
         }
+    }
+}
+
+impl AppContext {
+    /// The window's one open-menu state.
+    pub fn menus(&self) -> &OpenMenus {
+        &self.open_menus
     }
 }
 
@@ -673,6 +745,7 @@ pub mod key_handler;
 pub mod label;
 pub mod modal;
 pub mod model_tray;
+pub mod open_menu;
 pub mod padding;
 pub mod page;
 pub mod pointer_menu;
@@ -685,6 +758,7 @@ pub mod running_indicator;
 pub mod scrollable;
 pub mod search_input;
 pub mod select;
+pub mod settings;
 pub mod sheet;
 pub mod shell;
 pub mod shortcut_hints;

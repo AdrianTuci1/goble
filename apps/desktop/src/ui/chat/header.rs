@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    harness_bar_mark, lane_column, AppContext, ConstrainedBox, Container, CrossAxisAlignment,
+    harness_bar_mark, AppContext, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Flex, Icon, LayoutContext,
     MainAxisAlignment, MainAxisSize, PaintContext, Point, SizeConstraint, Spacer, Text, Tooltip,
     TooltipPosition, TopbarButton,
@@ -29,42 +29,19 @@ const HARNESS_MARK_SIZE: f32 = 14.0;
 /// corners.
 const BAND_BLEED: f32 = PANE_INSET;
 
-/// How the header's row is bounded inside its full-width band.
-///
-/// The band is the pane's chrome and always spans the pane (slot-wide, square).
-/// Only the text inside it — the `esc` hint, the harness mark and title, the
-/// work chip and the pane's controls — is bounded to the tab's own content
-/// width, the column the conversation under it is centred in.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum HeaderRowWidth {
-    /// The row spans the band: a pane whose content is not metered by a
-    /// content lane (a shell pane, the review and file panes), or a host that
-    /// has not resolved a width yet.
-    #[default]
-    Full,
-    /// The row is bounded to the content lane resolved from the band's own
-    /// width and this preference (`None` = the ratio model, `Some` = the
-    /// pane's committed width), centred in the band.
-    Lane(Option<f32>),
-}
-
 /// The pane's topbar band: a square `Surface` band painted flush with the
 /// pane's slot, around one row of chrome.
 ///
 /// The band paints `bleed` points past its own top, left and right layout
 /// edges, covering the pane frame's inset gutter and the shadow under it, so
 /// the topbar has no margin against the pane's edge while the pane's card below
-/// stays inset and rounded. The row inside is laid out at the tab's content
-/// width when one is known (`HeaderRowWidth::Lane`/`Exact`), centred in the
-/// band, so the title and the work chip line up with the conversation column
-/// under them; with no width (`Full`) the row spans the band, as it always did.
+/// stays inset and rounded. The row inside it always spans the whole band: the
+/// pane's adjustable content-lane width never reaches the topbar, it only
+/// meters the conversation column under it.
 struct HeaderBand {
     row: Box<dyn Element>,
     color: ColorU,
     bleed: f32,
-    row_width: HeaderRowWidth,
-    /// The row's left offset inside the band, from the last layout.
-    row_offset: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -75,29 +52,9 @@ impl HeaderBand {
             row,
             color,
             bleed: BAND_BLEED,
-            row_width: HeaderRowWidth::Full,
-            row_offset: 0.0,
             size: None,
             origin: None,
         }
-    }
-
-    fn with_row_width(mut self, row_width: HeaderRowWidth) -> Self {
-        self.row_width = row_width;
-        self
-    }
-
-    /// The width the row is laid out at inside a band `available` wide, or
-    /// `None` when it spans the whole band.
-    fn row_bounds(&self, available: f32) -> Option<(f32, f32)> {
-        if !available.is_finite() {
-            return None;
-        }
-        let width = match self.row_width {
-            HeaderRowWidth::Full => return None,
-            HeaderRowWidth::Lane(preference) => lane_column(available, preference).1,
-        };
-        Some((((available - width) / 2.0).max(0.0), width))
     }
 }
 
@@ -108,19 +65,10 @@ impl Element for HeaderBand {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let available = constraint.max.x;
-        let bounds = self.row_bounds(available);
-        let row_constraint = match bounds {
-            Some((_, width)) => {
-                SizeConstraint::new(vec2f(0.0, constraint.min.y), vec2f(width, constraint.max.y))
-            }
-            None => constraint,
-        };
-        let row_size = self.row.layout(row_constraint, ctx, app);
-        self.row_offset = bounds.map(|(offset, _)| offset).unwrap_or(0.0);
+        let row_size = self.row.layout(constraint, ctx, app);
         let size = vec2f(
-            if available.is_finite() {
-                available.max(0.0)
+            if constraint.max.x.is_finite() {
+                constraint.max.x.max(0.0)
             } else {
                 row_size.x
             },
@@ -151,8 +99,7 @@ impl Element for HeaderBand {
                 0.0,
             );
         }
-        self.row
-            .paint(origin + vec2f(self.row_offset, 0.0), ctx, app);
+        self.row.paint(origin, ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -246,57 +193,6 @@ pub(crate) fn build_agent_header(
     surface_harness: Option<&'static goble_core::harness::HarnessSpec>,
     heading: Option<PaneHeading>,
 ) -> Box<dyn Element> {
-    build_agent_header_with_row_width(
-        app,
-        state,
-        actions,
-        pane_id,
-        esc,
-        surface_harness,
-        heading,
-        HeaderRowWidth::Full,
-    )
-}
-
-/// The pane's topbar for a pane whose content is metered by a content lane: the
-/// band still spans the whole pane, but the row inside it — title, work chip and
-/// controls — is bounded to the pane's content-lane column and centred, so the
-/// bar's text lines up with the conversation under it. `content_lane_pref` is
-/// the pane's committed lane width (`None` resolves the ratio model); the width
-/// is resolved from the band's own layout width, the same input the lane under
-/// the bar resolves its column from.
-pub(crate) fn build_agent_header_in_lane(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-    pane_id: u64,
-    esc: Option<Rc<RefCell<dyn FnMut()>>>,
-    surface_harness: Option<&'static goble_core::harness::HarnessSpec>,
-    heading: Option<PaneHeading>,
-    content_lane_pref: Option<f32>,
-) -> Box<dyn Element> {
-    build_agent_header_with_row_width(
-        app,
-        state,
-        actions,
-        pane_id,
-        esc,
-        surface_harness,
-        heading,
-        HeaderRowWidth::Lane(content_lane_pref),
-    )
-}
-
-fn build_agent_header_with_row_width(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-    pane_id: u64,
-    esc: Option<Rc<RefCell<dyn FnMut()>>>,
-    surface_harness: Option<&'static goble_core::harness::HarnessSpec>,
-    heading: Option<PaneHeading>,
-    row_width: HeaderRowWidth,
-) -> Box<dyn Element> {
     // The bar's title carries its harness on the left: the mark sits in the
     // title's own group, immediately before the words, so the pane reads as
     // "🐙 New Agent" wherever the bar puts it. A pane with no heading keeps the
@@ -335,7 +231,6 @@ fn build_agent_header_with_row_width(
         HeaderSlots {
             center,
             leading,
-            row_width,
             ..HeaderSlots::default()
         },
     )
@@ -386,10 +281,6 @@ pub(crate) struct HeaderSlots {
     /// Drawn at the bar's trailing edge, before the expand and close controls:
     /// the pane's own controls, to the left of the ones every pane shares.
     pub trailing: Option<Box<dyn Element>>,
-    /// How the row is bounded inside the full-width band: `Full` spans the
-    /// band, `Lane`/`Exact` bound it to the pane's content-lane width and
-    /// centre it, so the bar's text lines up with the conversation under it.
-    pub row_width: HeaderRowWidth,
 }
 
 /// The same bar, with the pane's own content in its leading and trailing slots.
@@ -489,7 +380,6 @@ pub(crate) fn build_agent_header_with(
         leading,
         center,
         trailing,
-        row_width,
     } = slots;
 
     // A titled bar keeps the marker's room inside its left group instead of
@@ -570,9 +460,7 @@ pub(crate) fn build_agent_header_with(
     let row = Container::new(row)
         .with_padding(EdgeInsets::new(bar_inset, v_pad, 0.0, v_pad))
         .finish();
-    HeaderBand::new(row, app.theme.color(ColorToken::Surface))
-        .with_row_width(row_width)
-        .finish()
+    HeaderBand::new(row, app.theme.color(ColorToken::Surface)).finish()
 }
 
 /// The pane's own work cue, drawn between the header's empty space and the
@@ -1959,16 +1847,18 @@ mod tests {
         }
     }
 
-    /// A wide pane bounds its header row to the content lane: the close X and
-    /// the work chip sit on the conversation column's right edge, not the
-    /// pane's, so the bar's text lines up with the content under it. A narrow
-    /// pane has no lane and keeps its row spanning the band.
+    /// The pane header row spans the whole band even while the pane's content
+    /// lane is active: the adjustable conversation width never reaches the
+    /// topbar. The close X keeps the pane's trailing edge, the `esc` hint its
+    /// leading one, and the work chip sits outside the (narrower) lane column.
     #[test]
-    fn a_wide_pane_bounds_its_header_row_to_the_content_lane() {
+    fn the_pane_header_row_spans_the_full_band_even_with_the_lane_active() {
         use goble_ui::elements::resolve_content_width;
 
         let app = AppContext::default();
         let (mut root, state, _desktop, _dir) = pane_root();
+        let size = vec2f(1600.0, 900.0);
+        let committed = 700.0;
         {
             let mut s = state.borrow_mut();
             let pane_id = s.active_pane_id;
@@ -1977,66 +1867,147 @@ mod tests {
                 .or_default()
                 .in_flight_tools
                 .insert("call-1".to_string(), tool_call("call-1", "run_command"));
+            // A committed lane width narrower than the passive ratio: the
+            // conversation column is clearly inside the pane while the bar
+            // still fills it.
+            s.content_lane_prefs.insert(pane_id, committed);
         }
-        let size = vec2f(1600.0, 900.0);
         let _ = frame_sized(&mut root, &app, size);
         let cmds = frame_sized(&mut root, &app, size);
         let pane = pane_rect(&state);
-        let lane = resolve_content_width(pane.width(), None);
+        let lane = resolve_content_width(pane.width(), Some(committed));
         let gutter = (pane.width() - lane) / 2.0;
         let lane_left = pane.min_x() + gutter;
         let lane_right = lane_left + lane;
         assert!(
             lane < pane.width() - 100.0,
-            "the fixture pane is wide enough for an active lane: {lane} in {}",
+            "the fixture pane's lane is clearly narrower than the pane: {lane} in {}",
             pane.width()
         );
 
-        // The close X rides the lane's trailing edge, not the pane's.
+        // The band itself is still the whole pane slot.
+        let band = header_band(&cmds, &app);
+        assert_eq!(band.min_x(), pane.min_x() - PANE_INSET);
+        assert_eq!(band.max_x(), pane.max_x() + PANE_INSET);
+
+        // The close X keeps the pane's own trailing edge, outside the lane.
         let close = rightmost_icon(&cmds, "x-close");
         assert!(
-            close.0 < lane_right,
-            "the close X is inside the lane column: {close:?} vs lane right {lane_right}"
+            close.0 > pane.max_x() - 40.0,
+            "the close X sits on the pane's trailing edge: {close:?} vs pane {pane:?}"
         );
         assert!(
-            close.0 > lane_right - 40.0,
-            "and hugs its trailing edge: {close:?} vs lane right {lane_right}"
+            close.0 > lane_right + 20.0,
+            "and not on the lane's: {close:?} vs lane right {lane_right}"
         );
 
-        // The work chip is bounded by the same column.
+        // The `esc` hint keeps the pane's leading edge, outside the lane.
+        let esc = header_texts(&cmds, close.1)
+            .into_iter()
+            .find(|(text, _)| text == "esc")
+            .map(|(_, origin)| origin)
+            .expect("the bar draws its esc hint");
+        assert!(
+            esc.x < lane_left - 20.0,
+            "the esc hint sits on the pane's leading edge: {esc:?} vs lane left {lane_left}"
+        );
+
+        // The work chip is a bar control, not lane content: it stays on the
+        // pane's side of the lane's trailing edge.
         let diamond = header_diamonds(&cmds, &app, close.1)
             .first()
             .map(|(origin, size)| origin.x + size / 2.0)
             .expect("the pane's chip draws its diamond");
         assert!(
-            diamond < lane_right && diamond > lane_right - 200.0,
-            "the work chip sits at the lane's trailing edge: {diamond} vs [{lane_left}, {lane_right}]"
+            diamond > lane_right + 20.0,
+            "the work chip sits on the pane's edge, outside the lane: {diamond} vs lane right {lane_right}"
         );
 
-        // The title still centres in the pane (the lane is centred in it).
+        // The title still centres in the pane.
         let centred = heading_center(&cmds, close.1, "New Agent");
         let pane_middle = (pane.min_x() + pane.max_x()) / 2.0;
         assert!(
             (centred - pane_middle).abs() <= 0.5,
             "the title centres in the pane: {centred} vs {pane_middle}"
         );
+    }
 
-        // A narrow pane's lane is inactive: the row spans the whole band, so
-        // the close X returns to the pane's own edge.
-        let (mut narrow, narrow_state, _d, _dir) = pane_root();
-        let _ = frame_sized(&mut narrow, &app, window());
-        let narrow_cmds = frame_sized(&mut narrow, &app, window());
-        let narrow_pane = pane_rect(&narrow_state);
-        assert!(
-            !goble_ui::elements::lane_is_active(narrow_pane.width()),
-            "the fixture's narrow pane has no lane: {}",
-            narrow_pane.width()
-        );
-        let narrow_close = rightmost_icon(&narrow_cmds, "x-close");
-        assert!(
-            narrow_close.0 > narrow_pane.max_x() - 40.0,
-            "a narrow pane's controls keep the pane's trailing edge: {narrow_close:?} vs {:?}",
-            narrow_pane
-        );
+    /// The agent conversation column is the darker background while the pane
+    /// body/gutters keep the pane's surface: the adjustable width reads as a
+    /// distinct darker column. Checked in both themes, with theme tokens only.
+    #[test]
+    fn the_agent_lane_column_is_darker_than_the_pane_surface() {
+        fn luminance(color: goble_ui::ColorU) -> f32 {
+            0.2126 * color.r as f32 + 0.7152 * color.g as f32 + 0.0722 * color.b as f32
+        }
+
+        fn assert_darker(app: &AppContext) {
+            use goble_ui::elements::resolve_content_width;
+
+            let (mut root, state, _desktop, _dir) = pane_root();
+            let size = vec2f(1600.0, 900.0);
+            let _ = frame_sized(&mut root, app, size);
+            let cmds = frame_sized(&mut root, app, size);
+            let pane = pane_rect(&state);
+
+            // The pane card's surface: the tall fill spanning the pane.
+            let surface = app.theme.color(ColorToken::Surface);
+            let (card, card_color) = cmds
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::FillRect { rect, color, .. }
+                        if *color == surface
+                            && (rect.width() - pane.width()).abs() < 0.5
+                            && rect.height() > 300.0
+                            && (rect.min_x() - pane.min_x()).abs() < 0.5 =>
+                    {
+                        Some((*rect, *color))
+                    }
+                    _ => None,
+                })
+                .expect("the pane card paints its surface");
+            assert_eq!(card_color, surface);
+
+            // The lane column: the tall fill inside the pane, narrower than it.
+            let (column, column_color) = cmds
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::FillRect { rect, color, .. }
+                        if rect.width() < pane.width() - 1.0
+                            && rect.height() > 300.0
+                            && rect.min_x() >= pane.min_x()
+                            && rect.max_x() <= pane.max_x() =>
+                    {
+                        Some((*rect, *color))
+                    }
+                    _ => None,
+                })
+                .max_by(|a, b| (a.0.width() * a.0.height()).total_cmp(&(b.0.width() * b.0.height())))
+                .expect("the lane paints its content column");
+
+            let lane = resolve_content_width(pane.width(), None);
+            let gutter = (pane.width() - lane) / 2.0;
+            assert!(
+                (column.width() - lane).abs() < 0.5
+                    && (column.min_x() - (pane.min_x() + gutter)).abs() < 0.5,
+                "the column is the centred lane: {column:?} vs {lane} @ {gutter}"
+            );
+            assert_eq!(
+                column_color,
+                app.theme.color(ColorToken::Bg),
+                "the lane column is the darker `Bg` token, not a hardcoded colour"
+            );
+            assert!(
+                luminance(column_color) < luminance(card_color),
+                "the lane column reads darker than the pane surface: {column_color:?} vs {card_color:?}"
+            );
+        }
+
+        // Dark: the window's gray `Bg` under the pane's `Surface`.
+        assert_darker(&AppContext::default());
+        // Light: the same token relationship, no hardcoded colours.
+        let mut light = AppContext::default();
+        light.theme = goble_ui::theme::Theme::light();
+        assert_darker(&light);
     }
 }

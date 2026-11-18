@@ -30,7 +30,6 @@ pub mod palette;
 pub mod panes;
 pub mod pickers;
 pub mod projects;
-pub mod settings;
 pub mod shell;
 pub mod shortcuts_help;
 pub mod sidebar;
@@ -44,6 +43,7 @@ pub mod worker;
 mod actions;
 mod build;
 mod pane;
+pub mod settings;
 mod shortcut_hints;
 mod snapshot;
 mod top_overlay;
@@ -68,7 +68,7 @@ pub use types::{
     AgentDashboardGrouping, AgentDashboardState, AppTab, ArchivedFilter, CostEntry, CronEntry,
     ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind, LlmFormField, McpSearchEntry,
     McpServerEntry, OnboardingAction, RemoteAgentEntry, RemoteDeploy, SearchRow, SettingsCategory,
-    SettingsControl, SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
+    SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
     WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry, WorkflowStepEntry, WorkspaceRouting,
 };
 
@@ -82,6 +82,8 @@ pub const CONNECTORS_WIDTH: f32 = 480.0;
 mod diff_panel_tests;
 #[cfg(test)]
 mod pane_tests;
+#[cfg(test)]
+mod open_menu_tests;
 #[cfg(test)]
 mod sidebar_menu_tests;
 #[cfg(test)]

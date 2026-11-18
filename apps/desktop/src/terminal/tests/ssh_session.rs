@@ -61,7 +61,7 @@ fn harness() -> Harness {
     let captured = Arc::new(Mutex::new(Vec::new()));
     {
         let mut s = state.borrow_mut();
-        s.settings_ssh_home = Some(home.path().to_path_buf());
+        s.settings.ssh_home_override = Some(home.path().to_path_buf());
         let mut session = detached();
         session.writer = Some(Box::new(CaptureWriter(Arc::clone(&captured))));
         s.terminal.borrow_mut().sessions.insert(1, session);

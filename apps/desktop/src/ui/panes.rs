@@ -39,6 +39,219 @@ use super::{
 /// even where nothing else in the bar changes.
 pub(crate) const FOCUS_MARKER_SIZE: f32 = 16.0;
 
+/// The radius of a tab's accent outline: the pane card's own rounding, so the
+/// purple corner reads as the tab border's own corner.
+pub(crate) const TAB_OUTLINE_RADIUS: f32 = WINDOW_CORNER_RADIUS;
+
+/// How far a tab's outline sits inside its slot on a side that is the tab
+/// area's own outer boundary — the top and bottom of the pane area, and the
+/// left/right side against the sidebar or the window's edge.
+pub(crate) const TAB_OUTLINE_OUTER_INSET: f32 = 3.0;
+
+/// How far a tab's outline sits inside its slot on a side it shares with a
+/// neighbouring tab. Each side insets by this much, so the two outlines at a
+/// split are exactly `2 × TAB_OUTLINE_SHARED_INSET` = 3 pt apart, with the
+/// window's `Bg` — the same grey the sidebar sits on — between them.
+pub(crate) const TAB_OUTLINE_SHARED_INSET: f32 = 1.5;
+
+thread_local! {
+    /// The tab slots recorded while this frame's panes paint, in window
+    /// coordinates, each with whether that tab is the focused one.
+    /// [`SlotOutlineLayer`] paints their outlines; it lives in the app topbar,
+    /// so the frames close across the selected workspace tab's merge stem and
+    /// stay under the bar's popups and every sheet.
+    static TAB_SLOTS: RefCell<Vec<(RectF, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Record one tab's slot for this frame's outline. Called by the pane that
+/// occupies the slot while it paints (see [`SlotFrame`] and [`RegionLayer`]).
+fn record_tab_slot(rect: RectF, active: bool) {
+    TAB_SLOTS.with(|slots| slots.borrow_mut().push((rect, active)));
+}
+
+/// The rectangle a tab's outline is drawn on, from its slot and the tab area's
+/// own rectangle: [`TAB_OUTLINE_OUTER_INSET`] on the sides that are the area's
+/// boundary (so a solo tab is inset 3 pt all round and no outline lands on the
+/// window's edge) and [`TAB_OUTLINE_SHARED_INSET`] on the sides shared with a
+/// neighbouring tab, which keeps neighbouring outlines exactly 3 pt apart.
+pub(crate) fn tab_outline_rect(slot: RectF, area: RectF) -> RectF {
+    let edge = |at: f32, boundary: f32| {
+        if (at - boundary).abs() < 0.5 {
+            TAB_OUTLINE_OUTER_INSET
+        } else {
+            TAB_OUTLINE_SHARED_INSET
+        }
+    };
+    let left = edge(slot.min_x(), area.min_x())
+        .min(slot.width() * 0.5)
+        .min(slot.height() * 0.5);
+    let right = edge(slot.max_x(), area.max_x())
+        .min(slot.width() * 0.5)
+        .min(slot.height() * 0.5);
+    let top = edge(slot.min_y(), area.min_y())
+        .min(slot.width() * 0.5)
+        .min(slot.height() * 0.5);
+    let bottom = edge(slot.max_y(), area.max_y())
+        .min(slot.width() * 0.5)
+        .min(slot.height() * 0.5);
+    rectf(
+        slot.min_x() + left,
+        slot.min_y() + top,
+        (slot.width() - left - right).max(1.0),
+        (slot.height() - top - bottom).max(1.0),
+    )
+}
+
+/// The bounding rectangle of the tab slots recorded in one frame: the tab area
+/// the tabs tile. It names the sides that are the area's outer boundary (see
+/// [`tab_outline_rect`]).
+fn tab_area(slots: &[(RectF, bool)]) -> Option<RectF> {
+    let mut rects = slots.iter().map(|(slot, _)| *slot);
+    let first = rects.next()?;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) =
+        (first.min_x(), first.min_y(), first.max_x(), first.max_y());
+    for rect in rects {
+        min_x = min_x.min(rect.min_x());
+        min_y = min_y.min(rect.min_y());
+        max_x = max_x.max(rect.max_x());
+        max_y = max_y.max(rect.max_y());
+    }
+    Some(rectf(min_x, min_y, max_x - min_x, max_y - min_y))
+}
+
+/// The layer that paints the recorded tab outlines: one 1 pt accent rounded
+/// rectangle per tab, so every tab — a solo pane included — wears a closed
+/// purple frame around its whole slot (the pane card together with its
+/// full-bleed chrome band and topbar). The topbar mounts it above its own bar
+/// so the frame is not cut by the selected workspace tab's merge; the bar's
+/// popups and the sheets paint after it and cover it.
+pub(crate) struct SlotOutlineLayer {
+    /// The focused tab's colour: the theme's accent.
+    active: goble_ui::ColorU,
+    /// Every other tab's colour: the ordinary outline colour.
+    inactive: goble_ui::ColorU,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+pub(crate) fn build_slot_outline_layer(app: &AppContext) -> Box<dyn Element> {
+    SlotOutlineLayer {
+        active: app.theme.color(ColorToken::Accent),
+        inactive: app.theme.color(ColorToken::Border),
+        size: None,
+        origin: None,
+    }
+    .finish()
+}
+
+impl Element for SlotOutlineLayer {
+    fn layout(
+        &mut self,
+        _constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        // A new frame starts here: the panes that paint after this layout push
+        // the slots they occupy, and this layer drains them while it paints.
+        TAB_SLOTS.with(|slots| slots.borrow_mut().clear());
+        let size = Vector2F::zero();
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            TAB_SLOTS.with(|slots| slots.borrow_mut().clear());
+            return;
+        };
+        let (active, inactive) = (self.active, self.inactive);
+        TAB_SLOTS.with(|slots| {
+            let slots = std::mem::take(&mut *slots.borrow_mut());
+            let Some(area) = tab_area(&slots) else {
+                return;
+            };
+            for (slot, is_active) in slots {
+                let frame = tab_outline_rect(slot, area);
+                let radius = TAB_OUTLINE_RADIUS
+                    .min(frame.width() * 0.5)
+                    .min(frame.height() * 0.5);
+                let color = if is_active { active } else { inactive };
+                renderer.stroke_rect(frame, color, 1.0, radius);
+            }
+        });
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
+
+/// A pane in its layout slot: paints the pane, then records the slot rectangle
+/// so [`SlotOutlineLayer`] can draw the tab's accent outline around the whole
+/// slot — the card and the full-bleed chrome band that bleeds over its top.
+struct SlotFrame {
+    inner: Box<dyn Element>,
+    /// Whether this tab is the focused one: it wears the accent outline, the
+    /// others the ordinary `Border` one.
+    active: bool,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl SlotFrame {
+    fn new(inner: Box<dyn Element>, active: bool) -> Self {
+        Self {
+            inner,
+            active,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for SlotFrame {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.inner.paint(origin, ctx, app);
+        if let Some(size) = self.size {
+            record_tab_slot(rectf(origin.x, origin.y, size.x, size.y), self.active);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.inner.dispatch_event(event, ctx, app)
+    }
+}
+
 /// Build the active space's pane tree as the main chat content.
 ///
 /// Guards against an empty space list or an out-of-range active index (which
@@ -59,11 +272,15 @@ pub fn build_active_space(
             if let Some(id) = state.maximized_pane {
                 if let Some(kind) = leaf_kind_of(&space.root, id) {
                     let leaf = build_leaf(app, state, actions, id, kind);
-                    if is_lifted(state, id) {
+                    let maximized: Box<dyn Element> = if is_lifted(state, id) {
                         Box::new(HiddenInPlace::new(leaf))
                     } else {
-                        leaf
-                    }
+                        // The maximized pane fills the whole pane area: its tab
+                        // slot is the pane area, so it wears the same accent
+                        // outline as any other tab.
+                        Box::new(SlotFrame::new(leaf, true))
+                    };
+                    maximized
                 } else {
                     build_space(app, state, actions, space)
                 }
@@ -80,10 +297,13 @@ pub fn build_active_space(
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_child(Expanded::new(chat).finish());
-            Container::new(column.finish())
-                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                .with_border(app.theme.color(ColorToken::Border).into())
-                .finish()
+            Box::new(SlotFrame::new(
+                Container::new(column.finish())
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                    .with_border(app.theme.color(ColorToken::Border).into())
+                    .finish(),
+                true,
+            ))
         }
     };
     // The drop ghost is drawn with the pane area but after its panes, so it
@@ -156,6 +376,8 @@ fn build_space(
                 children,
                 false,
                 true,
+                true,
+                state.active_pane_id,
                 actions,
                 state.floating_drag.clone(),
                 lifted_pane(state),
@@ -201,6 +423,8 @@ fn build_space(
                 children,
                 true,
                 true,
+                false,
+                state.active_pane_id,
                 actions,
                 state.floating_drag.clone(),
                 lifted_pane(state),
@@ -248,6 +472,8 @@ fn build_space(
                 children,
                 false,
                 true,
+                false,
+                state.active_pane_id,
                 actions,
                 state.floating_drag.clone(),
                 lifted_pane(state),
@@ -331,15 +557,14 @@ fn build_pane(
             }
             let leaf = build_leaf(app, state, actions, *id, kind.clone());
             // The frame sits a few pixels inside its split slot, so the
-            // outline stays visible where two panes meet instead of being
-            // clipped by the divider or the window edge.
-            Some(
-                Padding::new(
-                    Box::new(PaneShadow::new(leaf)),
-                    EdgeInsets::uniform(PANE_INSET),
-                )
-                .finish(),
-            )
+            // accent outline (drawn on the slot, see [`SlotFrame`]) has the
+            // window's dark `Bg` gutter between it and the card all the way
+            // round — and neighbouring tabs keep their 3 pt gutter. The card
+            // casts no shadow: the gutter has to read as the window's Bg.
+            Some(Box::new(SlotFrame::new(
+                Padding::new(leaf, EdgeInsets::uniform(PANE_INSET)).finish(),
+                state.active_pane_id == *id,
+            )))
         }
         Pane::Split {
             id,
@@ -716,65 +941,6 @@ fn paint_window_shadow(ctx: &mut PaintContext, rect: RectF) {
     );
 }
 
-/// A tiled pane drawn over the same soft shadow a floating window casts. The
-/// BSP tree places its leaves with a `SplitNode`, where there is no
-/// [`RegionLayer`] to paint the shadow, so this wrapper supplies it. It is
-/// paint-only: layout and every event belong to the pane it wraps, and the
-/// shadow is never a hit target.
-struct PaneShadow {
-    content: Box<dyn Element>,
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl PaneShadow {
-    fn new(content: Box<dyn Element>) -> Self {
-        Self {
-            content,
-            size: None,
-            origin: None,
-        }
-    }
-}
-
-impl Element for PaneShadow {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        ctx: &mut LayoutContext,
-        app: &AppContext,
-    ) -> Vector2F {
-        let size = self.content.layout(constraint, ctx, app);
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        if let Some(size) = self.size {
-            paint_window_shadow(ctx, rectf(origin.x, origin.y, size.x, size.y));
-        }
-        self.content.paint(origin, ctx, app);
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &DispatchedEvent,
-        ctx: &mut EventContext,
-        app: &AppContext,
-    ) -> bool {
-        self.content.dispatch_event(event, ctx, app)
-    }
-}
-
 struct RegionLayer {
     children: Vec<RegionChild>,
     /// Whether presses on a window's titlebar move it and the corner grip
@@ -783,6 +949,13 @@ struct RegionLayer {
     /// Whether the children are windows: shadow under each one, and a press
     /// anywhere on a window focuses it.
     windows: bool,
+    /// Whether the children are tiled tabs (the master-stack layout): each one
+    /// records its slot so it wears the tab outline, and none casts the window
+    /// shadow that would darken the tab gutter.
+    outline: bool,
+    /// The tab that currently has focus: its outline is the accent one, the
+    /// others the ordinary `Border`.
+    active_pane: u64,
     floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
     /// The pane lifted out of this layer, if any: it keeps its slot and layout
     /// but paints no frame and no shadow, and takes no pointer.
@@ -800,6 +973,8 @@ impl RegionLayer {
         children: Vec<RegionChild>,
         floating: bool,
         windows: bool,
+        outline: bool,
+        active_pane: u64,
         actions: &UiActions,
         floating_drag: Rc<RefCell<Option<FloatingDrag>>>,
         lifted: Option<u64>,
@@ -808,6 +983,8 @@ impl RegionLayer {
             children,
             floating,
             windows,
+            outline,
+            active_pane,
             floating_drag,
             lifted,
             on_float_start: actions.on_float_start.clone(),
@@ -871,16 +1048,33 @@ impl Element for RegionLayer {
             }
             let px = Self::child_pixels(child, area);
             let child_origin = origin + vec2f(px.min_x(), px.min_y());
-            if self.windows {
+            if self.windows && !self.outline {
                 // A soft drop shadow under every window, so overlapping panes
                 // read as separate surfaces the way OS windows do. It is drawn
-                // before the child, so the window covers all but its edges.
+                // before the child, so the window covers all but its edges. A
+                // tiled tab never casts one: the gutter between tabs has to
+                // read as the window's own `Bg`, not as a shadow.
                 paint_window_shadow(
                     ctx,
                     rectf(child_origin.x, child_origin.y, px.width(), px.height()),
                 );
             }
             child.content.paint(child_origin, ctx, app);
+            if self.outline {
+                // The tab's whole slot: the card's inset plus the gutter the
+                // full-bleed chrome band covers, so the accent frame includes
+                // the tab's topbar.
+                let slot = child.rect.to_pixels(area);
+                record_tab_slot(
+                    rectf(
+                        origin.x + slot.min_x(),
+                        origin.y + slot.min_y(),
+                        slot.width(),
+                        slot.height(),
+                    ),
+                    child.pane_id == self.active_pane,
+                );
+            }
         }
     }
 
@@ -996,7 +1190,7 @@ pub(crate) const WINDOW_TITLEBAR_HEIGHT: f32 = 26.0;
 pub(crate) const WINDOW_CONTROLS_WIDTH: f32 = 80.0;
 const WINDOW_CONTROL_SIZE: f32 = 20.0;
 /// The corner radius of a pane's frame: the same on a tiled pane and a window.
-const WINDOW_CORNER_RADIUS: f32 = 6.0;
+pub(crate) const WINDOW_CORNER_RADIUS: f32 = 6.0;
 
 /// A pane as an operating-system window: its titlebar and controls above its
 /// content, a border that turns accent when it is focused, and the shadow the
@@ -1178,14 +1372,13 @@ fn build_leaf_with_lift(
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
     let column = build_leaf_column(app, state, actions, id, kind, lift);
-    let border_color = if active {
-        ColorToken::Accent
-    } else {
-        ColorToken::Border
-    };
+    // The card's own edge stays the ordinary `Border`: the tab's accent outline
+    // is drawn on its whole slot by [`SlotOutlineLayer`], around the card and
+    // the chrome band together. A card edge in the accent as well would put a
+    // second purple rule `PANE_INSET` inside the tab's real border.
     let pane = Container::new(column)
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .with_border(app.theme.color(border_color).into())
+        .with_border(app.theme.color(ColorToken::Border).into())
         .with_corner_radius(WINDOW_CORNER_RADIUS)
         .finish();
     let framed: Box<dyn Element> = if active {

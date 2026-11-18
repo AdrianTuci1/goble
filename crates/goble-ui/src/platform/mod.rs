@@ -43,6 +43,17 @@ pub mod fallback {
         None
     }
 
+    /// Open the platform's directory picker and return the folder the user
+    /// chose.
+    ///
+    /// The "add workspace" flow's one step that needs the OS: a Workspace in
+    /// the sidebar is a directory, and picking it is the native part (see
+    /// `mac::pick_directory`). A target with no native picker answers `None`,
+    /// so the flow adds nothing rather than inventing a path.
+    pub fn pick_directory() -> Option<String> {
+        None
+    }
+
     pub fn default_font_family() -> &'static str {
         "system-ui"
     }

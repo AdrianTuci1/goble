@@ -151,7 +151,10 @@ pub async fn transcribe_at(
 /// providers answer `{"text": "..."}` on success.
 async fn read_transcript(response: reqwest::Response) -> anyhow::Result<String> {
     let status = response.status();
-    let body = response.text().await.context("read the provider's answer")?;
+    let body = response
+        .text()
+        .await
+        .context("read the provider's answer")?;
     if !status.is_success() {
         let detail = body.trim();
         let detail: String = detail.chars().take(300).collect();
@@ -173,9 +176,7 @@ fn provider_key(secrets: &HashMap<String, Secret>, provider: &str) -> Option<Str
     let named = |name: &str| {
         secrets
             .values()
-            .find(|secret| {
-                secret.name == name && secret.provider.eq_ignore_ascii_case(provider)
-            })
+            .find(|secret| secret.name == name && secret.provider.eq_ignore_ascii_case(provider))
             .and_then(|secret| String::from_utf8(secret.encrypted_value.clone()).ok())
     };
     named("voice_api_key").or_else(|| named("llm_api_key"))
@@ -306,7 +307,10 @@ mod tests {
     #[test]
     fn the_speech_key_wins_and_only_for_its_own_provider() {
         let secrets = vault();
-        assert_eq!(provider_key(&secrets, "openai").as_deref(), Some("sk-voice"));
+        assert_eq!(
+            provider_key(&secrets, "openai").as_deref(),
+            Some("sk-voice")
+        );
         assert_eq!(
             provider_key(&secrets, "elevenlabs").as_deref(),
             Some("el-key")

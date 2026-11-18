@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
+use goble_core::config::ConfigFile;
 use goble_core::mcp_manager::McpManager;
 use goble_core::store::Store;
 use goble_core::vault::CredentialVault;
@@ -111,6 +112,11 @@ impl DesktopState {
         state.set_worktrees_root(home.worktrees_dir());
         let _ = state.reload_config(&home.config_path());
         let _ = state.load_from_store();
+        // The settings files: tighten them to 0600, run the one-time store
+        // imports once, sync the MCP declarations into the runtime registry,
+        // and watch the three files for external edits.
+        state.bootstrap_settings_files();
+        state.start_settings_watcher();
         // A run the previous process left as running is not this process's:
         // settle it as interrupted so the dock never spins on a dead run.
         state.settle_interrupted_runs();
@@ -157,6 +163,24 @@ impl DesktopState {
     /// models the app is configured with. A section that does not parse costs
     /// only itself; the sections around it are kept.
     pub fn reload_config(&self, path: &Path) -> anyhow::Result<()> {
+        // The settings editor is the one reader when this state has one (the
+        // running app, and any test that pinned a config path): it holds the
+        // revision and parses the same document the writes use.
+        if let Some(editor) = self.settings_editor() {
+            if editor.path(ConfigFile::Config) == path {
+                let document = editor
+                    .load(ConfigFile::Config)
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                for problem in document.problems() {
+                    log::error!("{}: {}", path.display(), problem.line());
+                }
+                let config = document
+                    .typed_config()
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                *self.config.lock() = config;
+                return Ok(());
+            }
+        }
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -203,6 +227,20 @@ impl DesktopState {
         };
         let mut config = config.clone();
         config.absorb_legacy();
+        if let Some(editor) = self.settings_editor() {
+            if editor.path(ConfigFile::Config) == path {
+                // The one writer: lock, revision fence, refusal of an
+                // unparseable file, validation and the atomic 0600 rename. This
+                // legacy shim still reserializes the whole typed config (new
+                // settings writes use path ops so comments survive), but it can
+                // no longer interleave with a settings edit or leave a 0644 file.
+                editor
+                    .save_typed_config(&config, None)
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                *self.config.lock() = config;
+                return Ok(());
+            }
+        }
         let toml = config.to_toml()?;
         fs::write(&path, toml).with_context(|| format!("write {}", path.display()))?;
         *self.config.lock() = config;
@@ -296,6 +334,8 @@ impl DesktopState {
             sandbox_store: Mutex::new(None),
             worktrees_root: Mutex::new(None),
             environment: Mutex::new(super::environment::EnvironmentCache::default()),
+            settings_editor: Mutex::new(None),
+            settings_watch: Mutex::new(None),
             daemon_state,
             daemon,
             translator_spawned: Arc::new(std::sync::atomic::AtomicBool::new(false)),

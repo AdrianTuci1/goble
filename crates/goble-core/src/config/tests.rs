@@ -893,3 +893,15 @@ fn the_seeded_default_does_not_write_app_or_harness() {
     assert!(!body.contains("[app]"), "{body}");
     assert!(!body.contains("[harness."), "{body}");
 }
+
+#[test]
+fn setting_a_key_keeps_the_comment_above_it() {
+    let text = "[app]\nfriendly_name = \"Ada\"\n# the telemetry choice is opt-in\ntelemetry = false\n";
+    let mut doc: toml_edit::DocumentMut = text.parse().expect("parse");
+    let op = super::ConfigOp::set(&["app", "telemetry"], super::ConfigValue::Bool(true));
+    super::schema::apply_op(&mut doc, &op).expect("apply");
+    let written = doc.to_string();
+    assert!(written.contains("# the telemetry choice is opt-in"), "{written}");
+    assert!(written.contains("telemetry = true"), "{written}");
+    assert!(written.contains("friendly_name = \"Ada\""), "{written}");
+}

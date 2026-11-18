@@ -31,8 +31,8 @@ use std::rc::Rc;
 use crate::elements::icon::icon_atlas_name;
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, PopupMenuItem,
-    SizeConstraint,
+    AppContext, Element, EventContext, LayoutContext, MenuClose, MenuId, MenuPointer, PaintContext,
+    Point, PopupMenuItem, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, RectF, Vector2F};
@@ -238,6 +238,10 @@ struct MenuBand {
     on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     drawn: Vec<DrawnRow>,
+    /// The window's shared open-menu identity, when the band is drawn as a menu
+    /// (the slash card and the model card are). `None` leaves a bare band — the
+    /// one a test lays out — out of the open-menu state.
+    menu: Option<(MenuId, MenuClose)>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -257,9 +261,17 @@ impl MenuBand {
             on_move: None,
             on_accept: None,
             drawn: Vec::new(),
+            menu: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Carry the host menu identity a [`SlashMenu`]/[`ModelMenu`] was given into
+    /// the band it builds each frame.
+    fn apply_menu(mut self, menu: Option<(MenuId, MenuClose)>) -> Self {
+        self.menu = menu;
+        self
     }
 
     /// Fired when the selection moves (arrow keys, or the pointer onto a row).
@@ -271,6 +283,16 @@ impl MenuBand {
     fn with_on_accept(mut self, callback: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>) -> Self {
         self.on_accept = callback;
         self
+    }
+
+    /// Hand the card's surface to the window and end the menu paint, so the
+    /// pointer over the card belongs to it and nothing behind it hovers there.
+    /// Called on every path out of `paint` once the card started painting.
+    fn publish(&self, ctx: &mut PaintContext, app: &AppContext, card: RectF) {
+        ctx.leave_menu_surface();
+        if let Some((id, close)) = self.menu.clone() {
+            app.open_menus.report(id, close, vec![card], MenuPointer::Events);
+        }
     }
 
     /// The selection, clamped to the rows this band was given.
@@ -403,6 +425,15 @@ impl Element for MenuBand {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        // The card is one of the window's menus while it paints: it claims the
+        // shared state (closing any other menu) and owns the pointer over its
+        // own surface.
+        if let Some((id, close)) = self.menu.clone() {
+            if app.open_menus.id() != Some(id) {
+                app.open_menus.open(id, close);
+            }
+        }
+        ctx.enter_menu_surface();
         // The hover query reads the paint context, and taking the renderer
         // borrows it, so the pointer is resolved first.
         self.track_hover(ctx);
@@ -423,7 +454,10 @@ impl Element for MenuBand {
         let empty_text = self.empty_text;
         let renderer = match ctx.renderer.as_mut() {
             Some(renderer) => renderer,
-            None => return,
+            None => {
+                self.publish(ctx, app, card);
+                return;
+            }
         };
         // The DSH menu surface: one rounded card over the input block, with the
         // surface's own fill and a hairline so it separates from the card under
@@ -443,6 +477,7 @@ impl Element for MenuBand {
                 (card.width() - CARD_PADDING * 2.0 - HEADING_PAD_X * 2.0).max(0.0),
                 DESCRIPTION_LINE_HEIGHT / DESCRIPTION_FONT_SIZE,
             );
+            self.publish(ctx, app, card);
             return;
         }
 
@@ -550,6 +585,7 @@ impl Element for MenuBand {
                 );
             }
         }
+        self.publish(ctx, app, card);
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -610,6 +646,10 @@ pub struct SlashMenu {
     index: Rc<RefCell<usize>>,
     on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The window's open-menu identity while the card is up (the host names it
+    /// and hands the dismiss handle). `None` for a card a caller draws outside
+    /// the window's menu state (tests, the render tools).
+    menu: Option<(MenuId, MenuClose)>,
     band: Option<MenuBand>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -622,10 +662,20 @@ impl SlashMenu {
             index,
             on_move: None,
             on_accept: None,
+            menu: None,
             band: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Register the card as the window's open menu while it is up: opening it
+    /// closes any other menu, an outside press closes it through `close`, and
+    /// the pointer over its card belongs to it. The host names the card
+    /// (`"composer.slash"`) and passes the dismiss its own state uses.
+    pub fn with_menu(mut self, id: MenuId, close: MenuClose) -> Self {
+        self.menu = Some((id, close));
+        self
     }
 
     /// Fired when the selection moves (arrow keys, or the pointer onto a row).
@@ -682,6 +732,7 @@ impl SlashMenu {
         )
         .with_on_move(self.on_move.clone())
         .with_on_accept(self.on_accept.clone())
+        .apply_menu(self.menu.clone())
     }
 }
 
@@ -742,6 +793,7 @@ pub struct ModelMenu {
     index: Rc<RefCell<usize>>,
     on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    menu: Option<(MenuId, MenuClose)>,
     band: Option<MenuBand>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -754,10 +806,18 @@ impl ModelMenu {
             index,
             on_move: None,
             on_accept: None,
+            menu: None,
             band: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Register the flat model list as the window's open menu while it is up,
+    /// with the same claim/hover/dismiss rules as the slash card.
+    pub fn with_menu(mut self, id: MenuId, close: MenuClose) -> Self {
+        self.menu = Some((id, close));
+        self
     }
 
     /// Fired when the selection moves (arrow keys, or the pointer onto a row).
@@ -792,6 +852,7 @@ impl ModelMenu {
         )
         .with_on_move(self.on_move.clone())
         .with_on_accept(self.on_accept.clone())
+        .apply_menu(self.menu.clone())
     }
 }
 
@@ -1105,6 +1166,117 @@ mod tests {
         assert!(
             labels.iter().any(|text| text == "No models configured"),
             "got {labels:?}"
+        );
+    }
+
+    // ---- the window's shared open-menu state ------------------------------
+
+    /// One frame of the real loop for a band: layout, seed the open-menu gate
+    /// from the registry (as the root view does), paint, reconcile.
+    fn band_frame(menu: &mut dyn Element, app: &AppContext, cursor: Option<Vector2F>) {
+        menu.layout(
+            SizeConstraint::loose(vec2f(640.0, 400.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        if let Some(point) = cursor {
+            ctx.cursor_position = point;
+            ctx.cursor_inside = true;
+        }
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        app.open_menus.begin_paint();
+        menu.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        app.open_menus.end_paint();
+    }
+
+    /// The slash card is one of the window's menus: it claims the shared state
+    /// while it paints, the pointer over its card hovers the card and not the
+    /// input block behind it, and the host's dismiss handle closes it.
+    #[test]
+    fn the_open_slash_card_claims_the_open_menu_state_and_owns_the_pointer() {
+        use crate::elements::{HoverRow, Text};
+
+        let app = AppContext::default();
+        let dismissed = Rc::new(RefCell::new(false));
+        let close: MenuClose = {
+            let dismissed = Rc::clone(&dismissed);
+            Rc::new(RefCell::new(move || *dismissed.borrow_mut() = true))
+        };
+        let mut menu: Box<dyn Element> = SlashMenu::new(items(), Rc::new(RefCell::new(0)))
+            .with_menu("composer.slash", close)
+            .finish();
+
+        band_frame(&mut *menu, &app, None);
+        assert_eq!(
+            app.open_menus.id(),
+            Some("composer.slash"),
+            "the open slash card is the window's open menu"
+        );
+        let surface = app
+            .open_menus
+            .surfaces()
+            .into_iter()
+            .next()
+            .expect("the card reported its face");
+
+        // The pointer on the card: a row painted behind it must not hover.
+        let point = vec2f(surface.min_x() + 20.0, surface.min_y() + 20.0);
+        band_frame(&mut *menu, &app, Some(point));
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_position = point;
+        ctx.cursor_inside = true;
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        let hover_cell: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let mut behind = HoverRow::new(Text::new("behind").finish())
+            .with_hover_key(Rc::clone(&hover_cell), "behind");
+        behind.layout(
+            SizeConstraint::loose(vec2f(300.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        behind.paint(vec2f(point.x - 20.0, point.y - 10.0), &mut ctx, &app);
+        assert_eq!(
+            *hover_cell.borrow(),
+            None,
+            "the input block behind the slash card must not hover"
+        );
+
+        // The root view's dismiss path closes it through the host's handle.
+        app.open_menus.close();
+        assert!(
+            *dismissed.borrow(),
+            "the registry closed the card through the host's dismiss"
+        );
+        assert!(!app.open_menus.is_open());
+    }
+
+    /// Opening the slash card closes a menu that was already up: one menu at a
+    /// time across the window.
+    #[test]
+    fn opening_the_slash_card_closes_the_menu_that_was_open() {
+        let app = AppContext::default();
+        let previous_closed = Rc::new(RefCell::new(false));
+        let previous_close: MenuClose = {
+            let previous_closed = Rc::clone(&previous_closed);
+            Rc::new(RefCell::new(move || *previous_closed.borrow_mut() = true))
+        };
+        app.open_menus.open("some.other.menu", previous_close);
+
+        let dismissed = Rc::new(RefCell::new(false));
+        let close: MenuClose = {
+            let dismissed = Rc::clone(&dismissed);
+            Rc::new(RefCell::new(move || *dismissed.borrow_mut() = true))
+        };
+        let mut menu: Box<dyn Element> = SlashMenu::new(items(), Rc::new(RefCell::new(0)))
+            .with_menu("composer.slash", close)
+            .finish();
+        band_frame(&mut *menu, &app, None);
+
+        assert_eq!(app.open_menus.id(), Some("composer.slash"));
+        assert!(
+            *previous_closed.borrow(),
+            "the menu that was open was closed by the slash card opening"
         );
     }
 }

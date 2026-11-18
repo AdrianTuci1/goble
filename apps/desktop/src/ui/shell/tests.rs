@@ -12,9 +12,9 @@ use goble_ui::theme::{ColorToken, TabColor};
 use super::topbar::{
     build_live_indicator, insertion_index, left_padding, reorder_target_index, tab_fillet_bottom,
     tab_hint, tab_merge_bottom, tab_pill_bottom, tab_top_radius, WorkspaceChip, WorkspaceChipParts,
-    MIN_CONTENTS_FOR_CLOSE, TAB_EDGE_INSET, TAB_FLARE_RADIUS, TAB_TOP_INSET,
-    TAB_TOP_RADIUS, TOPBAR_BOTTOM_BAND, TOPBAR_BOTTOM_BAND_RADIUS, TOPBAR_FULLSCREEN_PADDING,
-    TOPBAR_ICON_BUTTON_SIZE, TOPBAR_RIGHT_PADDING, TOPBAR_TRAFFIC_INSET,
+    MIN_CONTENTS_FOR_CLOSE, TAB_EDGE_INSET, TAB_FLARE_RADIUS, TAB_TOP_INSET, TAB_TOP_RADIUS,
+    TOPBAR_BOTTOM_BAND, TOPBAR_FULLSCREEN_PADDING, TOPBAR_ICON_BUTTON_SIZE, TOPBAR_RIGHT_PADDING,
+    TOPBAR_TRAFFIC_INSET,
 };
 
 use super::*;
@@ -232,9 +232,9 @@ fn a_fullscreen_window_moves_the_bar_into_the_traffic_lights_space() {
 }
 
 /// The shift is the padding's, not the bar's: a full-screen bar still spans the
-/// window at the height the body reserves below it, and it is filled with the
-/// frame's `Bg` — the tone the selected tab's `Surface` fill continues away
-/// from.
+/// window at the height the body reserves below it — the bar row plus its band —
+/// and it is filled with the frame's `Bg`, the tone the selected tab's `Surface`
+/// fill continues away from.
 #[test]
 fn the_fullscreen_padding_keeps_the_bar_height() {
     let (mut root, _state, _desktop, _dir) = app_root();
@@ -246,15 +246,19 @@ fn the_fullscreen_padding_keeps_the_bar_height() {
         .find_map(|command| match command {
             RenderCommand::FillRect { rect, color, .. }
                 if *color == app.theme.color(ColorToken::Bg)
-                    && (rect.height() - TOPBAR_HEIGHT).abs() < 0.01
+                    && (rect.height() - (TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND)).abs() < 0.01
                     && rect.width() >= window().x =>
             {
                 Some(*rect)
             }
             _ => None,
         })
-        .expect("the bar's background spans the window");
-    assert_eq!(bar.height(), TOPBAR_HEIGHT, "the bar keeps its height");
+        .expect("the bar block's background spans the window");
+    assert_eq!(
+        bar.height(),
+        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND,
+        "the bar block keeps its height (the bar row plus its band)"
+    );
     assert_eq!(bar.min_y(), 0.0, "the bar starts at the window's top edge");
 }
 
@@ -1251,65 +1255,66 @@ fn a_short_named_tab_centres_its_name() {
     );
 }
 
-/// The band under the bar is a full-window-width lip of the content's `Surface`
-/// with rounded top corners, not just background: it spans the sidebar width as
-/// well as the pane area, the sidebar surface continues it on the left, and it
-/// is the surface the selected tab's stem meets without a seam.
+/// The band under the bar is the bar's own `Bg`, not a lighter lip of the
+/// content's surface: the bar block's darker background fills every pixel down
+/// to the content sheet, and the sheet's `Surface` (the sidebar, and the panes'
+/// header band) starts exactly on the band's bottom edge. The selected tab is
+/// the one `Surface` fill that crosses that edge, which is what makes its merge
+/// read.
 #[test]
-fn the_band_under_the_bar_is_a_full_width_rounded_lip() {
+fn the_band_under_the_bar_is_the_bars_bg_up_to_the_content_sheet() {
     let (mut root, _state, _desktop, _dir) = app_root();
     let app = AppContext::default();
     let commands = render_element(&mut root, window(), &app);
     let surface = app.theme.color(ColorToken::Surface);
+    let bg = app.theme.color(ColorToken::Bg);
+    let sheet_top = TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND;
 
-    // The lip: the one `Surface` fill that starts at the bar's bottom edge and
-    // spans the whole window.
-    let lip = commands
+    // No `Surface` fill starts at the bar's bottom edge across the window: the
+    // old full-width lip is gone, so nothing lighter separates the bar from the
+    // content.
+    let lip = commands.iter().find_map(|command| match command {
+        RenderCommand::FillRect { rect, color, .. }
+            if *color == surface
+                && (rect.min_y() - TOPBAR_HEIGHT).abs() < 0.01
+                && (rect.width() - window().x).abs() < 0.01 =>
+        {
+            Some(*rect)
+        }
+        _ => None,
+    });
+    assert!(lip.is_none(), "no lighter lip runs under the bar: {lip:?}");
+
+    // The band is the window's own `Bg`, full width, exactly the band's rows:
+    // the darker background reaches the window outline above it.
+    let band = commands
         .iter()
         .find_map(|command| match command {
             RenderCommand::FillRect {
                 rect,
                 color,
                 corner_radius,
-            } if *color == surface
+            } if *color == bg
                 && (rect.min_y() - TOPBAR_HEIGHT).abs() < 0.01
+                && (rect.height() - TOPBAR_BOTTOM_BAND).abs() < 0.01
                 && (rect.width() - window().x).abs() < 0.01 =>
             {
                 Some((*rect, *corner_radius))
             }
             _ => None,
         })
-        .expect("the lip under the bar is painted full width");
+        .expect("the band under the bar is painted in the bar's own Bg");
     assert_eq!(
-        (lip.0.min_x(), lip.0.width()),
-        (0.0, window().x),
-        "the lip runs the whole window width, under the sidebar too: {:?}",
-        lip.0
+        (band.0.min_x(), band.0.min_y()),
+        (0.0, TOPBAR_HEIGHT),
+        "the band starts at the window's edge, on the bar's bottom row: {:?}",
+        band.0
     );
-    assert_eq!(
-        lip.1, TOPBAR_BOTTOM_BAND_RADIUS,
-        "the lip's top corners carry the content sheet's radius"
-    );
+    assert_eq!(band.1, 0.0, "the band is square: it is the bar's own foot");
 
-    // Only the band's rows of that rounded slab are visible: a clip starts at
-    // the bar's bottom edge and stops at the content's top.
-    let clip = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::ClipRect(rect)
-                if (rect.min_y() - TOPBAR_HEIGHT).abs() < 0.01
-                    && (rect.height() - TOPBAR_BOTTOM_BAND).abs() < 0.01
-                    && (rect.width() - window().x).abs() < 0.01 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        })
-        .expect("the lip is clipped to the band's few rows");
-    assert_eq!(clip.min_x(), 0.0, "the band starts at the window's edge");
-
-    // The lip is the content's own surface: the sidebar starts at the band's
-    // bottom and continues it, and the selected tab's stem reaches the content.
+    // The content sheet begins on the band's bottom edge: the sidebar's surface
+    // starts there, and the panes' full-bleed header band is `Surface` from that
+    // same row on. Nothing of the lighter sheet shows inside the band.
     let sidebar = commands
         .iter()
         .find_map(|command| match command {
@@ -1323,17 +1328,40 @@ fn the_band_under_the_bar_is_a_full_width_rounded_lip() {
         .expect("the sidebar paints its surface");
     assert_eq!(
         sidebar.min_y(),
-        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND,
-        "the sidebar begins under the lip: {sidebar:?}"
+        sheet_top,
+        "the content sheet begins on the band's bottom edge: {sidebar:?}"
+    );
+    assert!(
+        sidebar.min_y() > TOPBAR_HEIGHT,
+        "so the band under the bar stays the window's own Bg: {sidebar:?}"
+    );
+
+    // The selected tab's fill is the sheet's own surface and runs from inside
+    // the bar to the pane card's own surface below the sheet's first rows: the
+    // bar block, the pane inset and the merge line agree.
+    let body = selected_tab_body(&commands, &app);
+    assert!(
+        body.min_y() < TOPBAR_HEIGHT,
+        "the selected fill starts inside the bar: {body:?}"
     );
     assert_eq!(
-        selected_tab_body(&commands, &app).max_y(),
+        body.max_y(),
         tab_merge_bottom(),
-        "the selected tab's stem reaches the content under the lip"
+        "the fill crosses the band and the pane gutter to the card's surface: {body:?}"
+    );
+    assert_eq!(
+        tab_fillet_bottom(),
+        sheet_top,
+        "the flare bottoms out on the sheet's top edge"
+    );
+    assert_eq!(
+        tab_merge_bottom(),
+        sheet_top + crate::ui::panes::PANE_INSET + 1.0,
+        "the bar block, the pane inset and the merge line agree"
     );
     assert!(
         tab_pill_bottom() < TOPBAR_HEIGHT,
-        "the floating pills end above the lip"
+        "the floating pills end above the bar's own bottom edge"
     );
 }
 
@@ -1523,9 +1551,9 @@ fn render_with_cursor(
 
 /// The pane surface under the topbar has no seam: the old 1 pt horizontal rule
 /// is gone, and the selected workspace tab's fill runs from inside the bar,
-/// across the [`TOPBAR_BOTTOM_BAND`] and over the pane card's own top border,
-/// into the content. The band is what makes the merge read: the tab stands
-/// above the bar while the content starts below the strip of `Bg`.
+/// across the [`TOPBAR_BOTTOM_BAND`], one point into the content sheet. The band
+/// is what makes the merge read: the tab stands above the bar while the content
+/// sheet starts on the band's bottom edge.
 #[test]
 fn the_pane_surface_under_the_selected_tab_has_no_seam() {
     let (mut root, _state, _desktop, _dir) = app_root();
@@ -1567,8 +1595,10 @@ fn the_pane_surface_under_the_selected_tab_has_no_seam() {
         "the fill ends where the merge line is: {body:?}"
     );
 
-    // The pane card's `Surface` begins right below the merge line: the tab's
-    // fill covers the card's top border, so the two surfaces meet with no gap.
+    // The content sheet's `Surface` begins right below the merge line: the
+    // selected tab's fill crosses the band and lands one point into the sheet,
+    // so the two surfaces meet with no gap — and the pane card keeps its own
+    // inset frame below.
     let surface = app.theme.color(ColorToken::Surface);
     let pane = commands
         .iter()
@@ -1590,7 +1620,8 @@ fn the_pane_surface_under_the_selected_tab_has_no_seam() {
     assert_eq!(
         body.max_y(),
         pane.min_y() + 1.0,
-        "the selected fill reaches the pane card's own border: {body:?} against {pane:?}"
+        "the selected fill crosses the pane gutter and reaches the card's own surface: \
+         {body:?} against {pane:?}"
     );
 }
 
@@ -1629,11 +1660,13 @@ fn the_shell_content_starts_one_band_below_the_bar() {
 }
 
 /// Floating tabs float: a 6 pt gap between the selected fill and a neighbour's
-/// pill at the top, the feet reaching 9 pt past the selected slot at the merge
-/// line, and the selected tab painted last so it covers its neighbours'
-/// corners. The neighbouring tab is hovered so it paints at all.
+/// pill at the top and the feet reaching a fillet radius past the selected slot
+/// at the merge line. The neighbouring tab is hovered so it paints at all, and
+/// it paints *last*: the owner wants a hovered pill never bitten by the selected
+/// tab's inverted-corner discs, while the selected tab keeps its merge into the
+/// content sheet.
 #[test]
-fn floating_tabs_float_with_gaps_and_the_selected_tab_paints_last() {
+fn floating_tabs_float_with_gaps_and_a_hovered_pill_paints_last() {
     let (mut root, state, _desktop, _dir) = app_root();
     workspace_of_tabs(&state, 3);
     let app = AppContext::default();
@@ -1761,7 +1794,10 @@ fn floating_tabs_float_with_gaps_and_the_selected_tab_paints_last() {
         "the right fillet disc is centred on the band's outer top corner"
     );
 
-    // Painted last: the selected body lies above the neighbour's hovered pill.
+    // Painted last: the neighbour's hovered pill sits above the selected body and
+    // above its inverted-corner discs — a hovered pill is never bitten. The
+    // selected tab still merges: its body is painted after the *rest* of the
+    // neighbours, and nothing covers it once the pointer leaves.
     let body_index = commands
         .iter()
         .position(|command| match command {
@@ -1771,6 +1807,15 @@ fn floating_tabs_float_with_gaps_and_the_selected_tab_paints_last() {
             _ => false,
         })
         .expect("the selected body");
+    let disc_index = commands
+        .iter()
+        .position(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } => {
+                *color == background && (rect.width() - TAB_FLARE_RADIUS * 2.0).abs() < 0.01
+            }
+            _ => false,
+        })
+        .expect("the selected tab's inverted-corner disc");
     let pill_index = commands
         .iter()
         .position(|command| match command {
@@ -1781,8 +1826,12 @@ fn floating_tabs_float_with_gaps_and_the_selected_tab_paints_last() {
         })
         .expect("the hovered pill");
     assert!(
-        body_index > pill_index,
-        "the selected tab is painted after its neighbours, so its feet cover their corners"
+        pill_index > body_index,
+        "the hovered pill is painted after the selected body: pill {pill_index}, body {body_index}"
+    );
+    assert!(
+        pill_index > disc_index,
+        "and after the selected tab's inverted-corner fills: pill {pill_index}, disc {disc_index}"
     );
 }
 
@@ -2210,9 +2259,12 @@ fn floating_panes_draw_their_own_window_chrome() {
     );
 }
 
-/// A BSP pane is a framed surface like a floating window: it casts the same
-/// soft shadow and wears the same 1 px outline at the window's corner radius,
-/// without gaining a second titlebar (its own pane header stays the one bar).
+/// A BSP pane is a tab in the panel: it wears the app's 1 pt accent outline
+/// around its whole slot — the card plus the full-bleed chrome band it bleeds
+/// over the top — with the pane card's corner radius, and without gaining a
+/// second titlebar (its own pane header stays the one bar). It casts no soft
+/// shadow: the gutter around it is the window's own `Bg`, so the tab gutter
+/// reads as the sidebar's grey.
 #[test]
 fn bsp_panes_cast_the_window_frame() {
     let app = AppContext::default();
@@ -2228,23 +2280,48 @@ fn bsp_panes_cast_the_window_frame() {
     }
 
     let commands = render_element(&mut root, window(), &app);
-    let shadow = goble_ui::ColorU::new(0, 0, 0, 72);
-    assert!(
-        commands
-            .iter()
-            .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == shadow)),
-        "the pane casts the window shadow: {commands:?}"
-    );
-    assert!(
-        commands.iter().any(|c| matches!(
-            c,
+    let accent = app.theme.color(ColorToken::Accent);
+    let outlines: Vec<RectF> = commands
+        .iter()
+        .filter_map(|c| match c {
             RenderCommand::StrokeRect {
+                rect,
+                color,
                 width,
                 corner_radius,
-                ..
-            } if *width == 1.0 && *corner_radius == 6.0
-        )),
-        "the pane wears the window outline: {commands:?}"
+            } if *color == accent
+                && (*width - 1.0).abs() < 0.01
+                && (*corner_radius - crate::ui::panes::TAB_OUTLINE_RADIUS).abs() < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        outlines.len(),
+        1,
+        "the pane's tab wears one accent outline: {outlines:?}"
+    );
+    // The pane area is the slot: sidebar to window edge, body origin to bottom.
+    let slot = rectf(
+        crate::ui::SIDEBAR_WIDTH,
+        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND,
+        window().x - crate::ui::SIDEBAR_WIDTH,
+        window().y - (TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND),
+    );
+    assert_eq!(
+        outlines[0],
+        crate::ui::panes::tab_outline_rect(slot, slot),
+        "the outline is the tab's whole slot, inset {} pt on every outer side: {outlines:?}",
+        crate::ui::panes::TAB_OUTLINE_OUTER_INSET
+    );
+    let shadow = goble_ui::ColorU::new(0, 0, 0, 72);
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == shadow)),
+        "a tiled tab casts no shadow: its gutter is the window's own Bg: {commands:?}"
     );
 }
 
@@ -3078,10 +3155,10 @@ fn ctrl_tab_onto_the_settings_tab_puts_the_keyboard_in_its_rail() {
 
     // The page holds the keyboard, as it does after Tab from the rail, and the
     // chord steps off the tab and back onto it.
-    state.borrow_mut().settings_focus_into_pane();
+    state.borrow_mut().settings.region = crate::ui::settings::SettingsRegion::Page;
     assert_eq!(
-        state.borrow().settings_focus,
-        crate::ui::SettingsFocus::Pane,
+        state.borrow().settings.region,
+        crate::ui::settings::SettingsRegion::Page,
         "the page holds the keyboard to start"
     );
     assert!(press_chord(&mut root, &app, "Tab", ctrl_shift_tab()));
@@ -3097,8 +3174,8 @@ fn ctrl_tab_onto_the_settings_tab_puts_the_keyboard_in_its_rail() {
         "and came back to it"
     );
     assert_eq!(
-        state.borrow().settings_focus,
-        crate::ui::SettingsFocus::Rail,
+        state.borrow().settings.region,
+        crate::ui::settings::SettingsRegion::Rail,
         "the arriving tab's rail takes the keyboard"
     );
 }

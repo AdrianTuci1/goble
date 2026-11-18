@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind, ToolDisplayMode};
@@ -297,6 +298,14 @@ impl ChatView {
             self.composer_slash_items.clone(),
             self.composer_slash_index.clone(),
         );
+        // The card is one of the window's menus: it dismisses any other menu
+        // when it opens, an outside press closes it, and the pointer over it
+        // belongs to it (see `OpenMenus`). The view's own dismissal is the
+        // shared flag the composer keys off.
+        let dismissed = self.composer_slash_dismissed.clone();
+        let slash_close: crate::elements::MenuClose =
+            Rc::new(RefCell::new(move || *dismissed.borrow_mut() = true));
+        menu = menu.with_menu("composer.slash", slash_close);
         if let Some(cb) = self.on_composer_slash_move.clone() {
             menu = menu.with_on_move(move |index| (cb.borrow_mut())(index));
         }
@@ -323,11 +332,19 @@ impl ChatView {
         let mut menu = ModelMenu::new(
             self.composer_model_items.clone(),
             self.composer_model_index.clone(),
-        )
-        .with_on_accept(move |index| {
-            *open.borrow_mut() = false;
-            (accept.borrow_mut())(index);
-        });
+        );
+        // Same open-menu contract as the slash card. This flat list is the
+        // legacy band: it is itself a menu with a single selection, so an
+        // outside press closes it and opening it closes any other menu.
+        let menu_open = self.composer_model_menu_open.clone();
+        let model_close: crate::elements::MenuClose =
+            Rc::new(RefCell::new(move || *menu_open.borrow_mut() = false));
+        menu = menu
+            .with_menu("composer.model.list", model_close)
+            .with_on_accept(move |index| {
+                *open.borrow_mut() = false;
+                (accept.borrow_mut())(index);
+            });
         // The pointer moves the same selection the arrow keys do (the composer
         // routes those), so the highlight is the row either one would take.
         let index = self.composer_model_index.clone();

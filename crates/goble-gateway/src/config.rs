@@ -35,6 +35,10 @@ pub struct GatewayConfig {
     /// Directory with the built browser client. `None` falls back to `web/`
     /// next to the executable, then to the crate directory.
     pub web_dir: Option<PathBuf>,
+    /// Directory the gateway keeps its own state in: the control plane's session
+    /// bindings (`sessions.json`). `None` keeps that state in memory only,
+    /// which is what tests and embedders that do not want files use.
+    pub data_dir: Option<PathBuf>,
 }
 
 impl GatewayConfig {
@@ -51,6 +55,7 @@ impl GatewayConfig {
             allowed_hosts: Vec::new(),
             session_ttl: DEFAULT_SESSION_TTL,
             web_dir: None,
+            data_dir: None,
         }
     }
 

@@ -29,7 +29,8 @@ use std::rc::Rc;
 use crate::elements::icon::icon_atlas_name;
 use crate::elements::interactive::contains;
 use crate::elements::{
-    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
+    AppContext, Element, EventContext, LayoutContext, MenuClose, MenuId, MenuPointer, PaintContext,
+    Point, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -39,6 +40,13 @@ use crate::theme::{ColorToken, FontFamily};
 /// How many model rows the card draws at once before it windows around the
 /// selection.
 pub const MODEL_TRAY_ROWS: usize = 8;
+
+/// The label the composer's model card registers under in the window's shared
+/// open-menu state. The card is one of the window's menus even though it is not
+/// a [`PopupMenu`](crate::elements::PopupMenu): it owns the pointer over its
+/// surface, closes on an outside press and Escape, and opening it closes any
+/// other menu.
+pub const MODEL_TRAY_MENU_ID: MenuId = "composer.model";
 
 /// The width the card's root pane keeps: DSH's 240pt settings-menu casing.
 const ROOT_WIDTH: f32 = 240.0;
@@ -461,6 +469,39 @@ impl ModelTray {
         state.seed(&self.harnesses, &self.current_model, &self.current_level);
     }
 
+    /// How the card is put away from outside its element: the shared registry
+    /// keeps it while it is the one open, so opening another menu closes the
+    /// card and an outside press clears the flag the composer reads.
+    fn close_handle(&self) -> MenuClose {
+        let open = Rc::clone(&self.open);
+        Rc::new(RefCell::new(move || *open.borrow_mut() = false))
+    }
+
+    /// Register the card as the window's open menu, dismissing whatever menu
+    /// was up before it.
+    fn claim(&self, app: &AppContext) {
+        if app.open_menus.id() != Some(MODEL_TRAY_MENU_ID) {
+            app.open_menus
+                .open(MODEL_TRAY_MENU_ID, self.close_handle());
+        }
+    }
+
+    /// Hand the card's surface to the window and end the menu paint, so the
+    /// pointer over the card belongs to it and nothing behind it hovers there.
+    /// Called on every path out of `paint` once the card started painting.
+    fn publish(&self, ctx: &mut PaintContext, app: &AppContext, card: RectF) {
+        ctx.leave_menu_surface();
+        app.open_menus.report(
+            MODEL_TRAY_MENU_ID,
+            self.close_handle(),
+            vec![card],
+            MenuPointer::Events,
+        );
+        if let Some(anchor) = self.bounds() {
+            app.open_menus.report_anchor(MODEL_TRAY_MENU_ID, anchor);
+        }
+    }
+
     /// The first model row the list shows: the window never scrolls past the
     /// end, and the selected row always sits inside it.
     fn window_start(row: usize, total: usize) -> usize {
@@ -871,13 +912,21 @@ impl Element for ModelTray {
             panel.size.x,
             panel.size.y,
         );
+        // The card is the window's open menu while it paints: it claims the
+        // shared state (closing any other menu) and owns the pointer over its
+        // own surface.
+        self.claim(app);
+        ctx.enter_menu_surface();
         let state = self.state.borrow().clone();
         let levels = self.levels();
         let flat = flat_models(&self.harnesses);
         let radius = CARD_RADIUS;
         let renderer = match ctx.renderer.as_mut() {
             Some(renderer) => renderer,
-            None => return,
+            None => {
+                self.publish(ctx, app, card);
+                return;
+            }
         };
         // DSH's menu surface: one rounded, padded card with a hairline, floated
         // above the chip. The card is the whole menu; there is no band under it.
@@ -898,6 +947,7 @@ impl Element for ModelTray {
                 (panel.size.x - CARD_PADDING * 2.0 - ROW_PAD_X * 2.0).max(0.0),
                 MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
             );
+            self.publish(ctx, app, card);
             return;
         }
 
@@ -1057,6 +1107,7 @@ impl Element for ModelTray {
                 }
             }
         }
+        self.publish(ctx, app, card);
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -1412,6 +1463,130 @@ mod tests {
         assert!(
             panel.origin.y <= -(CARD_GAP),
             "the card hangs above the chip"
+        );
+    }
+
+    // ---- the window's shared open-menu state ------------------------------
+
+    /// One frame of the real loop for the card: layout, seed the open-menu gate
+    /// from the registry (as the root view does), paint, reconcile.
+    fn frame(menu: &mut ModelTray, app: &AppContext, cursor: Option<Vector2F>) {
+        menu.layout(
+            SizeConstraint::loose(vec2f(800.0, 600.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(crate::render::Renderer::new());
+        if let Some(point) = cursor {
+            ctx.cursor_position = point;
+            ctx.cursor_inside = true;
+        }
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        app.open_menus.begin_paint();
+        menu.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        app.open_menus.end_paint();
+    }
+
+    /// The card is one of the window's menus: opening it claims the shared
+    /// state, the pointer over its card hovers the card and not the element
+    /// behind it, and a press outside closes it.
+    #[test]
+    fn the_open_card_claims_the_open_menu_state_and_owns_the_pointer() {
+        use crate::elements::{EventContext, HoverRow, Text};
+
+        let app = AppContext::default();
+        let open = Rc::new(RefCell::new(false));
+        let tray = ComposerModelTray::new(
+            harnesses(),
+            Rc::new(RefCell::new(ModelTrayState::default())),
+            Rc::clone(&open),
+        )
+        .with_current("deepseek-flash", "off");
+        let mut menu = tray.popup(Box::new(crate::elements::Empty::new()));
+
+        // Closed, the card is not the open menu.
+        frame(&mut menu, &app, None);
+        assert!(!app.open_menus.is_open(), "a closed card registers nothing");
+
+        *open.borrow_mut() = true;
+        frame(&mut menu, &app, None);
+        assert_eq!(
+            app.open_menus.id(),
+            Some(MODEL_TRAY_MENU_ID),
+            "the open card is the window's open menu"
+        );
+        let surfaces = app.open_menus.surfaces();
+        assert_eq!(surfaces.len(), 1, "the card owns exactly its own face");
+        let panel = surfaces[0];
+
+        // The pointer on the card: a row painted behind it must not hover.
+        let point = vec2f(panel.min_x() + 10.0, panel.min_y() + 10.0);
+        frame(&mut menu, &app, Some(point));
+        let mut ctx = PaintContext::new(crate::render::Renderer::new());
+        ctx.cursor_position = point;
+        ctx.cursor_inside = true;
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        let hover_cell: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let mut behind = HoverRow::new(Text::new("behind").finish())
+            .with_hover_key(Rc::clone(&hover_cell), "behind");
+        behind.layout(
+            SizeConstraint::loose(vec2f(300.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        behind.paint(vec2f(point.x - 20.0, point.y - 10.0), &mut ctx, &app);
+        assert_eq!(
+            *hover_cell.borrow(),
+            None,
+            "the element behind the model card must not hover under the pointer"
+        );
+
+        // A press outside the card (and its chip) closes it and clears the
+        // shared state.
+        let mut ectx = EventContext::default();
+        menu.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(700.0, 300.0),
+                button: 0,
+            },
+            &mut ectx,
+            &app,
+        );
+        assert!(!*open.borrow(), "the outside press closed the card");
+        frame(&mut menu, &app, None);
+        assert!(
+            !app.open_menus.is_open(),
+            "the shared state let go of the closed card"
+        );
+    }
+
+    /// Opening the card dismisses another menu that was up: only one menu is
+    /// open at a time across the window.
+    #[test]
+    fn opening_the_card_closes_the_menu_that_was_open() {
+        let app = AppContext::default();
+        let previous_closed = Rc::new(RefCell::new(false));
+        let previous_close: crate::elements::MenuClose = {
+            let previous_closed = Rc::clone(&previous_closed);
+            Rc::new(RefCell::new(move || *previous_closed.borrow_mut() = true))
+        };
+        app.open_menus
+            .open("some.other.menu", previous_close);
+
+        let open = Rc::new(RefCell::new(true));
+        let tray = ComposerModelTray::new(
+            harnesses(),
+            Rc::new(RefCell::new(ModelTrayState::default())),
+            Rc::clone(&open),
+        )
+        .with_current("deepseek-flash", "off");
+        let mut menu = tray.popup(Box::new(crate::elements::Empty::new()));
+        frame(&mut menu, &app, None);
+
+        assert_eq!(app.open_menus.id(), Some(MODEL_TRAY_MENU_ID));
+        assert!(
+            *previous_closed.borrow(),
+            "the menu that was open was closed by the card opening"
         );
     }
 }

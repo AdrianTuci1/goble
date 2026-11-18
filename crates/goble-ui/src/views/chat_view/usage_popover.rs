@@ -30,7 +30,8 @@ use std::rc::Rc;
 
 use crate::elements::interactive::contains;
 use crate::elements::{
-    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
+    AppContext, Element, EventContext, LayoutContext, MenuClose, MenuId, MenuPointer, PaintContext,
+    Point, SizeConstraint,
 };
 use crate::event::{DispatchedEvent, BUTTON_PRIMARY};
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -48,6 +49,11 @@ const PANEL_MAX_HEIGHT: f32 = 400.0;
 /// minimum, so 300 is the width an ordinary pane gets.
 pub(super) const PANEL_MIN_WIDTH: f32 = 300.0;
 const PANEL_MAX_WIDTH: f32 = 440.0;
+
+/// The usage panel's label in the window's shared open-menu state. DSH portals
+/// its stat dialog above the page like any menu, so the panel is one here too:
+/// the pointer over it belongs to it, and an outside press or Escape closes it.
+pub(super) const USAGE_MENU_ID: MenuId = "chat.usage";
 
 /// The trigger-anchored details panel: the pill the caller built, and the panel
 /// it opens above itself while the app-owned flag says so.
@@ -110,6 +116,13 @@ impl UsagePopover {
         *self.open.borrow_mut() = false;
         self.panel_rect = None;
     }
+
+    /// How the panel is dismissed from outside the element: the shared registry
+    /// keeps it while it is the one open menu, and an outside press runs this.
+    fn close_handle(&self) -> MenuClose {
+        let open = Rc::clone(&self.open);
+        Rc::new(RefCell::new(move || *open.borrow_mut() = false))
+    }
 }
 
 impl Element for UsagePopover {
@@ -171,7 +184,23 @@ impl Element for UsagePopover {
         if at.y + panel_size.y > origin.y {
             at.y = origin.y + trigger_size.y + PANEL_GAP;
         }
-        self.panel_rect = Some(rectf(at.x, at.y, panel_size.x, panel_size.y));
+        let panel_rect = rectf(at.x, at.y, panel_size.x, panel_size.y);
+        self.panel_rect = Some(panel_rect);
+        // The open panel is the window's menu: it claims the shared state
+        // (putting any other menu away), owns the pointer over its surface, and
+        // an outside press or Escape closes it through this handle.
+        if app.open_menus.id() != Some(USAGE_MENU_ID) {
+            app.open_menus.open(USAGE_MENU_ID, self.close_handle());
+        }
+        app.open_menus.report(
+            USAGE_MENU_ID,
+            self.close_handle(),
+            vec![panel_rect],
+            MenuPointer::Paint,
+        );
+        if let Some(anchor) = self.trigger_bounds() {
+            app.open_menus.report_anchor(USAGE_MENU_ID, anchor);
+        }
         // The last layer draws it: this element's own paint pass is clipped to
         // the transcript viewport, and the panel belongs over the whole pane.
         app.hover_chips.borrow_mut().push(at, panel);

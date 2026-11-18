@@ -156,6 +156,13 @@ pub fn build_terminal(
     // is not drawn, so there is no rich input under the decision. It comes back
     // with the pane's draft once the command is approved or rejected.
     let bar_focused = bar_focused && approval.is_none();
+    // What the bar's line asks for, by surface: a plain shell's rich input
+    // runs a command in the pane's own PTY ("Run any command"), while a CLI
+    // harness owns the line as its prompt ("Message <agent>…").
+    let bar_placeholder = match agent {
+        Some(spec) => format!("Message {}…", spec.name),
+        None => goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string(),
+    };
     let bar = if approval.is_none() && (!owns_screen || agent.is_some()) {
         Some(chat::build_terminal_composer(
             state,
@@ -163,6 +170,7 @@ pub fn build_terminal(
             pane_id,
             bar_focused,
             agent,
+            bar_placeholder,
         ))
     } else {
         None

@@ -34,6 +34,11 @@ struct Args {
     #[arg(long, value_name = "DIR", env = "GOBLE_WEB_DIR")]
     web_dir: Option<PathBuf>,
 
+    /// Directory for the gateway's own state: the control plane's session
+    /// bindings (`sessions.json`). Defaults to `~/.goble/gateway`.
+    #[arg(long, value_name = "DIR", env = "GOBLE_GATEWAY_DATA")]
+    data_dir: Option<PathBuf>,
+
     /// Extra Host header value accepted by the DNS-rebinding guard. Repeatable.
     #[arg(long = "allow-host", value_name = "HOST")]
     allow_hosts: Vec<String>,
@@ -108,12 +113,16 @@ async fn main() -> anyhow::Result<()> {
     config.public_url = args.public_url;
     config.allowed_hosts = args.allow_hosts;
     config.web_dir = args.web_dir;
+    config.data_dir = Some(args.data_dir.unwrap_or_else(default_data_dir));
     let gateway = Gateway::new(config)?;
     let bind = gateway.bind_addr();
     tracing::info!(
         "browser client directory: {}",
         gateway.state().web_root().display()
     );
+    if let Some(data_dir) = gateway.state().config().data_dir.as_deref() {
+        tracing::info!("gateway data directory: {}", data_dir.display());
+    }
 
     if !bind.ip().is_loopback() {
         tracing::warn!(
@@ -135,6 +144,16 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// Where the control plane stores its session bindings when `--data-dir` is not
+/// given: the user's own home, so restarts and upgrades reuse the bindings.
+fn default_data_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        PathBuf::from(home).join(".goble").join("gateway")
+    } else {
+        PathBuf::from(".goble-gateway")
+    }
 }
 
 fn read_secret_file(path: &Path, what: &str) -> anyhow::Result<String> {

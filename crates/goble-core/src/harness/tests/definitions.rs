@@ -17,11 +17,9 @@ fn test_list_tools() {
 /// a raw tool name and failed when called.
 #[test]
 fn the_python_tool_is_not_defined() {
-    assert!(
-        harness_tool_definitions()
-            .iter()
-            .all(|definition| definition.name != "execute_python_code")
-    );
+    assert!(harness_tool_definitions()
+        .iter()
+        .all(|definition| definition.name != "execute_python_code"));
 }
 
 /// A `cat` of a credentials file is a tool result like any other, and the

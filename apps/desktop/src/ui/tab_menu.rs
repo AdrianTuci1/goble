@@ -118,6 +118,10 @@ pub fn build_tab_menu(
         // menu, so it is open for the one frame this element lives in; the app's
         // own open state is what the next frame reads.
         .with_open(Rc::new(RefCell::new(true)))
+        // It is a menu of the window like any other: the pointer over its panel
+        // belongs to it, an outside press/Escape closes it (through the close
+        // callback below), and opening it puts any other menu away.
+        .with_menu_id("tab.menu")
         .with_on_select(move |row| {
             if let Some((_, action)) = rows.get(row) {
                 (chosen.borrow_mut())(*action);

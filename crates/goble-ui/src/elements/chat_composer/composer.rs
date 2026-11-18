@@ -1,13 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::hints_row::ComposerHintsRow;
 use super::proposal::CommandProposalUi;
 use crate::elements::{
     harness_bar_mark, AppContext, ApprovalMode, Border, Clipped, ComposerButton,
     ComposerModelTray, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, DiffSummary,
     EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, ModelTrayKey,
     Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
-    PopupMenuPosition, ShortcutHint, ShortcutHints, SizeConstraint, SlashMenuItem, Spacer, Text,
+    PopupMenuPosition, ShortcutHint, SizeConstraint, SlashMenuItem, Spacer, Text,
     TextArea, Tooltip, TooltipPosition, Wrap, COMPOSER_CONTROL_RADIUS, CONTEXT_PILL_HEIGHT,
     CONTEXT_PILL_LABEL_SIZE, MENU_MAX_VISIBLE_ROWS,
 };
@@ -31,6 +32,17 @@ const SESSION_CHIP_MAX_WIDTH: f32 = 280.0;
 /// made. The host's own resolved label says the same thing (its model value is
 /// empty until a model is configured), and this covers the label it passes.
 pub const MODEL_NOT_CONFIGURED: &str = "not configured";
+
+/// The placeholder an agent/chat surface shows: the input asks for a prompt.
+/// A terminal surface takes [`TERMINAL_COMPOSER_PLACEHOLDER`] through the
+/// builder instead (the app says which surface the shared input is on).
+pub const AGENT_COMPOSER_PLACEHOLDER: &str = "Ask anything...";
+
+/// The placeholder a plain shell's rich input shows: the line runs a command in
+/// the pane's own PTY, so it asks for a command instead of a prompt. Only the
+/// terminal surface gets it; agent surfaces (chat, agent view, worker,
+/// sub-agent) keep [`AGENT_COMPOSER_PLACEHOLDER`].
+pub const TERMINAL_COMPOSER_PLACEHOLDER: &str = "Run any command";
 
 /// The rich input's controls share one label size and one side inset, so every
 /// button in the band and footer — the model, the attach and stop controls, the
@@ -80,6 +92,9 @@ pub const COMPOSER_INPUT_MIN_HEIGHT: f32 =
     14.0 + COMPOSER_EDITOR_MIN_HEIGHT + COMPOSER_FOOTER_GAP + COMPOSER_FOOTER_HEIGHT + 8.0;
 /// The instruction strip's own height when a host passes hints inside the
 /// input: the capped key's box, whose 11pt label is a 13.2pt line (11 x 1.2).
+/// The row is reserved from the first time a surface ships hints, even while
+/// the list is empty (`ComposerHintsRow` never wraps), so the card height and a
+/// shell pane's reserved bar height are the same with a hint present or absent.
 /// A host that reserves the bar's height adds this row and the footer gap above
 /// it, exactly as the element lays them out.
 pub const COMPOSER_HINTS_ROW_HEIGHT: f32 = 13.2;
@@ -151,6 +166,11 @@ pub struct ChatComposer {
     /// separator: what belongs *in* the input is the one entry the host marks
     /// as its own, which is the shell bar's `⌘↵ new conversation`.
     hints: Vec<ShortcutHint>,
+    /// Whether the host opts into the instruction row. A surface that ships
+    /// hints reserves the row's height (`COMPOSER_HINTS_ROW_HEIGHT`) even while
+    /// the list is empty, so the card never changes height when a hint appears
+    /// or disappears; a surface that never asks for hints pays nothing.
+    hints_enabled: bool,
     /// The slash-command menu: the commands the draft can run, drawn above the
     /// editor while the draft starts with `/`. `slash_enabled` records that the
     /// host offers one at all, so a query that matches nothing still shows the
@@ -272,7 +292,7 @@ impl ChatComposer {
         Self {
             value: Rc::new(RefCell::new(String::new())),
             caret: Rc::new(RefCell::new(0)),
-            placeholder: String::from("Ask anything..."),
+            placeholder: String::from(AGENT_COMPOSER_PLACEHOLDER),
             attachments: Vec::new(),
             model_label: None,
             agent_harness: None,
@@ -284,6 +304,7 @@ impl ChatComposer {
             queued_prompt_present: false,
             blur_on_outside_click: true,
             hints: Vec::new(),
+            hints_enabled: false,
             slash_enabled: false,
             slash_items: Vec::new(),
             slash_index: Rc::new(RefCell::new(0)),
@@ -808,6 +829,9 @@ impl ChatComposer {
     /// this is the one entry the host keeps inside the input.
     pub fn with_hints(mut self, hints: Vec<ShortcutHint>) -> Self {
         self.hints = hints;
+        // The row is reserved from the first time a surface ships hints, even
+        // if the current list is empty: its height is the card's contract.
+        self.hints_enabled = true;
         self
     }
 
@@ -1799,8 +1823,12 @@ impl ChatComposer {
         // footer: the shell bar's `⌘↵ new conversation` is the entry the pane
         // shows here rather than over the separator, where the rest of a pane's
         // strip goes.
-        if !self.hints.is_empty() {
-            input = input.with_child(ShortcutHints::new(self.hints.clone()).finish(app));
+        // The instruction row is reserved whenever the host ships hints, and
+        // draws one fixed-height line: a hint appearing, disappearing, being
+        // re-worded or not fitting must never add a row to the card (or move
+        // `COMPOSER_BAR_RESERVED_HEIGHT`), so the list is truncated instead.
+        if self.hints_enabled {
+            input = input.with_child(ComposerHintsRow::new(self.hints.clone()).finish());
         }
 
         // The segment is borderless (owner feedback: the rich input and its

@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, watch};
 use crate::assets;
 use crate::auth;
 use crate::config::{ConfigError, GatewayConfig};
+use crate::remote::RemoteState;
 
 /// Name of the browser session cookie.
 pub const SESSION_COOKIE: &str = "goble_gateway_session";
@@ -68,6 +69,9 @@ pub struct GatewayState {
     web_root: PathBuf,
     sessions: Mutex<HashMap<String, Session>>,
     workers: RwLock<HashMap<String, WorkerEntry>>,
+    /// The remote-execution control plane: session bindings, runs and their
+    /// event logs. It shares the worker connections of the relay.
+    pub(crate) remote: RemoteState,
     login: Mutex<LoginLimiter>,
     next_client_id: AtomicU64,
 }
@@ -95,6 +99,7 @@ impl GatewayState {
         allowed_hosts.dedup();
 
         let web_root = assets::resolve_web_dir(config.web_dir.as_deref());
+        let remote = RemoteState::new(config.data_dir.clone());
 
         Ok(Self {
             config,
@@ -102,6 +107,7 @@ impl GatewayState {
             web_root,
             sessions: Mutex::new(HashMap::new()),
             workers: RwLock::new(HashMap::new()),
+            remote,
             login: Mutex::new(LoginLimiter { failures: 0 }),
             next_client_id: AtomicU64::new(1),
         })

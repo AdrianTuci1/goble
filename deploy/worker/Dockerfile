@@ -4,6 +4,22 @@
 # `~/.goble/config.toml`. Built and published as
 # `ghcr.io/<owner>/goble-worker` by `.github/workflows/worker-image.yml`.
 #
+# Two runtimes share this one build:
+#
+#   RUNTIME=agent (default)  the native Goble harness, as before.
+#   RUNTIME=dsh              the DeepSeek Harness headless profile installed in
+#                            the sandbox, driven by the worker over the ordinary
+#                            worker protocol. Published as
+#                            `goble-worker-dsh` (build it with
+#                            `scripts/build-worker-dsh-image.sh`, or directly:
+#                            `docker build -f deploy/worker/Dockerfile
+#                             --build-arg RUNTIME=dsh -t goble-worker-dsh:dev .`).
+#
+# `deploy/worker-dsh/Dockerfile` is the thin variant for a fork that already
+# publishes the base worker image: it extends that image instead of rebuilding
+# the Rust binary. Both produce the same runtime environment; see
+# `docs/remote-dsh-runtime.md`.
+#
 # Not the same thing as `deploy/goblin/Dockerfile`: that one is the
 # Kubernetes/distroless image for `charts/goblin-cluster`, with a PVC, leader
 # election and `--mode=cluster`. A sandbox is one throwaway container with no
@@ -14,6 +30,17 @@
 # Build from the repository root, because the build stage copies the workspace:
 #
 #   docker build -f deploy/worker/Dockerfile -t goble-worker:dev .
+#   docker build -f deploy/worker/Dockerfile --build-arg RUNTIME=dsh \
+#     -t goble-worker-dsh:dev .
+
+# --- build arguments ---------------------------------------------------------
+# `RUNTIME` picks the runtime stage the final image is built FROM.
+ARG RUNTIME=agent
+# Pinned harness version. Bumping it means bumping the image, not the worker:
+# the worker only speaks the headless JSON contract, which the `dsh-headless`
+# package documents. `0.2.2-rc.3` is also what dsh-remote (the reference
+# implementation this runtime is modelled on) installs.
+ARG DSH_VERSION=0.2.2-rc.3
 
 # --- build ------------------------------------------------------------------
 # `1-slim-bookworm` is the newest stable 1.x, which is the channel `release.yml`
@@ -42,20 +69,68 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release -p goblin-worker \
  && cp /build/target/release/goblin /usr/local/bin/goblin
 
-# --- runtime ----------------------------------------------------------------
-FROM debian:bookworm-slim
+# The official Node image is the source of the `node`/`npm` pair the DSH
+# runtime needs. Copying `/usr/local` (node, npm, corepack shims) is the
+# smallest deterministic way to get a Node 24 into a Debian runtime: the
+# bookworm archive ships Node 18, which the harness does not support.
+FROM node:24-bookworm-slim AS dsh-node
+
+# --- runtime base -----------------------------------------------------------
+FROM debian:bookworm-slim AS runtime-base
 
 # What an agent inside the sandbox needs on PATH: a shell, `git` to clone and
 # commit, `rg` for the search tools, `curl` for the health check and for
 # anything the agent fetches by hand. `ca-certificates` is what makes the
 # outbound `wss://` gateway connection and `https://` git remotes verify.
+# `procps` (ps/pkill) is what a harness's own process supervision expects when
+# it looks for the processes its tools started.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
       git \
+      procps \
       ripgrep \
  && rm -rf /var/lib/apt/lists/*
+
+# --- agent runtime (native Goble harness) -----------------------------------
+FROM runtime-base AS runtime-agent
+
+# --- dsh runtime (DeepSeek Harness headless) --------------------------------
+FROM runtime-base AS runtime-dsh
+
+COPY --from=dsh-node /usr/local /usr/local
+
+# The Goble-owned composition: the shipped `headless` profile plus the three
+# deployment choices dsh-remote makes (sign in with the DeepSeek account, keep
+# session logs line-readable, let the agent work without an interactive
+# approval channel — the container is the boundary). The worker may pass a
+# second, generated `--patch` overlay for the model and the exact session root.
+COPY deploy/worker/harness.dsh.yml /opt/dsh/harness.yml
+
+# `--allow-scripts` is required: the harness's own subprocess/local-pty packages
+# build native modules during install. Only the packages that need it are
+# allowed to run scripts, and the version is pinned so the image is
+# reproducible.
+RUN mkdir -p /opt/dsh \
+ && npm i -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,protobufjs \
+      "@deepseek-ai/dsh@${DSH_VERSION}" \
+ && npm cache clean --force \
+ && dsh --version
+
+# The harness home holds the JSONL sessions and (while a run is in flight) the
+# DeepSeek account credentials. It is under the worker user's home, so the
+# sandbox user can write it, and it is never baked with credentials.
+ENV DSH_HOME=/home/goble/.dsh \
+    GOBLE_HARNESS=dsh \
+    GOBLE_DSH_BIN=dsh \
+    GOBLE_DSH_HARNESS=/opt/dsh/harness.yml \
+    GOBLE_DSH_MODEL=deepseek-flash \
+    DSH_TELEMETRY_DISABLED=1 \
+    npm_config_update_notifier=false
+
+# --- final image ------------------------------------------------------------
+FROM runtime-${RUNTIME} AS runtime
 
 COPY --from=builder --chmod=0755 /usr/local/bin/goblin /usr/local/bin/goblin
 

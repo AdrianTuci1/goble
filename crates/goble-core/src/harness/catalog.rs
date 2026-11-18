@@ -339,11 +339,7 @@ mod tests {
     fn a_blank_session_id_reopens_nothing() {
         let spec = harness_by_id("claude").expect("claude is in the catalog");
         for id in ["", " ", "   ", "\t\n"] {
-            assert_eq!(
-                spec.resume_command(id),
-                None,
-                "{id:?} names no session"
-            );
+            assert_eq!(spec.resume_command(id), None, "{id:?} names no session");
         }
     }
 

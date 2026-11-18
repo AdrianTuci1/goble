@@ -279,6 +279,11 @@ pub struct UiActions {
     /// it, and every row, field and action inside sends its own variant.
     pub on_agent_dashboard: Rc<RefCell<dyn FnMut(AgentDashboardAction)>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
+    /// The settings tab's one dispatch: every rail row, control, field commit,
+    /// dialog button and keyboard gesture the surface makes. The handler in
+    /// `actions/settings_actions.rs` is the single call site for the
+    /// file-backed settings service.
+    pub settings: crate::ui::settings::SettingsActions,
     /// Toggle the left conversation sidebar (topbar sidebar button).
     pub on_toggle_sidebar: Rc<RefCell<dyn FnMut()>>,
     /// One interaction in the diff review pane, naming the pane it happened in.
@@ -316,6 +321,28 @@ pub struct UiActions {
     pub on_archive_cancel: Rc<RefCell<dyn FnMut()>>,
     /// Set the sidebar's archived filter from the view-options menu.
     pub on_archived_filter_change: Rc<RefCell<dyn FnMut(ArchivedFilter)>>,
+    /// The Workspaces header's "+": open the platform's directory picker and add
+    /// the picked directory as a Workspace (DSH's add-workspace flow). It never
+    /// creates a conversation — the separate "New conversation" row does that.
+    pub on_add_workspace: Rc<RefCell<dyn FnMut()>>,
+    /// A workspace row's New-session control: start a conversation inside that
+    /// workspace's directory (DSH's `ProjectRow` create action).
+    pub on_sidebar_workspace_new_session: Rc<RefCell<dyn FnMut(String)>>,
+    /// Open the "Rename workspace" dialog for the workspace over this path,
+    /// with the title it currently shows.
+    pub on_sidebar_workspace_rename_start: Rc<RefCell<dyn FnMut(String, String)>>,
+    /// The workspace Rename dialog's draft changed.
+    pub on_sidebar_workspace_rename_draft: Rc<RefCell<dyn FnMut(String)>>,
+    /// Commit the workspace Rename dialog (Enter or its Rename button).
+    pub on_sidebar_workspace_rename_commit: Rc<RefCell<dyn FnMut()>>,
+    /// Cancel the workspace Rename dialog (Escape or its backdrop).
+    pub on_sidebar_workspace_rename_cancel: Rc<RefCell<dyn FnMut()>>,
+    /// Delete a Workspace row (its list entry only; the folder and its
+    /// conversations are kept, DSH's delete contract).
+    pub on_sidebar_workspace_delete: Rc<RefCell<dyn FnMut(String)>>,
+    /// A workspace row opened its tray (`Some` section) or every menu should
+    /// close (`None`), so one menu is open at a time app-wide.
+    pub on_sidebar_workspace_menu: Rc<RefCell<dyn FnMut(Option<String>)>>,
     /// Put the transient notice away.
     pub on_toast_dismiss: Rc<RefCell<dyn FnMut()>>,
     /// Expand or collapse a directory in the project explorer, by path.
@@ -350,71 +377,44 @@ pub struct UiActions {
     /// the flow.
     pub on_onboarding: Rc<RefCell<dyn FnMut(OnboardingAction)>>,
     /// Settings → Profile: the friendly name field.
-    pub on_profile_name_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Profile: the name field gained (`true`) or lost the caret.
     /// Losing it abandons the edit, putting back what the field held.
-    pub on_profile_name_focus: Rc<RefCell<dyn FnMut(bool)>>,
     /// Settings → Agent & Approval: pick a default model from that menu.
-    pub on_select_default_model: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Profile: allow or refuse anonymous telemetry uploads.
-    pub on_toggle_telemetry: Rc<RefCell<dyn FnMut(bool)>>,
     /// Settings: switch the page the settings tab shows.
-    pub on_settings_category: Rc<RefCell<dyn FnMut(SettingsCategory)>>,
     /// Settings: step the active category by `delta` (with wraparound). The
     /// arrow-key path, which must advance from the live category rather than
     /// from the one captured when the tree was built.
-    pub on_settings_category_step: Rc<RefCell<dyn FnMut(i32)>>,
     /// Settings: move the keyboard's slot inside the region that holds it —
     /// the rail's category, or the pane's control.
-    pub on_settings_focus_move: Rc<RefCell<dyn FnMut(i32)>>,
     /// Settings: move the keyboard from the category rail into the content
     /// pane, onto its first control.
-    pub on_settings_focus_into_pane: Rc<RefCell<dyn FnMut()>>,
     /// Settings: move the keyboard from the content pane back to the rail.
-    pub on_settings_focus_out_of_pane: Rc<RefCell<dyn FnMut()>>,
     /// Settings: activate the focused pane control — a switch flips, a stepper
     /// advances, a list row opens, a text field takes the caret.
-    pub on_settings_activate: Rc<RefCell<dyn FnMut()>>,
     /// Settings: adjust the focused pane control by `delta`; only the controls
     /// that hold a discrete value change.
-    pub on_settings_adjust: Rc<RefCell<dyn FnMut(i32)>>,
     /// Settings: commit the focused text field's edit — `Enter` again — so what
     /// was typed stays and the caret goes.
-    pub on_settings_commit_field: Rc<RefCell<dyn FnMut()>>,
     /// Settings: cancel the focused text field's edit, putting back what it
     /// held when the caret went in. This is what `Escape` means in a field
     /// before it means "back to the rail"; the sheet stays open.
-    pub on_settings_cancel_field: Rc<RefCell<dyn FnMut()>>,
     /// Settings → Environment: the new-group name field.
-    pub on_environment_group_draft_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Environment: create the group the name field holds.
-    pub on_environment_create_group: Rc<RefCell<dyn FnMut()>>,
     /// Settings → Environment: open a group (its secrets join the pane).
-    pub on_environment_open_group: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Environment: delete a group and its secrets.
-    pub on_environment_delete_group: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Environment: the secret-name field.
-    pub on_environment_secret_name_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Environment: the secret-value field.
-    pub on_environment_secret_value_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Environment: add the secret the fields hold, or save the
     /// entry they were loaded from.
-    pub on_environment_save_secret: Rc<RefCell<dyn FnMut()>>,
     /// Settings → Environment: load one secret back into the fields to edit.
-    pub on_environment_edit_secret: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings → Environment: remove one secret.
-    pub on_environment_delete_secret: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: toggle mouse scroll-direction inversion.
-    pub on_toggle_invert_scroll: Rc<RefCell<dyn FnMut(bool)>>,
     /// Settings: set mouse scroll speed (1..=100).
-    pub on_set_scroll_speed: Rc<RefCell<dyn FnMut(i32)>>,
     /// Settings: set editor font-size zoom factor.
-    pub on_set_font_size: Rc<RefCell<dyn FnMut(f32)>>,
     /// Models: reload the model list from the global config file.
-    pub on_reload_model_config: Rc<RefCell<dyn FnMut()>>,
     /// Agent & Approval: re-read `[remote_agents.<name>]` from the global
     /// config file and refresh the page's rows.
-    pub on_reload_remote_agents: Rc<RefCell<dyn FnMut()>>,
     /// Agent & Approval: open a conversation that sets Remote up by asking for
     /// what is missing and writing it through `goble-cli setup`.
     pub on_setup_remote_with_agent: Rc<RefCell<dyn FnMut()>>,
@@ -425,14 +425,10 @@ pub struct UiActions {
     /// takes this path.
     pub on_open_remote_settings: Rc<RefCell<dyn FnMut()>>,
     /// Connections: re-read `~/.ssh` and replace the cached read.
-    pub on_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>>,
     /// Updates: ask the release host now, off the UI thread.
-    pub on_check_for_updates: Rc<RefCell<dyn FnMut()>>,
     /// Updates: download, verify, install and restart with the offered release.
-    pub on_install_update: Rc<RefCell<dyn FnMut()>>,
     /// Connections: select a connection by alias (the row's own click). It
     /// names a target and connects nothing.
-    pub on_ssh_select_host: Rc<RefCell<dyn FnMut(String)>>,
     pub on_projects: Rc<RefCell<dyn FnMut()>>,
     /// Navigate to the harness workflows page (topbar button).
     pub on_workflows: Rc<RefCell<dyn FnMut()>>,
@@ -614,11 +610,9 @@ pub struct UiActions {
     /// Settings: return to the previous view (chat).
     pub on_settings_back: Rc<RefCell<dyn FnMut()>>,
     /// Settings: switch the active settings page.
-    pub on_settings_navigate: Rc<RefCell<dyn FnMut(SettingsPage)>>,
     /// Settings: toggle dark mode.
     pub on_toggle_dark_mode: Rc<RefCell<dyn FnMut(bool)>>,
     /// Settings: pick which theme channel the single color wheel edits.
-    pub on_set_theme_target: Rc<RefCell<dyn FnMut(color_picker::ColorTarget)>>,
     /// Settings: set the custom theme primary color (as `#rrggbb`).
     pub on_set_theme_primary: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: set the custom theme secondary color (as `#rrggbb`).
@@ -632,11 +626,8 @@ pub struct UiActions {
     /// Settings: pick a preset palette, or `None` for the Default base.
     pub on_set_theme_preset: Rc<RefCell<dyn FnMut(Option<goble_ui::theme::ThemePreset>)>>,
     /// Settings: step the Themes stepper by `delta` bases.
-    pub on_step_theme: Rc<RefCell<dyn FnMut(i32)>>,
     /// Settings: clear all five colour overrides, keeping the current base.
-    pub on_reset_theme_colors: Rc<RefCell<dyn FnMut()>>,
     /// Settings: save the profile (name, email).
-    pub on_save_profile: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Settings: save the LLM config (provider, model, api_key, base_url, temperature).
     pub on_save_llm: SaveLlmHandler,
     /// Settings: register a worker (name, url).
@@ -644,15 +635,10 @@ pub struct UiActions {
     /// Settings: remove a worker by id.
     pub on_remove_worker: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: unlock the vault with a passphrase.
-    pub on_vault_unlock: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: create a cluster identity (name, passphrase).
-    pub on_create_cluster: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Settings: unlock the cluster identity (passphrase).
-    pub on_unlock_cluster: Rc<RefCell<dyn FnMut(String)>>,
     /// Settings: add an authorized key (name, pem, fingerprint).
-    pub on_add_authorized_key: ThreeStringHandler,
     /// Settings: remove an authorized key by id.
-    pub on_remove_authorized_key: Rc<RefCell<dyn FnMut(String)>>,
     /// Open an external URL clicked in the transcript. The app guards it to
     /// `http`/`https` before any OS opener sees it.
     pub on_open_url: Rc<RefCell<dyn FnMut(String)>>,
@@ -703,6 +689,8 @@ pub struct AiActions {
     pub on_open_vault: Rc<RefCell<dyn FnMut()>>,
     pub on_close_vault: Rc<RefCell<dyn FnMut()>>,
     pub on_vault_unlock_draft_change: Rc<RefCell<dyn FnMut(String)>>,
+    /// Unlock the vault with the passphrase the draft holds (the vault sheet's
+    /// button).
     pub on_vault_unlock: Rc<RefCell<dyn FnMut()>>,
     pub on_vault_new_key_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_vault_new_value_change: Rc<RefCell<dyn FnMut(String)>>,

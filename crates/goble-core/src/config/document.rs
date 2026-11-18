@@ -843,6 +843,23 @@ pub struct HostView {
     pub identity: Option<String>,
 }
 
+impl HostView {
+    /// The target line the Hosts row draws: `user@host:port` with ssh's
+    /// defaults (the local account, port 22) when the file leaves them out.
+    pub fn target_line(&self) -> String {
+        let user = self
+            .user
+            .as_deref()
+            .map(str::trim)
+            .filter(|user| !user.is_empty());
+        let port = self.port.unwrap_or(22);
+        match user {
+            Some(user) => format!("{user}@{}:{port}", self.host),
+            None => format!("{}:{port}", self.host),
+        }
+    }
+}
+
 /// How one environment variable is stored: the value itself or a vault key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

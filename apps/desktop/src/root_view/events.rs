@@ -349,6 +349,13 @@ impl RootView {
                 // it persisted, or the sentence saying why it stopped.
                 "remote:deploy" => state.apply_remote_deploy(&payload),
                 "vault:updated" => self.ai_state.borrow_mut().refresh_vault(&desktop),
+                // Settings files are the source of truth; an external edit (or
+                // another writer) is pulled into the page and the app's typed
+                // config here. The service already reloaded its own cache, so
+                // this is the one cheap read per change.
+                "settings:changed" | "settings:file-changed" => {
+                    state.refresh_settings(&desktop)
+                }
                 "executions:updated" => {
                     self.projects_state.borrow_mut().refresh(&desktop);
                     // Sessions/projects come from the store; re-derive the tree

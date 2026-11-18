@@ -9,10 +9,12 @@
 
 use super::*;
 
+use goble_ui::elements::conversation_list_item::SidebarGroupUi;
 use goble_ui::elements::LaneEdge;
 
 use goble_core::hosts::HostEntry;
-use goble_core::ssh_hosts::SshHosts;
+
+use crate::ui::settings::SettingsUiState;
 
 mod agents;
 mod close;
@@ -28,6 +30,7 @@ mod settings;
 mod spaces;
 mod title;
 mod work_dock;
+mod workspace_rows;
 mod worker;
 
 pub use agents::{PaneAgentState, TurnOutcome};
@@ -36,6 +39,7 @@ pub use onboarding::{ONBOARDING_STEPS, ONBOARDING_USAGE};
 pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
 pub use session_menu::{ArchiveConfirm, SidebarRename, ToastKind, ToastNotice};
 pub use title::prompt_subject;
+pub use workspace_rows::{SidebarWorkspace, SidebarWorkspaceRename};
 
 /// The title a conversation gets when it is created without a subject of its
 /// own. It is a placeholder, not a subject: a tab whose agent holds such a
@@ -234,9 +238,7 @@ pub struct UiState {
     pub timeline: Vec<TimelineEntry>,
     /// Cost rows derived from real execution/usage records.
     pub costs: Vec<CostEntry>,
-    pub settings_page: SettingsPage,
     pub settings_profile_name: String,
-    pub settings_profile_email: String,
     pub settings_dark_mode: bool,
     pub settings_llm_provider: String,
     pub settings_llm_model: String,
@@ -244,54 +246,10 @@ pub struct UiState {
     pub settings_llm_base_url: String,
     pub settings_llm_temperature: String,
     pub settings_workers: Vec<(String, String, String, bool)>,
-    pub settings_cluster_name: String,
-    pub settings_cluster_configured: bool,
-    pub settings_authorized_keys: Vec<(String, String, String)>,
-    pub settings_vault_unlocked: bool,
-    /// Which of the settings tab's two regions (the page rail, the content
-    /// pane) holds the keyboard. Opening it starts in the rail.
-    pub settings_focus: SettingsFocus,
-    /// The pane control the keyboard is on: an index into the order
-    /// [`crate::ui::settings::pane_controls`] answers for the active category.
-    pub settings_pane_focus: usize,
-    /// Whether the focused pane control is a text field that holds the caret.
-    /// While it does, the overlay reserves `Enter` (commit the edit) and
-    /// `Escape` (cancel it) and every other key reaches the field.
-    pub settings_pane_field_active: bool,
-    /// What the focused text field held when the caret was put into it.
-    /// `Enter` commits what was typed and clears this; `Escape` puts the value
-    /// back, so a cancelled edit leaves nothing behind.
-    pub settings_field_edit_start: Option<String>,
-    /// Settings → Environment: the persisted groups of secrets and their
-    /// entries, reloaded from the store whenever one changes.
-    pub settings_environment_groups: Vec<SecretGroup>,
-    /// Settings → Environment: the group whose secrets the pane is showing.
-    pub settings_environment_open_group: Option<String>,
-    /// Settings → Environment: the new-group name field.
-    pub settings_environment_group_draft: String,
-    /// Settings → Environment: the secret-name field.
-    pub settings_environment_secret_name: String,
-    /// Settings → Environment: the secret-value field. Held here, like every
-    /// other settings field, because the element tree is rebuilt every frame.
-    pub settings_environment_secret_value: String,
-    /// Settings → Environment: the name the entry being edited carried before
-    /// the fields were filled in, so an edit that renames removes the old one.
-    pub settings_environment_editing: Option<String>,
-    /// Settings → Connections: the `~/.ssh` read, filled when the page is
-    /// first shown and kept until the reload row re-reads it. The element tree
-    /// is rebuilt every frame, so the directory is read here and never while
-    /// the page draws; `None` means there was no home directory to read.
-    pub settings_ssh_hosts: Option<SshHosts>,
-    /// Whether [`Self::settings_ssh_hosts`] has been filled. A cache that has
-    /// been read is not read again for the same home, however many frames the
-    /// page is drawn on.
-    pub settings_ssh_read: bool,
-    /// The home directory `~/.ssh` is read under. `None` is the user's own
-    /// home; tests point it at a fixture so no real home is ever read.
-    pub settings_ssh_home: Option<std::path::PathBuf>,
-    /// Settings → Connections: the alias `Enter` last selected, drawn as the
-    /// page's prefill line. It names a target for whatever consumes it next.
-    pub settings_ssh_selected: Option<String>,
+    /// The settings tab's own state: the file projection, the keyboard's
+    /// position, the field drafts and the dialogs. One field, not a field per
+    /// row; the pages live in `ui::settings`.
+    pub settings: SettingsUiState,
     /// The update checker, when this build knows a release host. `None` keeps
     /// the Updates section written but inert: a build with nowhere to check
     /// opens no sockets and offers no install.
@@ -299,12 +257,6 @@ pub struct UiState {
     /// What that checker last published, refreshed from it on every rebuild so
     /// the page reads one frame behind the worker thread.
     pub update_view: crate::update::UpdateView,
-    /// Mouse: invert the wheel/scroll direction.
-    pub settings_invert_scroll: bool,
-    /// Mouse: scroll speed multiplier (1..=100, default 50).
-    pub settings_scroll_speed: i32,
-    /// Editor: font size as a whole-app zoom factor (mirrors `ui_zoom`).
-    pub settings_font_size: f32,
     /// Whether the rich input uses modal (vim) editing. Persisted in the store
     /// as `vim_mode`; each pane keeps its own mode/registers in
     /// [`PaneControls::vim`].
@@ -449,6 +401,17 @@ pub struct UiState {
     pub sidebar_archived_filter: Rc<RefCell<crate::ui::ArchivedFilter>>,
     /// The open "Rename conversation" dialog, if any.
     pub sidebar_rename: Option<SidebarRename>,
+    /// The sidebar's durable Workspaces rows: the directories the user added
+    /// with the Workspaces header's "+" (DSH's workspace list). A row that has
+    /// no conversations yet is listed from here; the folder groups the sessions
+    /// imply are matched to these rows by the directory's last segment.
+    pub sidebar_workspaces: Vec<SidebarWorkspace>,
+    /// The open "Rename workspace" dialog, if any.
+    pub sidebar_workspace_rename: Option<SidebarWorkspaceRename>,
+    /// Per-workspace-group tray state, shared with the rows so an open menu
+    /// survives the per-frame element rebuild (the session rows' `agent_cards`
+    /// is the same contract).
+    pub sidebar_group_ui: Rc<RefCell<HashMap<String, Rc<RefCell<SidebarGroupUi>>>>>,
     /// The open stop-and-archive confirmation, if any.
     pub archive_confirm: Option<ArchiveConfirm>,
     /// The transient notice at the top of the window, if one is up.
@@ -486,19 +449,6 @@ pub struct UiState {
     /// Scroll offsets of the project explorer's and the global search's lists.
     pub explorer_scroll: Rc<RefCell<ScrollState>>,
     pub global_search_scroll: Rc<RefCell<ScrollState>>,
-    /// Scroll offset of the settings overlay's content pane.
-    pub settings_scroll: Rc<RefCell<ScrollState>>,
-    /// Settings → Agent & Approval: whether the default-model menu is open.
-    /// The menu is drawn at the window's top layer, so the page cannot hold it
-    /// as a child of the field it hangs from.
-    pub settings_model_menu_open: Rc<RefCell<bool>>,
-    /// Where the default-model field last painted, in window coordinates. The
-    /// overlay hangs from this rect, one frame behind the field.
-    pub settings_model_anchor: Rc<RefCell<Option<goble_ui::geometry::RectF>>>,
-    /// Whether the default-model field painted on the frame the overlay was
-    /// built from. A field that did not paint (its tab is not on screen) has
-    /// no menu to hang anywhere.
-    pub settings_model_painted: Rc<RefCell<bool>>,
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
     /// double-clicking the tab, or from its menu's "Rename tab" row).
     pub space_rename_editing: bool,
@@ -718,6 +668,13 @@ pub struct UiState {
     /// so its hover tray survives the per-frame element rebuild — hover itself
     /// is read at paint time.
     pub env_selector_hover: Rc<RefCell<Option<usize>>>,
+    /// The one menu the window recognised as open on the last frame, mirrored
+    /// from the UI's shared open-menu registry (`AppContext::open_menus`) after
+    /// the tree painted: a `None` means no menu is up. The registry stays the
+    /// authority (it owns the close handle and the surface the pointer belongs
+    /// to); this is the app-level view of the same state, so a test or a
+    /// reader of the state machine can see which menu the window is drawing.
+    pub open_menu: Option<goble_ui::elements::MenuId>,
     /// Whether the "add a new medium" dialog is open over the app.
     pub add_medium_dialog_open: bool,
     /// The new medium's name as typed in the add-medium dialog.

@@ -39,6 +39,7 @@ mod files;
 mod guide;
 mod mcp;
 mod presentation;
+pub mod remote;
 mod runner;
 mod text_diff;
 mod types;
@@ -52,6 +53,10 @@ pub use catalog::{detect_harness, harness_by_id, harness_for, HarnessSpec, HARNE
 pub use detect::{
     launch_command, path_dirs, probe_version, resolve_command, resolve_command_in,
     resolve_harness, status, status_with_version, HarnessStatus, VERSION_PROBE_TIMEOUT,
+};
+pub use remote::{
+    is_remote_harness, remote_harness_by_id, RemoteHarnessSpec, DSH_IMAGE, DSH_SPEC, HARNESS_ENV,
+    NATIVE_SESSION_ENV, REMOTE_HARNESSES,
 };
 pub use presentation::{
     edit_change_counts, edit_diffstat, is_hidden_tool, one_line, skill_name, string_argument,

@@ -679,7 +679,7 @@ fn toggle_right_sidebar_action_flips_state() {
 }
 
 #[test]
-fn settings_navigate_and_back_flip_state() {
+fn settings_navigation_and_back_flip_state() {
     let state = Rc::new(RefCell::new(UiState::mock()));
     let actions = make_actions(
         Rc::clone(&state),
@@ -690,8 +690,19 @@ fn settings_navigate_and_back_flip_state() {
     );
 
     assert_eq!(state.borrow().current_tab, AppTab::Chat);
-    (actions.on_settings_navigate.borrow_mut())(SettingsPage::Llm);
-    assert_eq!(state.borrow().settings_page, SettingsPage::Llm);
+    (actions.on_settings.borrow_mut())();
+    assert!(
+        state.borrow().settings_pane().is_some(),
+        "the settings tab opened"
+    );
+    // The tab's own dispatch points it at another page of the DSH IA.
+    (actions.settings.dispatch.borrow_mut())(
+        goble_app::ui::settings::SettingsAction::Navigate(goble_app::ui::SettingsCategory::Agent),
+    );
+    assert_eq!(
+        state.borrow().settings_page(),
+        goble_app::ui::SettingsCategory::Agent
+    );
     (actions.on_settings_back.borrow_mut())();
     assert_eq!(
         state.borrow().current_tab,
@@ -699,8 +710,8 @@ fn settings_navigate_and_back_flip_state() {
         "back returns to chat"
     );
     assert_eq!(
-        state.borrow().settings_page,
-        SettingsPage::Llm,
+        state.borrow().settings_page(),
+        goble_app::ui::SettingsCategory::Agent,
         "back keeps the last selected settings page"
     );
 }
@@ -876,7 +887,10 @@ fn workspace_tabs_are_chrome_style_tabs_with_no_rules() {
     let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
     let top_inset = if cfg!(target_os = "macos") { 5.0 } else { 6.0 };
     let band = goble_app::ui::shell::TOPBAR_BOTTOM_BAND;
-    let merge_bottom = topbar_height + band + 5.0;
+    // The merge line is the pane card's surface top: the bar block, then the
+    // pane area's inset gutter and the card's own 1 pt border.
+    let merge_bottom =
+        topbar_height + band + 4.0 + 1.0; // the pane area's 4px inset
 
     assert_eq!(
         topbar_surface(&commands, &app).height(),

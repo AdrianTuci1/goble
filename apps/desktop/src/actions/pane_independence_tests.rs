@@ -11,7 +11,7 @@ use goble_ui::platform::WindowControl;
 use crate::media::MediaState;
 use crate::state::{UiState, NEW_AGENT_TAB_LABEL};
 use crate::ui::{
-    AppTab, Pane, PaneKind, SettingsCategory, SettingsControl, SettingsFocus, UiActions,
+    AppTab, Pane, PaneKind, SettingsCategory, UiActions,
     WorkspaceRouting,
 };
 
@@ -824,10 +824,22 @@ fn the_cloud_agent_asks_for_remote_before_opening_a_tab() {
 
     (actions.on_new_cloud_agent.borrow_mut())();
 
-    assert_eq!(state.borrow().spaces.len(), before, "no tab opened");
+    // The settings tab is what opened (the flow lands there); no cloud-agent
+    // tab was started.
+    assert_eq!(
+        state.borrow().spaces.len(),
+        before + 1,
+        "only the settings tab opened"
+    );
+    assert!(state
+        .borrow()
+        .settings_pane()
+        .is_some_and(|(_, id)| state.borrow().spaces
+            .iter()
+            .any(|space| space.root.contains_leaf(id))));
     assert_eq!(
         state.borrow().settings_page(),
-        SettingsCategory::AgentApproval,
+        SettingsCategory::Agent,
         "the page that configures Remote"
     );
     assert_eq!(
@@ -892,12 +904,18 @@ fn choosing_remote_without_a_configuration_opens_the_remote_settings() {
 
     let assert_on_remote_section = |state: &Rc<RefCell<UiState>>| {
         let s = state.borrow();
-        assert_eq!(s.settings_page(), SettingsCategory::AgentApproval);
-        assert_eq!(s.settings_focus, SettingsFocus::Pane);
+        assert_eq!(s.settings_page(), SettingsCategory::Agent);
+        assert_eq!(s.settings.region, crate::ui::settings::SettingsRegion::Page);
+        let focused = crate::ui::settings::pages::page_model(
+            SettingsCategory::Agent,
+            &s.settings,
+        )
+        .row_at(s.settings.row_index)
+        .map(|row| row.id.clone());
         assert_eq!(
-            s.settings_focused_control(),
-            Some(SettingsControl::ReloadRemoteAgents),
-            "the keyboard lands on the row that re-reads the file"
+            focused.as_deref(),
+            Some("remote.mode"),
+            "the keyboard lands on the row that configures Remote"
         );
         assert!(
             s.remote_config_path.ends_with("config.toml"),
@@ -940,7 +958,7 @@ fn the_config_file_configures_the_gateway() {
     .expect("write config.toml");
     let (state, actions, media) = build(&desktop);
 
-    (actions.on_reload_remote_agents.borrow_mut())();
+    (actions.settings.dispatch.borrow_mut())(crate::ui::settings::SettingsAction::Reload);
 
     {
         let s = state.borrow();
@@ -973,7 +991,7 @@ fn the_config_file_lists_a_sandbox_platform() {
     .expect("write config.toml");
     let (state, actions, _media) = build(&desktop);
 
-    (actions.on_reload_remote_agents.borrow_mut())();
+    (actions.settings.dispatch.borrow_mut())(crate::ui::settings::SettingsAction::Reload);
 
     let s = state.borrow();
     assert!(s.remote_configured(), "the platform is ready");

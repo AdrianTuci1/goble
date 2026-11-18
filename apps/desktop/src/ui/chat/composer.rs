@@ -46,6 +46,7 @@ pub(crate) fn build_terminal_composer(
     pane_id: u64,
     focused: bool,
     agent: Option<&'static goble_core::harness::HarnessSpec>,
+    placeholder: String,
 ) -> Box<dyn Element> {
     let session = pane_session_snapshot(state, pane_id);
     let controls = state
@@ -97,6 +98,10 @@ pub(crate) fn build_terminal_composer(
 
     let mut composer = ChatComposer::new()
         .with_value(session.composer_draft.clone())
+        // The surface names what the line is for: the terminal builder hands a
+        // plain shell "Run any command"; a CLI harness's prompt line keeps its
+        // own "Message <agent>…" copy.
+        .with_placeholder(placeholder)
         // The bar owns the pane's keyboard while the pane is active and the
         // screen still belongs to the shell; a background pane's input never
         // swallows the keys the active pane needs.
@@ -168,9 +173,6 @@ pub(crate) fn build_terminal_composer(
             (on_activate_for_stop.borrow_mut())(pane_id);
             (on_stop.borrow_mut())()
         });
-    if let Some(name) = agent_name {
-        composer = composer.with_placeholder(format!("Message {name}…"));
-    }
     // A CLI harness owns its own model and approval policy, so its footer shows
     // the harness's mark (the name of what answers) where the native agent's
     // surface shows the model switcher. The hint above the editor names the
@@ -281,7 +283,14 @@ pub(crate) fn build_terminal_composer(
     {
         return composer;
     }
+    // The card is one of the window's menus: opening it dismisses any other
+    // menu, a press outside it closes it, and the pointer over its rows belongs
+    // to it (the composer's draft keeps it open until dismissed otherwise).
+    let dismiss = controls.slash_dismissed.clone();
+    let slash_close: goble_ui::elements::MenuClose =
+        Rc::new(RefCell::new(move || *dismiss.borrow_mut() = true));
     let menu = SlashMenu::new(slash_items, controls.slash_index.clone())
+        .with_menu("composer.slash", slash_close)
         .with_on_move(move |index| (on_slash_move_menu.borrow_mut())(index))
         .with_on_accept(slash_accept(
             slash_filtered,

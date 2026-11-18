@@ -4497,3 +4497,43 @@ fn the_work_dock_band_spans_the_pane_while_its_cards_are_lane_bounded() {
         "the bounded cards are centred in the band: {card_centre} vs {band_centre}"
     );
 }
+
+/// The adjustable conversation column is the darker `Bg` token while the pane
+/// around it keeps its `Surface`: the lane reads as a distinct darker column
+/// (the pane card and gutters are the app's `Surface` behind the view).
+#[test]
+fn the_lane_column_paints_the_darker_background() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let (mut view, _starts) = laned_view(None);
+    let commands = render_element(&mut view, vec2f(1600.0, 900.0), &app);
+
+    let bg = app.theme.color(ColorToken::Bg);
+    let column = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == bg => Some(*rect),
+            _ => None,
+        })
+        .max_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
+        .expect("the lane paints its content column");
+    assert_eq!(
+        (column.width(), column.min_x()),
+        (920.0, 340.0),
+        "the darker column is the centred lane: {column:?}"
+    );
+    assert_ne!(
+        bg,
+        app.theme.color(ColorToken::Surface),
+        "the column's token is distinct from the pane surface"
+    );
+    let luminance = |color: crate::color::ColorU| {
+        0.2126 * color.r as f32 + 0.7152 * color.g as f32 + 0.0722 * color.b as f32
+    };
+    assert!(
+        luminance(bg) < luminance(app.theme.color(ColorToken::Surface)),
+        "the column reads darker than the pane's surface"
+    );
+}

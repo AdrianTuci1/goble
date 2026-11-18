@@ -47,24 +47,28 @@ pub const TOPBAR_HEIGHT: f32 = 36.0;
 #[cfg(not(target_os = "macos"))]
 pub const TOPBAR_HEIGHT: f32 = 40.0;
 
-/// The height of the full-window-width lip between the topbar and the shell
-/// content below it. The body reserves `TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND` for
-/// the toolbar and this lip, and the lip itself is painted by [`crate::ui::build`]
-/// in the content's own `Surface`, so the content reads as a rounded sheet whose
-/// top edge shows for these few points under the bar — across the sidebar width
-/// too. The floating tabs end above it (their pill bottoms keep their relation
-/// to the bar's own bottom edge), and the selected tab's stem is the same
-/// `Surface` and meets the lip without a seam, while its inverted corners bite
-/// the lip in the bar's `Bg`, which is what makes the merge read. 4 pt: inside a
-/// 3–5 pt window, thin enough not to read as a gutter.
+/// The height of the full-window-width foot of the topbar: the band under the
+/// bar's own row. The bar block is `TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND` tall and
+/// is all the window's `Bg` — the band is the extra room the floating tabs need
+/// under them and the dark surface that reaches the window's outline at the
+/// topbar's own edges. The content sheet (the sidebar's `Surface` and the panes'
+/// header band) begins exactly at the band's bottom, so the window's darker
+/// background fills every pixel up to the outline above it and there is no
+/// lighter strip between the bar and the content. The selected tab is the same
+/// `Surface` as that sheet and continues through the band into it, while its
+/// inverted corners are cut out of its flare in the bar's `Bg`, which is what
+/// makes the merge read. 4 pt: inside a 3–5 pt window, thin enough not to read
+/// as its own band.
 pub const TOPBAR_BOTTOM_BAND: f32 = 4.0;
 
-/// The corner radius of the lip's top-left and top-right corners — the content
-/// sheet's own rounded top, the same family as the pane cards' radius. Only the
-/// band's few points of it are visible, so the visible arc is a little shallower
-/// than the radius: at the window's two edges the lip's top edge curves inward
-/// by the radius and reaches almost the window edge by the bottom of the band.
-pub const TOPBAR_BOTTOM_BAND_RADIUS: f32 = 8.0;
+/// The height of the whole bar block: the bar's own row plus the
+/// [`TOPBAR_BOTTOM_BAND`] under it. The body reserves this below the bar, and
+/// the bar's own layout uses it too, so the controls and the tab labels centre on
+/// the block the window actually shows — not on the shorter row, which would
+/// leave them a couple of points high with the band's room unused underneath.
+pub(super) fn bar_height() -> f32 {
+    TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND
+}
 
 /// The room the macOS traffic lights take at the bar's leading edge, plus the
 /// gap that sets the Tools control apart from them. They are real OS controls
@@ -155,21 +159,21 @@ pub(super) const TAB_EDGE_INSET: f32 = 3.0;
 /// The gap between a floating pill's bottom edge and the merge line, where the
 /// selected tab continues into the content below. It is the
 /// [`TOPBAR_BOTTOM_BAND`] the selected tab has to cross plus the bar's own 1 pt
-/// foot and Chrome's 6 pt pill-to-strip-bottom gap, so a pill still ends 1 pt
-/// above the bar's own bottom edge (`y = TOPBAR_HEIGHT − 1`) and the band stays
-/// visible underneath it. The selected tab's feet therefore land on the pane
-/// card's top border below the band, exactly as they did on the bar's old
-/// bottom edge.
+/// foot and Chrome's 6 pt pill-to-strip-bottom gap, so a pill ends 1 pt above the
+/// bar row's own bottom edge (`y = TOPBAR_HEIGHT − 1`) and the whole band stays
+/// visible, dark, underneath it. The selected tab's feet therefore land on the
+/// pane card's top border below the band, and its stem crosses the pane gutter
+/// to the card's `Surface` (the merge).
 pub(super) const TAB_PILL_BOTTOM_GAP: f32 = TOPBAR_BOTTOM_BAND + 6.0;
 
 /// How far the selected tab's fill runs past the bar's bottom edge so that it
-/// meets the pane surface below. Between the bar and the body lies the
-/// [`TOPBAR_BOTTOM_BAND`]; below that, over the pane area, lie the pane area's
-/// 4 pt gutter and the pane card's 1 pt border
-/// ([`crate::ui::panes::PANE_INSET`]). The fill crosses all of them to reach
-/// the card's `Surface` — Chrome's "the sidebar's active tab meets the
-/// toolbar", one level down — and the band is what makes that crossing read as
-/// a tab standing proud of the bar instead of a flat join.
+/// meets the pane surface below. The bar block — bar plus [`TOPBAR_BOTTOM_BAND`]
+/// — ends at [`tab_fillet_bottom`], the top of the content sheet (the sidebar and
+/// the panes' full-bleed header band). Below the sheet's first rows over the pane
+/// area lie the pane area's 4 pt gutter and the pane card's 1 pt border
+/// ([`crate::ui::panes::PANE_INSET`]): the fill crosses all of them to reach the
+/// card's `Surface` — Chrome's "the active tab meets the toolbar", one level
+/// down — so it merges with the content whatever the pane's own header draws.
 pub(super) const TAB_MERGE_DROP: f32 = TOPBAR_BOTTOM_BAND + crate::ui::panes::PANE_INSET + 1.0;
 
 /// The narrowest a tab's contents can get and still carry its close control:
@@ -216,10 +220,10 @@ pub(super) fn tab_pill_bottom() -> f32 {
 }
 
 /// The y the selected tab's inverted corners bottom out: the bottom edge of the
-/// [`TOPBAR_BOTTOM_BAND`], i.e. the top of the shell's content. The flare and its
-/// concave fillets therefore stay inside the toolbar's own reservation and never
-/// hang over the pane area below: only the tab's own width continues from here
-/// down across the pane gutter and card border to the surface (the merge).
+/// [`TOPBAR_BOTTOM_BAND`], which is the top edge of the content sheet. The flare
+/// and its concave fillets therefore bottom out on the sheet's edge instead of
+/// hanging over it, and the tab's own width continues from here across the pane
+/// gutter and card border to the pane's surface (the merge).
 pub(super) fn tab_fillet_bottom() -> f32 {
     TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND
 }
@@ -238,22 +242,22 @@ pub(super) fn tab_content_rect(slot: RectF) -> RectF {
 
 /// Paint a tab's fill: the selected tab's body merged into the surface below, or
 /// a floating pill. `slot` is the tab's whole slot in window coordinates, `fill`
-/// the colour the tab's state gives it and `background` the bar/band tone the
+/// the colour the tab's state gives it and `background` the bar's tone the
 /// selected tab's inverted corners are cut out with.
 ///
 /// The selected tab is composed of a rounded-top body — which carries the fill
-/// all the way down across the pane gutter to the surface, so the merge has no
+/// down through the bar's foot into the content sheet, so the merge has no
 /// seam — plus a foot band along the bottom of the band and a concave fillet at
-/// each end of it. The fillets bottom out at [`tab_fillet_bottom`], the band's
-/// lower edge, so the tab's widest part and its bottom side stay inside the
-/// toolbar's reservation and only the tab's own width continues into the content
-/// below. Chromium's active-tab path has the same inverse corners
+/// each end of it. The fillets bottom out at [`tab_fillet_bottom`], the content
+/// sheet's top edge, so the tab flares into the sheet exactly where the sheet
+/// begins; only the tab's own width continues below that line. Chromium's
+/// active-tab path has the same inverse corners
 /// (`chrome/browser/ui/views/tabs/common/horizontal_tab_style_views.cc:188-340`):
 /// each is a quarter circle tangent to the tab's vertical side and to the
 /// horizontal bottom side of the foot. Our renderer has no paths, so a
 /// background-coloured disc bites the foot's outer top corner under a clip,
-/// leaving exactly that tangent quarter circle — the bite shows the
-/// [`TOPBAR_BOTTOM_BAND`], and the tab flows into the surface below.
+/// leaving exactly that tangent quarter circle — the bite is the bar's own `Bg`,
+/// and the tab flows into the sheet below.
 pub(super) fn paint_tab_surface(
     renderer: &mut goble_ui::render::Renderer,
     slot: RectF,
@@ -490,12 +494,12 @@ pub fn build_topbar(
     )
     .finish();
 
-    // The workspace strip is drawn at the full height of the bar — each tab
-    // spans it and floats its fill inside it (see [`WorkspaceChip`]) — so the
-    // bar needs no vertical padding of its own: the shorter controls center
-    // against the tabs and the bar is exactly `TOPBAR_HEIGHT` tall, the height
-    // the body reserves below it, with the macOS traffic lights vertically
-    // centred inside it.
+    // The workspace strip is drawn at the full height of the bar block — the
+    // bar row plus its band ([`bar_height`]) — and each tab spans it and floats
+    // its fill inside it (see [`WorkspaceChip`]), so the bar needs no vertical
+    // padding of its own: the shorter controls centre in the same block, its
+    // bottom edge is the content sheet's top, and the macOS traffic lights sit
+    // vertically centred inside it.
     //
     // The bar's own fill is the window frame's `Bg`, one tone away from the
     // pane surface the selected tab is filled with. That two-tone is what makes
@@ -532,9 +536,15 @@ pub fn build_topbar(
     // and over the pane below it, and it is the first child dispatched, so the
     // press that lands on it never reaches the tab under it.
     let menu = build_space_menu(state, actions);
+    // The pane tabs' accent outlines are a layer of the bar: the bar paints the
+    // body already (the shell body is below it in the window's stack), so this
+    // is where the outlines close over the selected workspace tab's merge stem
+    // while the bar's own ghost and popups, and every sheet, still paint above
+    // them.
     goble_ui::elements::Stack::new()
         .with_children(vec![
             bar,
+            crate::ui::panes::build_slot_outline_layer(app),
             build_pane_drag_ghost(app, state.pane_drag.as_ref()),
             menu,
         ])
@@ -1044,9 +1054,13 @@ struct TabFrame {
 }
 
 /// A child of a [`TabFrame`]: one of its tabs, and whether it is the selected
-/// one. The selected tab is painted last, above its neighbours: Chromium gives
-/// the active tab an infinite z-value (`chrome/browser/ui/views/tabs/tab.cc:1214`)
-/// so its flared feet cover the rounded bottom corners of the pills beside it.
+/// one. The frame paints in three layers: the floating tabs at rest, then the
+/// selected tab, then a hovered (or pressed) floating tab. Chromium gives the
+/// active tab an infinite z-value (`chrome/browser/ui/views/tabs/tab.cc:1214`)
+/// so its flared feet cover the rounded bottom corners of the pills beside it;
+/// a pill the pointer is on is the exception the owner asked for — it paints
+/// above the active tab's inverted-corner fills, so hovering a tab never leaves
+/// a dark square bitten out of its bottom corners.
 struct FrameChild {
     element: Box<dyn Element>,
     selected: bool,
@@ -1093,14 +1107,33 @@ impl Element for TabFrame {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        // Two passes: the floating tabs first, the selected tab last, so its
-        // feet paint over the corners of the pills beside it.
-        for selected in [false, true] {
+        // Three layers, in paint order: (0) the floating tabs at rest, (1) the
+        // selected tab, whose flare and inverted corners merge it into the
+        // content sheet, and (2) a hovered or pressed floating tab, painted last
+        // so the active tab's background-coloured fillet discs never bite its
+        // pill. Hover is read here, exactly as [`WorkspaceChip::paint`] reads it
+        // (the whole slot is the tab's hit bounds), so the two agree.
+        let mut slots: Vec<(usize, bool, bool, f32)> = Vec::with_capacity(self.children.len());
+        let mut x = origin.x;
+        for (index, child) in self.children.iter().enumerate() {
+            let width = child.element.size().unwrap_or(Vector2F::zero()).x;
+            let hovered =
+                !child.selected && ctx.hovered(rectf(x, origin.y, width, WorkspaceChip::height()));
+            slots.push((index, child.selected, hovered, width));
+            x += width;
+        }
+        for layer in 0..3 {
             let mut x = origin.x;
-            for child in &mut self.children {
-                let width = child.element.size().unwrap_or(Vector2F::zero()).x;
-                if child.selected == selected {
-                    child.element.paint(vec2f(x, origin.y), ctx, app);
+            for (index, selected, hovered, width) in &slots {
+                let in_layer = match layer {
+                    0 => !*selected && !*hovered,
+                    1 => *selected,
+                    _ => !*selected && *hovered,
+                };
+                if in_layer {
+                    self.children[*index]
+                        .element
+                        .paint(vec2f(x, origin.y), ctx, app);
                 }
                 x += width;
             }
@@ -1767,11 +1800,13 @@ impl WorkspaceChip {
         }
     }
 
-    /// The tab's element is as tall as the bar, so its label centres on the bar
-    /// exactly as Chrome's title centres on its 41 pt strip; the visible fill
-    /// is inset inside that height (see [`tab_content_rect`]).
+    /// The tab's element is as tall as the whole bar block — the bar row plus its
+    /// band — so its label centres on the block the window shows, exactly as
+    /// Chrome's title centres on its strip, and the pill floats with an equal gap
+    /// above and below it; the visible fill is inset inside that height (see
+    /// [`tab_content_rect`]).
     fn height() -> f32 {
-        TOPBAR_HEIGHT
+        bar_height()
     }
 
     fn h_pad() -> f32 {

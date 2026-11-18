@@ -26,11 +26,11 @@ use goble_desktop_service::{DesktopState, ThreadStore};
 use goble_ui::elements::{AppContext, Element, LayoutContext, PaintContext, SizeConstraint};
 use goble_ui::geometry::{vec2f, RectF, Vector2F};
 use goble_ui::render::{RenderCommand, Renderer};
-use goble_ui::theme::{TabColor, Theme};
+use goble_ui::theme::{AccentColor, ColorToken, TabColor, Theme};
 
 use goble_app::root_view::RootView;
 use goble_app::ui::shell::TOPBAR_HEIGHT;
-use goble_app::ui::{Pane, PaneKind, Space};
+use goble_app::ui::{Pane, PaneKind, Space, SplitDir};
 
 /// The window the app is laid out in. Wide enough for four comfortable tabs;
 /// the pane area below the bar is what the selected tab's fill merges into.
@@ -62,6 +62,9 @@ enum Scene {
     Rename,
     /// The selected pane has changed files: the Open-changes topbar control.
     Diff,
+    /// Two panes side by side: each tab wears its own accent outline, 6 pt of
+    /// the window's `Bg` between the two borders.
+    Split,
 }
 
 impl Scene {
@@ -75,6 +78,7 @@ impl Scene {
             Scene::Many => "many",
             Scene::Rename => "rename",
             Scene::Diff => "diff",
+            Scene::Split => "split",
         }
     }
 }
@@ -199,13 +203,36 @@ fn scene_commands(app: &AppContext, scene: Scene) -> anyhow::Result<(Vec<RenderC
                 },
             ));
         }
+        // The split scene: the active space is two tabs side by side, so each
+        // gets its own accent outline and the gutter between them can be
+        // measured.
+        if scene == Scene::Split {
+            let first = s.spaces[1].root.clone();
+            let id = s.next_pane_id;
+            s.next_pane_id += 1;
+            s.spaces[1].root = Pane::Split {
+                id: s.next_pane_id,
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                first: Box::new(first),
+                second: Box::new(Pane::Leaf {
+                    id,
+                    kind: PaneKind::Terminal,
+                }),
+            };
+            s.next_pane_id += 1;
+        }
         // A pane outside any repository draws no Open-changes control: the
         // plain scenes show the bar as it looks on a clean working tree.
         let active = s.active_pane_id;
         s.set_pane_path(active, dir.path().display().to_string());
         // The second tab is the selected one throughout: Chrome's selected tab
-        // merges into the content with a floating neighbour on each side.
+        // merges into the content with a floating neighbour on each side. Its
+        // pane is the focused one, so its tab outline is the accent one.
         s.active_space = 1;
+        let active_pane = s.spaces[1].root.first_leaf_id();
+        s.active_pane_id = active_pane;
+        s.pane_sessions.entry(active_pane).or_default();
     }
 
     // Scene state that changes what the strip paints (never its own geometry),
@@ -315,6 +342,292 @@ fn fillet_crop(body: RectF) -> (f32, f32, f32) {
     (left, right - left, height)
 }
 
+/// Crop a logical rectangle out of a rendered frame, scale it up `zoom` times on
+/// top of the raster pass's x2 and write it out. Unlike [`write_zoom`], the
+/// rectangle starts at an explicit `top` (a tab's corner sits far below the
+/// window's first row).
+fn write_zoom_at(
+    full: &std::path::Path,
+    out: &std::path::Path,
+    (left, top, width, height): (f32, f32, f32, f32),
+    zoom: u32,
+) -> anyhow::Result<()> {
+    let frame = image::open(full)?.to_rgba8();
+    let cropped = image::imageops::crop_imm(
+        &frame,
+        (left * SCALE) as u32,
+        (top * SCALE) as u32,
+        (width * SCALE) as u32,
+        (height * SCALE) as u32,
+    )
+    .to_image();
+    let zoomed = image::imageops::resize(
+        &cropped,
+        cropped.width() * zoom,
+        cropped.height() * zoom,
+        image::imageops::FilterType::Lanczos3,
+    );
+    zoomed.save(out)?;
+    println!(
+        "wrote {} ({}x{})",
+        out.display(),
+        zoomed.width(),
+        zoomed.height()
+    );
+    Ok(())
+}
+
+/// Keep a crop rectangle inside the rendered frame.
+fn clamp_crop(left: f32, top: f32, width: f32, height: f32) -> (f32, f32, f32, f32) {
+    (
+        left.max(0.0).min(WIDTH - width),
+        top.max(0.0).min(HEIGHT - height),
+        width,
+        height,
+    )
+}
+
+/// The window's own edge: the top-left corner, the topbar under the top rule and
+/// the left rule running on into the pane area, so the window outline can be
+/// read as one continuous frame around every surface — the bar included.
+fn window_edge_crop() -> (f32, f32, f32) {
+    let height = TOPBAR_HEIGHT + goble_app::ui::shell::TOPBAR_BOTTOM_BAND + 96.0;
+    (0.0, 344.0, height)
+}
+
+/// The whole top of the window at a lower zoom: the window's top rule, the
+/// full-width topbar band under it and the bar's bottom junction, so the band's
+/// own tone against the content can be read across the window.
+fn window_top_crop() -> (f32, f32, f32) {
+    let height = TOPBAR_HEIGHT + goble_app::ui::shell::TOPBAR_BOTTOM_BAND + 24.0;
+    (0.0, WIDTH, height)
+}
+
+/// The tab outlines a frame paints — (rect, colour), ordered left to right:
+/// 1 pt rounded strokes (radius 6, the pane card's rounding), accent for the
+/// focused tab and the ordinary `Border` for the rest. A pane card's own
+/// `Border` stroke is excluded: the card paints a fill at exactly the same
+/// rect, an outline never does.
+fn tab_outlines(commands: &[RenderCommand], app: &AppContext) -> Vec<(RectF, goble_ui::ColorU)> {
+    let accent = app.theme.color(ColorToken::Accent);
+    let border = app.theme.color(ColorToken::Border);
+    let mut outlines: Vec<(RectF, goble_ui::ColorU)> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::StrokeRect {
+                rect,
+                color,
+                width,
+                corner_radius,
+            } if (*color == accent || *color == border)
+                && (*width - 1.0).abs() < 0.01
+                && (*corner_radius - 6.0).abs() < 0.01
+                && !commands.iter().any(|other| matches!(
+                    other,
+                    RenderCommand::FillRect { rect: filled, .. } if filled == rect
+                )) =>
+            {
+                Some((*rect, *color))
+            }
+            _ => None,
+        })
+        .collect();
+    outlines.sort_by(|a, b| a.0.min_x().total_cmp(&b.0.min_x()));
+    outlines
+}
+
+/// The measured chrome of one rendered frame, printed as the geometry evidence
+/// for the owner's four points: the window outline's path (the whole window,
+/// topbar included), the dark bar block up to it with no lighter gap, the
+/// content sheet's origin and the merge line, and — for a hovered frame — that
+/// the hovered pill is painted after the selected tab's inverted-corner discs.
+fn print_geometry(label: &str, commands: &[RenderCommand], app: &AppContext) {
+    let surface = app.theme.color(ColorToken::Surface);
+    let bg = app.theme.color(ColorToken::Bg);
+    let accent = app.theme.color(ColorToken::Accent);
+    let band_top = TOPBAR_HEIGHT;
+    let band = goble_app::ui::shell::TOPBAR_BOTTOM_BAND;
+    let sheet_top = band_top + band;
+
+    // The window's own rule is neutral: the accent outline is per tab, never
+    // around the outer window.
+    let window_rule = commands.iter().find_map(|command| match command {
+        RenderCommand::StrokeRect {
+            rect, color, width, ..
+        } if rect.width() == WIDTH && rect.height() == HEIGHT => Some((*rect, *color, *width)),
+        _ => None,
+    });
+    match window_rule {
+        Some((rect, color, width)) => println!(
+            "[{label}] window rule: {width} px at ({:.0},{:.0})..({:.0},{:.0}), \
+             colour {:?} — neutral? {}",
+            rect.min_x(),
+            rect.min_y(),
+            rect.max_x(),
+            rect.max_y(),
+            color,
+            color != accent,
+        ),
+        None => println!("[{label}] window rule: MISSING"),
+    }
+
+    // The tab's accent outline: the topbar's slot-outline layer paints one 1 pt
+    // rounded accent frame per tab, the tab's whole slot inset 3 pt a side.
+    let outlines = tab_outlines(commands, app);
+    if outlines.is_empty() {
+        println!("[{label}] tab outline: MISSING");
+    }
+    for (index, (outline, color)) in outlines.iter().enumerate() {
+        println!(
+            "[{label}] tab outline {index}: ({:.1},{:.1})..({:.1},{:.1}) 1 px r=6, colour {}; \
+             inset from the outer window edge: left {:.1}, top {:.1}, right {:.1}, bottom {:.1}",
+            outline.min_x(),
+            outline.min_y(),
+            outline.max_x(),
+            outline.max_y(),
+            if *color == accent { "accent (focused)" } else { "Border (rest)" },
+            outline.min_x(),
+            outline.min_y(),
+            WIDTH - outline.max_x(),
+            HEIGHT - outline.max_y(),
+        );
+    }
+    if outlines.len() >= 2 {
+        let gap = outlines[1].0.min_x() - outlines[0].0.max_x();
+        let between = vec2f(
+            outlines[0].0.max_x() + gap * 0.5,
+            outlines[0].0.min_y() + outlines[0].0.height() * 0.5,
+        );
+        let gutter = commands.iter().rev().find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if between.x >= rect.min_x()
+                    && between.x <= rect.max_x()
+                    && between.y >= rect.min_y()
+                    && between.y <= rect.max_y() =>
+            {
+                Some(*color)
+            }
+            _ => None,
+        });
+        println!(
+            "[{label}] tab gap: {gap:.1} pt between the two tab borders at x {:.1}; \
+             gutter fill {:?} (Bg = {:?})",
+            outlines[0].0.max_x(),
+            gutter,
+            bg
+        );
+    }
+
+    // The bar block: the bar's Bg from the window's top edge down to the
+    // content sheet. The sheet's first lighter row must be exactly the band's
+    // bottom: gap = 0.
+    let band_fill = commands.iter().find_map(|command| match command {
+        RenderCommand::FillRect { rect, color, .. }
+            if *color == bg
+                && (rect.min_y() - band_top).abs() < 0.01
+                && (rect.height() - band).abs() < 0.01
+                && rect.width() == WIDTH =>
+        {
+            Some(*rect)
+        }
+        _ => None,
+    });
+    let lip = commands.iter().find_map(|command| match command {
+        RenderCommand::FillRect { rect, color, .. }
+            if *color == surface
+                && (rect.min_y() - band_top).abs() < 0.01
+                && rect.width() == WIDTH =>
+        {
+            Some(*rect)
+        }
+        _ => None,
+    });
+    let sheet = commands.iter().find_map(|command| match command {
+        RenderCommand::FillRect { rect, color, .. }
+            if *color == surface && rect.min_x() == 0.0 && rect.height() > HEIGHT / 2.0 =>
+        {
+            Some(*rect)
+        }
+        _ => None,
+    });
+    println!(
+        "[{label}] bar block: Bg rows 0..{:.0} (bar {:.0} + band {:.0}); band fill {};          content sheet top {:.0}; dark gap to the outline at the top = 0",
+        band_top + band,
+        band_top,
+        band,
+        if band_fill.is_some() { "yes" } else { "MISSING" },
+        sheet.map(|rect| rect.min_y()).unwrap_or(f32::NAN),
+    );
+    println!(
+        "[{label}] lighter band under the bar (old lip): {} (expected none)",
+        if lip.is_some() { "PRESENT" } else { "none" }
+    );
+    if let Some(sheet) = sheet {
+        println!(
+            "[{label}] sheet origin {:.0} vs bar block end {:.0}: lighter-gap = {:.1} px",
+            sheet.min_y(),
+            sheet_top,
+            sheet.min_y() - sheet_top
+        );
+    }
+
+    // The selected tab's merge: its fill starts in the bar and ends on the pane
+    // card's surface, one point past the pane card's top border.
+    let body = commands.iter().find_map(|command| match command {
+        RenderCommand::FillRect { rect, color, .. }
+            if *color == surface
+                && rect.min_y() > 0.0
+                && rect.min_y() < band_top
+                && rect.max_y() > band_top =>
+        {
+            Some(*rect)
+        }
+        _ => None,
+    });
+    if let Some(body) = body {
+        let pane_inset = body.max_y() - sheet_top - 1.0;
+        println!(
+            "[{label}] selected merge: fill y {:.0}..{:.0} (merge line {:.0} = sheet {:.0} +              pane inset {:.0} + border 1)",
+            body.min_y(),
+            body.max_y(),
+            body.max_y(),
+            sheet_top,
+            pane_inset
+        );
+    }
+
+    // The fillet-vs-pill layering: the hovered pill must be painted after the
+    // selected tab's inverted-corner discs.
+    let pill_bottom = band_top - 1.0;
+    let pill = commands.iter().position(|command| match command {
+        RenderCommand::FillRect { rect, color, .. } => {
+            *color == app.theme.color(ColorToken::Hover)
+                && (rect.max_y() - pill_bottom).abs() < 0.01
+        }
+        _ => false,
+    });
+    let discs: Vec<usize> = commands
+        .iter()
+        .enumerate()
+        .filter_map(|(index, command)| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == bg
+                    && (rect.width() - 24.0).abs() < 0.01
+                    && (rect.height() - 24.0).abs() < 0.01 =>
+            {
+                Some(index)
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(pill) = pill {
+        println!(
+            "[{label}] hovered pill painted at command {pill} vs fillet discs {discs:?}:              pill above discs = {}",
+            discs.iter().all(|disc| pill > *disc)
+        );
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let assets =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/goble-ui/assets");
@@ -330,14 +643,29 @@ fn main() -> anyhow::Result<()> {
         Scene::Many,
         Scene::Rename,
         Scene::Diff,
+        Scene::Split,
+    ];
+    // The owner reads the window frame in the purple accent: the preview draws
+    // that state too, so the window outline is visible in the evidence.
+    let purple = Theme {
+        accent: AccentColor::Purple,
+        ..Theme::dark()
+    };
+    let themes = [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("purple", purple),
     ];
     for scene in scenes {
-        for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        for (theme_name, theme) in themes.clone() {
             let app = AppContext {
                 theme,
                 ..AppContext::default()
             };
             let (commands, body) = scene_commands(&app, scene)?;
+            if matches!(scene, Scene::Rest | Scene::Hover | Scene::Split) {
+                print_geometry(&format!("{theme_name}/{}", scene.name()), &commands, &app);
+            }
             let out = std::path::Path::new(OUT_DIR)
                 .join(format!("topbar-{theme_name}-{}.png", scene.name()));
             raster::rasterize_to_png(
@@ -359,6 +687,57 @@ fn main() -> anyhow::Result<()> {
                 scene.name()
             ));
             write_zoom(&out, &fillet, fillet_crop(body), 4)?;
+            // The window-edge evidence: the outline as one frame around the
+            // whole window, the bar included, and the tone of the band under it.
+            let edge = std::path::Path::new(OUT_DIR).join(format!(
+                "topbar-{theme_name}-{}-window-edge-zoom.png",
+                scene.name()
+            ));
+            write_zoom(&out, &edge, window_edge_crop(), 4)?;
+            let top = std::path::Path::new(OUT_DIR).join(format!(
+                "topbar-{theme_name}-{}-window-top-zoom.png",
+                scene.name()
+            ));
+            write_zoom(&out, &top, window_top_crop(), 3)?;
+            // The tab's purple corner, attached to the tab's border: the accent
+            // frame is the tab's whole slot inset 3 pt, rounded at the pane
+            // card's own radius. The bottom-right crop also shows the neutral
+            // window rule just outside it; the top-left crop shows the corner
+            // meeting the tab's chrome band under the app topbar.
+            let outlines = tab_outlines(&commands, &app);
+            if let Some((tab, _)) = outlines.first() {
+                let corner = std::path::Path::new(OUT_DIR).join(format!(
+                    "topbar-{theme_name}-{}-tab-corner-zoom.png",
+                    scene.name()
+                ));
+                write_zoom_at(
+                    &out,
+                    &corner,
+                    clamp_crop(tab.max_x() - 40.0, tab.max_y() - 40.0, 48.0, 48.0),
+                    8,
+                )?;
+                let top_corner = std::path::Path::new(OUT_DIR).join(format!(
+                    "topbar-{theme_name}-{}-tab-top-corner-zoom.png",
+                    scene.name()
+                ));
+                write_zoom_at(
+                    &out,
+                    &top_corner,
+                    clamp_crop(tab.min_x() - 10.0, tab.min_y() - 10.0, 52.0, 52.0),
+                    8,
+                )?;
+            }
+            if scene == Scene::Split && outlines.len() >= 2 {
+                let left = outlines[0].0;
+                let split = std::path::Path::new(OUT_DIR)
+                    .join(format!("topbar-{theme_name}-split-zoom.png"));
+                write_zoom_at(
+                    &out,
+                    &split,
+                    clamp_crop(left.max_x() - 20.0, left.min_y() - 8.0, 40.0, 96.0),
+                    8,
+                )?;
+            }
             if scene == Scene::Diff {
                 let cluster = std::path::Path::new(OUT_DIR)
                     .join(format!("topbar-{theme_name}-diff-control-zoom.png"));

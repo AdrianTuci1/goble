@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS project_sandboxes (
     sandbox_name   TEXT NOT NULL,
     sandbox_id     TEXT,
     workspace_path TEXT NOT NULL,
+    snapshot_id    TEXT,
+    native_session_id TEXT,
     updated_at     TEXT NOT NULL
 );
 ";
@@ -102,6 +104,20 @@ pub struct Task {
 /// sandbox and shares its filesystem. `sandbox_id` is the provider's handle
 /// once the sandbox exists; `sandbox_name` is the stable name derived from the
 /// project id, so a provider can find the sandbox again after a restart.
+///
+/// The binding is what makes a remote session durable rather than a process:
+///
+/// - `snapshot_id` is the last provider-side filesystem snapshot. When the
+///   sandbox is terminated (idle reaper, provider timeout, crash), the next
+///   deploy restores this snapshot instead of starting from the image.
+/// - `native_session_id` is the harness conversation to resume — the id a DSH
+///   harness takes as `--session-id`. The provisioner passes it to the worker
+///   as `GOBLE_NATIVE_SESSION_ID`, so the agent continues where it stopped even
+///   when the filesystem starts from a snapshot taken earlier.
+///
+/// Both are optional and independent: a provider with snapshots but no native
+/// session, a provider with neither, and a provider that keeps only a paused
+/// sandbox are all representable.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectSandbox {
     pub project_id: ProjectId,
@@ -109,6 +125,12 @@ pub struct ProjectSandbox {
     pub sandbox_name: String,
     pub sandbox_id: Option<String>,
     pub workspace_path: String,
+    /// The last filesystem snapshot the provider took, if it takes snapshots.
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
+    /// The harness conversation to resume on the next run.
+    #[serde(default)]
+    pub native_session_id: Option<String>,
     pub updated_at: String,
 }
 
@@ -149,6 +171,44 @@ fn migrate_legacy_checkpoint_table(conn: &Connection) -> Result<(), PersistenceE
     Ok(())
 }
 
+/// Add `column` to `table` when an older database does not have it yet.
+///
+/// `table`, `column` and `declaration` are code constants, never user input, so
+/// the DDL can be built with `format!`. SQLite's `ALTER TABLE … ADD COLUMN` is
+/// cheap and transactional per statement.
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    declaration: &str,
+) -> Result<(), PersistenceError> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        rusqlite::params![table, column],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+        ))?;
+    }
+    Ok(())
+}
+
+/// Migrate `project_sandboxes` from the pre-snapshot shape to the durable
+/// session binding.
+///
+/// A database written before Phase 3 has the project binding but neither the
+/// snapshot reference nor the native session id. The columns are added in
+/// place, so the existing `sandbox_id`/`workspace_path` rows survive untouched
+/// and read back with `None` for both new fields; a fresh database already
+/// carries them and this is a no-op.
+fn migrate_project_sandbox_columns(conn: &Connection) -> Result<(), PersistenceError> {
+    ensure_column(conn, "project_sandboxes", "snapshot_id", "TEXT")?;
+    ensure_column(conn, "project_sandboxes", "native_session_id", "TEXT")?;
+    Ok(())
+}
+
 /// A checkpoint store backed by a single SQLite file (or in-memory for tests).
 /// Thread-safe: the raw connection is wrapped in a [`Mutex`]. Implements
 /// [`CheckpointSink`], so it can be handed straight to the daemon.
@@ -171,6 +231,7 @@ impl CheckpointStore {
     fn init(conn: Connection) -> Result<Self, PersistenceError> {
         migrate_legacy_checkpoint_table(&conn)?;
         conn.execute_batch(SCHEMA)?;
+        migrate_project_sandbox_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -193,9 +254,13 @@ impl CheckpointStore {
     }
 
     /// Load a session's checkpoint, if one was persisted.
-    pub fn load_checkpoint(&self, session_id: &SessionId) -> Result<Option<Checkpoint>, PersistenceError> {
+    pub fn load_checkpoint(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<Checkpoint>, PersistenceError> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT checkpoint_json FROM checkpoints WHERE session_id = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT checkpoint_json FROM checkpoints WHERE session_id = ?1")?;
         let mut rows = stmt.query(rusqlite::params![session_id.0])?;
         if let Some(row) = rows.next()? {
             let json: String = row.get(0)?;
@@ -208,7 +273,8 @@ impl CheckpointStore {
     /// List the persisted checkpoint sessions, most recently updated first.
     pub fn list_checkpoint_sessions(&self) -> Result<Vec<SessionId>, PersistenceError> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT session_id FROM checkpoints ORDER BY updated_at DESC")?;
+        let mut stmt =
+            conn.prepare("SELECT session_id FROM checkpoints ORDER BY updated_at DESC")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
@@ -218,7 +284,10 @@ impl CheckpointStore {
     }
 
     /// Delete a session's checkpoint.
-    pub fn delete_checkpoint_session(&self, session_id: &SessionId) -> Result<(), PersistenceError> {
+    pub fn delete_checkpoint_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<(), PersistenceError> {
         let conn = self.conn.lock();
         conn.execute(
             "DELETE FROM checkpoints WHERE session_id = ?1",
@@ -242,10 +311,14 @@ impl CheckpointStore {
     }
 
     /// Load a project by id, if one was persisted.
-    pub fn load_project(&self, project_id: &ProjectId) -> Result<Option<Project>, PersistenceError> {
+    pub fn load_project(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Option<Project>, PersistenceError> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT project_id, directory, created_at FROM projects WHERE project_id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT project_id, directory, created_at FROM projects WHERE project_id = ?1",
+        )?;
         let mut rows = stmt.query(rusqlite::params![project_id.0])?;
         if let Some(row) = rows.next()? {
             Ok(Some(Project {
@@ -261,8 +334,9 @@ impl CheckpointStore {
     /// List all persisted projects, oldest first.
     pub fn list_projects(&self) -> Result<Vec<Project>, PersistenceError> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT project_id, directory, created_at FROM projects ORDER BY created_at ASC")?;
+        let mut stmt = conn.prepare(
+            "SELECT project_id, directory, created_at FROM projects ORDER BY created_at ASC",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok(Project {
                 project_id: ProjectId::new(r.get::<_, String>(0)?),
@@ -289,27 +363,32 @@ impl CheckpointStore {
 
     /// Upsert the sandbox a project runs in. A project has one sandbox, so the
     /// row is keyed by `project_id` and a new binding replaces the old one.
-    pub fn upsert_project_sandbox(
-        &self,
-        sandbox: &ProjectSandbox,
-    ) -> Result<(), PersistenceError> {
+    ///
+    /// The snapshot id and native session id are part of the replace: a resume
+    /// rewrites them so the row always names the state the next run restores.
+    pub fn upsert_project_sandbox(&self, sandbox: &ProjectSandbox) -> Result<(), PersistenceError> {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO project_sandboxes
-               (project_id, provider, sandbox_name, sandbox_id, workspace_path, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+               (project_id, provider, sandbox_name, sandbox_id, workspace_path,
+                snapshot_id, native_session_id, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(project_id) DO UPDATE SET
-               provider       = excluded.provider,
-               sandbox_name   = excluded.sandbox_name,
-               sandbox_id     = excluded.sandbox_id,
-               workspace_path = excluded.workspace_path,
-               updated_at     = excluded.updated_at",
+               provider          = excluded.provider,
+               sandbox_name      = excluded.sandbox_name,
+               sandbox_id        = excluded.sandbox_id,
+               workspace_path    = excluded.workspace_path,
+               snapshot_id       = excluded.snapshot_id,
+               native_session_id = excluded.native_session_id,
+               updated_at        = excluded.updated_at",
             rusqlite::params![
                 sandbox.project_id.0,
                 sandbox.provider,
                 sandbox.sandbox_name,
                 sandbox.sandbox_id,
                 sandbox.workspace_path,
+                sandbox.snapshot_id,
+                sandbox.native_session_id,
                 sandbox.updated_at,
             ],
         )?;
@@ -323,7 +402,8 @@ impl CheckpointStore {
     ) -> Result<Option<ProjectSandbox>, PersistenceError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT project_id, provider, sandbox_name, sandbox_id, workspace_path, updated_at
+            "SELECT project_id, provider, sandbox_name, sandbox_id, workspace_path,
+                    snapshot_id, native_session_id, updated_at
              FROM project_sandboxes WHERE project_id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![project_id.0])?;
@@ -334,7 +414,9 @@ impl CheckpointStore {
                 sandbox_name: row.get(2)?,
                 sandbox_id: row.get(3)?,
                 workspace_path: row.get(4)?,
-                updated_at: row.get(5)?,
+                snapshot_id: row.get(5)?,
+                native_session_id: row.get(6)?,
+                updated_at: row.get(7)?,
             }))
         } else {
             Ok(None)
@@ -345,7 +427,8 @@ impl CheckpointStore {
     pub fn list_project_sandboxes(&self) -> Result<Vec<ProjectSandbox>, PersistenceError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT project_id, provider, sandbox_name, sandbox_id, workspace_path, updated_at
+            "SELECT project_id, provider, sandbox_name, sandbox_id, workspace_path,
+                    snapshot_id, native_session_id, updated_at
              FROM project_sandboxes ORDER BY updated_at ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -355,7 +438,9 @@ impl CheckpointStore {
                 sandbox_name: row.get(2)?,
                 sandbox_id: row.get(3)?,
                 workspace_path: row.get(4)?,
-                updated_at: row.get(5)?,
+                snapshot_id: row.get(5)?,
+                native_session_id: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })?;
         let mut out = Vec::new();
@@ -367,10 +452,7 @@ impl CheckpointStore {
 
     /// Forget a project's sandbox binding. The sandbox itself is destroyed by
     /// the caller, which owns the provider credential.
-    pub fn delete_project_sandbox(
-        &self,
-        project_id: &ProjectId,
-    ) -> Result<(), PersistenceError> {
+    pub fn delete_project_sandbox(&self, project_id: &ProjectId) -> Result<(), PersistenceError> {
         let conn = self.conn.lock();
         conn.execute(
             "DELETE FROM project_sandboxes WHERE project_id = ?1",
@@ -400,7 +482,10 @@ impl CheckpointStore {
     }
 
     /// Load a session by id, if one was persisted.
-    pub fn load_session(&self, session_id: &SessionId) -> Result<Option<Session>, PersistenceError> {
+    pub fn load_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<Session>, PersistenceError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT session_id, project_id, medium_id, created_at FROM sessions WHERE session_id = ?1",
@@ -591,6 +676,8 @@ mod tests {
             sandbox_name: format!("goble-{project}-0123456789ab"),
             sandbox_id: Some(format!("sb-{project}")),
             workspace_path: format!("/workspace/{project}"),
+            snapshot_id: Some(format!("im-{project}-1")),
+            native_session_id: Some(format!("conversation-{project}")),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         }
     }
@@ -602,44 +689,71 @@ mod tests {
         let cp = ledger.checkpoint();
         store.save_checkpoint(&cp).unwrap();
 
-        let loaded = store.load_checkpoint(&SessionId::new("s1")).unwrap().unwrap();
+        let loaded = store
+            .load_checkpoint(&SessionId::new("s1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded, cp);
         assert_eq!(loaded.at, 1);
 
         // A missing session returns None, not an error.
-        assert!(store.load_checkpoint(&SessionId::new("nope")).unwrap().is_none());
+        assert!(store
+            .load_checkpoint(&SessionId::new("nope"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn save_replaces_prior_checkpoint() {
         let store = CheckpointStore::in_memory();
-        store.save_checkpoint(&ledger_with_one_turn("s1").checkpoint()).unwrap();
+        store
+            .save_checkpoint(&ledger_with_one_turn("s1").checkpoint())
+            .unwrap();
 
         // A second, longer transcript replaces the first.
         let ledger = ReplayLedger::new(SessionId::new("s1"));
         for i in 0..3 {
-            let turn = HarnessTurn::new(HarnessId::new("mock"), SessionId::new("s1"), format!("g{i}"));
+            let turn = HarnessTurn::new(
+                HarnessId::new("mock"),
+                SessionId::new("s1"),
+                format!("g{i}"),
+            );
             ledger.record_turn(turn);
         }
         store.save_checkpoint(&ledger.checkpoint()).unwrap();
 
-        let loaded = store.load_checkpoint(&SessionId::new("s1")).unwrap().unwrap();
+        let loaded = store
+            .load_checkpoint(&SessionId::new("s1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.at, 3);
-        assert_eq!(store.list_checkpoint_sessions().unwrap(), vec![SessionId::new("s1")]);
+        assert_eq!(
+            store.list_checkpoint_sessions().unwrap(),
+            vec![SessionId::new("s1")]
+        );
     }
 
     #[test]
     fn list_and_delete_checkpoint_sessions() {
         let store = CheckpointStore::in_memory();
-        store.save_checkpoint(&ledger_with_one_turn("a").checkpoint()).unwrap();
-        store.save_checkpoint(&ledger_with_one_turn("b").checkpoint()).unwrap();
+        store
+            .save_checkpoint(&ledger_with_one_turn("a").checkpoint())
+            .unwrap();
+        store
+            .save_checkpoint(&ledger_with_one_turn("b").checkpoint())
+            .unwrap();
 
         let mut sessions = store.list_checkpoint_sessions().unwrap();
         sessions.sort_by(|x, y| x.0.cmp(&y.0));
         assert_eq!(sessions, vec![SessionId::new("a"), SessionId::new("b")]);
 
-        store.delete_checkpoint_session(&SessionId::new("a")).unwrap();
-        assert_eq!(store.list_checkpoint_sessions().unwrap(), vec![SessionId::new("b")]);
+        store
+            .delete_checkpoint_session(&SessionId::new("a"))
+            .unwrap();
+        assert_eq!(
+            store.list_checkpoint_sessions().unwrap(),
+            vec![SessionId::new("b")]
+        );
     }
 
     #[test]
@@ -649,7 +763,10 @@ mod tests {
         store.save_checkpoint(&original.checkpoint()).unwrap();
 
         // After a "restart", rebuild the ledger from the store and replay.
-        let loaded = store.load_checkpoint(&SessionId::new("s1")).unwrap().unwrap();
+        let loaded = store
+            .load_checkpoint(&SessionId::new("s1"))
+            .unwrap()
+            .unwrap();
         let rebuilt = ReplayLedger::from_checkpoint(&loaded);
         let replayed = rebuilt.replay(0);
         assert_eq!(replayed.len(), 2);
@@ -667,7 +784,13 @@ mod tests {
         let store = CheckpointStore::in_memory();
         let cp = ledger_with_one_turn("s1").checkpoint();
         store.persist(&cp);
-        assert_eq!(store.load_checkpoint(&SessionId::new("s1")).unwrap().unwrap(), cp);
+        assert_eq!(
+            store
+                .load_checkpoint(&SessionId::new("s1"))
+                .unwrap()
+                .unwrap(),
+            cp
+        );
     }
 
     #[test]
@@ -682,7 +805,13 @@ mod tests {
         }
         // Re-open and read back.
         let store = CheckpointStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.load_checkpoint(&SessionId::new("s1")).unwrap().unwrap(), cp);
+        assert_eq!(
+            store
+                .load_checkpoint(&SessionId::new("s1"))
+                .unwrap()
+                .unwrap(),
+            cp
+        );
     }
 
     #[test]
@@ -695,7 +824,10 @@ mod tests {
         assert_eq!(loaded.project_id, ProjectId::new("p1"));
 
         // A missing project returns None.
-        assert!(store.load_project(&ProjectId::new("nope")).unwrap().is_none());
+        assert!(store
+            .load_project(&ProjectId::new("nope"))
+            .unwrap()
+            .is_none());
 
         // Upsert replaces a prior row for the same id.
         let mut updated = sample_project("p1");
@@ -725,6 +857,8 @@ mod tests {
             .unwrap();
         assert_eq!(loaded, sample_sandbox("p1"));
         assert_eq!(loaded.workspace_path, "/workspace/p1");
+        assert_eq!(loaded.snapshot_id.as_deref(), Some("im-p1-1"));
+        assert_eq!(loaded.native_session_id.as_deref(), Some("conversation-p1"));
         assert!(store
             .load_project_sandbox(&ProjectId::new("missing"))
             .unwrap()
@@ -751,13 +885,113 @@ mod tests {
         store.upsert_project_sandbox(&sample_sandbox("p2")).unwrap();
         assert_eq!(store.list_project_sandboxes().unwrap().len(), 2);
 
-        store
-            .delete_project_sandbox(&ProjectId::new("p1"))
-            .unwrap();
+        store.delete_project_sandbox(&ProjectId::new("p1")).unwrap();
         assert!(store
             .load_project_sandbox(&ProjectId::new("p1"))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn a_snapshot_and_native_session_roundtrip_and_are_replaceable() {
+        let store = CheckpointStore::in_memory();
+        store.upsert_project_sandbox(&sample_sandbox("p1")).unwrap();
+
+        // The reaper snapshotted and destroyed the sandbox: no handle, but the
+        // snapshot is kept so the next deploy can restore it.
+        let mut reaped = sample_sandbox("p1");
+        reaped.sandbox_id = None;
+        reaped.snapshot_id = Some("im-p1-2".to_string());
+        reaped.updated_at = "2026-03-01T00:00:00Z".to_string();
+        store.upsert_project_sandbox(&reaped).unwrap();
+
+        let loaded = store
+            .load_project_sandbox(&ProjectId::new("p1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.sandbox_id, None);
+        assert_eq!(loaded.snapshot_id.as_deref(), Some("im-p1-2"));
+        assert_eq!(
+            loaded.native_session_id.as_deref(),
+            Some("conversation-p1"),
+            "the conversation id survives a sandbox teardown"
+        );
+
+        // A provider with no snapshots stores a binding with neither field.
+        let mut plain = sample_sandbox("p3");
+        plain.provider = "cloud_run".to_string();
+        plain.sandbox_id = Some("execution-1".to_string());
+        plain.snapshot_id = None;
+        plain.native_session_id = None;
+        store.upsert_project_sandbox(&plain).unwrap();
+        let loaded = store
+            .load_project_sandbox(&ProjectId::new("p3"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.snapshot_id, None);
+        assert_eq!(loaded.native_session_id, None);
+    }
+
+    #[test]
+    fn migrates_a_pre_snapshot_project_sandbox_table_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy-sandboxes.sqlite");
+        {
+            // The table as Phase 2 wrote it: no snapshot, no session id.
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE project_sandboxes (
+                    project_id     TEXT NOT NULL PRIMARY KEY,
+                    provider       TEXT NOT NULL,
+                    sandbox_name   TEXT NOT NULL,
+                    sandbox_id     TEXT,
+                    workspace_path TEXT NOT NULL,
+                    updated_at     TEXT NOT NULL
+                 );
+                 INSERT INTO project_sandboxes
+                   (project_id, provider, sandbox_name, sandbox_id, workspace_path, updated_at)
+                 VALUES
+                   ('projects/goble', 'modal', 'goble-goble-2fbfef8fa780', 'sb-old',
+                    '/workspace/goble', '2026-01-01T00:00:00Z');",
+            )
+            .unwrap();
+        }
+
+        // Opening through the store adds the two columns and leaves the row.
+        let store = CheckpointStore::open(&path).unwrap();
+        let loaded = store
+            .load_project_sandbox(&ProjectId::new("projects/goble"))
+            .unwrap()
+            .expect("the pre-migration row still loads");
+        assert_eq!(loaded.provider, "modal");
+        assert_eq!(loaded.sandbox_id.as_deref(), Some("sb-old"));
+        assert_eq!(loaded.snapshot_id, None);
+        assert_eq!(loaded.native_session_id, None);
+
+        // The new columns are writable after the migration.
+        let mut upgraded = loaded;
+        upgraded.snapshot_id = Some("im-migrated".to_string());
+        upgraded.native_session_id = Some("conversation-migrated".to_string());
+        store.upsert_project_sandbox(&upgraded).unwrap();
+        let loaded = store
+            .load_project_sandbox(&ProjectId::new("projects/goble"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.snapshot_id.as_deref(), Some("im-migrated"));
+        assert_eq!(
+            loaded.native_session_id.as_deref(),
+            Some("conversation-migrated")
+        );
+
+        // Re-opening a migrated database is a no-op, not a duplicate-column error.
+        let reopened = CheckpointStore::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .load_project_sandbox(&ProjectId::new("projects/goble"))
+                .unwrap()
+                .unwrap(),
+            loaded
+        );
     }
 
     #[test]
@@ -768,7 +1002,10 @@ mod tests {
         let loaded = store.load_session(&SessionId::new("s1")).unwrap().unwrap();
         assert_eq!(loaded, sample_session("s1", "p1"));
         assert_eq!(loaded.medium_id, MediumId::new("local"));
-        assert!(store.load_session(&SessionId::new("nope")).unwrap().is_none());
+        assert!(store
+            .load_session(&SessionId::new("nope"))
+            .unwrap()
+            .is_none());
 
         // Upsert replaces a prior row for the same id.
         let mut updated = sample_session("s1", "p1");
@@ -781,7 +1018,10 @@ mod tests {
         assert_eq!(store.list_sessions().unwrap().len(), 2);
 
         store.delete_session(&SessionId::new("s1")).unwrap();
-        assert_eq!(store.list_sessions().unwrap(), vec![sample_session("s2", "p2")]);
+        assert_eq!(
+            store.list_sessions().unwrap(),
+            vec![sample_session("s2", "p2")]
+        );
     }
 
     #[test]
@@ -819,9 +1059,18 @@ mod tests {
         }
         // Re-open and read back.
         let store = CheckpointStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.load_project(&ProjectId::new("p1")).unwrap().unwrap(), sample_project("p1"));
-        assert_eq!(store.load_session(&SessionId::new("s1")).unwrap().unwrap(), sample_session("s1", "p1"));
-        assert_eq!(store.load_task("t1").unwrap().unwrap(), sample_task("t1", "s1"));
+        assert_eq!(
+            store.load_project(&ProjectId::new("p1")).unwrap().unwrap(),
+            sample_project("p1")
+        );
+        assert_eq!(
+            store.load_session(&SessionId::new("s1")).unwrap().unwrap(),
+            sample_session("s1", "p1")
+        );
+        assert_eq!(
+            store.load_task("t1").unwrap().unwrap(),
+            sample_task("t1", "s1")
+        );
     }
 
     #[test]
@@ -849,8 +1098,17 @@ mod tests {
         }
         // Re-open through the store: the legacy rows land in `checkpoints`.
         let store = CheckpointStore::open(&path).unwrap();
-        assert_eq!(store.load_checkpoint(&SessionId::new("s1")).unwrap().unwrap(), cp);
-        assert_eq!(store.list_checkpoint_sessions().unwrap(), vec![SessionId::new("s1")]);
+        assert_eq!(
+            store
+                .load_checkpoint(&SessionId::new("s1"))
+                .unwrap()
+                .unwrap(),
+            cp
+        );
+        assert_eq!(
+            store.list_checkpoint_sessions().unwrap(),
+            vec![SessionId::new("s1")]
+        );
 
         // The legacy table was dropped and the new entity table created.
         let conn = rusqlite::Connection::open(&path).unwrap();

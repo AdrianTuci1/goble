@@ -2106,10 +2106,12 @@ fn the_footer_wraps_instead_of_overflowing_the_input() {
 
 /// The instructions the host hands the composer are drawn in the input's own
 /// bottom row, under the editor and the action row: the one entry a surface
-/// keeps inside its input rather than over the separator above it. The composer
-/// hugs its content either way — the strip adds its own height and nothing else.
+/// keeps inside its input rather than over the separator above it. The row is
+/// fixed-height and reserved from the moment the surface ships hints: a hint
+/// that is showing, missing, or re-worded never changes the card's height, and
+/// the editor does not move for it either.
 #[test]
-fn the_instructions_close_the_input_under_the_action_row() {
+fn the_instructions_close_the_input_in_a_fixed_row() {
     use crate::elements::ShortcutHint;
     use crate::render::RenderCommand;
 
@@ -2120,29 +2122,33 @@ fn the_instructions_close_the_input_under_the_action_row() {
             _ => None,
         })
     };
+    let shell = |hints: Vec<ShortcutHint>| {
+        let mut composer = ChatComposer::new()
+            .with_context_above_editor(true)
+            .with_path_label("~/Projects/goble")
+            .with_on_send(|_| {});
+        // The surface always ships hints, the list is what comes and goes.
+        composer = composer.with_hints(hints);
+        composer
+    };
     // The shell bar: its directory pill over the editor, its one instruction
     // under it, and no model or stop control in between.
-    let bare = paint_composer_in(
+    let empty = paint_composer_in(
         &app,
-        &mut ChatComposer::new()
-            .with_context_above_editor(true)
-            .with_path_label("~/Projects/goble"),
+        &mut shell(Vec::new()),
         vec2f(600.0, 500.0),
     );
     let with_hints = paint_composer_in(
         &app,
-        &mut ChatComposer::new()
-            .with_context_above_editor(true)
-            .with_path_label("~/Projects/goble")
-            .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]),
+        &mut shell(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]),
         vec2f(600.0, 500.0),
     );
 
-    let (bare_size, bare_commands) = bare;
+    let (empty_size, empty_commands) = empty;
     let (size, commands) = with_hints;
     assert!(
-        line_of(&bare_commands, "new conversation").is_none(),
-        "an input handed no instructions draws none"
+        line_of(&empty_commands, "new conversation").is_none(),
+        "an empty instruction list draws no entry"
     );
     let editor = line_of(&commands, "Ask anything...").expect("the editor is drawn");
     let hint = line_of(&commands, "new conversation").expect("the instruction is drawn");
@@ -2150,17 +2156,147 @@ fn the_instructions_close_the_input_under_the_action_row() {
         hint > editor,
         "the instruction is under the editor, inside the input ({hint} against {editor})"
     );
-    // The strip's own height is all it costs.
-    let bare_editor = line_of(&bare_commands, "Ask anything...").expect("the editor is drawn");
+    let empty_editor = line_of(&empty_commands, "Ask anything...").expect("the editor is drawn");
     assert!(
-        (bare_editor - editor).abs() < 1.0,
-        "the editor does not move for the strip ({editor} against {bare_editor})"
+        (empty_editor - editor).abs() < 1.0,
+        "the editor does not move for the row ({editor} against {empty_editor})"
+    );
+    // The constant footer: the card is the same height whether the hint is up
+    // or not, so a shell pane's reserved bar height cannot drift.
+    assert!(
+        (size.y - empty_size.y).abs() < 0.01,
+        "the card height is constant with the hint present or absent ({} against {})",
+        size.y,
+        empty_size.y
     );
     assert!(
-        size.y > bare_size.y,
-        "the input grows by the strip's height ({} against {})",
-        bare_size.y,
-        size.y
+        (size.y - super::COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.01,
+        "the shell bar's card is the reserved bar height with the hint up: {} against {}",
+        size.y,
+        super::COMPOSER_BAR_RESERVED_HEIGHT
+    );
+
+    // A surface that never ships hints pays no row: its card is shorter.
+    let (without_row_size, _) = paint_composer_in(
+        &app,
+        &mut ChatComposer::new()
+            .with_context_above_editor(true)
+            .with_path_label("~/Projects/goble")
+            .with_on_send(|_| {}),
+        vec2f(600.0, 500.0),
+    );
+    assert!(
+        size.y > without_row_size.y,
+        "a hint-less surface does not reserve the row: {} against {}",
+        size.y,
+        without_row_size.y
+    );
+}
+
+/// The instruction row never wraps and never moves the card: at a wide and a
+/// narrow pane, the composer's height with three hints is the height with none,
+/// and nothing a hint draws runs past the input's own width.
+#[test]
+fn the_instruction_row_never_wraps_or_grows_the_card() {
+    use crate::elements::ShortcutHint;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let hints = || {
+        vec![
+            ShortcutHint::new(&["⌘", "↵"], "new conversation"),
+            ShortcutHint::new(&["⌘", "⌥", "↵"], "send to cloud"),
+            ShortcutHint::new(&["⌘", "K"], "commands"),
+        ]
+    };
+    let paint = |hints: Vec<ShortcutHint>, width: f32| {
+        let mut composer = ChatComposer::new()
+            .with_context_above_editor(true)
+            .with_path_label("~/Projects/goble")
+            .with_hints(hints)
+            .with_on_send(|_| {});
+        paint_composer_in(&app, &mut composer, vec2f(width, 500.0))
+    };
+    for width in [900.0_f32, 260.0] {
+        let (wide_size, wide_commands) = paint(hints(), width);
+        let (empty_size, _) = paint(Vec::new(), width);
+        assert!(
+            (wide_size.y - empty_size.y).abs() < 0.01,
+            "the row is constant at {width}pt: {} against {}",
+            wide_size.y,
+            empty_size.y
+        );
+        for command in &wide_commands {
+            let max_x = match command {
+                RenderCommand::DrawText { origin, .. } => origin.x,
+                RenderCommand::FillRect { rect, .. } => rect.max_x(),
+                RenderCommand::StrokeRect { rect, .. } => rect.max_x(),
+                RenderCommand::DrawIcon { origin, .. } => origin.x,
+                _ => continue,
+            };
+            assert!(
+                max_x <= width + 0.5,
+                "nothing the instruction row draws runs past the pane at {width}pt: {command:?}"
+            );
+        }
+    }
+}
+
+/// The shared rich input names its surface: the agent/chat composer asks for a
+/// prompt ("Ask anything..."), while the app hands the terminal surface "Run any
+/// command" through the builder. The placeholder keeps its mechanics — drawn
+/// only while the draft is empty, gone once there is something to submit.
+#[test]
+fn the_placeholder_names_the_surface() {
+    use crate::elements::chat_composer::{
+        AGENT_COMPOSER_PLACEHOLDER, TERMINAL_COMPOSER_PLACEHOLDER,
+    };
+
+    let app = AppContext::default();
+    assert_eq!(
+        ChatComposer::new().placeholder(),
+        AGENT_COMPOSER_PLACEHOLDER,
+        "the shared default is the agent input's prompt placeholder"
+    );
+    assert_eq!(TERMINAL_COMPOSER_PLACEHOLDER, "Run any command");
+    assert_eq!(AGENT_COMPOSER_PLACEHOLDER, "Ask anything...");
+
+    let mut agent = ChatComposer::new().with_context_above_editor(true);
+    let commands = paint_composer(&app, &mut agent);
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts.iter().any(|text| text == AGENT_COMPOSER_PLACEHOLDER),
+        "the agent input draws its placeholder: {texts:?}"
+    );
+
+    let mut terminal = ChatComposer::new()
+        .with_context_above_editor(true)
+        .with_placeholder(TERMINAL_COMPOSER_PLACEHOLDER);
+    assert_eq!(terminal.placeholder(), TERMINAL_COMPOSER_PLACEHOLDER);
+    let (_, commands) = paint_composer_in(&app, &mut terminal, vec2f(600.0, 500.0));
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts.iter().any(|text| text == TERMINAL_COMPOSER_PLACEHOLDER),
+        "the terminal rich input asks for a command: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text == AGENT_COMPOSER_PLACEHOLDER),
+        "and never reads as the agent prompt input: {texts:?}"
+    );
+
+    let mut typed = ChatComposer::new()
+        .with_context_above_editor(true)
+        .with_placeholder(TERMINAL_COMPOSER_PLACEHOLDER)
+        .with_value("ls -la");
+    let (_, commands) = paint_composer_in(&app, &mut typed, vec2f(600.0, 500.0));
+    let texts = drawn_texts(&commands);
+    assert!(
+        !texts.iter().any(|text| text == TERMINAL_COMPOSER_PLACEHOLDER),
+        "the placeholder steps aside once the draft has text: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "ls -la"),
+        "the draft replaces it: {texts:?}"
     );
 }
 

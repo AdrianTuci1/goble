@@ -23,6 +23,10 @@
 //!   with DSH's trailing check on the model in force.
 //! - `slash-menu` — the `/` command list as the DSH card over the composer, with
 //!   the context band hidden so the card is the input segment plus the menu.
+//! - `terminal-placeholder` — the shell bar's rich input: "Run any command" and
+//!   the fixed instruction row under the footer.
+//! - `agent-placeholder` — the agent input: "Ask anything..." with the same
+//!   fixed-height instruction row.
 //! - `lane` — a 1600x900 window (default) with the real [`ContentLane`] around a
 //!   representative transcript + the composer; `--width 800` renders the
 //!   narrow-window pass-through. `--dragging` paints the dragged edge rule and
@@ -43,10 +47,13 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use goble_ui::elements::chat_composer::{
+    AGENT_COMPOSER_PLACEHOLDER, TERMINAL_COMPOSER_PLACEHOLDER,
+};
 use goble_ui::elements::{
     AppContext, ChatComposer, ComposerModelTray, ContentLane, CrossAxisAlignment, EdgeInsets,
     Element, Expanded, Fill, Flex, LaneEdge, MainAxisSize, ModelTrayHarness, ModelTrayModel,
-    ModelTrayState, Padding, PopupMenuItem, SlashMenu, SlashMenuItem, Text,
+    ModelTrayState, Padding, PopupMenuItem, ShortcutHint, SlashMenu, SlashMenuItem, Text,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, Theme};
@@ -83,6 +90,8 @@ fn main() -> anyhow::Result<()> {
         "model-menu" => render_model_menu(&options, &assets)?,
         "model-pane" => render_model_pane(&options, &assets)?,
         "slash-menu" => render_slash_menu(&options, &assets)?,
+        "terminal-placeholder" => render_placeholder(&options, &assets, PlaceholderSurface::Terminal)?,
+        "agent-placeholder" => render_placeholder(&options, &assets, PlaceholderSurface::Agent)?,
         "lane" => render_lane(&options, &assets)?,
         "all" => {
             // `all` writes one file per scene into the `--out` directory (the
@@ -120,6 +129,19 @@ fn main() -> anyhow::Result<()> {
                 &options.sub_scene("slash-menu", dir.join("slash-menu.png")),
                 &assets,
             )?;
+            render_placeholder(
+                &options.sub_scene(
+                    "terminal-placeholder",
+                    dir.join("placeholder-terminal.png"),
+                ),
+                &assets,
+                PlaceholderSurface::Terminal,
+            )?;
+            render_placeholder(
+                &options.sub_scene("agent-placeholder", dir.join("placeholder-agent.png")),
+                &assets,
+                PlaceholderSurface::Agent,
+            )?;
             for (name, width) in [("lane-wide.png", 1600.0), ("lane-narrow.png", 800.0)] {
                 let lane = options.sub_scene("lane", dir.join(name));
                 render_lane(
@@ -134,7 +156,8 @@ fn main() -> anyhow::Result<()> {
         }
         other => anyhow::bail!(
             "unknown scene {other:?}; expected composer, menus, env-menu, branch-menu, \
-             model-menu, model-pane, slash-menu, lane or all"
+             model-menu, model-pane, slash-menu, terminal-placeholder, agent-placeholder, \
+             lane or all"
         ),
     }
     Ok(())
@@ -316,7 +339,8 @@ fn print_usage() {
     println!(
         "composer_preview — rasterize goble-ui scenes to PNG\n\
          \n\
-         --scene composer|menus|env-menu|branch-menu|model-menu|model-pane|slash-menu|lane|all  (default: composer)\n\
+         --scene composer|menus|env-menu|branch-menu|model-menu|model-pane|slash-menu|\n\
+         --scene terminal-placeholder|agent-placeholder|lane|all  (default: composer)\n\
          --out PATH        output PNG path (default: /tmp/goble-work/out/<scene>.png)\n\
          --scale N         device pixel ratio to rasterize at (default: 2 for composer/menus, 1 for lane)\n\
          --width N         logical scene width (default: 876 for composer/menus, 1600 for lane)\n\
@@ -729,6 +753,98 @@ fn render_slash_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Resul
 }
 
 ///
+/// Which surface's placeholder a scene shows: the plain shell's rich input, or
+/// the agent/chat input.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlaceholderSurface {
+    Terminal,
+    Agent,
+}
+
+impl PlaceholderSurface {
+    fn placeholder(self) -> &'static str {
+        match self {
+            PlaceholderSurface::Terminal => TERMINAL_COMPOSER_PLACEHOLDER,
+            PlaceholderSurface::Agent => AGENT_COMPOSER_PLACEHOLDER,
+        }
+    }
+}
+
+/// The composer as that surface builds it: the shell bar carries only the
+/// shell's own context and its one instruction row, while the agent input adds
+/// the environment and model controls and its own hint.
+fn placeholder_element(
+    flags: &MenuFlags,
+    surface: PlaceholderSurface,
+    focused: bool,
+) -> Box<dyn Element> {
+    let mut composer = ChatComposer::new()
+        .with_value("")
+        .with_caret(flags.caret.clone())
+        .with_focused(focused)
+        .with_context_above_editor(true)
+        .with_edge_to_edge(true)
+        .with_path_label("brindlepad-web")
+        .with_branch_label("main")
+        .with_placeholder(surface.placeholder())
+        .with_hints(match surface {
+            PlaceholderSurface::Terminal => {
+                vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]
+            }
+            PlaceholderSurface::Agent => vec![ShortcutHint::new(&["/"], "commands")],
+        })
+        .with_on_send(|_| {});
+    if surface == PlaceholderSurface::Agent {
+        composer = composer
+            .with_harness_label("This Computer")
+            .with_harness_icon("environment-computer")
+            .with_model_label("DeepSeek Flash")
+            .with_model_tray(
+                ComposerModelTray::new(
+                    model_tray_harnesses(),
+                    flags.tray_state.clone(),
+                    flags.tray_open.clone(),
+                )
+                .with_current("deepseek-flash", "off")
+                .with_on_select_model(|_| {})
+                .with_on_select_level(|_| {}),
+            )
+            .with_on_attach(|| {});
+    }
+    composer.finish()
+}
+
+/// The terminal bar vs the agent input placeholder: "Run any command" on the
+/// shell surface, "Ask anything..." on the agent surface, each with the fixed
+/// instruction row under the footer.
+fn render_placeholder(
+    options: &Options,
+    assets: &PreviewAssets,
+    surface: PlaceholderSurface,
+) -> anyhow::Result<()> {
+    let mut app = AppContext::default();
+    app.theme = options.theme()?;
+    let width = options.width.unwrap_or(REFERENCE_WIDTH);
+    let scale = options.scale(2.0);
+    let flags = MenuFlags::new();
+    let focused = options.focused;
+    let mut probe = placeholder_element(&flags, surface, false);
+    let content = raster::layout_size(&mut probe, vec2f(width, 4000.0), &app);
+    if options.dump_commands {
+        let mut element = placeholder_element(&flags, surface, focused);
+        let commands = raster::render_commands(&mut element, vec2f(width, 4000.0), &app);
+        dump_commands(&commands);
+    }
+    let build_flags = flags.clone();
+    frame_scene(width, scale, &app, assets, &options.out, content.y, move |headroom| {
+        Padding::new(
+            placeholder_element(&build_flags, surface, focused),
+            EdgeInsets::new(0.0, headroom, 0.0, 0.0),
+        )
+        .finish()
+    })
+}
+
 /// A full-height pane column: a representative transcript and the real
 /// `ChatComposer` pinned under it. This is the content a `ContentLane` bounds.
 ///

@@ -12,7 +12,7 @@ use goble_ui::elements::{resolve_content_width, LaneEdge};
 use goble_ui::geometry::Vector2F;
 use goble_ui::platform::WindowControl;
 use goble_ui::theme::ThemePreset;
-use goble_ui::{ChatMessage, ChatRole, SettingsPage};
+use goble_ui::{ChatMessage, ChatRole};
 
 use crate::media::MediaState;
 use crate::state::{
@@ -24,7 +24,7 @@ use crate::ui::color_picker::ColorTarget;
 use crate::ui::{
     AgentDashboardAction, AppTab, ArchivedFilter, CronEntry, DiffPanelAction, FloatingDrag,
     FloatingDragMode, LayoutKind, NavDir, OnboardingAction, Pane, PaneKind, SettingsCategory,
-    SettingsControl, SidebarView, Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
+    SidebarView, Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
 };
 
 use super::pane_ops::{
@@ -264,6 +264,19 @@ pub fn make_actions(
     let desktop_archive_confirm = desktop.clone();
     let on_archive_cancel = Rc::clone(&state);
     let on_archived_filter_change = Rc::clone(&state);
+    let on_add_workspace = Rc::clone(&state);
+    let desktop_add_workspace = desktop.clone();
+    let on_sidebar_workspace_new_session = Rc::clone(&state);
+    let media_sidebar_workspace_new_session = Rc::clone(&media);
+    let desktop_sidebar_workspace_new_session = desktop.clone();
+    let on_sidebar_workspace_rename_start = Rc::clone(&state);
+    let on_sidebar_workspace_rename_draft = Rc::clone(&state);
+    let on_sidebar_workspace_rename_commit = Rc::clone(&state);
+    let desktop_sidebar_workspace_rename_commit = desktop.clone();
+    let on_sidebar_workspace_rename_cancel = Rc::clone(&state);
+    let on_sidebar_workspace_delete = Rc::clone(&state);
+    let desktop_sidebar_workspace_delete = desktop.clone();
+    let on_sidebar_workspace_menu = Rc::clone(&state);
     let on_toast_dismiss = Rc::clone(&state);
     let on_toggle_explorer_dir = Rc::clone(&state);
     let on_explorer_file_click = Rc::clone(&state);
@@ -692,71 +705,10 @@ pub fn make_actions(
     // The Themes stepper walks Default and the presets in order, wrapping at
     // both ends. Every step goes through the preset action, so it persists and
     // drops the overrides exactly as picking a base does.
-    let action_step_theme: Rc<RefCell<dyn FnMut(i32)>> = {
-        let step_state = Rc::clone(&state);
-        let on_preset = action_set_theme_preset.clone();
-        Rc::new(RefCell::new(move |delta: i32| {
-            let next = step_state.borrow().theme_preset_stepped(delta);
-            (on_preset.borrow_mut())(next);
-        }))
-    };
-    let action_reset_theme_colors: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
-        {
-            let mut state = on_reset_theme_colors.borrow_mut();
-            state.theme_primary = None;
-            state.theme_secondary = None;
-            state.theme_accent = None;
-            state.theme_bg = None;
-            state.theme_surface = None;
-        }
-        if let Some(desktop) = &desktop_reset_theme {
-            let mut config = desktop.config();
-            config.theme.primary = None;
-            config.theme.secondary = None;
-            config.theme.accent = None;
-            config.theme.bg = None;
-            config.theme.surface = None;
-            if let Err(e) = desktop.save_config(&config) {
-                log::warn!("save_config (theme) failed: {e}");
-            }
-        }
-    }));
-    let action_toggle_invert_scroll: Rc<RefCell<dyn FnMut(bool)>> =
-        Rc::new(RefCell::new(move |enabled: bool| {
-            on_toggle_invert_scroll.borrow_mut().settings_invert_scroll = enabled;
-        }));
-    let action_reload_model_config: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
-        let mut state = on_reload_model_config.borrow_mut();
-        if let Some(desktop) = &desktop_reload_model {
-            if let Ok(home) = goble_core::app_home::GobleHome::locate() {
-                if let Err(e) = desktop.reload_config(&home.config_path()) {
-                    log::error!("reload_config failed: {e}");
-                }
-            }
-            state.models = desktop.available_models(&state.settings_llm_provider);
-        }
-    }));
     // Remote agents are read by the same config reader the models use: reload
     // the file into the desktop state, then copy its `[remote_agents.*]` map
     // into the page's rows. The state's own pinned path wins, so a test or a
     // tool that names a file is read instead of the user's home.
-    let action_reload_remote_agents: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
-        let mut state = on_reload_remote_agents.borrow_mut();
-        let Some(desktop) = &desktop_reload_remote_agents else {
-            return;
-        };
-        let path = desktop.config_path().or_else(|| {
-            goble_core::app_home::GobleHome::locate()
-                .ok()
-                .map(|home| home.config_path())
-        });
-        if let Some(path) = path {
-            if let Err(e) = desktop.reload_config(&path) {
-                log::error!("reload_config (remote agents) failed: {e}");
-            }
-        }
-        state.refresh_remote_agents(Some(desktop));
-    }));
     // Setting Remote or the hub up is a conversation: the page opens an agent
     // pane whose first message is the brief, built from the config the app has
     // loaded. The agent asks for what is missing and writes the answers through
@@ -793,24 +745,8 @@ pub fn make_actions(
     }));
     // `~/.ssh` is read by the state (which owns the Connections page's cache),
     // so the row and `Enter` on it take one path.
-    let action_reload_ssh_hosts: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
-        let state = Rc::clone(&on_reload_ssh_hosts);
-        move || state.borrow_mut().reload_ssh_hosts()
-    }));
-    let action_ssh_select_host: Rc<RefCell<dyn FnMut(String)>> = Rc::new(RefCell::new({
-        let state = Rc::clone(&on_reload_ssh_hosts);
-        move |alias: String| state.borrow_mut().ssh_select_host(&alias)
-    }));
     // Updates: both buttons go through the state, which owns the checker, so
     // the page and the banner share one path.
-    let action_check_for_updates: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
-        let state = Rc::clone(&on_reload_ssh_hosts);
-        move || state.borrow_mut().check_for_updates()
-    }));
-    let action_install_update: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new({
-        let state = Rc::clone(&on_reload_ssh_hosts);
-        move || state.borrow_mut().install_available_update()
-    }));
     let action_toggle_auto_approve: Rc<RefCell<dyn FnMut(u64, bool)>> =
         Rc::new(RefCell::new(move |pane_id: u64, enabled: bool| {
             // The switch is the two-state shortcut for the app-wide policy:
@@ -951,18 +887,6 @@ pub fn make_actions(
             // workspace.
             state.current_tab = AppTab::Chat;
         }));
-    let action_set_scroll_speed: Rc<RefCell<dyn FnMut(i32)>> =
-        Rc::new(RefCell::new(move |speed: i32| {
-            on_set_scroll_speed.borrow_mut().settings_scroll_speed = speed.clamp(1, 100);
-        }));
-    let action_set_font_size: Rc<RefCell<dyn FnMut(f32)>> =
-        Rc::new(RefCell::new(move |size: f32| {
-            let mut state = on_set_font_size.borrow_mut();
-            state.settings_font_size = size.clamp(0.5, 2.0);
-            // Drive the real window zoom from the same shared cell the keyboard
-            // shortcut and menubar use, so the settings control reflects 1:1.
-            *ui_zoom_font.borrow_mut() = state.settings_font_size;
-        }));
     // First-run onboarding: the three answers and the step buttons. Finishing
     // writes the same store keys the Profile page edits.
     let action_onboarding: Rc<RefCell<dyn FnMut(OnboardingAction)>> = {
@@ -986,87 +910,14 @@ pub fn make_actions(
             }
         }))
     };
-    let action_profile_name_change: Rc<RefCell<dyn FnMut(String)>> =
-        Rc::new(RefCell::new(move |value: String| {
-            on_profile_name_change.borrow_mut().settings_profile_name = value;
-        }));
     // The name field's caret: taking it remembers what the field held, and
     // leaving it without pressing Enter puts that value back.
-    let action_profile_name_focus: Rc<RefCell<dyn FnMut(bool)>> = {
-        let state = Rc::clone(&state);
-        Rc::new(RefCell::new(move |gained: bool| {
-            state.borrow_mut().settings_profile_name_focus(gained);
-        }))
-    };
     // The Agent & Approval page's default model: one pick from the menu writes
     // `[models] default`, so a new agent and the next launch start on it.
-    let action_select_default_model: Rc<RefCell<dyn FnMut(String)>> = {
-        let state = Rc::clone(&on_default_model_state);
-        let desktop = desktop_default_model.clone();
-        Rc::new(RefCell::new(move |model: String| {
-            let mut state = state.borrow_mut();
-            state.settings_default_model = model.clone();
-            // New panes read `selected_model`, so the choice takes effect now
-            // as well as on the next launch.
-            state.selected_model = model.clone();
-            *state.settings_model_menu_open.borrow_mut() = false;
-            if let Some(desktop) = &desktop {
-                if let Err(e) = desktop.set_default_model(&model) {
-                    log::warn!("set_default_model failed: {e}");
-                }
-            }
-        }))
-    };
-    let action_toggle_telemetry: Rc<RefCell<dyn FnMut(bool)>> = {
-        let state = on_toggle_telemetry_state;
-        Rc::new(RefCell::new(move |enabled: bool| {
-            let in_force = goble_telemetry::global()
-                .map(|telemetry| telemetry.set_upload_consent(enabled))
-                .unwrap_or(enabled);
-            state.borrow_mut().share_telemetry = in_force;
-        }))
-    };
     // The focused row's own value step, shared by the arrow keys and by `Enter`
     // on a row that holds one (a stepper advances, the channel column moves on).
     // The steppers run through the actions that own their bounds and, for the
     // font, the shared zoom cell; the rest belongs to the state.
-    let action_settings_step: Rc<RefCell<dyn FnMut(i32)>> = {
-        let step_state = Rc::clone(&state);
-        let on_speed = action_set_scroll_speed.clone();
-        let on_font = action_set_font_size.clone();
-        let on_mode = action_select_approval_mode.clone();
-        let on_theme = action_step_theme.clone();
-        Rc::new(RefCell::new(move |delta: i32| {
-            // Read the focused control into a local first: the arms below run
-            // the actions that own the value, and those borrow the same state,
-            // so the match must not hold a borrow of its own.
-            let control = step_state.borrow().settings_focused_control();
-            match control {
-                Some(SettingsControl::ScrollSpeed) => {
-                    let next = step_state.borrow().settings_scroll_speed + delta;
-                    (on_speed.borrow_mut())(next);
-                }
-                Some(SettingsControl::FontSize) => {
-                    let next = step_state.borrow().settings_font_size + delta as f32 * 0.1;
-                    (on_font.borrow_mut())(next);
-                }
-                Some(SettingsControl::ApprovalMode) => {
-                    let (pane_id, mode) = {
-                        let state = step_state.borrow();
-                        (state.active_pane_id, state.approval_mode)
-                    };
-                    let next = if delta >= 0 {
-                        mode.next()
-                    } else {
-                        mode.previous()
-                    };
-                    (on_mode.borrow_mut())(pane_id, next);
-                }
-                Some(SettingsControl::ThemeStepper) => (on_theme.borrow_mut())(delta),
-                _ => step_state.borrow_mut().settings_adjust_control(delta),
-            }
-        }))
-    };
 
     UiActions {
         on_search_change: Rc::new(RefCell::new(move |value: String| {
@@ -2423,6 +2274,76 @@ pub fn make_actions(
         on_archived_filter_change: Rc::new(RefCell::new(move |filter: ArchivedFilter| {
             on_archived_filter_change.borrow_mut().set_archived_filter(filter);
         })),
+        // The Workspaces header's "+": pick a directory in the platform's own
+        // panel and adopt it as a Workspace (DSH's add-workspace flow: the
+        // native chooser is the one step the OS owns). The panel is modal and
+        // this handler runs on the UI thread, so the answer is in hand before
+        // the next frame; a cancelled pick (or a platform with no picker) adds
+        // nothing. It writes no conversation: the separate "New conversation"
+        // row, and each workspace row's own New-session control, do that.
+        on_add_workspace: Rc::new(RefCell::new(move || {
+            let Some(path) = goble_ui::platform::current::pick_directory() else {
+                return;
+            };
+            let mut state = on_add_workspace.borrow_mut();
+            state.add_workspace(&path, desktop_add_workspace.as_deref());
+        })),
+        // A workspace row's New-session control: a conversation in that
+        // workspace's directory, so its card lands under the workspace's folder
+        // group (which is the directory's last segment).
+        on_sidebar_workspace_new_session: Rc::new(RefCell::new(move |path: String| {
+            let mut state = on_sidebar_workspace_new_session.borrow_mut();
+            create_conversation_space(
+                &mut state,
+                &media_sidebar_workspace_new_session,
+                desktop_sidebar_workspace_new_session.as_ref(),
+                NEW_CONVERSATION_TITLE,
+                None,
+            );
+            let pane_id = state.active_pane_id;
+            state.set_active_pane_path(path.clone());
+            if let Some(desktop) = desktop_sidebar_workspace_new_session.as_deref() {
+                if let Some(conversation_id) = state.pane_conversation_id(pane_id) {
+                    if let Err(error) = desktop.set_chat_working_dir(&conversation_id, &path) {
+                        log::warn!("set_chat_working_dir({conversation_id}) failed: {error}");
+                    }
+                }
+                state.refresh_from_desktop(desktop);
+                state.save_panes(desktop);
+            }
+        })),
+        on_sidebar_workspace_rename_start: Rc::new(RefCell::new(move |path: String, title: String| {
+            on_sidebar_workspace_rename_start
+                .borrow_mut()
+                .begin_workspace_rename(&path, &title);
+        })),
+        on_sidebar_workspace_rename_draft: Rc::new(RefCell::new(move |draft: String| {
+            on_sidebar_workspace_rename_draft
+                .borrow_mut()
+                .workspace_rename_draft(draft);
+        })),
+        on_sidebar_workspace_rename_commit: Rc::new(RefCell::new(move || {
+            on_sidebar_workspace_rename_commit
+                .borrow_mut()
+                .commit_workspace_rename(desktop_sidebar_workspace_rename_commit.as_deref());
+        })),
+        on_sidebar_workspace_rename_cancel: Rc::new(RefCell::new(move || {
+            on_sidebar_workspace_rename_cancel
+                .borrow_mut()
+                .cancel_workspace_rename();
+        })),
+        on_sidebar_workspace_delete: Rc::new(RefCell::new(move |path: String| {
+            on_sidebar_workspace_delete
+                .borrow_mut()
+                .delete_workspace(&path, desktop_sidebar_workspace_delete.as_deref());
+        })),
+        // One menu at a time: opening a workspace row's tray closes the other
+        // workspace trays and every session row's tray.
+        on_sidebar_workspace_menu: Rc::new(RefCell::new(move |open: Option<String>| {
+            on_sidebar_workspace_menu
+                .borrow_mut()
+                .set_workspace_menu(open.as_deref());
+        })),
         on_toast_dismiss: Rc::new(RefCell::new(move || {
             on_toast_dismiss.borrow_mut().dismiss_toast();
         })),
@@ -2593,201 +2514,28 @@ pub fn make_actions(
         // `AppTab::Chat`, so the press comes back to the chat mode the strip is
         // drawn in.
         on_settings: Rc::new(RefCell::new(move || {
-            on_settings
-                .borrow_mut()
-                .open_settings_tab(desktop_settings.as_deref());
+            let mut state = on_settings.borrow_mut();
+            state.open_settings_tab(desktop_settings.as_deref());
+            // The files are the source of truth: opening the tab reads them
+            // again, so a hand edit made since the last visit shows up.
+            if let Some(desktop) = desktop_settings.as_deref() {
+                state.refresh_settings(desktop);
+            }
         })),
         on_onboarding: action_onboarding.clone(),
-        on_profile_name_change: action_profile_name_change.clone(),
-        on_profile_name_focus: action_profile_name_focus.clone(),
-        on_select_default_model: action_select_default_model.clone(),
-        on_toggle_telemetry: action_toggle_telemetry.clone(),
-        on_settings_category: Rc::new(RefCell::new(move |category: SettingsCategory| {
-            on_settings_category
-                .borrow_mut()
-                .settings_select_category(category);
-        })),
-        on_settings_category_step: Rc::new(RefCell::new(move |delta: i32| {
-            on_settings_category_step
-                .borrow_mut()
-                .settings_category_step(delta);
-        })),
-        on_settings_focus_move: Rc::new(RefCell::new(move |delta: i32| {
-            on_settings_focus_move
-                .borrow_mut()
-                .settings_focus_step(delta);
-        })),
-        on_settings_focus_into_pane: Rc::new(RefCell::new(move || {
-            on_settings_focus_into_pane
-                .borrow_mut()
-                .settings_focus_into_pane();
-        })),
-        on_settings_focus_out_of_pane: Rc::new(RefCell::new(move || {
-            on_settings_focus_out_of_pane
-                .borrow_mut()
-                .settings_focus_out_of_pane();
-        })),
-        on_settings_activate: Rc::new(RefCell::new({
-            let activate_state = Rc::clone(&on_settings_activate);
-            let on_invert = action_toggle_invert_scroll.clone();
-            let on_theme = action_set_theme_target.clone();
-            let on_reset_theme = action_reset_theme_colors.clone();
-            let on_auto = action_toggle_auto_approve.clone();
-            let on_vim = action_toggle_vim_mode.clone();
-            let on_auto_save = action_toggle_auto_save_on_close.clone();
-            let on_reload = action_reload_model_config.clone();
-            let on_reload_agents = action_reload_remote_agents.clone();
-            let on_setup_remote = action_setup_remote_with_agent.clone();
-            let on_setup_hub = action_setup_hub_with_agent.clone();
-            let on_open_config = Rc::clone(&action_open_config_file);
-            let on_step = action_settings_step.clone();
-            let desktop_activate = desktop.clone();
-            move || {
-                let control = activate_state.borrow().settings_focused_control();
-                match control {
-                    // The controls whose behaviour is already an action run
-                    // through it, so a click and the Enter key share one path.
-                    Some(SettingsControl::InvertScroll) => {
-                        let next = !activate_state.borrow().settings_invert_scroll;
-                        (on_invert.borrow_mut())(next);
-                    }
-                    Some(SettingsControl::ThemeChannel(target)) => {
-                        (on_theme.borrow_mut())(target);
-                    }
-                    Some(SettingsControl::ResetThemeColors) => (on_reset_theme.borrow_mut())(),
-                    // A stepper advances: the same step the arrow keys take.
-                    Some(SettingsControl::ScrollSpeed)
-                    | Some(SettingsControl::FontSize)
-                    | Some(SettingsControl::ThemeStepper)
-                    | Some(SettingsControl::ApprovalMode) => {
-                        (on_step.borrow_mut())(1);
-                    }
-                    // The default model is a list, not a stepper: Enter opens
-                    // the menu the field hangs, and a row picks the value.
-                    Some(SettingsControl::DefaultModel) => {
-                        *activate_state
-                            .borrow()
-                            .settings_model_menu_open
-                            .borrow_mut() = true;
-                    }
-                    Some(SettingsControl::AutoApprove) => {
-                        let (pane, next) = {
-                            let state = activate_state.borrow();
-                            (state.active_pane_id, !state.auto_approve)
-                        };
-                        (on_auto.borrow_mut())(pane, next);
-                    }
-                    Some(SettingsControl::VimMode) => {
-                        let next = !activate_state.borrow().vim_mode;
-                        (on_vim.borrow_mut())(next);
-                    }
-                    Some(SettingsControl::AutoSaveOnClose) => {
-                        let next = !activate_state.borrow().auto_save_on_close;
-                        (on_auto_save.borrow_mut())(next);
-                    }
-                    Some(SettingsControl::OpenConfigFile) => (on_open_config.borrow_mut())(),
-                    Some(SettingsControl::ReloadModels) => (on_reload.borrow_mut())(),
-                    Some(SettingsControl::ReloadRemoteAgents) => (on_reload_agents.borrow_mut())(),
-                    Some(SettingsControl::SetupRemoteWithAgent) => (on_setup_remote.borrow_mut())(),
-                    Some(SettingsControl::SetupHubWithAgent) => (on_setup_hub.borrow_mut())(),
-                    // Everything else belongs to the state: the environment
-                    // rows, and a text field taking the caret or committing it.
-                    _ => activate_state
-                        .borrow_mut()
-                        .settings_activate_control(desktop_activate.as_deref()),
-                }
-            }
-        })),
-        on_settings_adjust: Rc::new(RefCell::new({
-            let step = action_settings_step.clone();
-            move |delta: i32| (step.borrow_mut())(delta)
-        })),
-        on_settings_commit_field: Rc::new(RefCell::new(move || {
-            // The name is the one field whose commit is also a write: every
-            // other field is either an action of its own or a draft.
-            let (control, name) = {
-                let state = on_settings_commit_field.borrow();
-                (
-                    state.settings_focused_control(),
-                    state.settings_profile_name.clone(),
-                )
-            };
-            if control == Some(SettingsControl::FriendlyName) {
-                if let Some(desktop) = &desktop_commit_settings_field {
-                    if let Err(e) = desktop.set_friendly_name(&name) {
-                        log::warn!("set_friendly_name failed: {e}");
-                    }
-                }
-            }
-            on_settings_commit_field
-                .borrow_mut()
-                .settings_commit_field();
-        })),
-        on_settings_cancel_field: Rc::new(RefCell::new(move || {
-            on_settings_cancel_field
-                .borrow_mut()
-                .settings_cancel_field();
-        })),
-        on_environment_group_draft_change: Rc::new(RefCell::new(move |value: String| {
-            on_environment_group_draft_change
-                .borrow_mut()
-                .settings_environment_group_draft = value;
-        })),
-        on_environment_create_group: Rc::new(RefCell::new(move || {
-            on_environment_create_group
-                .borrow_mut()
-                .environment_create_group(desktop_environment_create.as_deref());
-        })),
-        on_environment_open_group: Rc::new(RefCell::new(move |id: String| {
-            on_environment_open_group
-                .borrow_mut()
-                .environment_open_group(&id);
-        })),
-        on_environment_delete_group: Rc::new(RefCell::new(move |id: String| {
-            on_environment_delete_group
-                .borrow_mut()
-                .environment_delete_group(&id, desktop_environment_delete.as_deref());
-        })),
-        on_environment_secret_name_change: Rc::new(RefCell::new(move |value: String| {
-            on_environment_secret_name_change
-                .borrow_mut()
-                .settings_environment_secret_name = value;
-        })),
-        on_environment_secret_value_change: Rc::new(RefCell::new(move |value: String| {
-            on_environment_secret_value_change
-                .borrow_mut()
-                .settings_environment_secret_value = value;
-        })),
-        on_environment_save_secret: Rc::new(RefCell::new(move || {
-            on_environment_save_secret
-                .borrow_mut()
-                .environment_save_secret(desktop_environment_save.as_deref());
-        })),
-        on_environment_edit_secret: Rc::new(RefCell::new(move |id: String| {
-            on_environment_edit_secret
-                .borrow_mut()
-                .environment_edit_secret(&id);
-        })),
-        on_environment_delete_secret: Rc::new(RefCell::new(move |id: String| {
-            on_environment_delete_secret
-                .borrow_mut()
-                .environment_delete_secret(&id, desktop_environment_secret_delete.as_deref());
-        })),
-        on_set_theme_target: action_set_theme_target.clone(),
-        on_toggle_invert_scroll: action_toggle_invert_scroll.clone(),
-        on_set_scroll_speed: action_set_scroll_speed.clone(),
-        on_set_font_size: action_set_font_size.clone(),
-        on_reload_model_config: action_reload_model_config.clone(),
-        on_reload_remote_agents: action_reload_remote_agents.clone(),
+        // The settings tab's one dispatch. Every page row, field commit, dialog
+        // and key gesture goes through it; `settings_actions.rs` is the single
+        // call site for the file-backed settings service.
+        settings: crate::actions::settings_actions::make_settings_actions(
+            Rc::clone(&state),
+            desktop.clone(),
+            Rc::clone(&media),
+        ),
         on_setup_remote_with_agent: action_setup_remote_with_agent.clone(),
         on_setup_hub_with_agent: action_setup_hub_with_agent.clone(),
         // Settings → Agent & Approval, and every place that chooses Remote:
         // one page holds the form that configures how Remote is reached.
         on_open_remote_settings: action_open_remote_settings.clone(),
-        on_reload_ssh_hosts: action_reload_ssh_hosts.clone(),
-        on_ssh_select_host: action_ssh_select_host.clone(),
-        on_check_for_updates: action_check_for_updates.clone(),
-        on_install_update: action_install_update.clone(),
         on_projects: Rc::new(RefCell::new(move || {
             on_projects.borrow_mut().current_tab = AppTab::Projects;
         })),
@@ -3789,9 +3537,6 @@ pub fn make_actions(
         on_settings_back: Rc::new(RefCell::new(move || {
             on_settings_back.borrow_mut().current_tab = AppTab::Chat;
         })),
-        on_settings_navigate: Rc::new(RefCell::new(move |page: SettingsPage| {
-            on_settings_navigate.borrow_mut().settings_page = page;
-        })),
         on_toggle_dark_mode: action_toggle_dark_mode.clone(),
         // Set a custom theme color (as `#rrggbb`) and persist it in config so
         // the live scheme matches what the color wheel picked.
@@ -3848,13 +3593,6 @@ pub fn make_actions(
         // Picking a preset (or Default) clears the channel overrides, so the
         // palette shown is exactly the one the row names.
         on_set_theme_preset: action_set_theme_preset.clone(),
-        on_step_theme: action_step_theme.clone(),
-        on_reset_theme_colors: action_reset_theme_colors.clone(),
-        on_save_profile: Rc::new(RefCell::new(move |name: String, email: String| {
-            let mut state = on_save_profile.borrow_mut();
-            state.settings_profile_name = name;
-            state.settings_profile_email = email;
-        })),
         on_save_llm: Rc::new(RefCell::new(
             move |provider: String,
                   model: String,
@@ -3960,61 +3698,6 @@ pub fn make_actions(
             if let Err(e) = crate::state::open_external_url(&url) {
                 log::warn!("transcript link not opened: {e}");
             }
-        })),
-        on_vault_unlock: Rc::new(RefCell::new(move |passphrase: String| {
-            let mut state = on_vault_unlock.borrow_mut();
-            if let Some(desktop) = &desktop_unlock_vault {
-                match desktop.unlock_vault(passphrase) {
-                    Ok(_) => {
-                        state.settings_vault_unlocked = true;
-                        state.refresh_settings(desktop);
-                    }
-                    Err(e) => log::warn!("unlock_vault failed: {e}"),
-                }
-            } else {
-                state.settings_vault_unlocked = true;
-            }
-        })),
-        on_create_cluster: Rc::new(RefCell::new(move |name: String, passphrase: String| {
-            let mut state = on_create_cluster.borrow_mut();
-            if let Some(desktop) = &desktop_create_cluster {
-                match desktop.create_cluster(&name, &passphrase) {
-                    Ok(_) => {
-                        state.settings_cluster_name = name;
-                        state.settings_cluster_configured = true;
-                    }
-                    Err(e) => log::warn!("create_cluster failed: {e}"),
-                }
-            } else {
-                state.settings_cluster_name = name;
-                state.settings_cluster_configured = true;
-            }
-        })),
-        on_unlock_cluster: Rc::new(RefCell::new(move |passphrase: String| {
-            let mut state = on_unlock_cluster.borrow_mut();
-            if let Some(desktop) = &desktop_unlock_cluster {
-                match desktop.unlock_cluster_identity(&passphrase) {
-                    Ok(true) => state.refresh_settings(desktop),
-                    Ok(false) => log::warn!("unlock_cluster_identity returned false"),
-                    Err(e) => log::warn!("unlock_cluster_identity failed: {e}"),
-                }
-            } else {
-                state.settings_cluster_configured = true;
-            }
-        })),
-        on_add_authorized_key: Rc::new(RefCell::new(
-            move |name: String, pem: String, fingerprint: String| {
-                let mut state = on_add_authorized_key.borrow_mut();
-                let id = format!("k-{}", state.settings_authorized_keys.len() + 1);
-                state.settings_authorized_keys.push((id, name, fingerprint));
-                let _ = pem;
-            },
-        )),
-        on_remove_authorized_key: Rc::new(RefCell::new(move |id: String| {
-            on_remove_authorized_key
-                .borrow_mut()
-                .settings_authorized_keys
-                .retain(|k| k.0 != id);
         })),
         on_config_llm_key: Rc::new(RefCell::new(move || {
             let mut state = on_config_llm_key.borrow_mut();
@@ -4128,7 +3811,7 @@ fn setup_status(desktop: &DesktopState) -> goble_core::config::SetupStatus {
 /// The brief carries the current state, the providers and the exact
 /// `goble-cli setup` commands, so the agent asks for the missing values and
 /// writes them through the CLI rather than rewriting the config by hand.
-fn open_setup_conversation(
+pub(crate) fn open_setup_conversation(
     state: &mut UiState,
     desktop: Option<&Arc<DesktopState>>,
     media: &Rc<RefCell<MediaState>>,

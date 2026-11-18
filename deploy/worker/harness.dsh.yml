@@ -1,0 +1,44 @@
+# Goble-owned composition for the remote DSH runtime.
+#
+# The worker runs the DeepSeek Harness headless profile inside its sandbox:
+#
+#   dsh --profile headless --patch /opt/dsh/harness.yml --json \
+#       --permission-mode danger-full-access --approval-policy never -
+#
+# This file rides over the shipped `headless` profile and makes the deployment
+# choices Goble needs, adapted from dsh-remote's
+# `gateway/harness/cordis.patch.yml`:
+#
+#   * sign in with a DeepSeek account instead of an API-key route (the account
+#     store ships disabled in the headless profile, so the three credentials
+#     consumers are re-enabled here);
+#   * keep session logs line-readable JSONL under the harness home so a later
+#     turn can resume the same conversation with `--session-id`;
+#   * start on a fast default model. A client picks another model by setting
+#     `GOBLE_DSH_MODEL` on the worker; the worker writes a second, generated
+#     overlay after this one that overrides `agent-default-model`, and patches
+#     apply in argv order.
+#
+# Credentials are NOT part of this file and never part of the image. The worker
+# writes `$DSH_HOME/.credentials.yaml` from the `dsh_credentials` secret (or the
+# provisioner's `DSH_CREDENTIALS_YAML`) for the duration of a run and deletes it
+# afterwards, before any filesystem snapshot. See docs/remote-dsh-runtime.md.
+
+- id: credentials
+  disabled: false
+
+- id: authorization
+  disabled: false
+
+- id: deepseek-account
+  disabled: false
+
+- id: agent-default-model
+  config:
+    provider: deepseek-account
+    model: deepseek-flash
+
+- id: session-persistence-jsonl
+  config:
+    root: /home/goble/.dsh/sessions
+    compression: none

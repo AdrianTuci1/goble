@@ -1221,11 +1221,13 @@ fn every_file_is_drawn_inside_its_own_border() {
         "both files wear a border: {:?}",
         texts(&commands)
     );
-    // The window's own rule is drawn in the same colour and spans the whole
-    // window (see `ui::build_window_border`): it is not a file's card.
+    // Not file cards: the window's own rule (the app's accent outline, see
+    // `ui::build_window_border`) spans the whole window, and the pane card under
+    // the review wears the ordinary `Border` `PANE_INSET` inside it. A file card
+    // is at most a few hundred points tall.
     let file_boxes: Vec<_> = boxes
         .into_iter()
-        .filter(|(rect, _)| rect.height() > 30.0 && rect.width() < window().x)
+        .filter(|(rect, _)| rect.height() > 30.0 && rect.height() < 300.0 && rect.width() < window().x)
         .collect();
     assert!(
         file_boxes.len() >= 2

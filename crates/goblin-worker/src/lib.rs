@@ -1,5 +1,6 @@
 pub mod agent_memory;
 pub mod agent_runtime;
+pub mod dsh_runner;
 pub mod file_vault;
 pub mod gateway_client;
 pub mod leader;

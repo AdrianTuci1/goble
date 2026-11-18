@@ -4,8 +4,9 @@ use std::rc::Rc;
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
     AppContext, Axis, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, PaintContext,
-    Point, ScrollState, Scrollable, SizeConstraint, Text,
+    Element, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, MenuClose,
+    MenuId, MenuPointer, PaintContext, Point, ScrollState, Scrollable, SizeConstraint, Text,
+    DEFAULT_MENU_ID,
 };
 use crate::event::{DispatchedEvent, BUTTON_PRIMARY};
 use crate::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
@@ -224,6 +225,13 @@ pub struct PopupMenu {
     /// app's own open state hears about it. Without this the app would not know
     /// the menu had closed and would open it again on the next frame.
     on_close: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// The label this menu registers under in the window's shared open-menu
+    /// state ([`crate::elements::OpenMenus`]). Opening it closes whatever menu
+    /// was open before, and while it is up the pointer over its panel belongs
+    /// to it — nothing painted behind it hovers. The default is
+    /// [`DEFAULT_MENU_ID`]; the app names the menus that matter
+    /// (`"sidebar.view-options"`, `"composer.dir"`…).
+    menu_id: MenuId,
     state: InteractiveState,
     panel: Option<Box<dyn Element>>,
     panel_size: Option<Vector2F>,
@@ -271,6 +279,7 @@ impl PopupMenu {
             highlight_index: Rc::new(RefCell::new(None)),
             footer_row: None,
             on_close: None,
+            menu_id: DEFAULT_MENU_ID,
             state: InteractiveState::default(),
             panel: None,
             panel_size: None,
@@ -293,6 +302,15 @@ impl PopupMenu {
 
     pub fn with_open(mut self, open: Rc<RefCell<bool>>) -> Self {
         self.open = open;
+        self
+    }
+
+    /// Name this menu in the window's shared open-menu state. A named menu is
+    /// the one that can be open: opening it closes any other menu first, and
+    /// the pointer on its panel belongs to it alone (see
+    /// [`crate::elements::OpenMenus`]).
+    pub fn with_menu_id(mut self, id: MenuId) -> Self {
+        self.menu_id = id;
         self
     }
 
@@ -422,6 +440,45 @@ impl PopupMenu {
 
     pub fn is_open(&self) -> bool {
         *self.open.borrow()
+    }
+
+    /// The id this menu registers under in the shared open-menu state.
+    pub fn menu_id(&self) -> MenuId {
+        self.menu_id
+    }
+
+    /// How to put this menu away from outside the element: the shared registry
+    /// keeps it while the menu is the one open, so opening another menu closes
+    /// this one, and a dismiss from the root view clears the app's own flag.
+    fn close_handle(&self) -> MenuClose {
+        let open = Rc::clone(&self.open);
+        let on_close = self.on_close.clone();
+        Rc::new(RefCell::new(move || {
+            if !*open.borrow() {
+                return;
+            }
+            *open.borrow_mut() = false;
+            if let Some(cb) = on_close.as_ref() {
+                (cb.borrow_mut())();
+            }
+        }))
+    }
+
+    /// The toggle a press on the trigger runs: opening claims the window's one
+    /// open menu (closing whatever was up), closing puts this one away.
+    fn trigger_toggle(&self, app: &AppContext) -> Rc<RefCell<dyn FnMut()>> {
+        let menus = app.open_menus.clone();
+        let id = self.menu_id;
+        let open = Rc::clone(&self.open);
+        let close = self.close_handle();
+        Rc::new(RefCell::new(move || {
+            if *open.borrow() {
+                *open.borrow_mut() = false;
+                return;
+            }
+            menus.open(id, close.clone());
+            *open.borrow_mut() = true;
+        }))
     }
 
     fn panel_bounds(&self) -> Option<RectF> {
@@ -919,13 +976,46 @@ impl Element for PopupMenu {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.trigger.paint(origin, ctx, app);
-        if let Some(panel) = self.panel.as_mut() {
-            panel.paint(origin + self.panel_origin, ctx, app);
+        // The menu may have been closed between layout and this paint (another
+        // menu claimed the window, or the app cleared the flag): only the
+        // trigger draws then.
+        if !*self.open.borrow() {
+            return;
         }
-        if let Some(tray) = self.tray.as_mut() {
-            tray.paint(origin + self.tray_origin, ctx, app);
+        if self.panel.is_some() {
+            // The pointer on the panel belongs to the menu: behind it, nothing
+            // hovers while the menu paints over it (see `PaintContext::hovered`).
+            ctx.enter_menu_surface();
+            if let Some(panel) = self.panel.as_mut() {
+                panel.paint(origin + self.panel_origin, ctx, app);
+            }
+            if let Some(tray) = self.tray.as_mut() {
+                tray.paint(origin + self.tray_origin, ctx, app);
+            }
+            self.track_hover(ctx, app);
+            ctx.leave_menu_surface();
         }
-        self.track_hover(ctx, app);
+        // Register the surface the menu owns. The root view reads it next frame
+        // to gate hover behind it, and to decide that a press is inside the
+        // menu rather than an outside dismiss.
+        let mut surfaces = Vec::new();
+        if let Some(panel) = self.panel_bounds() {
+            surfaces.push(panel);
+        }
+        if let Some(tray) = self.tray_bounds() {
+            surfaces.push(tray);
+        }
+        if let Some(corridor) = (*self.hover_index.borrow())
+            .and_then(|index| self.row_bounds(index, app))
+            .and_then(|row| self.tray_corridor(row))
+        {
+            surfaces.push(corridor);
+        }
+        app.open_menus
+            .report(self.menu_id, self.close_handle(), surfaces, MenuPointer::Paint);
+        if let Some(anchor) = self.bounds() {
+            app.open_menus.report_anchor(self.menu_id, anchor);
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -1000,7 +1090,7 @@ impl Element for PopupMenu {
             // (which would otherwise let the release re-open it).
             if let Some(position) = event_position(event) {
                 if contains(bounds, position) {
-                    let cb = open_toggle_closure(self.open.clone());
+                    let cb = self.trigger_toggle(app);
                     let mut toggle = move || (cb.borrow_mut())();
                     return handle_mouse_event(&mut self.state, event, bounds, ctx, &mut toggle);
                 }
@@ -1026,7 +1116,7 @@ impl Element for PopupMenu {
             return false;
         }
 
-        let cb = open_toggle_closure(self.open.clone());
+        let cb = self.trigger_toggle(app);
         let mut toggle = move || (cb.borrow_mut())();
         handle_mouse_event(&mut self.state, event, bounds, ctx, &mut toggle)
     }
@@ -1040,13 +1130,6 @@ fn event_position(event: &DispatchedEvent) -> Option<Vector2F> {
         | DispatchedEvent::MouseMove { position } => Some(*position),
         _ => None,
     }
-}
-
-fn open_toggle_closure(open: Rc<RefCell<bool>>) -> Rc<RefCell<dyn FnMut()>> {
-    Rc::new(RefCell::new(move || {
-        let current = *open.borrow();
-        *open.borrow_mut() = !current;
-    }))
 }
 
 trait PanelInside {
@@ -1374,10 +1457,45 @@ impl Element for PopupMenuItemView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{Button, Empty, Text};
+    use crate::elements::{Button, Empty, HoverRow, Text};
     use crate::geometry::vec2f;
-    use crate::render::RenderCommand;
+    use crate::render::{RenderCommand, Renderer};
     use crate::test_util::render_element;
+
+    /// One frame of the real loop for a menu: lay out, seed the open-menu gate
+    /// from the registry (as the root view does), paint, reconcile.
+    fn frame(menu: &mut PopupMenu, app: &AppContext, cursor: Option<Vector2F>) {
+        menu.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        if let Some(cursor) = cursor {
+            ctx.cursor_position = cursor;
+            ctx.cursor_inside = true;
+        }
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        app.open_menus.begin_paint();
+        menu.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        app.open_menus.end_paint();
+    }
+
+    fn click_at(menu: &mut PopupMenu, x: f32, y: f32, app: &AppContext) {
+        let mut ctx = EventContext::default();
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: vec2f(x, y),
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: vec2f(x, y),
+                button: 0,
+            },
+        ] {
+            menu.dispatch_event(&event, &mut ctx, app);
+        }
+    }
 
     fn trigger() -> Box<dyn Element> {
         Empty::new().with_size(vec2f(40.0, 32.0)).finish()
@@ -2276,4 +2394,158 @@ fn a_pane_separator_divides_two_groups_of_rows() {
     );
 }
 
+
+    // ---- the window's shared open-menu state ------------------------------
+
+    #[test]
+    fn opening_a_menu_claims_the_shared_state_and_closes_the_previous_menu() {
+        let app = AppContext::default();
+        let mut first = PopupMenu::new(trigger(), vec![PopupMenuItem::new("A")])
+            .with_menu_id("test.first");
+        let mut second = PopupMenu::new(trigger(), vec![PopupMenuItem::new("B")])
+            .with_menu_id("test.second");
+
+        frame(&mut first, &app, None);
+        frame(&mut second, &app, None);
+        click_at(&mut first, 10.0, 16.0, &app);
+        assert!(first.is_open());
+        assert_eq!(app.open_menus.id(), Some("test.first"));
+
+        click_at(&mut second, 10.0, 16.0, &app);
+        assert!(second.is_open(), "the second menu opened");
+        assert!(!first.is_open(), "opening another menu closed the first");
+        assert_eq!(app.open_menus.id(), Some("test.second"));
+    }
+
+    #[test]
+    fn hovering_the_open_panel_hovers_the_panel_not_the_element_behind_it() {
+        let app = AppContext::default();
+        let mut menu = PopupMenu::new(trigger(), vec![PopupMenuItem::new("Row one")])
+            .with_menu_id("test.hover")
+            .with_position(PopupMenuPosition::Above);
+        // Open through the trigger, then paint the opened panel so the registry
+        // learns the rectangle it owns.
+        frame(&mut menu, &app, None);
+        click_at(&mut menu, 10.0, 16.0, &app);
+        let panel = {
+            menu.layout(
+                SizeConstraint::loose(vec2f(400.0, 400.0)),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            menu.panel_bounds().expect("the panel was laid out")
+        };
+        // A point inside the panel's first row (the panel's own padding is 6).
+        let point = vec2f(panel.min_x() + 8.0, panel.min_y() + 12.0);
+        frame(&mut menu, &app, Some(point));
+        assert_eq!(
+            *menu.hover_index.borrow(),
+            Some(0),
+            "the menu's own row hovers under the pointer"
+        );
+
+        // Next frame: the registry owns the pointer on that surface. A row
+        // painted behind it must not read as hovered.
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_position = point;
+        ctx.cursor_inside = true;
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        let hover_cell: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let mut behind = HoverRow::new(Text::new("behind").finish())
+            .with_hover_key(Rc::clone(&hover_cell), "behind");
+        behind.layout(
+            SizeConstraint::loose(vec2f(300.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        behind.paint(vec2f(point.x - 20.0, point.y - 10.0), &mut ctx, &app);
+        assert_eq!(
+            *hover_cell.borrow(),
+            None,
+            "the row behind the open menu must not hover while the pointer is on the menu"
+        );
+
+        // Outside the panel, the same row hovers normally: the menu does not
+        // shadow the whole window, only its own surface.
+        let mut outside = PaintContext::new(Renderer::new());
+        outside.cursor_position = vec2f(350.0, 350.0);
+        outside.cursor_inside = true;
+        outside.open_menu_surfaces = app.open_menus.surfaces();
+        behind.paint(vec2f(340.0, 340.0), &mut outside, &app);
+        assert_eq!(
+            *hover_cell.borrow(),
+            Some("behind".to_string()),
+            "hover outside the open menu still works"
+        );
+    }
+
+    #[test]
+    fn a_press_outside_closes_the_menu_and_clears_the_shared_state() {
+        let app = AppContext::default();
+        let mut menu = PopupMenu::new(trigger(), vec![PopupMenuItem::new("Row one")])
+            .with_menu_id("test.dismiss");
+        frame(&mut menu, &app, None);
+        click_at(&mut menu, 10.0, 16.0, &app);
+        frame(&mut menu, &app, None);
+        assert_eq!(app.open_menus.id(), Some("test.dismiss"));
+
+        // A press well outside the trigger and the panel.
+        click_at(&mut menu, 300.0, 300.0, &app);
+        assert!(!menu.is_open(), "an outside press closed the menu");
+        frame(&mut menu, &app, None);
+        assert!(!app.open_menus.is_open(), "the shared state let go of it");
+    }
+
+    #[test]
+    fn escape_closes_the_menu_and_clears_the_shared_state() {
+        let app = AppContext::default();
+        let mut menu = PopupMenu::new(trigger(), vec![PopupMenuItem::new("Row one")])
+            .with_menu_id("test.escape");
+        frame(&mut menu, &app, None);
+        click_at(&mut menu, 10.0, 16.0, &app);
+        frame(&mut menu, &app, None);
+        assert_eq!(app.open_menus.id(), Some("test.escape"));
+
+        let mut ctx = EventContext::default();
+        menu.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(!menu.is_open(), "Escape closed the menu");
+        frame(&mut menu, &app, None);
+        assert!(!app.open_menus.is_open(), "the shared state let go of it");
+    }
+
+    #[test]
+    fn an_open_menu_is_only_closed_by_a_click_inside_that_never_reaches_the_row_behind() {
+        // A press on the panel is the menu's: it must not dismiss the menu, and
+        // the shared state must keep it while a frame paints it.
+        let app = AppContext::default();
+        let picked = Rc::new(RefCell::new(None));
+        let picked_clone = Rc::clone(&picked);
+        let mut menu = PopupMenu::new(trigger(), vec![PopupMenuItem::new("Row one")])
+            .with_menu_id("test.inside")
+            .with_on_select(move |index| *picked_clone.borrow_mut() = Some(index));
+        frame(&mut menu, &app, None);
+        click_at(&mut menu, 10.0, 16.0, &app);
+        let panel = {
+            menu.layout(
+                SizeConstraint::loose(vec2f(400.0, 400.0)),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            menu.panel_bounds().expect("the panel was laid out")
+        };
+        frame(&mut menu, &app, None);
+        assert_eq!(app.open_menus.id(), Some("test.inside"));
+
+        let inside = vec2f(panel.min_x() + 8.0, panel.min_y() + 12.0);
+        click_at(&mut menu, inside.x, inside.y, &app);
+        assert_eq!(*picked.borrow(), Some(0), "the menu ran the row's action");
+        assert!(!menu.is_open(), "choosing a row closes the menu");
+    }
 }

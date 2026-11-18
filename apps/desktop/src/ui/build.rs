@@ -106,20 +106,21 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // The toolbar is layered *above* the shell body (see the stack below) so the
     // trays it opens — the "+ ▾" environment menu above all — paint over the
     // sidebar and the pane surface instead of being covered by them. This first
-    // child reserves the toolbar's own height plus the lip under it
-    // ([`shell::TOPBAR_BOTTOM_BAND`]) and paints that lip full width in the
-    // content's `Surface`, so the content reads as a rounded sheet whose top
-    // edge shows under the bar: the floating tabs' pill bottoms float above it,
-    // and the selected tab's fill crosses it into the surface below.
+    // child reserves the toolbar's own height plus the band under it
+    // ([`shell::TOPBAR_BOTTOM_BAND`]) and paints that band full width in the
+    // window's own `Bg`, so the bar block reads as one dark piece whose bottom
+    // edge is the top of the content sheet: the floating pills end above it and
+    // the selected tab's fill crosses it into the surface below.
     shell_col = shell_col.with_child(build_cursor_baseline(app));
-    shell_col = shell_col.with_child(build_topbar_lip(app));
+    shell_col = shell_col.with_child(build_topbar_band(app));
     // No rule under the toolbar: Chrome has none between its tab strip and
-    // the toolbar, and in Goble the two-tone does the separating — the bar is
-    // the window frame's `Bg`, the lip under it is the body's `Surface`, and
-    // the body proper starts below the lip. The selected workspace tab's fill
-    // runs through the lip and past the pane card's top border, so a rule here
-    // would be the very seam that merge is meant to erase. The body therefore
-    // starts at `TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND`.
+    // the toolbar, and in Goble the two-tone does the separating — the bar and
+    // its band are the window frame's `Bg`, and the content sheet's `Surface`
+    // begins exactly on the band's bottom edge. The selected workspace tab's
+    // fill runs through the band and into that sheet, so a rule here would be
+    // the very seam that merge is meant to erase. The body therefore starts at
+    // `TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND`, and the pane area begins there too
+    // (its `PANE_INSET` gutter sits below that edge, not inside the band).
     // First-run: a compact getting-started hint on the chat workspace, shown
     // after the workspace choice is made, until dismissed.
     if state.current_tab == AppTab::Chat && state.show_onboarding_tip {
@@ -215,6 +216,9 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         // they are open (each an inert zero-size dialog otherwise).
         session_menu::build_rename_dialog_surface(app, state, actions),
         session_menu::build_archive_confirm_surface(app, state, actions),
+        // The Workspaces list's own Rename dialog (workspace rows' "Rename
+        // workspace"): same casing, its own copy and callbacks.
+        session_menu::build_workspace_rename_dialog_surface(app, state, actions),
     ]);
 
     // A finished turn is announced here, at the window's top layer, so the
@@ -252,14 +256,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         );
     }
 
-    // Settings' default-model menu hangs from the field that opens it. The
-    // settings page scrolls inside a viewport, so the menu is drawn here, at
-    // the window's top layer, where neither the viewport nor the rows below it
-    // can clip or cover it.
-    if let Some((menu, offset)) = settings::build_model_menu_overlay(app, state, actions) {
-        stack = stack.with_overlay(menu, offset);
-    }
-
     // The model-provider dialog floats above everything (including the sheets).
     stack = stack.with_overlay(
         model_form::build_llm_dialog(app, state, actions),
@@ -281,9 +277,12 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             vec2f(0.0, 0.0),
         );
     }
-    // The window's own edge: a 1 px rule around the whole window, drawn above
-    // every page. It is mounted last so it is the topmost thing painted — and
-    // the first offered an event, which it never takes (see [`WindowBorder`]).
+    // The window's own edge: a neutral 1 px rule around the whole window, drawn
+    // above every page. The app's accent outline is per tab, painted inside the
+    // panel (see `panes::build_slot_outline_layer`), so the window edge stays
+    // neutral — topbar included. The rule is mounted last so it is the topmost
+    // thing painted — and the first offered an event, which it never takes (see
+    // [`WindowBorder`]).
     let fullscreen = app
         .window_control
         .window_fullscreen()
@@ -295,7 +294,9 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         .finish()
 }
 
-/// The rule around the window's edge, in the theme's outline colour.
+/// The window's own neutral rule: 1 px around the edge, in the theme's
+/// `Border`. The accent lives on the tabs (see
+/// [`crate::ui::panes::build_slot_outline_layer`]), never on the window edge.
 fn build_window_border(app: &AppContext, fullscreen: bool) -> Box<dyn Element> {
     WindowBorder {
         color: app.theme.color(ColorToken::Border),
@@ -356,36 +357,35 @@ impl Element for CursorBaseline {
     }
 }
 
-/// The full-window-width lip under the topbar: the visible top edge of the
-/// content sheet.
+/// The full-window-width foot of the topbar: the dark band under the bar's row.
 ///
-/// It fills the [`shell::TOPBAR_BOTTOM_BAND`] that the body reserves
-/// (`TOPBAR_HEIGHT` … `TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND`) with the content's
-/// own `Surface`. The paint is a much taller rounded slab clipped to those few
-/// rows, so the lip shows the slab's rounded top-left and top-right corners at
-/// the window's two edges — the content sheet's own rounded top — while its
-/// bottom edge is the straight clip line the content starts under. It runs the
-/// whole window width, under the sidebar as well as beside the panes, and the
-/// sidebar surface (`Surface`, beginning at the band's bottom) continues it on
-/// the left. The selected workspace tab is painted above it by the topbar: its
-/// stem is the same `Surface` and meets the lip without a seam, and its inverted
-/// corners cut the bar's `Bg` into the lip, which is what makes the merge read.
-struct TopbarLip {
+/// It reserves [`shell::TOPBAR_HEIGHT`] + [`shell::TOPBAR_BOTTOM_BAND`] of the
+/// shell column — the whole bar block — and paints the band's few rows
+/// (`TOPBAR_HEIGHT` … `TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND`) in the window's own
+/// `Bg`. There is no lighter lip between the bar and the content: the bar's
+/// darker background therefore fills every pixel down to the content sheet, and
+/// the sheet's `Surface` (the sidebar, and the panes' full-bleed header band)
+/// begins exactly on the band's bottom edge. The band runs the whole window
+/// width, under the sidebar as well as beside the panes. The selected workspace
+/// tab is painted above it by the topbar: its body is the same `Surface` as the
+/// sheet and crosses the band into it, and its inverted corners are cut out of
+/// the fill in the band's `Bg`, which is what makes the merge read.
+struct TopbarBand {
     color: ColorU,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
-fn build_topbar_lip(app: &AppContext) -> Box<dyn Element> {
-    TopbarLip {
-        color: app.theme.color(ColorToken::Surface),
+fn build_topbar_band(app: &AppContext) -> Box<dyn Element> {
+    TopbarBand {
+        color: app.theme.color(ColorToken::Bg),
         size: None,
         origin: None,
     }
     .finish()
 }
 
-impl Element for TopbarLip {
+impl Element for TopbarBand {
     fn layout(
         &mut self,
         constraint: SizeConstraint,
@@ -403,16 +403,12 @@ impl Element for TopbarLip {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
-        let radius = shell::TOPBAR_BOTTOM_BAND_RADIUS;
         let band_top = origin.y + shell::TOPBAR_HEIGHT;
         if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.clip_rect(rectf(origin.x, band_top, size.x, shell::TOPBAR_BOTTOM_BAND));
-            renderer.fill_rounded_rect(
-                rectf(origin.x, band_top, size.x, radius * 2.0),
+            renderer.fill_rect(
+                rectf(origin.x, band_top, size.x, shell::TOPBAR_BOTTOM_BAND),
                 self.color,
-                radius,
             );
-            renderer.pop_clip();
         }
     }
 
@@ -427,14 +423,18 @@ impl Element for TopbarLip {
 
 /// The 1 px rule wrapping the whole window, warp-new's `unthemed_window_border`
 /// (`app/src/root_view.rs:117-131`) and the themed stroke over the same edge
-/// (`app/src/workspace/view.rs:1921`).
+/// (`app/src/workspace/view.rs:1921`), in the theme's neutral `Border`.
 ///
 /// It is drawn at the window's outer edge on every page — the workspace,
 /// settings, the dashboards, first-run onboarding — because it is the topmost
-/// overlay of [`build_ui`]'s stack. It is a decoration, not a surface: it takes
-/// up no layout room, and it answers no event at all (the trait's default
-/// `dispatch_event` is `false`), so every press, move, scroll and key passes
-/// through to whatever is drawn beneath it, the 1 px band included.
+/// overlay of [`build_ui`]'s stack. The app's accent outline is not here: it is
+/// per tab, around each pane's whole slot (see
+/// [`crate::ui::panes::build_slot_outline_layer`]), so the window's own edge
+/// stays neutral — topbar included — and the tab frames sit `1.5 pt` inside it.
+/// It is a decoration, not a surface: it takes up no layout room, and it answers
+/// no event at all (the trait's default `dispatch_event` is `false`), so every
+/// press, move, scroll and key passes through to whatever is drawn beneath it,
+/// the 1 px band included.
 ///
 /// `Renderer::stroke_rect` strokes *inside* the rectangle it is given (its
 /// shader keeps the band between the edge and `width` inside it), so the rule
@@ -541,7 +541,8 @@ mod tests {
         (Box::new(view), state, dir)
     }
 
-    /// Every rule a frame draws in the theme's outline colour, in draw order.
+    /// Every rule a frame draws in the window's own outline colour (the
+    /// theme's neutral `Border`), in draw order.
     fn rules(commands: &[RenderCommand], app: &AppContext) -> Vec<(RectF, f32, f32)> {
         let outline = app.theme.color(ColorToken::Border);
         commands
@@ -572,10 +573,10 @@ mod tests {
         spanning.first().copied()
     }
 
-    /// The window wears one 1 px rule around all of it, in the theme's outline
-    /// colour, drawn on the window's own rect: `stroke_rect` strokes inside its
-    /// rect, so the line fills the window's outermost pixel and nothing of it
-    /// hangs off screen.
+    /// The window wears one 1 px rule around all of it, in the theme's neutral
+    /// `Border`, drawn on the window's own rect: `stroke_rect` strokes inside
+    /// its rect, so the line fills the window's outermost pixel and nothing of
+    /// it hangs off screen.
     #[test]
     fn the_window_wears_one_rule_around_all_of_it() {
         let app = AppContext::default();
@@ -608,9 +609,250 @@ mod tests {
         );
     }
 
+    /// The bar block's reservation is the bar's own height plus its band, and
+    /// every surface below starts on that one line: the sidebar, and the panes'
+    /// full-bleed header band bleeding back up to it. The pane card keeps its
+    /// `PANE_INSET` gutter below that line — the bar, the band and the body
+    /// origin agree with no leftover 3–4 px mismatch.
+    #[test]
+    fn the_bar_block_and_the_body_origin_are_the_same_line() {
+        let app = AppContext::default();
+        let sheet_top = shell::TOPBAR_HEIGHT + shell::TOPBAR_BOTTOM_BAND;
+
+        // The band element reserves the whole bar block and paints only the
+        // band's rows.
+        let mut band = build_topbar_band(&app);
+        let size = band.layout(
+            SizeConstraint::loose(window()),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert_eq!(
+            size,
+            vec2f(window().x, sheet_top),
+            "the bar block is the bar plus its band"
+        );
+
+        let (mut root, _state, _dir) = app_root();
+        let commands = render_element(&mut root, window(), &app);
+        let surface = app.theme.color(ColorToken::Surface);
+        let sidebar = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == surface
+                        && rect.min_x() == 0.0
+                        && rect.height() > window().y / 2.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the sidebar paints its surface");
+        assert_eq!(
+            sidebar.min_y(),
+            sheet_top,
+            "the content sheet begins on the band's bottom edge: {sidebar:?}"
+        );
+
+        // The panes' header bands bleed back up to that same edge, and the pane
+        // cards keep the gutter below it.
+        let frames = pane_frames(&commands, &app);
+        assert!(!frames.is_empty(), "the frame draws its panes");
+        let inset = crate::ui::panes::PANE_INSET;
+        for frame in frames {
+            assert_eq!(
+                frame.min_y(),
+                sheet_top + inset,
+                "the pane card is the body origin plus its gutter: {frame:?}"
+            );
+            let header = header_band(&commands, &app, frame).expect("the pane's header band");
+            assert_eq!(
+                header.min_y(),
+                sheet_top,
+                "the pane's header band starts exactly where the body does: {header:?}"
+            );
+            assert_eq!(
+                header.max_y(),
+                frame.min_y() + shell::TOPBAR_HEIGHT,
+                "and it is one bar tall against the card: {header:?}"
+            );
+        }
+    }
+
+    /// The tab outline is per tab, not around the window: the window's own rule
+    /// stays the neutral `Border`, and every pane's whole slot — the card plus
+    /// the full-bleed chrome band bleeding over its top — wears one 1 pt
+    /// rounded outline (radius = the pane card's own). Only the focused tab is
+    /// accent; the others are the ordinary `Border`. The inset is 3 pt on the
+    /// tab area's outer sides and 1.5 pt on a shared split side, so a solo tab
+    /// is inset 3 pt all round and neighbouring tab borders stay exactly 3 pt
+    /// apart with the window's `Bg` between them.
+    #[test]
+    fn every_tab_wears_its_own_outline_not_the_window() {
+        let app = AppContext::default();
+        let accent = app.theme.color(ColorToken::Accent);
+        let border = app.theme.color(ColorToken::Border);
+        let bg = app.theme.color(ColorToken::Bg);
+
+        // One pane: the window's rule is neutral and the focused tab — the only
+        // tab — is accent-outlined, 3 pt inside its slot on every side.
+        let (mut root, _state, _dir) = app_root();
+        let commands = render_element(&mut root, window(), &app);
+        let (_, width, _) = window_rule(&commands, &app).expect("the window's neutral rule");
+        assert_eq!(width, WINDOW_BORDER_WIDTH);
+        assert!(
+            !has_accent_window_rule(&commands, &app),
+            "no accent rule on the window's own rect"
+        );
+        let frames = pane_frames(&commands, &app);
+        assert_eq!(frames.len(), 1, "one pane: {frames:?}");
+        let slots = tab_slots(&frames);
+        assert_eq!(
+            crate::ui::panes::tab_outline_rect(slots[0], slots[0]),
+            rectf(303.0, 43.0, 718.0, 722.0),
+            "a solo tab is inset 3 pt on every side of its slot: {:?}",
+            slots[0]
+        );
+        let outlines = tab_outlines(&commands, &app);
+        assert_eq!(
+            outlines,
+            vec![(crate::ui::panes::tab_outline_rect(slots[0], slots[0]), accent)],
+            "the solo (focused) tab wears the accent outline: {outlines:?}"
+        );
+
+        // Two panes: one outline per tab; the focused (left) tab is accent, the
+        // other the ordinary `Border`; the shared split side is inset 1.5 pt
+        // each, so the two borders are exactly 3 pt apart over the window's Bg.
+        let (mut root, state, _dir) = app_root();
+        install_two_panes(&state, 0.5);
+        let commands = render_element(&mut root, window(), &app);
+        assert!(!has_accent_window_rule(&commands, &app));
+        let frames = pane_frames(&commands, &app);
+        assert_eq!(frames.len(), 2, "two panes: {frames:?}");
+        let slots = tab_slots(&frames);
+        let area = rectf(
+            slots[0].min_x(),
+            slots[0].min_y(),
+            slots[1].max_x() - slots[0].min_x(),
+            slots[0].max_y() - slots[0].min_y(),
+        );
+        let left = crate::ui::panes::tab_outline_rect(slots[0], area);
+        let right = crate::ui::panes::tab_outline_rect(slots[1], area);
+        let outlines = tab_outlines(&commands, &app);
+        assert_eq!(
+            outlines,
+            vec![(left, accent), (right, border)],
+            "the focused tab is accent, the other the ordinary Border: {outlines:?}"
+        );
+        let gap = right.min_x() - left.max_x();
+        assert!(
+            (gap - 3.0).abs() < 0.01,
+            "the neighbouring tab borders are 3 pt apart (1.5 pt each): {outlines:?}"
+        );
+        // The area's outer sides are inset 3 pt, the shared side 1.5 pt each.
+        assert!((left.min_x() - slots[0].min_x() - 3.0).abs() < 0.01);
+        assert!((left.min_y() - slots[0].min_y() - 3.0).abs() < 0.01);
+        assert!((slots[0].max_y() - left.max_y() - 3.0).abs() < 0.01);
+        assert!((slots[0].max_x() - left.max_x() - 1.5).abs() < 0.01);
+        assert!((right.min_x() - slots[1].min_x() - 1.5).abs() < 0.01);
+        assert!((slots[1].max_x() - right.max_x() - 3.0).abs() < 0.01);
+        let between = vec2f(
+            left.max_x() + gap * 0.5,
+            left.min_y() + left.height() * 0.5,
+        );
+        assert_eq!(
+            topmost_fill(&commands, between),
+            Some(bg),
+            "the 3 pt gutter between the tabs is the window's own Bg: {between:?}"
+        );
+    }
+
+    /// The tab slots of the pane cards: each card grown by `PANE_INSET`, ordered
+    /// left to right.
+    fn tab_slots(cards: &[RectF]) -> Vec<RectF> {
+        let inset = crate::ui::panes::PANE_INSET;
+        let mut slots: Vec<RectF> = cards
+            .iter()
+            .map(|card| {
+                rectf(
+                    card.min_x() - inset,
+                    card.min_y() - inset,
+                    card.width() + 2.0 * inset,
+                    card.height() + 2.0 * inset,
+                )
+            })
+            .collect();
+        slots.sort_by(|a, b| a.min_x().total_cmp(&b.min_x()));
+        slots
+    }
+
+    /// The tab outlines a frame paints — (rect, colour), ordered left to right.
+    /// A pane card's own `Border` stroke is excluded: the card paints a fill at
+    /// exactly the same rect, an outline never does.
+    fn tab_outlines(
+        commands: &[RenderCommand],
+        app: &AppContext,
+    ) -> Vec<(RectF, goble_ui::ColorU)> {
+        let colors = [
+            app.theme.color(ColorToken::Accent),
+            app.theme.color(ColorToken::Border),
+        ];
+        let mut outlines: Vec<(RectF, goble_ui::ColorU)> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::StrokeRect {
+                    rect,
+                    color,
+                    width,
+                    corner_radius,
+                } if colors.contains(color)
+                    && (*width - 1.0).abs() < 0.01
+                    && (*corner_radius - crate::ui::panes::TAB_OUTLINE_RADIUS).abs() < 0.01
+                    && !commands.iter().any(|other| matches!(
+                        other,
+                        RenderCommand::FillRect { rect: filled, .. } if filled == rect
+                    )) =>
+                {
+                    Some((*rect, *color))
+                }
+                _ => None,
+            })
+            .collect();
+        outlines.sort_by(|a, b| a.0.min_x().total_cmp(&b.0.min_x()));
+        outlines
+    }
+
+    /// Whether the frame draws an accent rule on the window's own rect.
+    fn has_accent_window_rule(commands: &[RenderCommand], app: &AppContext) -> bool {
+        let accent = app.theme.color(ColorToken::Accent);
+        commands.iter().any(|command| match command {
+            RenderCommand::StrokeRect { rect, color, .. } => {
+                *color == accent && rect.width() == window().x && rect.height() == window().y
+            }
+            _ => false,
+        })
+    }
+
+    /// The colour of the last fill covering `point`, i.e. what the frame leaves
+    /// visible there.
+    fn topmost_fill(commands: &[RenderCommand], point: Vector2F) -> Option<goble_ui::ColorU> {
+        commands.iter().rev().find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if point.x >= rect.min_x()
+                    && point.x <= rect.max_x()
+                    && point.y >= rect.min_y()
+                    && point.y <= rect.max_y() =>
+            {
+                Some(*color)
+            }
+            _ => None,
+        })
+    }
+
     /// Every pane card in a rendered frame — the `Surface` fill each leaf
-    /// paints, in window order. The body's other `Surface` fills (the topbar
-    /// lip, the tab strip, the sidebar) are shorter or outside the pane area.
+    /// paints, in window order. The body's other `Surface` fills (the tab strip,
+    /// the sidebar) are shorter or outside the pane area.
     fn pane_frames(commands: &[RenderCommand], app: &AppContext) -> Vec<RectF> {
         let surface = app.theme.color(ColorToken::Surface);
         let mut frames: Vec<RectF> = commands

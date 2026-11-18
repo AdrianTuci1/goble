@@ -16,7 +16,8 @@ use chrono::{DateTime, Utc};
 use goble_ui::elements::{
     AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
     Element, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
-    MainAxisSize, PaintContext, Point, Scrollable, SizeConstraint, Spacer, Text, TopbarButton,
+    MainAxisSize, MenuPointer, PaintContext, Point, Scrollable, SizeConstraint, Spacer, Text,
+    TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, ModifiersState, BUTTON_PRIMARY};
 use goble_ui::geometry::{vec2f, PointF, RectF, Size2F, Vector2F};
@@ -43,6 +44,12 @@ const EDGE_MARGIN: f32 = 8.0;
 const PANEL_GAP: f32 = 6.0;
 /// The panel's corner radius, matching the menus' own.
 const PANEL_RADIUS: f32 = 8.0;
+
+/// The inbox panel's label in the window's shared open-menu state. The panel is
+/// a menu too — a popover hung from the topbar's control — so it takes part in
+/// the same one-at-a-time rule, owns the pointer over its own surface, and is
+/// closed by the same outside press and Escape.
+const INBOX_MENU_ID: goble_ui::elements::MenuId = "inbox.popover";
 
 /// The side of a row's circular agent badge.
 const BADGE_SIZE: f32 = 28.0;
@@ -748,7 +755,27 @@ impl Element for InboxPopover {
         };
         let at = self.place(size);
         self.origin = Some(Point::from_vec2f(at, Default::default()));
+        // The open panel is one of the window's menus: it claims the shared
+        // state (putting away whatever menu was up), owns the pointer over its
+        // own surface, and any other menu that tries to open while it is up
+        // closes it through this handle.
+        if app.open_menus.id() != Some(INBOX_MENU_ID) {
+            app.open_menus
+                .open(INBOX_MENU_ID, self.on_close.clone());
+        }
+        ctx.enter_menu_surface();
         self.content.paint(at, ctx, app);
+        ctx.leave_menu_surface();
+        let panel = RectF::new(PointF::new(at.x, at.y), Size2F::new(size.x, size.y));
+        app.open_menus.report(
+            INBOX_MENU_ID,
+            self.on_close.clone(),
+            vec![panel],
+            MenuPointer::Paint,
+        );
+        if let Some(anchor) = *self.anchor.borrow() {
+            app.open_menus.report_anchor(INBOX_MENU_ID, anchor);
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

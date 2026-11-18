@@ -24,6 +24,25 @@ fn fallback_mock() -> (Arc<dyn LlmProvider>, String) {
     )
 }
 
+/// The credential a `[model.<slug>]` entry resolves to at turn time: the inline
+/// `api_key`, or the value of the `api_key_env` variable read now (an inline key
+/// wins when both are set). Reading it here, not at load time, means a shell
+/// that exports the variable after the app started still reaches its turn.
+fn model_credential(entry: &goble_core::config::ModelConfig) -> Option<String> {
+    if let Some(key) = entry.resolved_key() {
+        return Some(key.to_string());
+    }
+    let name = entry
+        .api_key_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 impl DesktopState {
     pub fn set_llm_setting(
         &self,
@@ -171,9 +190,9 @@ impl DesktopState {
     /// per-provider setting, exactly as before. `None` when neither has a key.
     pub fn effective_llm_setting(&self, provider: &str, model: &str) -> Option<LlmSetting> {
         if let Some((slug, entry)) = self.config().model_for(model) {
-            if let Some(key) = entry.resolved_key() {
+            if let Some(key) = model_credential(entry) {
                 return Some(LlmSetting {
-                    api_key: key.to_string(),
+                    api_key: key,
                     base_url: entry.base_url.clone(),
                     model: entry.model_id(slug),
                     temperature: None,
@@ -270,7 +289,7 @@ impl DesktopState {
     ) -> Option<(Arc<dyn LlmProvider>, String)> {
         let config = self.config();
         let (slug, entry) = config.model_for(model)?;
-        let key = entry.resolved_key()?.to_string();
+        let key = model_credential(entry)?;
         let base = entry
             .base_url
             .clone()
@@ -667,5 +686,57 @@ model = "gpt-4o"
             config_backend("anthropic", Some("https://api.deepseek.com")),
             "anthropic"
         );
+    }
+
+    /// `api_key_env` is the key path for a model whose credential lives in the
+    /// environment rather than inline: the resolver reads the variable at turn
+    /// time, and an unset variable does not shadow the store path.
+    #[test]
+    fn a_model_entry_with_api_key_env_resolves_the_key_from_the_environment() {
+        std::env::set_var("GOBLE_TEST_MODEL_KEY", "sk-env");
+        let state = state_with(
+            r#"
+[model.envmodel]
+model = "kimi-k2"
+base_url = "https://api.kimi.com/coding/v1"
+api_key_env = "GOBLE_TEST_MODEL_KEY"
+"#,
+        );
+        let setting = state
+            .effective_llm_setting("openai", "kimi-k2")
+            .expect("the env-provided key resolves");
+        assert_eq!(setting.api_key, "sk-env");
+        assert_eq!(setting.model, "kimi-k2");
+
+        // The variable goes away: the entry no longer resolves to a key, and the
+        // resolver falls back to the store rather than using an empty string.
+        std::env::remove_var("GOBLE_TEST_MODEL_KEY");
+        let state = state_with(
+            r#"
+[model.envmodel]
+model = "kimi-k2"
+api_key_env = "GOBLE_TEST_MODEL_KEY"
+"#,
+        );
+        assert!(state.effective_llm_setting("openai", "kimi-k2").is_none());
+
+        // An inline key wins over the variable when both are set.
+        std::env::set_var("GOBLE_TEST_MODEL_KEY", "sk-env");
+        let state = state_with(
+            r#"
+[model.envmodel]
+model = "kimi-k2"
+api_key = "sk-inline"
+api_key_env = "GOBLE_TEST_MODEL_KEY"
+"#,
+        );
+        assert_eq!(
+            state
+                .effective_llm_setting("openai", "kimi-k2")
+                .expect("inline key")
+                .api_key,
+            "sk-inline"
+        );
+        std::env::remove_var("GOBLE_TEST_MODEL_KEY");
     }
 }

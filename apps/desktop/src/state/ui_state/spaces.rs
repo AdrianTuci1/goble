@@ -358,24 +358,29 @@ impl UiState {
 
     /// The page the settings tab shows. The page rides in the leaf, so the rail
     /// and the pane cannot drift apart and the page comes back with the pane.
-    /// A layout with no settings leaf has no page: `Appearance`.
+    /// A layout with no settings leaf has no page: `General`.
     pub fn settings_page(&self) -> SettingsCategory {
         match self
             .settings_pane()
             .and_then(|(space, id)| self.spaces[space].leaf_kind(id))
         {
             Some(PaneKind::Settings { page }) => *page,
-            _ => SettingsCategory::Appearance,
+            _ => SettingsCategory::General,
         }
     }
 
     /// Point the settings tab's leaf at another page, so the page travels with
-    /// the pane.
+    /// the pane. The rail, the keyboard region and the page's focus reset to
+    /// that page's first row, exactly as if the rail had been used.
     pub fn settings_set_page(&mut self, page: SettingsCategory) {
-        let Some((space, id)) = self.settings_pane() else {
-            return;
-        };
-        self.spaces[space].set_leaf_kind(id, PaneKind::Settings { page });
+        if let Some((space, id)) = self.settings_pane() {
+            self.spaces[space].set_leaf_kind(id, PaneKind::Settings { page });
+        }
+        self.settings.page = page;
+        self.settings.nav_index = SettingsUiState::nav_index_of(page);
+        self.settings.region = crate::ui::settings::SettingsRegion::Rail;
+        self.settings.row_index = 0;
+        self.settings.focused_field = None;
     }
 
     /// Open the settings tab, or bring the one that already exists to the
@@ -429,16 +434,16 @@ impl UiState {
         }
     }
 
-    /// Put the keyboard at the settings tab's rail, on its first row, with no
+    /// Put the keyboard at the settings tab's rail, on its page's row, with no
     /// field holding the caret — the state it opens in.
     fn focus_settings_pane(&mut self) {
-        self.settings_focus = SettingsFocus::Rail;
-        self.settings_pane_focus = 0;
-        self.settings_pane_field_active = false;
-        self.settings_field_edit_start = None;
-        // The model menu hangs at the window's top layer, so it has to close
-        // with the page it belongs to.
-        *self.settings_model_menu_open.borrow_mut() = false;
+        let page = self.settings_page();
+        self.settings.page = page;
+        self.settings.nav_index = SettingsUiState::nav_index_of(page);
+        self.settings.region = crate::ui::settings::SettingsRegion::Rail;
+        self.settings.row_index = 0;
+        self.settings.focused_field = None;
+        self.settings.search_focused = false;
     }
 
     /// The pane a tab's label follows: the focused leaf of the active tab, and
@@ -509,7 +514,6 @@ impl UiState {
         self.active_space = target;
         // A menu opened over the previous tab's settings page has no page to
         // hang from on this one.
-        *self.settings_model_menu_open.borrow_mut() = false;
         self.spaces[target].recompute_layout();
         self.active_pane_id = self.spaces[target].root.first_leaf_id();
         if matches!(

@@ -293,6 +293,33 @@ impl ConfigEditor {
         self.edit(file, expected, |doc| schema::apply_ops(doc, ops))
     }
 
+    /// Reserialize a typed [`GobleConfig`](super::GobleConfig) into
+    /// `config.toml` through the full edit protocol (lock, revision fence,
+    /// refusal of an unparseable file, validation, atomic `0600` write).
+    ///
+    /// This is the compatibility shim for the legacy whole-config writers
+    /// (the service's old `save_config`); new settings writes use path ops so
+    /// comments and unknown keys survive. A legacy `[llm]` section is folded
+    /// before the write, so the shim writes the adopted schema.
+    pub fn save_typed_config(
+        &self,
+        config: &super::GobleConfig,
+        expected: Option<&ConfigRevision>,
+    ) -> Result<EditOutcome<()>, ConfigError> {
+        let mut config = config.clone();
+        config.absorb_legacy();
+        let text = config
+            .to_toml()
+            .map_err(|error| ConfigError::Io(ConfigFile::Config, error.to_string()))?;
+        let replacement: DocumentMut = text
+            .parse::<DocumentMut>()
+            .map_err(|error| ConfigError::RefusedUnparseable(error.to_string(), ConfigFile::Config))?;
+        self.edit(ConfigFile::Config, expected, |doc| {
+            *doc = replacement;
+            Ok(())
+        })
+    }
+
     /// Replace `environment.toml` with `groups` through the same protocol. The
     /// file's writer is typed (a group is written as a unit), but the lock,
     /// revision fence, refusal and atomic private write are shared.

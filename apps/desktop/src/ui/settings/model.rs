@@ -1,0 +1,479 @@
+//! The page model: what a settings page is made of, as data.
+//!
+//! Pages are built as data first ([`PageModel`]), then rendered by
+//! [`super::render`]. One description is used twice: the renderer draws it and
+//! the keyboard model counts and resolves its rows, so a page cannot draw a row
+//! the keys cannot reach (the failure the old hand-written focus order kept
+//! risking).
+//!
+//! A row is the unit. Its control is one of the settings controls; a row whose
+//! label is a "setting" has exactly one primary action, so `Enter` on the focused
+//! row does the obvious thing (flips a toggle, advances a select, commits a text
+//! field, or presses the first button of a button group).
+
+use goble_core::config::ConfigFile;
+
+use super::state::{SettingsAction, StatusKind};
+
+/// How an action button reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionStyle {
+    /// The secondary control (an outline/raised button).
+    Default,
+    /// The action the row exists for.
+    Primary,
+    /// Removes something; reads in the error colour.
+    Destructive,
+    /// A low-emphasis text action (a palette's "Use").
+    Ghost,
+}
+
+/// A button in a row's control group (or a section header).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionModel {
+    pub label: String,
+    pub icon: Option<&'static str>,
+    pub action: SettingsAction,
+    pub style: ActionStyle,
+    pub disabled: bool,
+}
+
+impl ActionModel {
+    pub fn new(label: impl Into<String>, action: SettingsAction) -> Self {
+        Self {
+            label: label.into(),
+            icon: None,
+            action,
+            style: ActionStyle::Default,
+            disabled: false,
+        }
+    }
+
+    pub fn primary(mut self) -> Self {
+        self.style = ActionStyle::Primary;
+        self
+    }
+
+    /// A low-emphasis text action.
+    pub fn with_ghost(mut self) -> Self {
+        self.style = ActionStyle::Ghost;
+        self
+    }
+
+    pub fn destructive(mut self) -> Self {
+        self.style = ActionStyle::Destructive;
+        self
+    }
+
+    pub fn with_icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
+}
+
+/// The control on a row's right.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ControlModel {
+    Toggle {
+        /// The path a write goes to (`app.telemetry`).
+        path: String,
+        value: bool,
+        disabled: bool,
+    },
+    Select {
+        path: String,
+        options: Vec<String>,
+        selected: usize,
+        disabled: bool,
+    },
+    Text {
+        /// The field id the draft is kept under (usually the path).
+        id: String,
+        value: String,
+        placeholder: String,
+        /// A write-only field: the value is masked and the projection never had
+        /// it, so the placeholder says whether one is configured.
+        secret: bool,
+        configured: bool,
+        disabled: bool,
+    },
+    Slider {
+        path: String,
+        value: f32,
+        min: f32,
+        max: f32,
+        step: f32,
+    },
+    /// A value the page reports but does not edit.
+    ReadOnly { text: String },
+    /// The row's actions, in draw order. `Enter` runs the first one.
+    Buttons(Vec<ActionModel>),
+    /// A row with no control at all (a status or explanation row).
+    None,
+}
+
+impl ControlModel {
+    pub fn is_interactive(&self) -> bool {
+        match self {
+            ControlModel::Toggle { disabled, .. }
+            | ControlModel::Select { disabled, .. }
+            | ControlModel::Text { disabled, .. } => !disabled,
+            ControlModel::Slider { .. } => true,
+            ControlModel::ReadOnly { .. } | ControlModel::None => false,
+            ControlModel::Buttons(actions) => actions.iter().any(|action| !action.disabled),
+        }
+    }
+}
+
+/// One row of a group.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowModel {
+    /// Stable identity for focus/test lookups.
+    pub id: String,
+    pub label: String,
+    pub hint: String,
+    pub status: Option<(String, StatusKind)>,
+    pub control: ControlModel,
+    /// A row this build cannot perform; the hint/status say why.
+    pub disabled: bool,
+    /// The reset action, when the value is not the schema default.
+    pub reset: Option<SettingsAction>,
+    /// A full-width child block under the row (a form, a nested list). It is
+    /// not itself focusable; the form's rows are.
+    pub children: Vec<RowModel>,
+}
+
+impl RowModel {
+    pub fn new(id: impl Into<String>, label: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            hint: hint.into(),
+            status: None,
+            control: ControlModel::None,
+            disabled: false,
+            reset: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn toggle(mut self, path: impl Into<String>, value: bool) -> Self {
+        self.control = ControlModel::Toggle {
+            path: path.into(),
+            value,
+            disabled: self.disabled,
+        };
+        self
+    }
+
+    pub fn select(
+        mut self,
+        path: impl Into<String>,
+        options: Vec<String>,
+        selected: usize,
+    ) -> Self {
+        self.control = ControlModel::Select {
+            path: path.into(),
+            options,
+            selected,
+            disabled: self.disabled,
+        };
+        self
+    }
+
+    pub fn text(
+        mut self,
+        id: impl Into<String>,
+        value: impl Into<String>,
+        placeholder: impl Into<String>,
+    ) -> Self {
+        self.control = ControlModel::Text {
+            id: id.into(),
+            value: value.into(),
+            placeholder: placeholder.into(),
+            secret: false,
+            configured: false,
+            disabled: self.disabled,
+        };
+        self
+    }
+
+    pub fn secret(
+        mut self,
+        id: impl Into<String>,
+        value: impl Into<String>,
+        configured: bool,
+    ) -> Self {
+        self.control = ControlModel::Text {
+            id: id.into(),
+            value: value.into(),
+            placeholder: String::new(),
+            secret: true,
+            configured,
+            disabled: self.disabled,
+        };
+        self
+    }
+
+    pub fn slider(
+        mut self,
+        path: impl Into<String>,
+        value: f32,
+        min: f32,
+        max: f32,
+        step: f32,
+    ) -> Self {
+        self.control = ControlModel::Slider {
+            path: path.into(),
+            value,
+            min,
+            max,
+            step,
+        };
+        self
+    }
+
+    pub fn read_only(mut self, text: impl Into<String>) -> Self {
+        self.control = ControlModel::ReadOnly { text: text.into() };
+        self
+    }
+
+    pub fn buttons(mut self, actions: Vec<ActionModel>) -> Self {
+        self.control = ControlModel::Buttons(actions);
+        self
+    }
+
+    pub fn with_status(mut self, kind: StatusKind, text: impl Into<String>) -> Self {
+        self.status = Some((text.into(), kind));
+        self
+    }
+
+    pub fn with_reset(mut self, action: SettingsAction) -> Self {
+        self.reset = Some(action);
+        self
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self.control = match self.control {
+            ControlModel::Toggle { path, value, .. } => ControlModel::Toggle {
+                path,
+                value,
+                disabled: true,
+            },
+            ControlModel::Select {
+                path,
+                options,
+                selected,
+                ..
+            } => ControlModel::Select {
+                path,
+                options,
+                selected,
+                disabled: true,
+            },
+            ControlModel::Text {
+                id,
+                value,
+                placeholder,
+                secret,
+                configured,
+                ..
+            } => ControlModel::Text {
+                id,
+                value,
+                placeholder,
+                secret,
+                configured,
+                disabled: true,
+            },
+            other => other,
+        };
+        self
+    }
+
+    /// The action `Enter` runs on this row.
+    pub fn primary_action(&self) -> Option<SettingsAction> {
+        match &self.control {
+            ControlModel::Toggle { path, value, .. } => Some(SettingsAction::SetToggle {
+                path: path.clone(),
+                value: !value,
+            }),
+            ControlModel::Select {
+                path,
+                options,
+                selected,
+                ..
+            } => {
+                if options.is_empty() {
+                    None
+                } else {
+                    Some(SettingsAction::SetSelect {
+                        path: path.clone(),
+                        index: (selected + 1) % options.len(),
+                    })
+                }
+            }
+            ControlModel::Text { id, .. } => Some(SettingsAction::CommitField { id: id.clone() }),
+            ControlModel::Slider { .. } => None,
+            ControlModel::Buttons(actions) => actions
+                .iter()
+                .find(|action| !action.disabled)
+                .map(|action| action.action.clone()),
+            ControlModel::ReadOnly { .. } | ControlModel::None => None,
+        }
+    }
+
+    /// The action `Left`/`Right` runs on this row, if the control has discrete
+    /// values (a select steps, a slider steps by `step`).
+    pub fn adjust_action(&self, delta: i32) -> Option<SettingsAction> {
+        let delta = delta.signum();
+        if delta == 0 {
+            return None;
+        }
+        match &self.control {
+            ControlModel::Select {
+                path,
+                options,
+                selected,
+                disabled,
+            } => {
+                if *disabled || options.is_empty() {
+                    return None;
+                }
+                let count = options.len() as i64;
+                let next = (*selected as i64 + delta as i64).rem_euclid(count) as usize;
+                Some(SettingsAction::SetSelect {
+                    path: path.clone(),
+                    index: next,
+                })
+            }
+            ControlModel::Slider {
+                path,
+                value,
+                min,
+                max,
+                step,
+            } => {
+                let next = (*value + *step * delta as f32).clamp(*min, *max);
+                Some(SettingsAction::SetSlider {
+                    path: path.clone(),
+                    value: next,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A titled group of rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionModel {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub header_action: Option<ActionModel>,
+    pub rows: Vec<RowModel>,
+    /// Draw the group as rows against the page instead of a card (the theme
+    /// library's plain section).
+    pub plain: bool,
+}
+
+impl SectionModel {
+    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            description: String::new(),
+            header_action: None,
+            rows: Vec::new(),
+            plain: false,
+        }
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    pub fn with_header_action(mut self, action: ActionModel) -> Self {
+        self.header_action = Some(action);
+        self
+    }
+
+    pub fn with_row(mut self, row: RowModel) -> Self {
+        self.rows.push(row);
+        self
+    }
+
+    pub fn with_rows(mut self, rows: impl IntoIterator<Item = RowModel>) -> Self {
+        self.rows.extend(rows);
+        self
+    }
+
+    pub fn plain(mut self) -> Self {
+        self.plain = true;
+        self
+    }
+
+    /// Every row in this section, in draw order, children flattened after their
+    /// parent (a child block is part of the same reading order).
+    fn all_rows(&self) -> Vec<&RowModel> {
+        let mut rows = Vec::new();
+        for row in &self.rows {
+            rows.push(row);
+            rows.extend(row.children.iter());
+        }
+        rows
+    }
+}
+
+/// One page: its sections plus the header line under the title.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageModel {
+    pub sections: Vec<SectionModel>,
+}
+
+impl PageModel {
+    pub fn new(sections: Vec<SectionModel>) -> Self {
+        Self { sections }
+    }
+
+    /// The interactive rows, in draw order — the page's focus order.
+    pub fn interactive_rows(&self) -> Vec<&RowModel> {
+        self.sections
+            .iter()
+            .flat_map(SectionModel::all_rows)
+            .filter(|row| !row.disabled && row.control.is_interactive())
+            .collect()
+    }
+
+    pub fn control_count(&self) -> usize {
+        self.interactive_rows().len()
+    }
+
+    /// The row at focus slot `index`.
+    pub fn row_at(&self, index: usize) -> Option<&RowModel> {
+        self.interactive_rows().into_iter().nth(index)
+    }
+}
+
+/// The file a scalar path belongs to. Paths are dotted (`app.friendly_name`);
+/// the first segment names the section, and every scalar row the settings
+/// surface edits lives in `config.toml`.
+pub fn path_file(_path: &str) -> ConfigFile {
+    ConfigFile::Config
+}
+
+/// Split a dotted path into its segments.
+pub fn path_segments(path: &str) -> Vec<String> {
+    path.split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect()
+}

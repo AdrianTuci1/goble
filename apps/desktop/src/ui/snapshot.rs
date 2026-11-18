@@ -2,20 +2,21 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use goble_core::store::SecretGroup;
 use goble_harness_types::MediumKind;
+use goble_ui::elements::conversation_list_item::SidebarGroupUi;
 use goble_ui::elements::{
     AgentCardUi, ChatMessage as UiChatMessage, ConversationEntry, DiffSummary, LaneEdge,
     PanelScroll, PopupMenuItem, TerminalFilter,
 };
 use goble_ui::geometry::Vector2F;
-use goble_ui::{ScrollState, SettingsPage};
+use goble_ui::ScrollState;
 
 use crate::state::{
     ArchiveConfirm, InboxItem, PaneAttach, PaneControls, PaneDrag, PaneWorkItem, SidebarRename,
-    SpaceMenu, ToastNotice, WorkerPaneSession,
+    SidebarWorkspace, SidebarWorkspaceRename, SpaceMenu, ToastNotice, WorkerPaneSession,
 };
 use crate::terminal::TerminalRegistry;
+use crate::ui::settings::SettingsUiState;
 use crate::ui::FloatingDrag;
 
 use super::color_picker;
@@ -23,7 +24,7 @@ use super::pane::Space;
 use super::types::{
     AgentDashboardState, AppTab, ArchivedFilter, CostEntry, CronEntry, ExecutionEntry, ExplorerRow,
     HarnessEntry, LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow,
-    SettingsCategory, SettingsFocus, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
+    SettingsCategory, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
     WorkflowEntry, WorkflowRunEntry, WorkspaceRouting,
 };
 
@@ -366,9 +367,7 @@ pub struct UiSnapshot {
     pub timeline: Vec<TimelineEntry>,
     /// Cost rows derived from real execution/usage records.
     pub costs: Vec<CostEntry>,
-    pub settings_page: SettingsPage,
     pub settings_profile_name: String,
-    pub settings_profile_email: String,
     pub settings_dark_mode: bool,
     pub settings_llm_provider: String,
     pub settings_llm_model: String,
@@ -376,45 +375,26 @@ pub struct UiSnapshot {
     pub settings_llm_base_url: String,
     pub settings_llm_temperature: String,
     pub settings_workers: Vec<(String, String, String, bool)>,
-    pub settings_cluster_name: String,
-    pub settings_cluster_configured: bool,
-    pub settings_authorized_keys: Vec<(String, String, String)>,
-    pub settings_vault_unlocked: bool,
+    /// The settings tab's whole state: the file projection and the tab's
+    /// interaction state. One field rather than one per row.
+    pub settings: SettingsUiState,
     /// The page the settings tab shows, read off its leaf.
-    pub settings_category: SettingsCategory,
     /// The settings tab's two-region keyboard focus, and the pane control it is
     /// on.
-    pub settings_focus: SettingsFocus,
-    pub settings_pane_focus: usize,
     /// Whether the focused pane control is a text field holding the caret.
-    pub settings_pane_field_active: bool,
     /// Settings → Agent & Approval: the default-model menu's open flag, and the
     /// rect its field last painted at. The menu is drawn at the window's top
     /// layer, hung from that rect.
-    pub settings_model_menu_open: Rc<RefCell<bool>>,
-    pub settings_model_anchor: Rc<RefCell<Option<goble_ui::geometry::RectF>>>,
-    pub settings_model_painted: Rc<RefCell<bool>>,
     /// Settings → Environment: the persisted groups with their secrets, the
     /// group the pane has open, and the fields a new or edited secret is typed
     /// into.
-    pub settings_environment_groups: Vec<SecretGroup>,
-    pub settings_environment_open_group: Option<String>,
-    pub settings_environment_group_draft: String,
-    pub settings_environment_secret_name: String,
-    pub settings_environment_secret_value: String,
-    pub settings_environment_editing: Option<String>,
     /// Settings → Connections: the `~/.ssh` read and the host alias the page
     /// has selected. The read is cached in app state — the page draws it, it
     /// never reads the directory itself.
-    pub settings_ssh_hosts: Option<goble_core::ssh_hosts::SshHosts>,
-    pub settings_ssh_selected: Option<String>,
     /// Settings → Updates: what the update checker last published, and whether
     /// this build has a release host to check at all.
     pub update: crate::update::UpdateView,
     pub update_configured: bool,
-    pub settings_invert_scroll: bool,
-    pub settings_scroll_speed: i32,
-    pub settings_font_size: f32,
     /// Whether the rich input uses modal (vim) editing, and which pane states
     /// to read for the mode badge.
     pub vim_mode: bool,
@@ -534,8 +514,6 @@ pub struct UiSnapshot {
     /// Scroll offsets of the project explorer's and the global search's lists.
     pub explorer_scroll: Rc<RefCell<ScrollState>>,
     pub global_search_scroll: Rc<RefCell<ScrollState>>,
-    /// Scroll offset of the settings overlay's content pane.
-    pub settings_scroll: Rc<RefCell<ScrollState>>,
     /// Whether the topbar workspace frame is in inline-rename mode.
     pub space_rename_editing: bool,
     /// Whether the platform's chord modifier (Command on macOS, Ctrl elsewhere)
@@ -672,6 +650,16 @@ pub struct UiSnapshot {
     pub sidebar_archived_filter: ArchivedFilter,
     /// The open "Rename conversation" dialog, if any.
     pub sidebar_rename: Option<SidebarRename>,
+    /// The sidebar's durable Workspaces rows: the directories the user added
+    /// with the header's "+" (DSH's workspace list), in insertion order.
+    pub sidebar_workspaces: Vec<SidebarWorkspace>,
+    /// The open "Rename workspace" dialog, if any.
+    pub sidebar_workspace_rename: Option<SidebarWorkspaceRename>,
+    /// Per-workspace-group tray state, shared with the rows (the same contract
+    /// as `agent_cards` for the session rows' trays).
+    pub sidebar_group_ui: Rc<
+        RefCell<HashMap<String, Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarGroupUi>>>>,
+    >,
     /// The open stop-and-archive confirmation, if any.
     pub archive_confirm: Option<ArchiveConfirm>,
     /// The transient notice at the top of the window, if one is up.
@@ -679,6 +667,17 @@ pub struct UiSnapshot {
 }
 
 impl UiSnapshot {
+    /// The workspace group row's tray state cell for `section`, created on first
+    /// use and shared with the state so an open tray survives the per-frame
+    /// element rebuild.
+    pub fn group_ui(&self, section: &str) -> Rc<RefCell<SidebarGroupUi>> {
+        self.sidebar_group_ui
+            .borrow_mut()
+            .entry(section.to_string())
+            .or_default()
+            .clone()
+    }
+
     /// Whether the onboarding step on screen has an answer worth advancing
     /// with. Mirrors [`crate::state::UiState::onboarding_can_advance`] for the
     /// element tree, which only sees the snapshot.

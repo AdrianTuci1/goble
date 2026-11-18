@@ -11,14 +11,20 @@
 //! desktop application; nothing here depends on the GUI. Listener TLS is
 //! deliberately out of scope: terminate it in Tailscale or a reverse proxy.
 //!
-//! State is in memory only. Sessions and worker registrations are lost on
-//! restart, which is appropriate for a transport: workers reconnect and users
-//! enter the PIN again.
+//! The relay's state is in memory only: attached clients and worker
+//! registrations are lost on restart, which is appropriate for a transport:
+//! workers reconnect and users enter the PIN again. The one thing that does
+//! outlive the process is the remote-execution control plane's session bindings
+//! (`src/remote.rs`): a named binding (worker id plus conversation/thread id) is
+//! stored as `sessions.json` in the gateway's data directory so a phone, a web
+//! client, or a bridge keeps the same conversation across restarts. The API is
+//! documented in `docs/gateway-api.md`.
 
 mod assets;
 mod auth;
 mod config;
 mod http;
+mod remote;
 mod state;
 mod web;
 mod ws;

@@ -179,7 +179,7 @@ fn a_restored_settings_tab_reopens_on_the_page_it_was_on() {
 
     let mut saved = UiState::mock();
     saved.open_settings_tab(Some(&desktop));
-    saved.settings_set_page(SettingsCategory::Environment);
+    saved.settings_set_page(SettingsCategory::Environments);
     assert!(
         saved.settings_pane().is_some(),
         "the press opened a settings tab"
@@ -194,7 +194,7 @@ fn a_restored_settings_tab_reopens_on_the_page_it_was_on() {
     assert_eq!(
         restored.spaces[space].leaf_kind(id),
         Some(&PaneKind::Settings {
-            page: SettingsCategory::Environment
+            page: SettingsCategory::Environments
         }),
         "the page travels with the pane: it is part of the leaf, not a second copy"
     );

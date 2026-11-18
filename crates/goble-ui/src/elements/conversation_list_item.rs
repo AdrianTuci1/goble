@@ -5,7 +5,8 @@ use crate::elements::interactive::{contains, handle_mouse_event, InteractiveStat
 use crate::elements::{
     AppContext, AppMark, Border, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
     EventContext, Expanded, Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisAlignment,
-    MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Stack, Text, TopbarButton,
+    MainAxisSize, MenuClose, MenuId, MenuPointer, Padding, PaintContext, Point, SizeConstraint,
+    Stack, Text, TopbarButton,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -118,7 +119,7 @@ pub struct AgentCardUi {
 impl AgentCardUi {
     /// Put the tray away with its highlight back on the first row, where the
     /// next open starts.
-    fn close_menu(&mut self) {
+    pub fn close_menu(&mut self) {
         self.menu_open = false;
         self.highlight = STAR_ROW;
     }
@@ -2225,11 +2226,50 @@ pub const SIDEBAR_LEADING_SLOT_H: f32 = 20.0;
 pub const SIDEBAR_TRAILING_GAP: f32 = 6.0;
 /// The hover action button's box (the hit target DSH paints the ellipsis in).
 pub const SIDEBAR_ACTION_BUTTON: f32 = 24.0;
-/// The layout footprint of the hover action's glyph: DSH's 24 pt button carries
-/// a -4 pt margin, so it occupies 16 pt in the row and the 32 pt row never
-/// grows. The row reserves its one trailing cell width around it, which is why
-/// the title cell cannot reflow between rest and hover.
+/// The layout footprint of a hover-strip control: DSH's 24 pt button carries a
+/// -4 pt margin, so it occupies 16 pt in the row and the 32 pt row never grows.
+/// At rest a session row holds just the dots' cell; while its strip is shown the
+/// title cell hands the strip's reserved room over (DSH's flex row does the
+/// same when `rowResting` drops for `rowActions`).
 pub const SIDEBAR_ACTION_SLOT: f32 = 16.0;
+/// The hover strip's button: DSH's 24pt iconButton carries a -4pt margin, so
+/// each control occupies 16pt of the row and its 24pt hit box spills into the
+/// 13pt gap beside it (24 < 16 + 13, so neighbouring targets never overlap).
+pub const SIDEBAR_QUICK_SLOT: f32 = SIDEBAR_ACTION_SLOT;
+/// Gap between the hover strip's controls (DSH `rowActions` gap: 13px).
+pub const SIDEBAR_QUICK_GAP: f32 = 13.0;
+/// The hit target of one hover-strip control (DSH's 24pt iconButton).
+pub const SIDEBAR_QUICK_HIT: f32 = SIDEBAR_ACTION_BUTTON;
+/// The quick actions' glyph size: DSH's Archive/Pin/NewSession buttons draw
+/// their icons at 14 (the ellipsis trigger keeps the 16pt default).
+pub const SIDEBAR_QUICK_ICON: f32 = 14.0;
+/// The hover strip's width for `buttons` controls, right-aligned in the row.
+pub fn sidebar_quick_strip_width(buttons: usize) -> f32 {
+    let n = buttons.max(1) as f32;
+    n * SIDEBAR_QUICK_SLOT + (n - 1.0) * SIDEBAR_QUICK_GAP
+}
+/// One session row's hover strip: More, then Archive (or Unarchive), then the
+/// pin toggle. An archived row offers nothing to pin, and its archive toggle is
+/// the restore, so it carries two controls instead of three (DSH resolves the
+/// same list: `PinSessionRowButton` returns null on an archived row).
+pub fn session_quick_buttons(archived: bool) -> usize {
+    if archived {
+        2
+    } else {
+        3
+    }
+}
+/// One Workspace row's hover strip: its context-menu trigger (More) and the
+/// New-session button (DSH's `ProjectRow` `rowActions`: the menu trigger, then
+/// the create control).
+pub const WORKSPACE_QUICK_BUTTONS: usize = 2;
+
+/// The open-menu registry's id for a session row's tray. The window keeps one
+/// menu at a time (see [`crate::elements::OpenMenus`]), and the rows claim,
+/// report and close their trays through it like every other menu.
+pub const SESSION_TRAY_MENU_ID: MenuId = "sidebar.session_row";
+/// The open-menu registry's id for a workspace row's tray.
+pub const WORKSPACE_TRAY_MENU_ID: MenuId = "sidebar.workspace_row";
 /// The section header's icon buttons.
 pub const SIDEBAR_HEADER_BUTTON: f32 = 28.0;
 /// The section header's glyphs.
@@ -2272,6 +2312,9 @@ pub const SIDEBAR_ICON_TRIANGLE_DOWN: &str = "triangle-down-fill";
 pub const SIDEBAR_ICON_ELLIPSIS: &str = "dots-horizontal";
 pub const SIDEBAR_ICON_PIN_FILL: &str = "pin-fill";
 pub const SIDEBAR_ICON_PIN_OUTLINE: &str = "pin-outline";
+/// The hover strip's Archive control, and its restore face on an archived row.
+pub const SIDEBAR_ICON_ARCHIVE: &str = "archive";
+pub const SIDEBAR_ICON_UNARCHIVE: &str = "unarchive";
 pub const SIDEBAR_ICON_STATUS_RUNNING: &str = "status-running";
 pub const SIDEBAR_ICON_SLIDERS: &str = "sliders-two";
 pub const SIDEBAR_ICON_PROJECT_ADD: &str = "project-add";
@@ -2653,8 +2696,36 @@ impl SidebarIconButton {
     }
 }
 
-/// One group row: the folder (or the disclosure triangle while hovered) and the
-/// group's label. Clicking it toggles the group.
+/// One workspace group row's open-tray state: whether its menu is up and which
+/// row the keyboard highlight is on. The app keeps one of these per group so the
+/// tray survives the per-frame element rebuild (the session rows' [`AgentCardUi`]
+/// is the same contract).
+#[derive(Clone, Debug, Default)]
+pub struct SidebarGroupUi {
+    /// Whether the row's workspace tray is open.
+    pub menu_open: bool,
+    /// The tray row the keyboard highlight is on.
+    pub highlight: usize,
+}
+
+impl SidebarGroupUi {
+    /// Put the tray away and reset the keyboard highlight.
+    pub fn close_menu(&mut self) {
+        self.menu_open = false;
+        self.highlight = 0;
+    }
+}
+
+/// One workspace row: the folder (or the disclosure triangle while hovered) and
+/// the workspace's label. Clicking it toggles the group.
+///
+/// The hover strip is DSH's `ProjectRow` `rowActions`, in its order: the
+/// context-menu trigger (the three dots) and the New-session button (the
+/// `new-chat` glyph). Both sit in 16pt slots with a 13pt gap and a 24pt hit
+/// target, at the row's trailing edge; the label cell keeps clear of the strip
+/// while it is shown, so the row never grows past its 32pt band. The tray the
+/// dots open carries the workspace's own actions (Rename workspace / Delete
+/// workspace), supplied by the app exactly like the session row's tray rows.
 pub struct SidebarGroupRow {
     label: String,
     /// A fixed leading glyph (the Starred group's pin). `None` draws the
@@ -2665,12 +2736,50 @@ pub struct SidebarGroupRow {
     /// theme accent, the way DSH blues the folder of the active workspace.
     active: bool,
     hovered: bool,
+    /// The workspace tray's rows, supplied by the app (labels, icons,
+    /// separators, actions). Empty means no dots control is drawn.
+    menu_items: Vec<SidebarMenuItem>,
+    /// The tray's open/highlight state, kept by the app across rebuilds.
+    ui: Rc<RefCell<SidebarGroupUi>>,
+    /// The window's height, for the tray's flip-above clamp (0 = unknown).
+    viewport_height: f32,
     hover_key: Option<(Rc<RefCell<Option<String>>>, String)>,
     on_click: Option<Rc<RefCell<dyn FnMut()>>>,
+    /// The New-session control: start a conversation inside this workspace.
+    on_create_session: Option<Rc<RefCell<dyn FnMut()>>>,
+    /// Called when the strip opens the tray, so the app can close every other
+    /// menu it owns (one menu is open at a time).
+    on_menu_open: Option<Rc<RefCell<dyn FnMut()>>>,
     child: Option<Box<dyn Element>>,
-    state: InteractiveState,
+    tray: Option<Rc<RefCell<Box<dyn Element>>>>,
+    tray_size: Option<Vector2F>,
+    label_width: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
+    state: InteractiveState,
+}
+
+/// A session row's hover-strip controls, left to right (DSH's `rowActions`:
+/// the context-menu trigger, then the registered quick actions — Archive, then
+/// Pin).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionQuick {
+    /// The three-dot context-menu trigger.
+    More,
+    /// Archive the conversation (or restore an archived one).
+    Archive,
+    /// Toggle the conversation's pin.
+    Pin,
+}
+
+/// The workspace row's hover-strip controls, left to right (DSH's
+/// `ProjectRow`: the context-menu trigger, then the create control).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceQuick {
+    /// The three-dot context-menu trigger.
+    More,
+    /// Start a conversation in this workspace.
+    NewSession,
 }
 
 impl SidebarGroupRow {
@@ -2681,12 +2790,20 @@ impl SidebarGroupRow {
             expanded,
             active: false,
             hovered: false,
+            menu_items: Vec::new(),
+            ui: Rc::new(RefCell::new(SidebarGroupUi::default())),
+            viewport_height: 0.0,
             hover_key: None,
             on_click: None,
+            on_create_session: None,
+            on_menu_open: None,
             child: None,
-            state: InteractiveState::default(),
+            tray: None,
+            tray_size: None,
+            label_width: 0.0,
             size: None,
             origin: None,
+            state: InteractiveState::default(),
         }
     }
 
@@ -2703,7 +2820,8 @@ impl SidebarGroupRow {
         self
     }
 
-    /// Whether the row was hovered on the last frame (folder → triangle swap).
+    /// Whether the row was hovered on the last frame (folder → triangle swap
+    /// and the action strip's appearance).
     pub fn with_hovered(mut self, hovered: bool) -> Self {
         self.hovered = hovered;
         self
@@ -2720,6 +2838,40 @@ impl SidebarGroupRow {
 
     pub fn with_on_click<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_click = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// The tray rows, in order. The app owns every label and whether a row is
+    /// offered (a folder that is only implied by its sessions has no stored
+    /// workspace to delete, for example).
+    pub fn with_menu_items(mut self, items: Vec<SidebarMenuItem>) -> Self {
+        self.menu_items = items;
+        self
+    }
+
+    /// The app-owned open/highlight state for this row's tray.
+    pub fn with_ui(mut self, ui: Rc<RefCell<SidebarGroupUi>>) -> Self {
+        self.ui = ui;
+        self
+    }
+
+    /// The window's height, so a tray opened near the bottom edge flips above
+    /// its row instead of running under the window.
+    pub fn with_viewport_height(mut self, height: f32) -> Self {
+        self.viewport_height = height;
+        self
+    }
+
+    /// The New-session control: start a conversation inside this workspace.
+    pub fn with_on_create_session<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_create_session = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// Called when the dots open the tray (never while it closes), so the app
+    /// can close its other menus.
+    pub fn with_on_menu_open<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_menu_open = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -2763,10 +2915,265 @@ impl SidebarGroupRow {
         }
     }
 
-    fn ensure_root(&mut self, app: &AppContext) {
+    /// Whether the tray is up (it stays up while the pointer leaves the row).
+    fn menu_open(&self) -> bool {
+        self.ui.borrow().menu_open
+    }
+
+    /// Whether the row is showing its action strip: hover, or the tray it keeps
+    /// open after the pointer walked onto the tray (DSH's `menuOpen`).
+    fn showing_actions(&self) -> bool {
+        self.hovered || self.menu_open()
+    }
+
+    /// The hover strip's width for this row (0 when it is not shown).
+    fn strip_width(&self) -> f32 {
+        if self.showing_actions() && !self.menu_items.is_empty() {
+            sidebar_quick_strip_width(WORKSPACE_QUICK_BUTTONS)
+        } else {
+            0.0
+        }
+    }
+
+    /// The glyph box and the hit box of each strip control, left to right. The
+    /// glyphs sit inside the strip's reserved width; the 24pt hit boxes are
+    /// centred on them, spilling 4pt into the gaps (never into a neighbour).
+    fn quick_action_boxes(&self) -> Vec<(WorkspaceQuick, RectF, RectF)> {
+        let (Some(origin), Some(size)) = (self.origin, self.size) else {
+            return Vec::new();
+        };
+        if !self.showing_actions() {
+            return Vec::new();
+        }
+        let count = WORKSPACE_QUICK_BUTTONS;
+        let right = origin.x() + size.x - SIDEBAR_PAINT_INSET - SIDEBAR_ROW_PADDING_END;
+        let kinds = [WorkspaceQuick::More, WorkspaceQuick::NewSession];
+        let mut boxes = Vec::with_capacity(count);
+        for (index, kind) in kinds.into_iter().enumerate() {
+            let from_right = (count - 1 - index) as f32;
+            let glyph_x = right
+                - SIDEBAR_QUICK_SLOT
+                - from_right * (SIDEBAR_QUICK_SLOT + SIDEBAR_QUICK_GAP);
+            let glyph = rectf(
+                glyph_x,
+                origin.y() + (size.y - SIDEBAR_LEADING_SLOT_H) / 2.0,
+                SIDEBAR_QUICK_SLOT,
+                SIDEBAR_LEADING_SLOT_H,
+            );
+            let hit = rectf(
+                glyph_x + (SIDEBAR_QUICK_SLOT - SIDEBAR_QUICK_HIT) / 2.0,
+                origin.y() + (size.y - SIDEBAR_QUICK_HIT) / 2.0,
+                SIDEBAR_QUICK_HIT,
+                SIDEBAR_QUICK_HIT,
+            );
+            boxes.push((kind, glyph, hit));
+        }
+        boxes
+    }
+
+    /// The actionable tray row a highlight index lands on (separators are flags
+    /// on rows, not rows).
+    fn menu_row(&self, index: usize) -> usize {
+        let count = self.menu_items.len();
+        if count == 0 {
+            0
+        } else {
+            index.min(count - 1)
+        }
+    }
+
+    fn tray_bounds(&self) -> Option<RectF> {
+        let (origin, size) = (self.origin?, self.size?);
+        let tray_size = self.tray_size?;
+        self.tray.as_ref()?;
+        let below = origin.y() + size.y + TRAY_GAP;
+        let fits_below =
+            self.viewport_height <= 0.0 || below + tray_size.y <= self.viewport_height - 4.0;
+        let y = if fits_below {
+            below
+        } else {
+            (origin.y() - TRAY_GAP - tray_size.y).max(4.0)
+        };
+        let x =
+            (origin.x() + size.x - SIDEBAR_PAINT_INSET - tray_size.x).max(SIDEBAR_PAINT_INSET);
+        Some(rectf(x, y, tray_size.x, tray_size.y))
+    }
+
+    /// The 4pt corridor between the row and its tray: part of the tray's hit
+    /// area (and of the open-menu surface reported to the root view), so the
+    /// pointer can walk from the dots onto the tray without leaving the menu.
+    fn tray_corridor(&self) -> Option<RectF> {
+        let bounds = self.tray_bounds()?;
+        let row_bottom = match (self.origin, self.size) {
+            (Some(origin), Some(size)) => origin.y() + size.y,
+            _ => bounds.min_y(),
+        };
+        let (bridge_y, bridge_h) = if bounds.min_y() >= row_bottom {
+            (bounds.min_y() - TRAY_GAP, TRAY_GAP)
+        } else {
+            (bounds.max_y(), TRAY_GAP)
+        };
+        Some(rectf(bounds.min_x(), bridge_y, bounds.width(), bridge_h))
+    }
+
+    /// The close handle the window's open-menu registry runs: it is the tray's
+    /// own close, so Escape, an outside press and another row opening its menu
+    /// all land here.
+    fn tray_close(&self) -> MenuClose {
+        let ui = Rc::clone(&self.ui);
+        Rc::new(RefCell::new(move || ui.borrow_mut().close_menu()))
+    }
+
+    /// The dots' hit box, the registry's anchor for the tray.
+    fn tray_anchor(&self) -> Option<RectF> {
+        self.quick_action_boxes()
+            .into_iter()
+            .find(|(kind, _, _)| *kind == WorkspaceQuick::More)
+            .map(|(_, _, hit)| hit)
+    }
+
+    fn pointer_on_tray(&self, position: Vector2F) -> bool {
+        let Some(bounds) = self.tray_bounds() else {
+            return false;
+        };
+        contains(bounds, position)
+            || self
+                .tray_corridor()
+                .is_some_and(|corridor| contains(corridor, position))
+    }
+
+    fn menu_takes_event(&self, event: &DispatchedEvent) -> bool {
+        match pointer_position(event) {
+            None => true,
+            Some(position) => self.pointer_on_tray(position),
+        }
+    }
+
+    /// The tray's keys, answered only while it is open.
+    fn menu_key(&mut self, event: &DispatchedEvent) -> bool {
+        let DispatchedEvent::KeyDown { key, modifiers } = event else {
+            return false;
+        };
+        if modifiers.command || modifiers.ctrl || modifiers.alt || !self.menu_open() {
+            return false;
+        }
+        let count = self.menu_items.len();
+        if count == 0 {
+            return false;
+        }
+        match key.as_str() {
+            "ArrowUp" | "ArrowDown" => {
+                let current = self.menu_row(self.ui.borrow().highlight);
+                let next = if key == "ArrowDown" {
+                    (current + 1).min(count - 1)
+                } else {
+                    current.saturating_sub(1)
+                };
+                self.ui.borrow_mut().highlight = next;
+                true
+            }
+            "Enter" => {
+                let highlighted = self.menu_row(self.ui.borrow().highlight);
+                self.run_menu_row(highlighted);
+                true
+            }
+            "Escape" => {
+                self.ui.borrow_mut().close_menu();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn run_menu_row(&self, index: usize) {
+        self.ui.borrow_mut().close_menu();
+        if let Some(item) = self.menu_items.get(index) {
+            (item.run.borrow_mut())();
+        }
+    }
+
+    /// One tray row: the icon and label in the row's ink colour (error for the
+    /// destructive rows), hovering and highlighting like the session tray's.
+    fn menu_row_widget(
+        &self,
+        app: &AppContext,
+        item: &SidebarMenuItem,
+        selected: bool,
+    ) -> Box<dyn Element> {
+        let xs = app.theme.spacing_px(SpacingToken::Xs);
+        let ink = if item.danger {
+            ColorToken::Error
+        } else {
+            ColorToken::Muted
+        };
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(xs)
+            .with_child(
+                Icon::new(item.icon)
+                    .with_size(14.0)
+                    .with_theme_color(ink, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(item.label.clone())
+                    .with_theme_color(ink, app)
+                    .with_font_size(12.0)
+                    .finish(),
+            )
+            .finish();
+        let ui = Rc::clone(&self.ui);
+        let run = Rc::clone(&item.run);
+        HoverRow::new(row)
+            .with_padding(menu_row_padding(app))
+            .with_selected(selected)
+            .with_corner_radius(TRAY_RADIUS)
+            .with_on_click(move || {
+                ui.borrow_mut().close_menu();
+                (run.borrow_mut())();
+            })
+            .finish()
+    }
+
+    fn menu_separator(&self) -> Box<dyn Element> {
+        Box::new(SidebarMenuSeparator {
+            size: None,
+            origin: None,
+        })
+    }
+
+    /// Open or close the tray. Opening claims the window's one open menu (which
+    /// closes whatever was open) and tells the app, so every other menu it owns
+    /// goes away first (DSH's context-menu contract).
+    fn toggle_menu(&mut self, app: &AppContext) {
+        let open = self.menu_open();
+        if open {
+            // Through the registry, so the dismissal path is the same one
+            // Escape and an outside press take.
+            app.open_menus.close();
+            return;
+        }
+        if self.menu_items.is_empty() {
+            return;
+        }
+        app.open_menus.open(WORKSPACE_TRAY_MENU_ID, self.tray_close());
+        if let Some(callback) = self.on_menu_open.clone() {
+            (callback.borrow_mut())();
+        }
+        let mut ui = self.ui.borrow_mut();
+        if !ui.menu_open {
+            ui.menu_open = true;
+            ui.highlight = 0;
+        }
+    }
+
+    fn ensure_root(&mut self, app: &AppContext, label_width: Option<f32>) {
         if self.child.is_some() {
             return;
         }
+        let menu_open = self.menu_open();
+        let highlight = self.menu_row(self.ui.borrow().highlight);
         let (glyph, size, color) = self.glyph();
         let leading = sidebar_leading_slot(
             Icon::new(glyph)
@@ -2775,22 +3182,48 @@ impl SidebarGroupRow {
                 .finish(),
             size,
         );
-        let row = Flex::row()
+        let label = match label_width {
+            Some(width) if width.is_finite() => truncate_with_ellipsis(
+                &self.label,
+                SIDEBAR_TITLE_SIZE,
+                SIDEBAR_TITLE_LINE,
+                width,
+            ),
+            _ => self.label.clone(),
+        };
+        let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(SIDEBAR_LABEL_GAP)
             .with_child(leading)
             .with_child(
-                Text::new(self.label.clone())
-                    .with_font_size(SIDEBAR_TITLE_SIZE)
-                    .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
-                    .with_max_lines(1)
-                    .with_theme_color(ColorToken::Text, app)
+                Expanded::new(
+                    Padding::new(
+                        Text::new(label)
+                            .with_font_size(SIDEBAR_TITLE_SIZE)
+                            .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
+                            .with_max_lines(1)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                        EdgeInsets::new(0.0, 0.0, 0.0, 0.0),
+                    )
                     .finish(),
-            )
-            .finish();
+                )
+                .finish(),
+            );
+        // The strip's layout footprint: the label keeps clear of it while the
+        // controls are shown, exactly as DSH's flex row does.
+        let strip = self.strip_width();
+        if strip > 0.0 {
+            row = row.with_child(
+                Empty::new()
+                    .with_size(vec2f(strip, SIDEBAR_LEADING_SLOT_H))
+                    .finish(),
+            );
+        }
+        self.label_width = label_width.unwrap_or(0.0);
         self.child = Some(
-            Container::new(row)
+            Container::new(row.finish())
                 .with_padding(EdgeInsets::new(
                     SIDEBAR_PAINT_INSET + SIDEBAR_ROW_PADDING_START,
                     (SIDEBAR_ROW_HEIGHT - SIDEBAR_LEADING_SLOT_H) / 2.0,
@@ -2799,6 +3232,28 @@ impl SidebarGroupRow {
                 ))
                 .finish(),
         );
+        if menu_open {
+            let mut rows = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(app.theme.spacing_px(SpacingToken::Xs));
+            for (index, item) in self.menu_items.iter().enumerate() {
+                if index > 0 && item.separator_before {
+                    rows = rows.with_child(self.menu_separator());
+                }
+                rows = rows.with_child(self.menu_row_widget(app, item, highlight == index));
+            }
+            let tray = ConstrainedBox::new(
+                Container::new(rows.finish())
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                    .with_border(app.theme.color(ColorToken::Border).into())
+                    .with_corner_radius(SIDEBAR_MENU_RADIUS)
+                    .with_padding(EdgeInsets::new(0.0, TRAY_PADDING, 0.0, TRAY_PADDING))
+                    .finish(),
+            )
+            .with_max_width(TRAY_MAX_WIDTH)
+            .finish();
+            self.tray = Some(Rc::new(RefCell::new(tray)));
+        }
     }
 }
 
@@ -2809,9 +3264,39 @@ impl Element for SidebarGroupRow {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        self.ensure_root(app);
+        // The label cell the strip leaves: the content width less the leading
+        // slot, both gaps and the strip. A row that is not showing its strip
+        // gives the label the whole run, like DSH's flex row.
+        let strip = self.strip_width();
+        let trailing = if strip > 0.0 {
+            strip + SIDEBAR_LABEL_GAP
+        } else {
+            0.0
+        };
+        let label_width = if constraint.max.x.is_finite() {
+            Some(
+                (constraint.max.x
+                    - 2.0 * SIDEBAR_PAINT_INSET
+                    - SIDEBAR_ROW_PADDING_START
+                    - SIDEBAR_ROW_PADDING_END
+                    - SIDEBAR_LEADING_SLOT_W
+                    - SIDEBAR_LABEL_GAP
+                    - trailing)
+                    .max(0.0),
+            )
+        } else {
+            None
+        };
+        self.ensure_root(app, label_width);
         let size = self.child.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
+        self.tray_size = None;
+        if let Some(tray) = self.tray.as_ref() {
+            let tray_size = tray
+                .borrow_mut()
+                .layout(SizeConstraint::loose(vec2f(TRAY_MAX_WIDTH, 400.0)), ctx, app);
+            self.tray_size = Some(tray_size);
+        }
         size
     }
 
@@ -2828,6 +3313,7 @@ impl Element for SidebarGroupRow {
                 *cell = None;
             }
         }
+        let menu_open = self.menu_open();
         let card = rectf(
             origin.x + SIDEBAR_PAINT_INSET,
             origin.y,
@@ -2835,12 +3321,15 @@ impl Element for SidebarGroupRow {
             size.y,
         );
         if let Some(renderer) = ctx.renderer.as_mut() {
-            if self.hovered {
-                renderer.fill_rounded_rect(
-                    card,
-                    app.theme.color(ColorToken::Hover),
-                    SIDEBAR_ROW_RADIUS,
-                );
+            let fill = if menu_open {
+                Some(ColorToken::Selected)
+            } else if self.hovered {
+                Some(ColorToken::Hover)
+            } else {
+                None
+            };
+            if let Some(token) = fill {
+                renderer.fill_rounded_rect(card, app.theme.color(token), SIDEBAR_ROW_RADIUS);
             }
             renderer.clip_rect(card);
         }
@@ -2849,6 +3338,59 @@ impl Element for SidebarGroupRow {
         }
         if let Some(renderer) = ctx.renderer.as_mut() {
             renderer.pop_clip();
+        }
+        // The strip's glyphs, painted after the label so they sit above it and
+        // read muted at rest, primary while the pointer is on the control.
+        for (kind, glyph, hit) in self.quick_action_boxes() {
+            let icon = match kind {
+                WorkspaceQuick::More => SIDEBAR_ICON_ELLIPSIS,
+                WorkspaceQuick::NewSession => SIDEBAR_ICON_NEW_CHAT,
+            };
+            let icon_size = match kind {
+                WorkspaceQuick::More => SIDEBAR_ACTION_SLOT,
+                WorkspaceQuick::NewSession => SIDEBAR_QUICK_ICON,
+            };
+            let ink = if ctx.hovered(hit) {
+                ColorToken::Text
+            } else {
+                ColorToken::Muted
+            };
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                renderer.draw_icon(
+                    vec2f(
+                        glyph.min_x() + (SIDEBAR_QUICK_SLOT - icon_size) / 2.0,
+                        glyph.min_y() + (SIDEBAR_LEADING_SLOT_H - icon_size) / 2.0,
+                    ),
+                    icon,
+                    icon_size,
+                    app.theme.color(ink),
+                );
+            }
+        }
+        // The tray reports itself and its surface to the window's open-menu
+        // registry and paints inside a menu surface, so its own hover survives
+        // while the rest of the window is gated.
+        if let Some(tray_bounds) = self.tray_bounds() {
+            if let Some(tray) = self.tray.as_ref() {
+                let at = vec2f(tray_bounds.min_x(), tray_bounds.min_y());
+                let mut surfaces = vec![tray_bounds];
+                surfaces.extend(self.tray_corridor());
+                app.open_menus.report(
+                    WORKSPACE_TRAY_MENU_ID,
+                    self.tray_close(),
+                    surfaces,
+                    MenuPointer::Paint,
+                );
+                if let Some(anchor) = self.tray_anchor() {
+                    app.open_menus.report_anchor(WORKSPACE_TRAY_MENU_ID, anchor);
+                }
+                ctx.enter_menu_surface();
+                tray.borrow_mut().paint(at, ctx, app);
+                app.hover_chips
+                    .borrow_mut()
+                    .push_shared(at, Rc::clone(tray));
+                ctx.leave_menu_surface();
+            }
         }
     }
 
@@ -2866,10 +3408,78 @@ impl Element for SidebarGroupRow {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
-        let _ = app;
+        if self.child.is_none() {
+            self.ensure_root(app, None);
+        }
         let Some(bounds) = self.bounds() else {
             return false;
         };
+
+        if self.menu_key(event) {
+            return true;
+        }
+
+        // The strip's own controls take the press before the row does: the
+        // dots toggle the tray, the create control starts a conversation. Only
+        // the press acts (the release is consumed with it) so the row's own
+        // toggle never fires from the same click.
+        if self.showing_actions() {
+            if let Some(position) = pointer_position(event) {
+                for (kind, _, hit) in self.quick_action_boxes() {
+                    if !contains(hit, position) {
+                        continue;
+                    }
+                    match event {
+                        DispatchedEvent::MouseDown { .. } => {
+                            match kind {
+                                WorkspaceQuick::More => self.toggle_menu(app),
+                                WorkspaceQuick::NewSession => {
+                                    if let Some(callback) = self.on_create_session.clone() {
+                                        (callback.borrow_mut())();
+                                    }
+                                }
+                            }
+                            return true;
+                        }
+                        DispatchedEvent::MouseUp { .. } => return true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if self.menu_open() {
+            let takes_menu = self.menu_takes_event(event);
+            if takes_menu {
+                if let Some(tray) = self.tray.as_mut() {
+                    if tray.borrow_mut().dispatch_event(event, ctx, app) {
+                        return true;
+                    }
+                }
+            }
+            // A press on the row itself (outside the tray) dismisses the tray
+            // first: the row underneath is a toggle, and running it while the
+            // menu is up would read as two actions from one click. Only the
+            // press is handled here — moves still reach the rows, and a press
+            // anywhere else in the window is the root view's outside-dismiss
+            // (it runs the tray's reported close handle).
+            let press = matches!(
+                event,
+                DispatchedEvent::MouseDown { .. } | DispatchedEvent::MouseUp { .. }
+            );
+            let inside_row = pointer_position(event).is_some_and(|at| contains(bounds, at));
+            if press && inside_row {
+                self.ui.borrow_mut().close_menu();
+                return true;
+            }
+        }
+
+        if let Some(child) = self.child.as_mut() {
+            if child.dispatch_event(event, ctx, app) {
+                return true;
+            }
+        }
+
         let on_click = self.on_click.clone();
         let mut run = move || {
             if let Some(cb) = on_click.as_ref() {
@@ -2877,13 +3487,6 @@ impl Element for SidebarGroupRow {
             }
         };
         handle_mouse_event(&mut self.state, event, bounds, ctx, &mut run)
-    }
-}
-
-impl SidebarGroupRow {
-    /// Box the row for a parent's child list.
-    pub fn finish(self) -> Box<dyn Element> {
-        Box::new(self)
     }
 }
 
@@ -3173,6 +3776,12 @@ pub struct SidebarSessionRow {
     on_click: Option<Rc<RefCell<dyn FnMut()>>>,
     on_toggle_star: Option<Rc<RefCell<dyn FnMut()>>>,
     on_delete: Option<Rc<RefCell<dyn FnMut()>>>,
+    /// The hover strip's Pin control: toggle the conversation's pin through the
+    /// app's durable action. Absent on a row that offers no pin.
+    on_quick_pin: Option<Rc<RefCell<dyn FnMut()>>>,
+    /// The hover strip's Archive control: archive the conversation, or restore
+    /// it when the row is archived. Absent on a row that offers no archive.
+    on_quick_archive: Option<Rc<RefCell<dyn FnMut()>>>,
     child: Option<Box<dyn Element>>,
     tray: Option<Rc<RefCell<Box<dyn Element>>>>,
     tray_size: Option<Vector2F>,
@@ -3213,6 +3822,8 @@ impl SidebarSessionRow {
             on_click: None,
             on_toggle_star: None,
             on_delete: None,
+            on_quick_pin: None,
+            on_quick_archive: None,
             child: None,
             tray: None,
             tray_size: None,
@@ -3355,20 +3966,89 @@ impl SidebarSessionRow {
         self
     }
 
+    /// The hover strip's Pin control (DSH's `PinSessionRowButton`): toggle the
+    /// conversation's pin. Goble's pin is the store's durable `chats.starred`,
+    /// which is also the Starred section's membership, so the quick control and
+    /// the tray's Star row are one action.
+    pub fn with_on_quick_pin<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_quick_pin = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// The hover strip's Archive control (DSH's `ArchiveSessionRowButton`): an
+    /// archived row's control is the restore, so the app passes the action that
+    /// matches the row's state.
+    pub fn with_on_quick_archive<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_quick_archive = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// The row's action button box, once the row has been laid out.
-    fn action_bounds(&self) -> Option<RectF> {
-        let (origin, size) = (self.origin?, self.size?);
-        Some(rectf(
-            origin.x() + size.x - SIDEBAR_PAINT_INSET - SIDEBAR_ROW_PADDING_END
-                - SIDEBAR_ACTION_BUTTON,
-            origin.y() + (size.y - SIDEBAR_ACTION_BUTTON) / 2.0,
-            SIDEBAR_ACTION_BUTTON,
-            SIDEBAR_ACTION_BUTTON,
-        ))
+    /// The hover strip's controls, left to right, in DSH's order: the
+    /// context-menu trigger, the Archive toggle, then the Pin toggle. A control
+    /// whose action the app did not supply is not drawn (DSH's slot list
+    /// resolves the same way when access refuses a toggle).
+    fn quick_kinds(&self) -> Vec<SessionQuick> {
+        let mut kinds = vec![SessionQuick::More];
+        if self.on_quick_archive.is_some() {
+            kinds.push(SessionQuick::Archive);
+        }
+        if self.on_quick_pin.is_some() && !self.archived {
+            kinds.push(SessionQuick::Pin);
+        }
+        kinds
+    }
+
+    /// The trailing cell's width this frame: the resting cluster at rest, the
+    /// action strip's reserved width while it is shown. Hover therefore narrows
+    /// the title cell exactly as DSH's flex row does (the resting cells drop and
+    /// the strip takes their room), while the row stays 32pt and its neighbours
+    /// never move.
+    fn trailing_slot(&self) -> f32 {
+        if self.hovered || self.ui.borrow().menu_open {
+            sidebar_quick_strip_width(self.quick_kinds().len())
+        } else {
+            trailing_slot_width(&self.time_label, self.remote, self.starred)
+        }
+    }
+
+    /// The glyph box and the hit box of each strip control, left to right. The
+    /// glyphs sit inside the reserved strip; the 24pt hit boxes are centred on
+    /// them, spilling 4pt into the gaps and never into a neighbour.
+    fn quick_action_boxes(&self) -> Vec<(SessionQuick, RectF, RectF)> {
+        let (Some(origin), Some(size)) = (self.origin, self.size) else {
+            return Vec::new();
+        };
+        if !(self.hovered || self.ui.borrow().menu_open) {
+            return Vec::new();
+        }
+        let kinds = self.quick_kinds();
+        let count = kinds.len();
+        let right = origin.x() + size.x - SIDEBAR_PAINT_INSET - SIDEBAR_ROW_PADDING_END;
+        let mut boxes = Vec::with_capacity(count);
+        for (index, kind) in kinds.into_iter().enumerate() {
+            let from_right = (count - 1 - index) as f32;
+            let glyph_x = right
+                - SIDEBAR_QUICK_SLOT
+                - from_right * (SIDEBAR_QUICK_SLOT + SIDEBAR_QUICK_GAP);
+            let glyph = rectf(
+                glyph_x,
+                origin.y() + (size.y - SIDEBAR_LEADING_SLOT_H) / 2.0,
+                SIDEBAR_QUICK_SLOT,
+                SIDEBAR_LEADING_SLOT_H,
+            );
+            let hit = rectf(
+                glyph_x + (SIDEBAR_QUICK_SLOT - SIDEBAR_QUICK_HIT) / 2.0,
+                origin.y() + (size.y - SIDEBAR_QUICK_HIT) / 2.0,
+                SIDEBAR_QUICK_HIT,
+                SIDEBAR_QUICK_HIT,
+            );
+            boxes.push((kind, glyph, hit));
+        }
+        boxes
     }
 
     /// The tray rows, in their order. The explicit app-supplied list wins; the
@@ -3437,12 +4117,12 @@ impl SidebarSessionRow {
         Some(rectf(x, y, tray_size.x, tray_size.y))
     }
 
-    fn pointer_on_tray(&self, position: Vector2F) -> bool {
-        let Some(bounds) = self.tray_bounds() else {
-            return false;
-        };
-        // The 4pt gap between the row and the tray stays part of the tray's hit
-        // area, on whichever side the tray opened.
+    /// The 4pt corridor between the row and its tray, on whichever side the
+    /// tray opened: it stays part of the tray's hit area (and of the open-menu
+    /// surface the root view reports), so walking the pointer from the dots down
+    /// onto the tray never leaves the menu.
+    fn tray_corridor(&self) -> Option<RectF> {
+        let bounds = self.tray_bounds()?;
         let row_bottom = match (self.origin, self.size) {
             (Some(origin), Some(size)) => origin.y() + size.y,
             _ => bounds.min_y(),
@@ -3452,8 +4132,34 @@ impl SidebarSessionRow {
         } else {
             (bounds.max_y(), TRAY_GAP)
         };
-        let bridge = rectf(bounds.min_x(), bridge_y, bounds.width(), bridge_h);
-        contains(bounds, position) || contains(bridge, position)
+        Some(rectf(bounds.min_x(), bridge_y, bounds.width(), bridge_h))
+    }
+
+    /// The close handle the window's open-menu registry runs when another menu
+    /// opens, Escape is pressed, or a press lands outside: it is the tray's own
+    /// close, so every dismissal path lands here.
+    fn tray_close(&self) -> MenuClose {
+        let ui = Rc::clone(&self.ui);
+        Rc::new(RefCell::new(move || ui.borrow_mut().close_menu()))
+    }
+
+    /// The dots' hit box, which the registry treats as the tray's anchor: a
+    /// press there toggles the tray instead of reading as an outside dismiss.
+    fn tray_anchor(&self) -> Option<RectF> {
+        self.quick_action_boxes()
+            .into_iter()
+            .find(|(kind, _, _)| *kind == SessionQuick::More)
+            .map(|(_, _, hit)| hit)
+    }
+
+    fn pointer_on_tray(&self, position: Vector2F) -> bool {
+        let Some(bounds) = self.tray_bounds() else {
+            return false;
+        };
+        contains(bounds, position)
+            || self
+                .tray_corridor()
+                .is_some_and(|corridor| contains(corridor, position))
     }
 
     fn menu_takes_event(&self, event: &DispatchedEvent) -> bool {
@@ -3605,7 +4311,7 @@ impl SidebarSessionRow {
         // target is painted from `action_bounds` and never participates in
         // layout). Content is therefore always 20pt tall and the row always 32,
         // and the title cell — with its baked ellipsis — never reflows.
-        let slot = trailing_slot_width(&self.time_label, self.remote, self.starred);
+        let slot = self.trailing_slot();
         let trailing: Box<dyn Element> = if self.hovered || menu_open {
             // The glyph itself is painted in `paint`, where the pointer's own
             // position is known: Muted at rest, Text while the button is hovered.
@@ -3784,7 +4490,7 @@ impl Element for SidebarSessionRow {
         // One trailing width in every state, so the title cell (and the baked
         // ellipsis built from `title_width`) cannot reflow between rest, hover
         // and tray-open.
-        let trailing_width = trailing_slot_width(&self.time_label, self.remote, self.starred);
+        let trailing_width = self.trailing_slot();
         let title_width = if constraint.max.x.is_finite() {
             Some(
                 (constraint.max.x
@@ -3913,26 +4619,42 @@ impl Element for SidebarSessionRow {
         if let Some(child) = self.child.as_mut() {
             child.paint(origin, ctx, app);
         }
-        // The hover action button's glyph: muted until the pointer is on it.
-        if self.hovered || menu_open {
-            if let Some(action) = self.action_bounds() {
-                let ink = if ctx.hovered(action) {
-                    ColorToken::Text
-                } else {
-                    ColorToken::Muted
-                };
-                if let Some(renderer) = ctx.renderer.as_mut() {
-                    let glyph_inset = (SIDEBAR_ACTION_BUTTON - SIDEBAR_ACTION_SLOT) / 2.0;
-                    renderer.draw_icon(
-                        vec2f(
-                            action.min_x() + glyph_inset,
-                            action.min_y() + glyph_inset,
-                        ),
-                        SIDEBAR_ICON_ELLIPSIS,
-                        SIDEBAR_ACTION_SLOT,
-                        app.theme.color(ink),
-                    );
-                }
+        // The hover strip's glyphs: muted until the pointer is on one, primary
+        // while it is (DSH's `iconButton` ink ramp). Painted after the row's own
+        // content so they sit over the cell the title keeps clear of.
+        for (kind, glyph, hit) in self.quick_action_boxes() {
+            let (icon, icon_size) = match kind {
+                SessionQuick::More => (SIDEBAR_ICON_ELLIPSIS, SIDEBAR_ACTION_SLOT),
+                SessionQuick::Archive => (
+                    if self.archived {
+                        SIDEBAR_ICON_UNARCHIVE
+                    } else {
+                        SIDEBAR_ICON_ARCHIVE
+                    },
+                    SIDEBAR_QUICK_ICON,
+                ),
+                SessionQuick::Pin => (
+                    if self.starred {
+                        SIDEBAR_ICON_PIN_FILL
+                    } else {
+                        SIDEBAR_ICON_PIN_OUTLINE
+                    },
+                    SIDEBAR_QUICK_ICON,
+                ),
+            };
+            let ink = if ctx.hovered(hit) {
+                ColorToken::Text
+            } else {
+                ColorToken::Muted
+            };
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                let inset = (SIDEBAR_QUICK_SLOT - icon_size) / 2.0;
+                renderer.draw_icon(
+                    vec2f(glyph.min_x() + inset, glyph.min_y() + inset),
+                    icon,
+                    icon_size,
+                    app.theme.color(ink),
+                );
             }
         }
         if let Some(renderer) = ctx.renderer.as_mut() {
@@ -3978,14 +4700,30 @@ impl Element for SidebarSessionRow {
                 .push_shared(at, Rc::clone(card));
         }
         // The tray, queued into the frame's top layer so nothing painted after
-        // this row can cover it.
+        // this row can cover it. While it is up it reports itself and its
+        // surface to the window's open-menu registry, and paints inside a menu
+        // surface so its own hover survives the gate the root view applies to
+        // everything the menu covers.
         if let Some(tray_bounds) = self.tray_bounds() {
             if let Some(tray) = self.tray.as_ref() {
                 let at = vec2f(tray_bounds.min_x(), tray_bounds.min_y());
+                let mut surfaces = vec![tray_bounds];
+                surfaces.extend(self.tray_corridor());
+                app.open_menus.report(
+                    SESSION_TRAY_MENU_ID,
+                    self.tray_close(),
+                    surfaces,
+                    MenuPointer::Paint,
+                );
+                if let Some(anchor) = self.tray_anchor() {
+                    app.open_menus.report_anchor(SESSION_TRAY_MENU_ID, anchor);
+                }
+                ctx.enter_menu_surface();
                 tray.borrow_mut().paint(at, ctx, app);
                 app.hover_chips
                     .borrow_mut()
                     .push_shared(at, Rc::clone(tray));
+                ctx.leave_menu_surface();
             }
         }
     }
@@ -4015,23 +4753,48 @@ impl Element for SidebarSessionRow {
             return true;
         }
 
-        // A press on the action button opens or closes the tray; the tray's own
-        // rows take their events while it is open. Only the press toggles it:
-        // the matching release arrives on the same target while the tray is
-        // already open, so it is consumed without toggling (and without falling
-        // through to the row's own click).
-        if let Some(action) = self.action_bounds() {
-            let showing_actions = self.hovered || self.ui.borrow().menu_open;
-            if showing_actions && pointer_inside(event, action) {
+        // The hover strip's own controls take the press before the row does:
+        // the dots open or close the tray, Archive and Pin run their durable
+        // actions. Only the press acts (the release is consumed with it), so the
+        // row's own click never fires from the same click and the tray never
+        // toggles twice.
+        if self.hovered || self.ui.borrow().menu_open {
+            for (kind, _, hit) in self.quick_action_boxes() {
+                if !pointer_inside(event, hit) {
+                    continue;
+                }
                 match event {
                     DispatchedEvent::MouseDown { .. } => {
-                        let mut ui = self.ui.borrow_mut();
-                        if ui.menu_open {
-                            ui.close_menu();
-                        } else {
-                            ui.menu_open = true;
-                            // Opening the tray puts the highlight on its first row.
-                            ui.highlight = 0;
+                        match kind {
+                            SessionQuick::More => {
+                                let open = self.ui.borrow().menu_open;
+                                if open {
+                                    // Closing through the registry runs the same
+                                    // close handle every other dismissal path
+                                    // uses (and drops the ui borrow first, so the
+                                    // handle can take it).
+                                    app.open_menus.close();
+                                } else {
+                                    app.open_menus.open(SESSION_TRAY_MENU_ID, self.tray_close());
+                                    let mut ui = self.ui.borrow_mut();
+                                    if !ui.menu_open {
+                                        ui.menu_open = true;
+                                        // Opening the tray puts the highlight on
+                                        // its first row.
+                                        ui.highlight = 0;
+                                    }
+                                }
+                            }
+                            SessionQuick::Archive => {
+                                if let Some(callback) = self.on_quick_archive.clone() {
+                                    (callback.borrow_mut())();
+                                }
+                            }
+                            SessionQuick::Pin => {
+                                if let Some(callback) = self.on_quick_pin.clone() {
+                                    (callback.borrow_mut())();
+                                }
+                            }
                         }
                         return true;
                     }
@@ -4954,9 +5717,37 @@ mod sidebar_workspaces_tests {
 
     /// A bare row, not boxed, so the private `title_width` can be read.
     fn session_row(time: &str, remote: bool, starred: bool) -> SidebarSessionRow {
+        // The app's rows carry the hover strip's quick actions, so the fixtures
+        // do too: the strip is then DSH's three controls (More, Archive, Pin).
         SidebarSessionRow::new("c1", "Redesign the sidebar", time)
             .with_remote(remote)
             .with_starred(starred)
+            .with_on_quick_pin(|| {})
+            .with_on_quick_archive(|| {})
+    }
+
+    fn default_group_ui() -> Rc<RefCell<SidebarGroupUi>> {
+        Rc::new(RefCell::new(SidebarGroupUi::default()))
+    }
+
+    /// One workspace row with the app's tray rows and create control, the shape
+    /// `sidebar.rs` builds. The tray state is passed in because the app builds a
+    /// fresh row every frame and the row caches its child after its first
+    /// layout — so a test that opens the tray re-renders a row built over the
+    /// same cell, exactly like the app's next frame.
+    fn workspace_row(hovered: bool, ui: Rc<RefCell<SidebarGroupUi>>) -> SidebarGroupRow {
+        SidebarGroupRow::new("goble", true)
+            .with_hovered(hovered)
+            .with_ui(ui)
+            .with_viewport_height(1000.0)
+            .with_menu_items(vec![
+                SidebarMenuItem::new("Rename workspace", "edit", || {}),
+                SidebarMenuItem::new("Delete workspace", "trash-02", || {})
+                    .with_separator_before(true)
+                    .with_danger(true),
+            ])
+            .with_on_create_session(|| {})
+            .with_on_menu_open(|| {})
     }
 
     fn lay_out_row(row: &mut dyn Element, width: f32) -> Vector2F {
@@ -5063,11 +5854,13 @@ mod sidebar_workspaces_tests {
         }
     }
 
-    /// The title cell keeps exactly one width from rest through hover and the
-    /// tray: the trailing slot is the same in every state, so the baked ellipsis
-    /// cannot reflow (the measured cause of the old +5…+55pt shift).
+    /// The title cell keeps the resting cluster's slot at rest and hands that
+    /// room to the hover strip while it is shown — DSH's own row behaviour (its
+    /// `rowActions` appear as the `rowResting` cells drop, so the title clips
+    /// instead of the row moving). The row stays 32pt and every row below keeps
+    /// its place; only which cell owns the trailing room changes.
     #[test]
-    fn the_title_cell_keeps_one_width_from_rest_through_hover_and_the_tray() {
+    fn the_title_cell_gives_its_trailing_room_to_the_hover_strip() {
         for (remote, starred) in [(false, false), (true, false), (false, true), (true, true)] {
             for time in ["now", "4min", "17h", "2d", "3mo", "1y"] {
                 let mut rest = session_row(time, remote, starred);
@@ -5087,20 +5880,34 @@ mod sidebar_workspaces_tests {
                     (rest_size.x - 284.0).abs() < 0.01,
                     "the row takes the sidebar's width: {rest_size:?}"
                 );
-                assert_eq!(
-                    rest.title_width, hover.title_width,
-                    "[{time} remote={remote} starred={starred}] rest and hover title widths match"
-                );
-                assert_eq!(
-                    rest.title_width, menu.title_width,
-                    "[{time} remote={remote} starred={starred}] rest and tray-open title widths match"
-                );
                 assert!(
                     (rest.title_width - expected_title_width(time, remote, starred, 284.0))
                         .abs()
                         < 0.01,
-                    "[{time} remote={remote} starred={starred}] the one slot in the formula: {}",
+                    "[{time} remote={remote} starred={starred}] the resting slot in the formula: {}",
                     rest.title_width
+                );
+                // The app's rows carry the Archive and Pin controls too, so the
+                // hover strip is three buttons; the tray-open row keeps the same
+                // strip (the menu holds the row's hover state, DSH's menuOpen).
+                let strip = sidebar_quick_strip_width(3);
+                let hover_expected = (284.0
+                    - 2.0 * SIDEBAR_PAINT_INSET
+                    - SIDEBAR_ROW_PADDING_START
+                    - SIDEBAR_ROW_PADDING_END
+                    - SIDEBAR_LEADING_SLOT_W
+                    - SIDEBAR_LABEL_GAP
+                    - 6.0
+                    - strip)
+                    .max(0.0);
+                assert!(
+                    (hover.title_width - hover_expected).abs() < 0.01,
+                    "[{time} remote={remote} starred={starred}] the hover strip owns the trailing room: {}",
+                    hover.title_width
+                );
+                assert_eq!(
+                    hover.title_width, menu.title_width,
+                    "[{time} remote={remote} starred={starred}] the tray keeps the strip shown"
                 );
             }
         }
@@ -5485,5 +6292,202 @@ mod sidebar_workspaces_tests {
             key: key.to_string(),
             modifiers: crate::event::ModifiersState::none(),
         }
+    }
+
+    /// One workspace row's hover strip is DSH's `ProjectRow` pair: the
+    /// context-menu trigger and the New-session control, in that order, and the
+    /// create control runs the app's callback without opening the tray.
+    #[test]
+    fn a_workspace_row_draws_its_hover_strip_and_runs_its_controls() {
+        let app = app();
+        let mut row: Box<dyn Element> = workspace_row(true, default_group_ui()).finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let drawn: Vec<String> = icons(&commands);
+        assert!(
+            drawn.iter().any(|name| name == SIDEBAR_ICON_ELLIPSIS),
+            "the row draws its context-menu trigger: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|name| name == SIDEBAR_ICON_NEW_CHAT),
+            "the row draws its New-session control: {drawn:?}"
+        );
+        // DSH's order: the trigger first, the create control last.
+        let origin = |name: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawIcon { name: drawn, origin, .. } if drawn == name => {
+                        Some(*origin)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the row draws {name:?}: {commands:?}"))
+        };
+        assert!(
+            origin(SIDEBAR_ICON_ELLIPSIS).x < origin(SIDEBAR_ICON_NEW_CHAT).x,
+            "the menu trigger leads the create control"
+        );
+
+        // A press on the New-session control runs its action and leaves the
+        // tray closed.
+        let created = Rc::new(RefCell::new(false));
+        let flag = Rc::clone(&created);
+        let mut row: Box<dyn Element> = SidebarGroupRow::new("goble", true)
+            .with_hovered(true)
+            .with_ui(Rc::new(RefCell::new(SidebarGroupUi::default())))
+            .with_menu_items(vec![SidebarMenuItem::new("Rename workspace", "edit", || {})])
+            .with_on_create_session(move || *flag.borrow_mut() = true)
+            .finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let new_chat = origin(SIDEBAR_ICON_NEW_CHAT);
+        let at = new_chat + vec2f(8.0, 8.0);
+        let mut ctx = EventContext::default();
+        for event in [
+            DispatchedEvent::MouseDown { position: at, button: 0 },
+            DispatchedEvent::MouseUp { position: at, button: 0 },
+        ] {
+            row.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(*created.borrow(), "the create control runs the app's action");
+    }
+
+    /// The workspace tray is the app-supplied list (Rename, then Delete behind
+    /// a separator); the dots toggle it, its rows run, and the row keeps the
+    /// strip on screen while the menu is up.
+    #[test]
+    fn a_workspace_row_opens_its_tray_and_keeps_the_strip_shown() {
+        let app = app();
+        let ui = default_group_ui();
+        let mut row: Box<dyn Element> = workspace_row(true, Rc::clone(&ui)).finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let dots = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. } if name == SIDEBAR_ICON_ELLIPSIS => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the hovered row draws its dots");
+        let at = dots + vec2f(8.0, 8.0);
+        let mut ctx = EventContext::default();
+        for event in [
+            DispatchedEvent::MouseDown { position: at, button: 0 },
+            DispatchedEvent::MouseUp { position: at, button: 0 },
+        ] {
+            row.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(ui.borrow().menu_open, "the dots open the workspace tray");
+        // The app rebuilds the row every frame: build the frame the next one
+        // would, over the same tray cell.
+        let mut row: Box<dyn Element> = workspace_row(true, Rc::clone(&ui)).finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let labels = texts(&commands);
+        assert!(
+            labels.iter().any(|(text, size)| text == "Rename workspace" && (*size - 12.0).abs() < 0.01),
+            "the tray lists its rows: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|(text, _)| text == "Delete workspace"),
+            "the tray lists the destructive row: {labels:?}"
+        );
+
+        // The tray-open row keeps its strip: DSH's `menuOpen` keeps the
+        // affordances up, so the dots do not vanish from under the pointer.
+        let open = render_element(
+            &mut workspace_row(
+                true,
+                Rc::new(RefCell::new(SidebarGroupUi {
+                    menu_open: true,
+                    highlight: 0,
+                })),
+            )
+            .finish(),
+            vec2f(284.0, 1000.0),
+            &app,
+        );
+        assert!(
+            icons(&open).iter().any(|name| name == SIDEBAR_ICON_ELLIPSIS),
+            "the open row still draws its strip"
+        );
+    }
+
+    /// A conversation row's hover strip is DSH's three controls in order — the
+    /// tray trigger, Archive, Pin — and both quick actions run their callbacks
+    /// without opening the tray.
+    #[test]
+    fn a_session_row_draws_archive_and_pin_and_runs_them() {
+        let app = app();
+        let mut row: Box<dyn Element> = session_row("4min", false, false)
+            .with_hovered(true)
+            .finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let drawn: Vec<String> = icons(&commands);
+        let position = |name: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawIcon { name: drawn, origin, .. } if drawn == name => {
+                        Some(*origin)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the row draws {name:?}: {commands:?}"))
+        };
+        for icon in [SIDEBAR_ICON_ELLIPSIS, SIDEBAR_ICON_ARCHIVE, SIDEBAR_ICON_PIN_OUTLINE] {
+            assert!(drawn.iter().any(|name| name == icon), "the strip draws {icon:?}");
+        }
+        assert!(position(SIDEBAR_ICON_ELLIPSIS).x < position(SIDEBAR_ICON_ARCHIVE).x);
+        assert!(position(SIDEBAR_ICON_ARCHIVE).x < position(SIDEBAR_ICON_PIN_OUTLINE).x);
+
+        let archived = Rc::new(RefCell::new(false));
+        let pinned = Rc::new(RefCell::new(false));
+        let archive_flag = Rc::clone(&archived);
+        let pin_flag = Rc::clone(&pinned);
+        let mut row: Box<dyn Element> = SidebarSessionRow::new("c1", "Work", "4min")
+            .with_hovered(true)
+            .with_on_quick_archive(move || *archive_flag.borrow_mut() = true)
+            .with_on_quick_pin(move || *pin_flag.borrow_mut() = true)
+            .finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let pin = position(SIDEBAR_ICON_PIN_OUTLINE);
+        let mut ctx = EventContext::default();
+        for event in [
+            DispatchedEvent::MouseDown { position: pin + vec2f(8.0, 8.0), button: 0 },
+            DispatchedEvent::MouseUp { position: pin + vec2f(8.0, 8.0), button: 0 },
+        ] {
+            row.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(*pinned.borrow(), "the Pin control runs its action");
+
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let archive = position(SIDEBAR_ICON_ARCHIVE);
+        for event in [
+            DispatchedEvent::MouseDown { position: archive + vec2f(8.0, 8.0), button: 0 },
+            DispatchedEvent::MouseUp { position: archive + vec2f(8.0, 8.0), button: 0 },
+        ] {
+            row.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(*archived.borrow(), "the Archive control runs its action");
+        let _ = commands;
+    }
+
+    /// An archived conversation row offers the restore instead of Archive and
+    /// no Pin at all (DSH resolves the same list for an archived session).
+    #[test]
+    fn an_archived_session_row_offers_only_the_restore() {
+        let app = app();
+        let mut row: Box<dyn Element> = SidebarSessionRow::new("c1", "Work", "4min")
+            .with_archived(true)
+            .with_hovered(true)
+            .with_on_quick_archive(|| {})
+            .with_on_quick_pin(|| {})
+            .finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let drawn: Vec<String> = icons(&commands);
+        assert!(drawn.iter().any(|name| name == SIDEBAR_ICON_UNARCHIVE));
+        assert!(!drawn.iter().any(|name| name == SIDEBAR_ICON_ARCHIVE));
+        assert!(!drawn.iter().any(|name| name == SIDEBAR_ICON_PIN_OUTLINE));
+        assert!(!drawn.iter().any(|name| name == SIDEBAR_ICON_PIN_FILL));
     }
 }

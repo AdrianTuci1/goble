@@ -211,8 +211,8 @@ fn agents_view(
 
     // The old "New conversation" row, rounded to the list's anatomy: a 32pt
     // full-width action under the search field (README: the owner wants the
-    // affordance kept, just restyled). The Workspaces header's square-plus stays
-    // as the second entry point; both call the same create action.
+    // affordance kept, just restyled). Starting a conversation is this row's
+    // job; the Workspaces header's square-plus adds a workspace instead.
     let new_conversation = Padding::new(
         new_conversation_row(state, actions),
         EdgeInsets::new(0.0, sm, 0.0, 0.0),
@@ -252,9 +252,9 @@ fn agents_view(
 /// container's), while its glyph and label sit in the same leading column as
 /// the list rows' so the sidebar reads as one grid.
 ///
-/// It calls the same `on_create_submit` the header's square-plus does; the
-/// hover flag lives in the shared sidebar hover cell so the highlight survives
-/// the per-frame rebuild.
+/// It calls `on_create_submit` (the "start a conversation" action); the hover
+/// flag lives in the shared sidebar hover cell so the highlight survives the
+/// per-frame rebuild.
 fn new_conversation_row(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
     let on_create = actions.on_create_submit.clone();
     SidebarActionRow::new(SIDEBAR_ICON_NEW_CHAT, "New conversation")
@@ -356,6 +356,9 @@ fn workspaces_header(app: &AppContext, state: &UiSnapshot, actions: &UiActions) 
         // for the composer menus).
         .with_selected_color(ColorToken::Focus)
         .with_position(PopupMenuPosition::BelowEnd)
+        // The view-options panel is a menu like every other: the window's
+        // open-menu registry knows it under this id.
+        .with_menu_id("sidebar.view-options")
         .with_on_select(move |index| match index {
             0 => *menu_flat.borrow_mut() = false,
             1 => *menu_flat.borrow_mut() = true,
@@ -369,14 +372,18 @@ fn workspaces_header(app: &AppContext, state: &UiSnapshot, actions: &UiActions) 
         .finish();
     let settings = DeferredOverlay::new(settings, menu_open).finish();
 
-    let on_create = actions.on_create_submit.clone();
+    // The Workspaces header's "+" adds a WORKSPACE, not a conversation (DSH's
+    // `workspace.add`): the click opens the platform's directory picker, and the
+    // picked folder becomes a row under this header. The separate "New
+    // conversation" row above the header is what starts a conversation.
+    let on_add_workspace = actions.on_add_workspace.clone();
     let add = SidebarIconButton::new(SIDEBAR_ICON_PROJECT_ADD)
         .with_button_size(SIDEBAR_HEADER_BUTTON)
         .with_icon_size(SIDEBAR_HEADER_ICON)
         .with_radius(12.0)
         .with_hovered(is_hovered(state, KEY_HEADER_NEW))
         .with_hover_cell(state.sidebar_hover_row.clone(), KEY_HEADER_NEW)
-        .with_on_click(move || (on_create.borrow_mut())())
+        .with_on_click(move || (on_add_workspace.borrow_mut())())
         .finish();
 
     let row = Flex::row()
@@ -391,7 +398,7 @@ fn workspaces_header(app: &AppContext, state: &UiSnapshot, actions: &UiActions) 
                 .finish(),
         )
         .with_child(
-            Tooltip::new(add, "New conversation")
+            Tooltip::new(add, "Add workspace")
                 .with_position(TooltipPosition::Below)
                 .finish(),
         )
@@ -452,6 +459,18 @@ fn session_row(
 
     let click_id = entry.id.clone();
     let on_select = actions.on_select_conversation.clone();
+    // The hover strip's quick actions (DSH's `rowActions`): Pin and Archive,
+    // wired to the same durable actions the tray's rows use. The pin is the
+    // store's `chats.starred` (Goble's pin), so this and the Star row are one
+    // action; an archived row's archive control is its restore.
+    let quick_pin = actions.on_toggle_star.clone();
+    let quick_pin_id = entry.id.clone();
+    let quick_archive = if entry.archived {
+        actions.on_unarchive_conversation.clone()
+    } else {
+        actions.on_archive_conversation.clone()
+    };
+    let quick_archive_id = entry.id.clone();
 
     // The drop handler writes the group's new order: the displayed ids are
     // captured here, so a drop reorders exactly the list the user saw.
@@ -497,6 +516,8 @@ fn session_row(
         .with_drag(state.sidebar_drag.clone())
         .with_drop_handler(drop_handler)
         .with_on_click(move || (on_select.borrow_mut())(click_id.clone()))
+        .with_on_quick_pin(move || (quick_pin.borrow_mut())(quick_pin_id.clone()))
+        .with_on_quick_archive(move || (quick_archive.borrow_mut())(quick_archive_id.clone()))
         // Archived rows keep the row's geometry but read as history; the app
         // blocks opening them and their menu has no Star/Archive rows.
         .with_archived(entry.archived)
@@ -586,7 +607,52 @@ fn session_menu_items(
     items
 }
 
+/// What a workspace row's controls act on: the directory behind the section
+/// (the stored Workspace's path, or the directory the section's sessions
+/// imply) and whether the user actually added it. A folder that only exists
+/// through its conversations has no stored row to delete, so its tray offers no
+/// Delete.
+#[derive(Clone, Debug)]
+struct WorkspaceSection {
+    folder: String,
+    path: String,
+    title: String,
+    stored: bool,
+}
+
+/// The DSH workspace menu for one row, in DSH's order: Rename workspace, then —
+/// for a stored Workspace — Delete workspace (danger, behind a separator).
+fn workspace_menu_items(
+    actions: &UiActions,
+    workspace: &WorkspaceSection,
+) -> Vec<SidebarMenuItem> {
+    let rename = actions.on_sidebar_workspace_rename_start.clone();
+    let path = workspace.path.clone();
+    let title = workspace.title.clone();
+    let mut items = vec![SidebarMenuItem::new("Rename workspace", "edit", move || {
+        (rename.borrow_mut())(path.clone(), title.clone())
+    })];
+    if workspace.stored {
+        let delete = actions.on_sidebar_workspace_delete.clone();
+        let path = workspace.path.clone();
+        items.push(
+            SidebarMenuItem::new("Delete workspace", "trash-02", move || {
+                (delete.borrow_mut())(path.clone())
+            })
+            .with_separator_before(true)
+            .with_danger(true),
+        );
+    }
+    items
+}
+
 /// A group row plus its expanded rows, as one block.
+///
+/// `workspace` is the directory behind the row when the row is a Workspace: its
+/// hover strip then carries the context-menu trigger (Rename / Delete, supplied
+/// by [`workspace_menu_items`]) and the New-session control, and its tray state
+/// is app-owned. The Starred block is not a Workspace and passes `None`.
+#[allow(clippy::too_many_arguments)]
 fn group_block(
     app: &AppContext,
     state: &UiSnapshot,
@@ -597,6 +663,7 @@ fn group_block(
     shown_ids: &std::collections::HashSet<&str>,
     fixed_glyph: Option<&'static str>,
     contains_selected: bool,
+    workspace: Option<&WorkspaceSection>,
 ) -> Box<dyn Element> {
     let collapsed = state
         .collapsed_sections
@@ -612,6 +679,18 @@ fn group_block(
         .with_on_click(move || (on_toggle.borrow_mut())(toggle_key.clone()));
     if let Some(icon) = fixed_glyph {
         header = header.with_leading_icon(icon);
+    }
+    if let Some(workspace) = workspace {
+        let menu = actions.on_sidebar_workspace_menu.clone();
+        let menu_section = section.to_string();
+        let create = actions.on_sidebar_workspace_new_session.clone();
+        let create_path = workspace.path.clone();
+        header = header
+            .with_ui(state.group_ui(section))
+            .with_viewport_height(state.window_size.y)
+            .with_menu_items(workspace_menu_items(actions, workspace))
+            .with_on_create_session(move || (create.borrow_mut())(create_path.clone()))
+            .with_on_menu_open(move || (menu.borrow_mut())(Some(menu_section.clone())));
     }
     let mut block = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -825,17 +904,50 @@ fn workspaces_list(
             &all_shown,
             Some(SIDEBAR_ICON_PIN_FILL),
             contains_selected,
+            None,
         ));
     }
 
-    // Folder groups, alphabetical.
-    let mut folders: Vec<String> = Vec::new();
+    // Folder groups, alphabetical, with the stored Workspaces folded in: a
+    // directory the user added with the header's "+" draws its row even before
+    // a conversation has run in it (that is the whole point of adding it), and
+    // a folder the conversations imply matches its stored row by name so the
+    // user's rename shows.
+    let mut sections: Vec<WorkspaceSection> = Vec::new();
     for entry in &visible {
-        if !folders.iter().any(|folder| folder == &entry.folder) {
-            folders.push(entry.folder.clone());
+        if sections.iter().any(|row| row.folder == entry.folder) {
+            continue;
         }
+        let stored = state
+            .sidebar_workspaces
+            .iter()
+            .find(|workspace| workspace.folder() == entry.folder);
+        let path = stored
+            .map(|workspace| workspace.path.clone())
+            .unwrap_or_else(|| card_directory(state, entry));
+        let title = stored
+            .map(|workspace| workspace.display_title())
+            .unwrap_or_else(|| entry.folder.clone());
+        sections.push(WorkspaceSection {
+            folder: entry.folder.clone(),
+            path,
+            title,
+            stored: stored.is_some(),
+        });
     }
-    folders.sort();
+    for workspace in &state.sidebar_workspaces {
+        let folder = workspace.folder();
+        if sections.iter().any(|row| row.folder == folder) {
+            continue;
+        }
+        sections.push(WorkspaceSection {
+            folder,
+            path: workspace.path.clone(),
+            title: workspace.display_title(),
+            stored: true,
+        });
+    }
+    sections.sort_by(|left, right| left.folder.cmp(&right.folder));
     if flat_list {
         // One flat run of sessions instead of the project blocks; the manual
         // order keys off the flat section, and recency otherwise.
@@ -874,18 +986,21 @@ fn workspaces_list(
         }
         blocks.push(flat_block.finish());
     }
-    for folder in folders.iter().filter(|_| !flat_list) {
+    for workspace in sections.iter().filter(|_| !flat_list) {
         let entries: Vec<&ConversationEntry> = visible
             .iter()
-            .filter(|entry| &entry.folder == folder)
+            .filter(|entry| entry.folder == workspace.folder)
             .copied()
             .collect();
-        let section = folder_section(folder);
+        let section = folder_section(&workspace.folder);
         let collapsed = state.collapsed_sections.iter().any(|key| key == &section);
         let draws_a_card = entries
             .iter()
             .any(|entry| shown_ids.contains(entry.id.as_str()));
-        if !collapsed && !draws_a_card {
+        // A folder that only exists through its sessions disappears when the
+        // digest hides every card it has; a stored Workspace keeps its row (its
+        // "+" would otherwise add nothing visible to the list).
+        if !workspace.stored && !collapsed && !draws_a_card {
             continue;
         }
         let ordered = ordered_entries(
@@ -903,19 +1018,20 @@ fn workspaces_list(
             app,
             state,
             actions,
-            folder.as_str(),
+            &workspace.title,
             &section,
             &ordered,
             &shown_ids,
             None,
             contains_selected,
+            Some(workspace),
         ));
     }
 
     // The list is empty for one of two reasons, and they read differently:
     // nothing worth listing exists yet, or the ones that do belong to another
     // environment.
-    let empty = visible.is_empty() && starred.is_empty();
+    let empty = visible.is_empty() && starred.is_empty() && state.sidebar_workspaces.is_empty();
     let any_listable = state
         .conversations
         .iter()
@@ -2428,5 +2544,392 @@ mod sidebar_action_tests {
         assert!(s.global_search_rows.is_empty());
         assert!(!s.global_search_searched, "an empty query has not searched");
         assert!(s.global_search_error.is_none());
+    }
+}
+
+#[cfg(test)]
+mod workspace_row_tests {
+    //! The Workspaces rows' controls, the header's add-workspace flow, and the
+    //! session rows' hover Pin/Archive — each wired to the real durable action
+    //! (the store's `chats.starred` / `chats.archived_at` and the persisted
+    //! Workspaces list in `ui.workspaces`), not to a mock.
+
+    use super::*;
+    use crate::root_view::RootView;
+    use goble_core::store::Store;
+    use goble_desktop_service::{DesktopState, ThreadStore};
+    use goble_ui::elements::EventContext;
+    use goble_ui::event::DispatchedEvent;
+    use goble_ui::geometry::{vec2f, Vector2F};
+    use goble_ui::render::RenderCommand;
+    use goble_ui::test_util::render_element;
+    use std::sync::Arc;
+
+    fn window() -> Vector2F {
+        vec2f(1024.0, 768.0)
+    }
+
+    /// A root view over a real store with two answered conversations, in two
+    /// different directories (so the list has two real folder groups).
+    fn seeded() -> (
+        Box<dyn Element>,
+        Rc<RefCell<crate::state::UiState>>,
+        Arc<DesktopState>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        );
+        for (title, workspace) in [("Alpha work", "alpha"), ("Beta work", "beta")] {
+            let id = desktop
+                .create_chat(title, None, None)
+                .expect("create a conversation");
+            desktop
+                .add_chat_message(&id, "assistant", "done")
+                .expect("the agent's reply");
+            desktop
+                .set_chat_working_dir(&id, &format!("/tmp/goble-work/{workspace}"))
+                .expect("the conversation's directory");
+        }
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.show_onboarding_tip = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            s.refresh_conversations(&desktop);
+        }
+        (Box::new(view), state, desktop, dir)
+    }
+
+    fn render(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
+        render_element(root, window(), app)
+    }
+
+    fn dispatch(root: &mut Box<dyn Element>, app: &AppContext, event: DispatchedEvent) {
+        let mut ctx = EventContext::default();
+        root.dispatch_event(&event, &mut ctx, app);
+    }
+
+    fn click(root: &mut Box<dyn Element>, app: &AppContext, at: Vector2F) {
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
+        ] {
+            dispatch(root, app, event);
+        }
+    }
+
+    /// The origin of the first atlas glyph with this name that is drawn in the
+    /// sidebar's own column, below the topbar.
+    fn sidebar_icon(commands: &[RenderCommand], name: &str) -> Vector2F {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name: drawn, origin, .. }
+                    if drawn == name
+                        && origin.x < crate::ui::SIDEBAR_WIDTH
+                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the sidebar draws the {name:?} glyph: {commands:?}"))
+    }
+
+    /// The origin of the first run of exactly this text drawn in the sidebar's
+    /// list.
+    fn sidebar_text(commands: &[RenderCommand], text: &str) -> Vector2F {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text: drawn, origin, .. }
+                    if drawn == text
+                        && origin.x < crate::ui::SIDEBAR_WIDTH
+                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the sidebar draws {text:?}: {commands:?}"))
+    }
+
+    fn hovered_row(commands: &[RenderCommand], text: &str) -> Vector2F {
+        sidebar_text(commands, text)
+    }
+
+    /// A workspace row shows the same treatment as a session row: the app's
+    /// Workspaces list lists a stored workspace even with no conversations, the
+    /// hovered row draws DSH's two controls (the context-menu trigger and the
+    /// New-session button), and the tray they open carries the workspace's own
+    /// actions.
+    #[test]
+    fn a_workspace_row_shows_its_hover_controls_and_opens_its_tray() {
+        let app = AppContext::default();
+        let (mut root, state, desktop, _dir) = seeded();
+        state
+            .borrow_mut()
+            .add_workspace("/tmp/goble-work/gamma", Some(&desktop))
+            .expect("the picked directory becomes a workspace");
+
+        let commands = render(&mut root, &app);
+        assert!(
+            state.borrow().conversations.iter().all(|entry| entry.folder != "gamma"),
+            "the workspace row exists with no conversations in it"
+        );
+        hovered_row(&commands, "gamma");
+
+        // Hover the group row: the app reads the shared hover cell next frame.
+        *state.borrow().sidebar_hover_row.borrow_mut() =
+            Some(format!("group:{}", folder_section("gamma")));
+        let commands = render(&mut root, &app);
+        let dots = sidebar_icon(&commands, "dots-horizontal");
+        let new_chat = sidebar_icon(&commands, "new-chat");
+        assert!(
+            dots.x > new_chat.x,
+            "DSH's `ProjectRow` order is the menu trigger, then the create control: {dots:?} / {new_chat:?}"
+        );
+        assert!(
+            dots.y > crate::ui::shell::TOPBAR_HEIGHT,
+            "the controls sit on the row: {dots:?}"
+        );
+
+        // The dots open the workspace tray.
+        click(&mut root, &app, dots + vec2f(8.0, 8.0));
+        let commands = render(&mut root, &app);
+        let rename = sidebar_text(&commands, "Rename workspace");
+        sidebar_text(&commands, "Delete workspace");
+
+        // Rename opens the workspace dialog on the real path.
+        click(&mut root, &app, rename + vec2f(6.0, 6.0));
+        let rename_state = state
+            .borrow()
+            .sidebar_workspace_rename
+            .clone()
+            .expect("the Rename workspace dialog is open");
+        assert_eq!(rename_state.path, "/tmp/goble-work/gamma");
+        assert_eq!(rename_state.draft, "gamma");
+        state.borrow_mut().cancel_workspace_rename();
+    }
+
+    /// The Workspaces header's "+" adds a workspace: the picked directory is
+    /// persisted (`ui.workspaces`), lists as a row, survives a restart, and is
+    /// renamed and deleted through the row's own actions. It never creates a
+    /// conversation — the separate "New conversation" row does that.
+    #[test]
+    fn the_header_plus_adds_and_persists_a_workspace() {
+        let app = AppContext::default();
+        let (mut root, state, desktop, _dir) = seeded();
+
+        // The button no longer creates a conversation: a press on it leaves the
+        // spaces/panes alone. (On a test thread the native picker answers None,
+        // so a cancelled pick adds nothing either — both halves are the point.)
+        let before_spaces = state.borrow().spaces.len();
+        let before_conversations = state.borrow().conversations.len();
+        let commands = render(&mut root, &app);
+        let plus = sidebar_icon(&commands, "project-add");
+        click(&mut root, &app, plus + vec2f(8.0, 8.0));
+        assert_eq!(
+            state.borrow().spaces.len(),
+            before_spaces,
+            "the header \"+\" does not open a conversation space"
+        );
+        assert_eq!(
+            state.borrow().conversations.len(),
+            before_conversations,
+            "the header \"+\" does not create a conversation"
+        );
+
+        // The flow behind it (what the picker answer feeds) persists the row.
+        state
+            .borrow_mut()
+            .add_workspace("/tmp/goble-work/delta/", Some(&desktop))
+            .expect("the directory is adopted");
+        let persisted = desktop
+            .get_ui_workspaces()
+            .expect("the workspaces list is persisted");
+        assert!(
+            persisted.contains("/tmp/goble-work/delta"),
+            "the picked directory persists: {persisted}"
+        );
+        let commands = render(&mut root, &app);
+        hovered_row(&commands, "delta");
+
+        // A restart restores it from the store.
+        let restarted = crate::state::UiState::from_desktop(&desktop);
+        assert!(
+            restarted.workspace_for_folder("delta").is_some(),
+            "the workspace comes back after a restart"
+        );
+
+        // Rename through the row's dialog: the row, and the store, follow.
+        state
+            .borrow_mut()
+            .begin_workspace_rename("/tmp/goble-work/delta", "delta");
+        state
+            .borrow_mut()
+            .workspace_rename_draft("Delta App".to_string());
+        state.borrow_mut().commit_workspace_rename(Some(&desktop));
+        let commands = render(&mut root, &app);
+        hovered_row(&commands, "Delta App");
+        assert!(
+            desktop
+                .get_ui_workspaces()
+                .expect("persisted")
+                .contains("Delta App"),
+            "the renamed title persists"
+        );
+
+        // Delete drops the row from the list and the store.
+        state
+            .borrow_mut()
+            .delete_workspace("/tmp/goble-work/delta", Some(&desktop));
+        let commands = render(&mut root, &app);
+        assert!(
+            commands.iter().all(|command| !matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "Delta App"
+            )),
+            "the deleted workspace row is gone"
+        );
+        assert!(!desktop
+            .get_ui_workspaces()
+            .expect("persisted")
+            .contains("delta"));
+    }
+
+    /// A workspace row's New-session control is real: it opens a conversation
+    /// whose working directory is the workspace's own path, so the row's
+    /// folder group (the directory's last segment) holds the new conversation.
+    #[test]
+    fn a_workspace_rows_new_session_control_opens_a_conversation_in_its_directory() {
+        let app = AppContext::default();
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let view = RootView::new(&app, &desktop, None);
+        let state = view.state_rc();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.show_onboarding_tip = false;
+            s.right_sidebar_open = false;
+            s.refresh_conversations(&desktop);
+        }
+        let actions = crate::actions::make_actions(
+            state.clone(),
+            Some(Arc::clone(&desktop)),
+            view.media_state_rc(),
+            goble_ui::platform::WindowControl::default(),
+            Rc::new(RefCell::new(1.0)),
+        );
+        (actions.on_sidebar_workspace_new_session.borrow_mut())(
+            "/tmp/goble-work/gamma".to_string(),
+        );
+        let opened = desktop
+            .list_chats()
+            .into_iter()
+            .find(|chat| chat.working_dir.as_deref() == Some("/tmp/goble-work/gamma"))
+            .expect("the new conversation works in the workspace's directory");
+        assert!(
+            state.borrow().conversations.iter().any(|entry| entry.id == opened.id
+                && entry.folder == "gamma"),
+            "the conversation is listed under the workspace's folder group"
+        );
+        assert_eq!(
+            state.borrow().composer_path,
+            "/tmp/goble-work/gamma",
+            "the pane the conversation opened in works in the workspace"
+        );
+    }
+
+    /// A conversation row's hover strip offers Archive and Pin next to the
+    /// tray's dots, and both are the real durable actions: Pin writes
+    /// `chats.starred`, Archive writes `chats.archived_at`.
+    #[test]
+    fn a_hovered_conversation_row_pins_and_archives_for_real() {
+        let app = AppContext::default();
+        let (mut root, state, desktop, _dir) = seeded();
+        let id = state.borrow().conversations[0].id.clone();
+        let name = state.borrow().conversations[0].name.clone();
+
+        *state.borrow().sidebar_hover_row.borrow_mut() = Some(format!("session:{id}"));
+        let commands = render(&mut root, &app);
+        let pin = sidebar_icon(&commands, "pin-outline");
+        let archive = sidebar_icon(&commands, "archive");
+        assert!(
+            pin.x > archive.x,
+            "DSH's order is dots, Archive, Pin: {archive:?} then {pin:?}"
+        );
+        let dotted = sidebar_icon(&commands, "dots-horizontal");
+        assert!(
+            archive.x > dotted.x,
+            "the tray's trigger leads the quick actions: {dotted:?}"
+        );
+
+        // Pin: the store's starred column, and the row's own pin state.
+        click(&mut root, &app, pin + vec2f(8.0, 8.0));
+        assert!(
+            desktop.chat_starred(&id).expect("the starred column"),
+            "the hover Pin writes the durable star"
+        );
+        assert!(
+            state.borrow().starred_conversations.contains(&id),
+            "the Starred block follows the pin"
+        );
+
+        // Archive: the store's archived_at column.
+        *state.borrow().sidebar_hover_row.borrow_mut() = Some(format!("session:{id}"));
+        let commands = render(&mut root, &app);
+        let archive = sidebar_icon(&commands, "archive");
+        click(&mut root, &app, archive + vec2f(8.0, 8.0));
+        assert!(
+            desktop.chat_archived(&id).expect("the archived column").is_some(),
+            "the hover Archive writes the durable archive stamp"
+        );
+
+        // The archived row's strip offers the restore, not the archive, and
+        // Pin is gone (DSH resolves the same list for an archived session). The
+        // default filter hides the row, so show archived rows first (DSH's
+        // archive action offers the same filter switch).
+        state
+            .borrow_mut()
+            .set_archived_filter(crate::ui::ArchivedFilter::Show);
+        *state.borrow().sidebar_hover_row.borrow_mut() = Some(format!("session:{id}"));
+        let commands = render(&mut root, &app);
+        let unarchive = sidebar_icon(&commands, "unarchive");
+        assert!(
+            commands.iter().all(|command| !matches!(
+                command,
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if name == "pin-outline"
+                        && origin.x < crate::ui::SIDEBAR_WIDTH
+                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT
+            )),
+            "an archived row offers no pin control"
+        );
+        click(&mut root, &app, unarchive + vec2f(8.0, 8.0));
+        assert!(
+            desktop.chat_archived(&id).expect("the archived column").is_none(),
+            "the restore clears the archive stamp"
+        );
+        let _ = name;
     }
 }

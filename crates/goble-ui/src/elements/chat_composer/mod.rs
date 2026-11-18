@@ -6,17 +6,19 @@
 //! `elements::chat_composer::CommandProposalUi`) unchanged.
 
 mod composer;
+mod hints_row;
 mod diff;
 mod proposal;
 #[cfg(test)]
 mod tests;
 
 pub use composer::{
-    ChatComposer, COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_GUTTER, COMPOSER_CARD_INSET,
+    ChatComposer, AGENT_COMPOSER_PLACEHOLDER, COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_GUTTER,
+    COMPOSER_CARD_INSET,
     COMPOSER_CARD_RADIUS, COMPOSER_EDITOR_MAX_HEIGHT, COMPOSER_EDITOR_MIN_HEIGHT,
     COMPOSER_FOOTER_GAP, COMPOSER_FOOTER_HEIGHT,
     COMPOSER_HINTS_ROW_HEIGHT, COMPOSER_INPUT_MIN_HEIGHT, COMPOSER_INPUT_RADIUS,
-    COMPOSER_SEND_SIZE, CONTEXT_SEGMENT_HEIGHT,
+    COMPOSER_SEND_SIZE, CONTEXT_SEGMENT_HEIGHT, TERMINAL_COMPOSER_PLACEHOLDER,
 };
 /// The words the model control reads while no model is configured. The element
 /// that draws the label owns them; the app re-exports this constant rather than

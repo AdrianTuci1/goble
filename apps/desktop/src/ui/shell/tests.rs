@@ -2267,12 +2267,10 @@ fn floating_panes_draw_their_own_window_chrome() {
     );
 }
 
-/// A BSP pane is a tab in the panel: it wears the app's 1 pt accent outline
-/// around its whole slot — the card plus the full-bleed chrome band it bleeds
-/// over the top — with the pane card's corner radius, and without gaining a
-/// second titlebar (its own pane header stays the one bar). It casts no soft
-/// shadow: the gutter around it is the panel surface — the sidebar's `Surface`
-/// — so the tab gutter reads as the sidebar's grey.
+/// A BSP pane is a tab in the panel: it wears no outline — only its own card
+/// `Border` edge — and the focused pane is marked by the accent corner triangle
+/// drawn over the card's top-left corner. It casts no soft shadow: the gutter
+/// around it is the panel surface, not a darkened one.
 #[test]
 fn bsp_panes_cast_the_window_frame() {
     let app = AppContext::default();
@@ -2289,44 +2287,11 @@ fn bsp_panes_cast_the_window_frame() {
 
     let commands = render_element(&mut root, window(), &app);
     let accent = app.theme.color(ColorToken::Accent);
-    let outlines: Vec<RectF> = commands
-        .iter()
-        .filter_map(|c| match c {
-            RenderCommand::StrokeRect {
-                rect,
-                color,
-                width,
-                corner_radius,
-            } if *color == accent
-                && (*width - 1.0).abs() < 0.01
-                && (*corner_radius - crate::ui::panes::TAB_OUTLINE_RADIUS).abs() < 0.01 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        outlines.len(),
-        1,
-        "the pane's tab wears one accent outline: {outlines:?}"
-    );
-    // The pane area is the slot: the tab slot is inset from the sidebar, the
-    // window edges and the bar block (the panel surface behind it paints the
-    // whole body, inset frame included), so the slot starts and ends
-    // `PANE_AREA_INSET` inside them.
-    let inset = crate::ui::panes::PANE_AREA_INSET;
-    let slot = rectf(
-        crate::ui::SIDEBAR_WIDTH + inset,
-        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND + inset,
-        window().x - crate::ui::SIDEBAR_WIDTH - 2.0 * inset,
-        window().y - (TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND) - 2.0 * inset,
-    );
-    assert_eq!(
-        outlines[0],
-        crate::ui::panes::tab_outline_rect(slot, slot),
-        "the outline is the tab's whole slot, inset {} pt on every outer side: {outlines:?}",
-        crate::ui::panes::TAB_OUTLINE_OUTER_INSET
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::StrokeRect { color, .. } if *color == accent)),
+        "the panel does not outline its tabs: {commands:?}"
     );
     let shadow = goble_ui::ColorU::new(0, 0, 0, 72);
     assert!(
@@ -2334,6 +2299,23 @@ fn bsp_panes_cast_the_window_frame() {
             .iter()
             .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == shadow)),
         "a tiled tab casts no shadow: its gutter is the panel surface: {commands:?}"
+    );
+    // The focused pane's accent corner marker, over its card's top-left corner.
+    let card = {
+        let s = state.borrow();
+        let bounds = s.pane_bounds.borrow();
+        *bounds.get(&7).expect("the pane recorded its bounds")
+    };
+    let marker = commands.iter().find_map(|c| match c {
+        RenderCommand::DrawIcon {
+            origin, name, color, ..
+        } if name == "upper-left-triangle" && *color == accent => Some(*origin),
+        _ => None,
+    });
+    let marker = marker.expect("the focused pane wears its accent corner marker");
+    assert!(
+        (marker.x - card.min_x()).abs() < 0.01 && (marker.y - card.min_y()).abs() < 0.01,
+        "the accent corner sits on the pane card's top-left corner: {marker:?} against {card:?}"
     );
 }
 

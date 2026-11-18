@@ -92,8 +92,8 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             // the pane area painted `Surface`, not a margin left for the
             // window's `Bg` to show through: the padding is inside the surface
             // container, so no dark strip is left anywhere around the panes.
-            // The per-tab slots tile the padded area, so every tab's outline
-            // keeps its own geometry relative to its slot.
+            // The tab slots tile the padded area, so every pane keeps its own
+            // gutter geometry relative to its slot.
             let panels = Padding::new(main, EdgeInsets::uniform(panes::PANE_AREA_INSET)).finish();
             Container::new(panels)
                 .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
@@ -317,9 +317,9 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         );
     }
     // The window's own edge: a neutral 1 px rule around the whole window, drawn
-    // above every page. The app's accent outline is per tab, painted inside the
-    // panel (see `panes::build_slot_outline_layer`), so the window edge stays
-    // neutral — topbar included. The rule is mounted last so it is the topmost
+    // above every page. The panel does not outline its tabs — the focused pane
+    // wears its accent corner marker instead — so the window edge stays
+    // neutral, topbar included. The rule is mounted last so it is the topmost
     // thing painted — and the first offered an event, which it never takes (see
     // [`WindowBorder`]).
     let fullscreen = app
@@ -466,10 +466,9 @@ impl Element for TopbarBand {
 ///
 /// It is drawn at the window's outer edge on every page — the workspace,
 /// settings, the dashboards, first-run onboarding — because it is the topmost
-/// overlay of [`build_ui`]'s stack. The app's accent outline is not here: it is
-/// per tab, around each pane's whole slot (see
-/// [`crate::ui::panes::build_slot_outline_layer`]), so the window's own edge
-/// stays neutral — topbar included — and the tab frames sit `1.5 pt` inside it.
+/// overlay of [`build_ui`]'s stack. The panel does not wear an accent outline:
+/// the selected pane is marked by its accent corner triangle instead, so the
+/// window's own edge stays neutral — topbar included.
 /// It is a decoration, not a surface: it takes up no layout room, and it answers
 /// no event at all (the trait's default `dispatch_event` is `false`), so every
 /// press, move, scroll and key passes through to whatever is drawn beneath it,
@@ -729,23 +728,17 @@ mod tests {
         }
     }
 
-    /// The tab outline is per tab, not around the window: the window's own rule
-    /// stays the neutral `Border`, and every pane's whole slot — the card plus
-    /// the full-bleed chrome band bleeding over its top — wears one 1 pt
-    /// rounded outline (radius = the pane card's own). Only the focused tab is
-    /// accent; the others are the ordinary `Border`. The inset is 3 pt on the
-    /// tab area's outer sides and 1.5 pt on a shared split side, so a solo tab
-    /// is inset 3 pt all round and neighbouring tab borders stay exactly 3 pt
-    /// apart with the panel surface (the sidebar's `Surface`) between them.
+    /// The panel does not outline its tabs: no accent (and no extra neutral)
+    /// rule runs around a pane's slot — only the pane card's own `Border` edge
+    /// does. The selected cue is the focused pane's accent corner triangle,
+    /// drawn over the panel card at its top-left corner. Solo and in a split.
     #[test]
-    fn every_tab_wears_its_own_outline_not_the_window() {
+    fn the_panel_wears_no_tab_outline_only_the_focused_corner() {
         let app = AppContext::default();
         let accent = app.theme.color(ColorToken::Accent);
-        let border = app.theme.color(ColorToken::Border);
-        let bg = app.theme.color(ColorToken::Bg);
 
-        // One pane: the window's rule is neutral and the focused tab — the only
-        // tab — is accent-outlined, 3 pt inside its slot on every side.
+        // One pane: the window rule is neutral, no accent stroke anywhere, and
+        // one accent corner marker on the focused pane's card.
         let (mut root, state, _dir) = app_root();
         let commands = render_element(&mut root, window(), &app);
         let (_, width, _) = window_rule(&commands, &app).expect("the window's neutral rule");
@@ -754,129 +747,113 @@ mod tests {
             !has_accent_window_rule(&commands, &app),
             "no accent rule on the window's own rect"
         );
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::StrokeRect { color, .. } if *color == accent)),
+            "no accent outline stroke anywhere in the panel"
+        );
         let frames = pane_frames(&state);
         assert_eq!(frames.len(), 1, "one pane: {frames:?}");
-        let slots = tab_slots(&frames);
         assert_eq!(
-            crate::ui::panes::tab_outline_rect(slots[0], slots[0]),
-            rectf(307.0, 47.0, 710.0, 714.0),
-            "a solo tab is inset 3 pt on every side of its slot: {:?}",
-            slots[0]
+            rounded_border_strokes(&commands, &app),
+            1,
+            "only the pane card's own Border edge frames the pane"
         );
-        let outlines = tab_outlines(&commands, &app);
-        assert_eq!(
-            outlines,
-            vec![(crate::ui::panes::tab_outline_rect(slots[0], slots[0]), accent)],
-            "the solo (focused) tab wears the accent outline: {outlines:?}"
+        let card = frames[0];
+        let markers = corner_markers(&commands, &app);
+        assert_eq!(markers.len(), 1, "one focused corner: {markers:?}");
+        assert!(
+            (markers[0].x - card.min_x()).abs() < 0.01
+                && (markers[0].y - card.min_y()).abs() < 0.01,
+            "the accent corner sits on the focused pane's top-left corner: {:?} against {card:?}",
+            markers[0]
+        );
+        // It is painted after the card's fill, so it reads on the darker panel.
+        let card_fill = commands
+            .iter()
+            .position(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *rect == card && *color == app.theme.color(ColorToken::Bg) =>
+                {
+                    true
+                }
+                _ => false,
+            })
+            .expect("the panel card paints its darker background");
+        let marker = commands
+            .iter()
+            .position(|command| matches!(command, RenderCommand::DrawIcon { name, color, .. } if name == "upper-left-triangle" && *color == accent))
+            .expect("the accent corner marker");
+        assert!(
+            marker > card_fill,
+            "the panel paints the marker above the card: {marker} against {card_fill}"
         );
 
-        // Two panes: one outline per tab; the focused (left) tab is accent, the
-        // other the ordinary `Border`; the shared split side is inset 1.5 pt
-        // each, so the two borders are exactly 3 pt apart over the panel surface.
+        // Two panes: still no outlines; the two cards keep their own Border
+        // edges and only the focused (left) pane wears the accent corner.
         let (mut root, state, _dir) = app_root();
         install_two_panes(&state, 0.5);
         let commands = render_element(&mut root, window(), &app);
-        assert!(!has_accent_window_rule(&commands, &app));
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::StrokeRect { color, .. } if *color == accent)),
+            "no accent outline stroke around either tab"
+        );
         let frames = pane_frames(&state);
         assert_eq!(frames.len(), 2, "two panes: {frames:?}");
-        let slots = tab_slots(&frames);
-        let area = rectf(
-            slots[0].min_x(),
-            slots[0].min_y(),
-            slots[1].max_x() - slots[0].min_x(),
-            slots[0].max_y() - slots[0].min_y(),
-        );
-        let left = crate::ui::panes::tab_outline_rect(slots[0], area);
-        let right = crate::ui::panes::tab_outline_rect(slots[1], area);
-        let outlines = tab_outlines(&commands, &app);
         assert_eq!(
-            outlines,
-            vec![(left, accent), (right, border)],
-            "the focused tab is accent, the other the ordinary Border: {outlines:?}"
+            rounded_border_strokes(&commands, &app),
+            2,
+            "one card edge per pane, no outline around the slots"
         );
-        let gap = right.min_x() - left.max_x();
+        let markers = corner_markers(&commands, &app);
+        assert_eq!(markers.len(), 1, "only the focused tab is marked: {markers:?}");
         assert!(
-            (gap - 3.0).abs() < 0.01,
-            "the neighbouring tab borders are 3 pt apart (1.5 pt each): {outlines:?}"
-        );
-        // The area's outer sides are inset 3 pt, the shared side 1.5 pt each.
-        assert!((left.min_x() - slots[0].min_x() - 3.0).abs() < 0.01);
-        assert!((left.min_y() - slots[0].min_y() - 3.0).abs() < 0.01);
-        assert!((slots[0].max_y() - left.max_y() - 3.0).abs() < 0.01);
-        assert!((slots[0].max_x() - left.max_x() - 1.5).abs() < 0.01);
-        assert!((right.min_x() - slots[1].min_x() - 1.5).abs() < 0.01);
-        assert!((slots[1].max_x() - right.max_x() - 3.0).abs() < 0.01);
-        let between = vec2f(
-            left.max_x() + gap * 0.5,
-            left.min_y() + left.height() * 0.5,
-        );
-        assert_eq!(
-            topmost_fill(&commands, between),
-            Some(app.theme.color(ColorToken::Surface)),
-            "the 3 pt gutter between the tabs is the panel surface, the sidebar's Surface: {between:?}"
-        );
-        // The layer below the tabs' gutters is the sidebar's Surface, not the
-        // window's darker Bg (the owner's corrected layering).
-        assert_ne!(
-            app.theme.color(ColorToken::Surface),
-            bg,
-            "the panel surface is a different material from the window's Bg"
+            (markers[0].x - frames[0].min_x()).abs() < 0.01
+                && (markers[0].y - frames[0].min_y()).abs() < 0.01,
+            "the corner sits on the focused (left) pane: {:?} against {:?}",
+            markers[0],
+            frames[0]
         );
     }
 
-    /// The tab slots of the pane cards: each card grown by `PANE_INSET`, ordered
-    /// left to right.
-    fn tab_slots(cards: &[RectF]) -> Vec<RectF> {
-        let inset = crate::ui::panes::PANE_INSET;
-        let mut slots: Vec<RectF> = cards
+    /// The 1 pt `Border` rules rounded at the pane card's own radius: one per
+    /// pane card. No extra rule may frame a tab slot.
+    fn rounded_border_strokes(commands: &[RenderCommand], app: &AppContext) -> usize {
+        let border = app.theme.color(ColorToken::Border);
+        commands
             .iter()
-            .map(|card| {
-                rectf(
-                    card.min_x() - inset,
-                    card.min_y() - inset,
-                    card.width() + 2.0 * inset,
-                    card.height() + 2.0 * inset,
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::StrokeRect {
+                        color,
+                        width,
+                        corner_radius,
+                        ..
+                    } if *color == border
+                        && (*width - 1.0).abs() < 0.01
+                        && (*corner_radius - crate::ui::panes::WINDOW_CORNER_RADIUS).abs() < 0.01
                 )
             })
-            .collect();
-        slots.sort_by(|a, b| a.min_x().total_cmp(&b.min_x()));
-        slots
+            .count()
     }
 
-    /// The tab outlines a frame paints — (rect, colour), ordered left to right.
-    /// A pane card's own `Border` stroke is excluded: the card paints a fill at
-    /// exactly the same rect, an outline never does.
-    fn tab_outlines(
-        commands: &[RenderCommand],
-        app: &AppContext,
-    ) -> Vec<(RectF, goble_ui::ColorU)> {
-        let colors = [
-            app.theme.color(ColorToken::Accent),
-            app.theme.color(ColorToken::Border),
-        ];
-        let mut outlines: Vec<(RectF, goble_ui::ColorU)> = commands
+    /// The focused panes' accent corner markers (the upper-left triangle icon),
+    /// by their drawn origin.
+    fn corner_markers(commands: &[RenderCommand], app: &AppContext) -> Vec<Vector2F> {
+        let accent = app.theme.color(ColorToken::Accent);
+        commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::StrokeRect {
-                    rect,
-                    color,
-                    width,
-                    corner_radius,
-                } if colors.contains(color)
-                    && (*width - 1.0).abs() < 0.01
-                    && (*corner_radius - crate::ui::panes::TAB_OUTLINE_RADIUS).abs() < 0.01
-                    && !commands.iter().any(|other| matches!(
-                        other,
-                        RenderCommand::FillRect { rect: filled, .. } if filled == rect
-                    )) =>
-                {
-                    Some((*rect, *color))
-                }
+                RenderCommand::DrawIcon {
+                    origin, name, color, ..
+                } if name == "upper-left-triangle" && *color == accent => Some(*origin),
                 _ => None,
             })
-            .collect();
-        outlines.sort_by(|a, b| a.0.min_x().total_cmp(&b.0.min_x()));
-        outlines
+            .collect()
     }
 
     /// Whether the frame draws an accent rule on the window's own rect.
@@ -1963,44 +1940,17 @@ mod tests {
                 "no Bg strip is painted over the panel surface outside the pane cards: {stray:?}"
             );
 
-            // The gutter between two neighbouring tab slots: the shared split
-            // insets each tab outline by 1.5 pt, so the two outlines are exactly
-            // 3 pt apart — and those 3 px are the panel surface, not a dark
-            // seam.
+            // The gutter between two neighbouring tab slots — the shared split
+            // boundary — is the panel surface, not a dark seam: the panel does
+            // not outline its tabs.
             if frames.len() == 2 {
-                let inset = crate::ui::panes::PANE_INSET;
-                let slots: Vec<RectF> = frames
-                    .iter()
-                    .map(|card| {
-                        rectf(
-                            card.min_x() - inset,
-                            card.min_y() - inset,
-                            card.width() + 2.0 * inset,
-                            card.height() + 2.0 * inset,
-                        )
-                    })
-                    .collect();
-                let area = rectf(
-                    slots[0].min_x(),
-                    slots[0].min_y(),
-                    slots[1].max_x() - slots[0].min_x(),
-                    slots[0].max_y() - slots[0].min_y(),
-                );
-                let left_outline = crate::ui::panes::tab_outline_rect(slots[0], area);
-                let right_outline = crate::ui::panes::tab_outline_rect(slots[1], area);
-                let gap = right_outline.min_x() - left_outline.max_x();
-                assert!(
-                    (gap - 3.0).abs() < 0.01,
-                    "neighbouring tab outlines stay 3 pt apart: {gap}"
-                );
-                let gutter_x = left_outline.max_x() + gap * 0.5;
+                let boundary = (frames[0].max_x() + frames[1].min_x()) * 0.5;
                 let mut gutter_y = top + 6.0;
                 while gutter_y <= bottom - 6.0 {
                     assert_eq!(
-                        topmost_fill(&commands, vec2f(gutter_x, gutter_y)),
+                        topmost_fill(&commands, vec2f(boundary, gutter_y)),
                         Some(surface),
-                        "the 3 pt gutter between the tab slots is the panel surface, \
-                         not a dark seam, at y {gutter_y}"
+                        "the gutter between the tab slots is the panel surface,                          not a dark seam, at y {gutter_y}"
                     );
                     gutter_y += 7.0;
                 }

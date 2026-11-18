@@ -62,8 +62,8 @@ enum Scene {
     Rename,
     /// The selected pane has changed files: the Open-changes topbar control.
     Diff,
-    /// Two panes side by side: each tab wears its own accent outline, 6 pt of
-    /// the window's `Bg` between the two borders.
+    /// Two panes side by side: no outlines, just the two darker pane cards on
+    /// the panel surface, 8 pt of it between them.
     Split,
 }
 
@@ -204,8 +204,7 @@ fn scene_commands(app: &AppContext, scene: Scene) -> anyhow::Result<(Vec<RenderC
             ));
         }
         // The split scene: the active space is two tabs side by side, so each
-        // gets its own accent outline and the gutter between them can be
-        // measured.
+        // is two pane cards, so the gutter between them can be measured.
         if scene == Scene::Split {
             let first = s.spaces[1].root.clone();
             let id = s.next_pane_id;
@@ -228,7 +227,7 @@ fn scene_commands(app: &AppContext, scene: Scene) -> anyhow::Result<(Vec<RenderC
         s.set_pane_path(active, dir.path().display().to_string());
         // The second tab is the selected one throughout: Chrome's selected tab
         // merges into the content with a floating neighbour on each side. Its
-        // pane is the focused one, so its tab outline is the accent one.
+        // pane is the focused one, so it wears the accent corner marker.
         s.active_space = 1;
         let active_pane = s.spaces[1].root.first_leaf_id();
         s.active_pane_id = active_pane;
@@ -403,37 +402,70 @@ fn window_top_crop() -> (f32, f32, f32) {
     (0.0, WIDTH, height)
 }
 
-/// The tab outlines a frame paints — (rect, colour), ordered left to right:
-/// 1 pt rounded strokes (radius 6, the pane card's rounding), accent for the
-/// focused tab and the ordinary `Border` for the rest. A pane card's own
-/// `Border` stroke is excluded: the card paints a fill at exactly the same
-/// rect, an outline never does.
-fn tab_outlines(commands: &[RenderCommand], app: &AppContext) -> Vec<(RectF, goble_ui::ColorU)> {
-    let accent = app.theme.color(ColorToken::Accent);
+/// The pane cards a frame paints: the big darker-`Bg` fills under the app
+/// topbar that also carry the card's own `Border` edge, ordered left to right.
+/// The panel paints no outline around them.
+fn pane_cards(commands: &[RenderCommand], app: &AppContext) -> Vec<RectF> {
+    let bg = app.theme.color(ColorToken::Bg);
     let border = app.theme.color(ColorToken::Border);
-    let mut outlines: Vec<(RectF, goble_ui::ColorU)> = commands
+    let mut cards: Vec<RectF> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::StrokeRect {
-                rect,
-                color,
-                width,
-                corner_radius,
-            } if (*color == accent || *color == border)
-                && (*width - 1.0).abs() < 0.01
-                && (*corner_radius - 6.0).abs() < 0.01
-                && !commands.iter().any(|other| matches!(
-                    other,
-                    RenderCommand::FillRect { rect: filled, .. } if filled == rect
-                )) =>
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == bg
+                    && rect.width() > 120.0
+                    && rect.height() > 120.0
+                    && rect.min_y() >= TOPBAR_HEIGHT
+                    && commands.iter().any(|other| matches!(
+                        other,
+                        RenderCommand::StrokeRect { rect: edge, color: edge_color, width, .. }
+                            if edge == rect
+                                && *edge_color == border
+                                && (*width - 1.0).abs() < 0.01
+                    )) =>
             {
-                Some((*rect, *color))
+                Some(*rect)
             }
             _ => None,
         })
         .collect();
-    outlines.sort_by(|a, b| a.0.min_x().total_cmp(&b.0.min_x()));
-    outlines
+    cards.sort_by(|a, b| a.min_x().total_cmp(&b.min_x()));
+    cards
+}
+
+/// Whether a frame paints any 1 pt rounded rule that is not a pane card's own
+/// `Border` edge: the panel wears no tab outline.
+fn panel_outlined(commands: &[RenderCommand], app: &AppContext) -> bool {
+    commands.iter().any(|command| match command {
+        RenderCommand::StrokeRect {
+            rect,
+            width,
+            corner_radius,
+            ..
+        } if (*width - 1.0).abs() < 0.01
+            && (*corner_radius - 6.0).abs() < 0.01
+            && !commands.iter().any(|other| matches!(
+                other,
+                RenderCommand::FillRect { rect: filled, .. } if filled == rect
+            )) =>
+        {
+            !pane_cards(commands, app)
+                .iter()
+                .any(|card| card.min_x() <= rect.min_x() && card.max_x() >= rect.max_x())
+        }
+        _ => false,
+    })
+}
+
+/// The focused pane's accent corner marker: the upper-left triangle icon.
+fn accent_marker(commands: &[RenderCommand], app: &AppContext) -> Option<Vector2F> {
+    let accent = app.theme.color(ColorToken::Accent);
+    commands.iter().find_map(|command| match command {
+        RenderCommand::DrawIcon {
+            origin, name, color, ..
+        } if name == "upper-left-triangle" && *color == accent => Some(*origin),
+        _ => None,
+    })
 }
 
 /// The measured chrome of one rendered frame, printed as the geometry evidence
@@ -449,7 +481,7 @@ fn print_geometry(label: &str, commands: &[RenderCommand], app: &AppContext) {
     let band = goble_app::ui::shell::TOPBAR_BOTTOM_BAND;
     let sheet_top = band_top + band;
 
-    // The window's own rule is neutral: the accent outline is per tab, never
+    // The window's own rule is neutral: the panel wears no outline, and the
     // around the outer window.
     let window_rule = commands.iter().find_map(|command| match command {
         RenderCommand::StrokeRect {
@@ -471,34 +503,39 @@ fn print_geometry(label: &str, commands: &[RenderCommand], app: &AppContext) {
         None => println!("[{label}] window rule: MISSING"),
     }
 
-    // The tab's accent outline: the topbar's slot-outline layer paints one 1 pt
-    // rounded accent frame per tab, the tab's whole slot inset 3 pt a side.
-    let outlines = tab_outlines(commands, app);
-    if outlines.is_empty() {
-        println!("[{label}] tab outline: MISSING");
-    }
-    for (index, (outline, color)) in outlines.iter().enumerate() {
+    // The panel wears no outline around its tabs: only the pane cards' own
+    // `Border` edges frame them, and the focused pane is marked by its accent
+    // corner triangle.
+    let cards = pane_cards(commands, app);
+    println!(
+        "[{label}] tab outline: {} (expected none); pane cards: {}",
+        if panel_outlined(commands, app) { "PRESENT" } else { "none" },
+        cards.len(),
+    );
+    if let Some(marker) = accent_marker(commands, app) {
         println!(
-            "[{label}] tab outline {index}: ({:.1},{:.1})..({:.1},{:.1}) 1 px r=6, colour {}; \
-             inset from the outer window edge: left {:.1}, top {:.1}, right {:.1}, bottom {:.1}",
-            outline.min_x(),
-            outline.min_y(),
-            outline.max_x(),
-            outline.max_y(),
-            if *color == accent { "accent (focused)" } else { "Border (rest)" },
-            outline.min_x(),
-            outline.min_y(),
-            WIDTH - outline.max_x(),
-            HEIGHT - outline.max_y(),
+            "[{label}] focused corner: accent upper-left triangle at ({:.1},{:.1})",
+            marker.x, marker.y
+        );
+    } else {
+        println!("[{label}] focused corner: MISSING");
+    }
+    for (index, card) in cards.iter().enumerate() {
+        println!(
+            "[{label}] pane card {index}: ({:.1},{:.1})..({:.1},{:.1}), Bg on the panel surface",
+            card.min_x(),
+            card.min_y(),
+            card.max_x(),
+            card.max_y(),
         );
     }
-    if outlines.len() >= 2 {
-        let gap = outlines[1].0.min_x() - outlines[0].0.max_x();
+    if cards.len() >= 2 {
+        let gutter = cards[1].min_x() - cards[0].max_x();
         let between = vec2f(
-            outlines[0].0.max_x() + gap * 0.5,
-            outlines[0].0.min_y() + outlines[0].0.height() * 0.5,
+            cards[0].max_x() + gutter * 0.5,
+            cards[0].min_y() + cards[0].height() * 0.5,
         );
-        let gutter = commands.iter().rev().find_map(|command| match command {
+        let fill = commands.iter().rev().find_map(|command| match command {
             RenderCommand::FillRect { rect, color, .. }
                 if between.x >= rect.min_x()
                     && between.x <= rect.max_x()
@@ -510,11 +547,11 @@ fn print_geometry(label: &str, commands: &[RenderCommand], app: &AppContext) {
             _ => None,
         });
         println!(
-            "[{label}] tab gap: {gap:.1} pt between the two tab borders at x {:.1}; \
-             gutter fill {:?} (Bg = {:?})",
-            outlines[0].0.max_x(),
-            gutter,
-            bg
+            "[{label}] pane gutter: {gutter:.1} pt between the two cards at x {:.1}; \
+             fill {:?} (panel Surface = {:?})",
+            cards[0].max_x(),
+            fill,
+            surface
         );
     }
 
@@ -699,23 +736,11 @@ fn main() -> anyhow::Result<()> {
                 scene.name()
             ));
             write_zoom(&out, &top, window_top_crop(), 3)?;
-            // The tab's purple corner, attached to the tab's border: the accent
-            // frame is the tab's whole slot inset 3 pt, rounded at the pane
-            // card's own radius. The bottom-right crop also shows the neutral
-            // window rule just outside it; the top-left crop shows the corner
-            // meeting the tab's chrome band under the app topbar.
-            let outlines = tab_outlines(&commands, &app);
-            if let Some((tab, _)) = outlines.first() {
-                let corner = std::path::Path::new(OUT_DIR).join(format!(
-                    "topbar-{theme_name}-{}-tab-corner-zoom.png",
-                    scene.name()
-                ));
-                write_zoom_at(
-                    &out,
-                    &corner,
-                    clamp_crop(tab.max_x() - 40.0, tab.max_y() - 40.0, 48.0, 48.0),
-                    8,
-                )?;
+            // The panel corner evidence: no outline around the tab — just the
+            // focused pane's accent corner triangle over its darker card, with
+            // the neutral window rule outside it.
+            let cards = pane_cards(&commands, &app);
+            if let Some(card) = cards.first() {
                 let top_corner = std::path::Path::new(OUT_DIR).join(format!(
                     "topbar-{theme_name}-{}-tab-top-corner-zoom.png",
                     scene.name()
@@ -723,18 +748,28 @@ fn main() -> anyhow::Result<()> {
                 write_zoom_at(
                     &out,
                     &top_corner,
-                    clamp_crop(tab.min_x() - 10.0, tab.min_y() - 10.0, 52.0, 52.0),
+                    clamp_crop(card.min_x() - 10.0, card.min_y() - 10.0, 52.0, 52.0),
+                    8,
+                )?;
+                let corner = std::path::Path::new(OUT_DIR).join(format!(
+                    "topbar-{theme_name}-{}-tab-corner-zoom.png",
+                    scene.name()
+                ));
+                write_zoom_at(
+                    &out,
+                    &corner,
+                    clamp_crop(card.max_x() - 40.0, card.max_y() - 40.0, 48.0, 48.0),
                     8,
                 )?;
             }
-            if scene == Scene::Split && outlines.len() >= 2 {
-                let left = outlines[0].0;
+            if scene == Scene::Split && cards.len() >= 2 {
+                let boundary = (cards[0].max_x() + cards[1].min_x()) * 0.5;
                 let split = std::path::Path::new(OUT_DIR)
                     .join(format!("topbar-{theme_name}-split-zoom.png"));
                 write_zoom_at(
                     &out,
                     &split,
-                    clamp_crop(left.max_x() - 20.0, left.min_y() - 8.0, 40.0, 96.0),
+                    clamp_crop(boundary - 20.0, cards[0].min_y() - 8.0, 40.0, 96.0),
                     8,
                 )?;
             }

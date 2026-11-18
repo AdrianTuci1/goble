@@ -537,15 +537,9 @@ pub fn build_topbar(
     // and over the pane below it, and it is the first child dispatched, so the
     // press that lands on it never reaches the tab under it.
     let menu = build_space_menu(state, actions);
-    // The pane tabs' accent outlines are a layer of the bar: the bar paints the
-    // body already (the shell body is below it in the window's stack), so this
-    // is where the outlines close over the selected workspace tab's merge stem
-    // while the bar's own ghost and popups, and every sheet, still paint above
-    // them.
     goble_ui::elements::Stack::new()
         .with_children(vec![
             bar,
-            crate::ui::panes::build_slot_outline_layer(app),
             build_pane_drag_ghost(app, state.pane_drag.as_ref()),
             menu,
         ])

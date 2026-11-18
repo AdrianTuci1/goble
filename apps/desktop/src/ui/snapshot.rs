@@ -12,8 +12,9 @@ use goble_ui::geometry::Vector2F;
 use goble_ui::ScrollState;
 
 use crate::state::{
-    ArchiveConfirm, InboxItem, PaneAttach, PaneControls, PaneDrag, PaneWorkItem, SidebarRename,
-    SidebarWorkspace, SidebarWorkspaceRename, SpaceMenu, ToastNotice, WorkerPaneSession,
+    ArchiveConfirm, InboxItem, PaneAttach, PaneControls, PaneDrag, PaneWorkItem, Responsive,
+    SidebarRename, SidebarWorkspace, SidebarWorkspaceRename, SpaceMenu, ToastNotice,
+    WorkerPaneSession,
 };
 use crate::terminal::TerminalRegistry;
 use crate::ui::settings::SettingsUiState;
@@ -464,8 +465,12 @@ pub struct UiSnapshot {
     pub content_lane_dragging: bool,
     /// The lane edge being dragged, so its handle line is drawn there.
     pub content_lane_drag_edge: Option<LaneEdge>,
-    /// Whether the left conversation sidebar is shown.
+    /// Whether the left conversation sidebar is shown (the user's preference).
     pub sidebar_visible: bool,
+    /// The responsive layout's decisions for this frame: whether the sidebar is
+    /// auto-collapsed, the secondary panels leave the view and only the active
+    /// pane is drawn (see `state::ui_state::responsive`).
+    pub responsive: Responsive,
     /// Whether the sidebar lists every conversation (false shows a few cards
     /// plus a "View all" button).
     pub conversations_expanded: bool,

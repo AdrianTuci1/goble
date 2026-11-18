@@ -2173,7 +2173,11 @@ pub fn make_actions(
         )),
         on_toggle_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_sidebar.borrow_mut();
-            state.sidebar_visible = !state.sidebar_visible;
+            // Below the responsive breakpoint the toggle re-expands the
+            // auto-collapsed sidebar over the squeezed panes and leaves the
+            // visibility preference for the wide layout (DSH's
+            // `narrowExpanded`); above it, it is the ordinary toggle.
+            state.toggle_sidebar_responsive();
         })),
         on_toggle_conversations_expanded: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_conversations_expanded.borrow_mut();

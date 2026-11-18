@@ -62,15 +62,19 @@ const MAX_HEIGHT: f32 = 360.0;
 /// The air between the card and the chip it hangs from (DSH:
 /// `bottom: calc(anchor(top) + 8px)`).
 const CARD_GAP: f32 = 8.0;
-/// The card is the same material as the composer's other dropdowns
-/// ([`PopupMenu`](crate::elements::PopupMenu): 12pt casing, 6pt inset, 6pt
-/// rows), which is DSH's own rule for this card ("Surface tokens match the
-/// Menu primitive card so every dropdown reads as the same material"). Goble's
-/// menu casing is slightly tighter than DSH's figma radii, so the shared menu
-/// numbers win over the raw figma ones.
-const CARD_RADIUS: f32 = 12.0;
-const CARD_PADDING: f32 = 6.0;
-const ROW_RADIUS: f32 = 6.0;
+/// DSH clamps its portaled card 12pt inside the layout viewport (`.menu`
+/// `left: 12px` / `right: 12px`); the composer card is this surface's
+/// viewport, so the card keeps the same inset inside it. The composer publishes
+/// its card width minus twice this inset, so the card also max-sizes against
+/// DSH's `min(240px/420px, 100vw - 24px)` bounds.
+pub const MODEL_MENU_VIEWPORT_INSET: f32 = 12.0;
+/// DSH's menu surface (`MenuSurface.module.css`: `--dsw-radius-lg` = 16pt) and
+/// its 4pt casing padding (`ModelSelect.module.css` `.menu { padding: 4px }`).
+const CARD_RADIUS: f32 = 16.0;
+const CARD_PADDING: f32 = 4.0;
+/// A row/cell inside the surface: DSH `--dsw-radius-md` = 12pt
+/// (`.option`/`.cell { border-radius: var(--dsw-radius-md) }`).
+const ROW_RADIUS: f32 = 12.0;
 
 /// A cell/row: the shared menu row's 32pt rhythm, its content inset, the gap
 /// between its boxes and the glyph gaps. DSH's model menu rows are 34pt; the
@@ -78,7 +82,10 @@ const ROW_RADIUS: f32 = 6.0;
 /// menu material it shares rather than the figma page's row height.
 const ROW_HEIGHT: f32 = 32.0;
 const ROW_SPACING: f32 = 2.0;
-const ROW_PAD_X: f32 = 8.0;
+/// DSH `.option` padding-x (5px 7px rows); the root pane's `.cell` uses
+/// [`CELL_PAD_X`] (0 8px).
+const ROW_PAD_X: f32 = 7.0;
+const CELL_PAD_X: f32 = 8.0;
 const ROW_GAP: f32 = 6.0;
 const CHECK_SIZE: f32 = 14.0;
 const CHEVRON_SIZE: f32 = 12.0;
@@ -890,8 +897,21 @@ impl ModelTray {
         let panel = self.panel.as_ref()?;
         let mut x = origin.x() + panel.origin.x;
         if let Some(bounds) = self.bounds.as_ref().and_then(ModelTrayBounds::painted_rect) {
-            let left = bounds.min_x();
-            let right = (bounds.max_x() - panel.size.x).max(left);
+            // DSH insets the card 12pt inside the layout viewport
+            // (`left: 12px; right: 12px`). The composer card is the native
+            // frame's local viewport here, so the card clamps 12pt inside it;
+            // when the card cannot fit between both insets it falls back to the
+            // card's own edges rather than leaving the surface.
+            let inset_left = bounds.min_x() + MODEL_MENU_VIEWPORT_INSET;
+            let inset_right = bounds.max_x() - MODEL_MENU_VIEWPORT_INSET;
+            let (left, right) = if inset_right - inset_left >= panel.size.x {
+                (inset_left, inset_right - panel.size.x)
+            } else {
+                (
+                    bounds.min_x(),
+                    (bounds.max_x() - panel.size.x).max(bounds.min_x()),
+                )
+            };
             x = x.clamp(left, right);
         }
         Some((vec2f(x, origin.y() + panel.origin.y), panel.size))
@@ -1118,8 +1138,8 @@ impl Element for ModelTray {
                     // DSH's cell: label primary, the value tertiary and
                     // ellipsized in the space the label and chevron leave, the
                     // drill chevron at the trailing edge.
-                    let content_left = bounds.min_x() + ROW_PAD_X;
-                    let chevron_x = bounds.max_x() - ROW_PAD_X - CHEVRON_SIZE;
+                    let content_left = bounds.min_x() + CELL_PAD_X;
+                    let chevron_x = bounds.max_x() - CELL_PAD_X - CHEVRON_SIZE;
                     let label_width = Self::text_width(&label, LABEL_FONT_SIZE, CELL_LINE_HEIGHT);
                     let value_max =
                         (chevron_x - ROW_GAP - content_left - label_width - ROW_GAP).max(0.0);
@@ -1703,8 +1723,8 @@ mod tests {
         painted(&mut menu, &app, vec2f(600.0, 300.0));
         let (origin, _) = menu.placed_panel().expect("an open card has a panel");
         assert!(
-            (origin.x - (512.0 - 240.0)).abs() < 0.5,
-            "the card stops at the surface's trailing edge: {origin:?}"
+            (origin.x - (512.0 - MODEL_MENU_VIEWPORT_INSET - 240.0)).abs() < 0.5,
+            "the card stops 12pt inside the surface's trailing edge: {origin:?}"
         );
 
         // A chip near the surface's leading edge cannot open leftwards: the
@@ -1713,8 +1733,8 @@ mod tests {
         painted(&mut menu, &app, vec2f(20.0, 300.0));
         let (origin, _) = menu.placed_panel().expect("an open card has a panel");
         assert!(
-            (origin.x - 12.0).abs() < 0.5,
-            "the card never starts left of the surface's leading edge: {origin:?}"
+            (origin.x - (12.0 + MODEL_MENU_VIEWPORT_INSET)).abs() < 0.5,
+            "the card never starts left of the 12pt inset inside the surface: {origin:?}"
         );
     }
 

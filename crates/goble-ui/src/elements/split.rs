@@ -26,17 +26,25 @@ use crate::platform::window::CursorKind;
 /// the drag target, and the resize cursor over it is its whole affordance.
 const DIVIDER_HALF: f32 = 4.0;
 
-/// The smallest extent (along the main axis) a pane is allowed to have. The
+/// The smallest extent (along the main axis) a pane is allowed to have unless
+/// the host asks for its own floor (see [`SplitNode::with_min_pane_px`]). The
 /// ratio floor alone (`0.05`) can still leave a pane only a few pixels wide in
 /// a small split, so both the ratio floor and this pixel floor are enforced at
 /// drag and layout time.
-const MIN_PANE_PX: f32 = 120.0;
+pub const MIN_PANE_PX: f32 = 120.0;
 
 pub struct SplitNode {
     axis: Axis,
     ratio: f32,
     first: Box<dyn Element>,
     second: Box<dyn Element>,
+    /// The floors the two children may be dragged down to along the main axis.
+    /// The app passes each subtree's own minimum (a pane's `PANE_MIN_WIDTH`
+    /// plus its frame gutters, or the summed minimum for a nested split), so a
+    /// split can never hand a pane less than the owner's minimum; the default
+    /// keeps the generic element's own floor.
+    min_first_px: f32,
+    min_second_px: f32,
     dragging: bool,
     on_drag_start: Option<Rc<RefCell<dyn FnMut()>>>,
     on_drag_move: Option<Rc<RefCell<dyn FnMut(f32)>>>,
@@ -52,6 +60,8 @@ impl SplitNode {
             ratio: ratio.clamp(0.05, 0.95),
             first,
             second,
+            min_first_px: MIN_PANE_PX,
+            min_second_px: MIN_PANE_PX,
             dragging: false,
             on_drag_start: None,
             on_drag_move: None,
@@ -59,6 +69,24 @@ impl SplitNode {
             size: None,
             origin: None,
         }
+    }
+
+    /// The floor both children may shrink to along the main axis, in pixels.
+    pub fn with_min_pane_px(mut self, min_pane_px: f32) -> Self {
+        let min_pane_px = min_pane_px.max(1.0);
+        self.min_first_px = min_pane_px;
+        self.min_second_px = min_pane_px;
+        self
+    }
+
+    /// The floors the two children may shrink to along the main axis, in
+    /// pixels, one per side. The app passes each subtree's own minimum, so a
+    /// nested split keeps the width its own panes need while the sibling keeps
+    /// the rest.
+    pub fn with_min_panes(mut self, min_first_px: f32, min_second_px: f32) -> Self {
+        self.min_first_px = min_first_px.max(1.0);
+        self.min_second_px = min_second_px.max(1.0);
+        self
     }
 
     /// Whether a drag is in progress (carried from app state so it survives the
@@ -123,13 +151,26 @@ impl SplitNode {
     }
 
     /// Clamp a ratio so that both children of a split of main-axis length
-    /// `main` keep at least [`MIN_PANE_PX`] along the main axis. When the
-    /// container is too small to give both panes their minimum, falls back to
-    /// an equal split. The `0.05` ratio floor is kept as a lower bound so a
-    /// very large split never hands the first pane less than the ratio floor.
+    /// `main` keep at least their own floor (`min_first_px` / `min_second_px`).
+    /// When the container is too small to give both panes their minimum, falls
+    /// back to an equal split (the responsive layout is what keeps the window
+    /// wide enough in the app; the element never produces a degenerate child).
+    /// The `0.05` ratio floor is kept as a lower bound so a very large split
+    /// never hands the first pane less than the ratio floor.
+    fn clamp_ratio_with(ratio: f32, main: f32, min_first_px: f32, min_second_px: f32) -> f32 {
+        let main = main.max(1.0);
+        let min_ratio = (min_first_px / main).clamp(0.0, 0.5).max(0.05);
+        let max_ratio = 1.0 - (min_second_px / main).clamp(0.0, 0.5).max(0.05);
+        // The halves are clamped, so `min_ratio <= 0.5 <= max_ratio` always: a
+        // container too small for both floors resolves to the equal split
+        // instead of squeezing a child to nothing.
+        ratio.clamp(min_ratio, max_ratio)
+    }
+
+    /// [`Self::clamp_ratio_with`] at the element's default floor: the generic
+    /// floor the tests and other split users read.
     fn clamp_ratio(ratio: f32, main: f32) -> f32 {
-        let min_ratio = (MIN_PANE_PX / main.max(1.0)).clamp(0.0, 0.5).max(0.05);
-        ratio.clamp(min_ratio, 1.0 - min_ratio)
+        Self::clamp_ratio_with(ratio, main, MIN_PANE_PX, MIN_PANE_PX)
     }
 
     /// New ratio (0..1) for an absolute pointer position along the main axis.
@@ -145,7 +186,7 @@ impl SplitNode {
             Axis::Horizontal => position.x - origin.x(),
             Axis::Vertical => position.y - origin.y(),
         };
-        Self::clamp_ratio(pointer / main, main)
+        Self::clamp_ratio_with(pointer / main, main, self.min_first_px, self.min_second_px)
     }
 
     /// Ask the platform for the cursor this frame should show.
@@ -183,11 +224,16 @@ impl Element for SplitNode {
     ) -> Vector2F {
         let main = constraint.max.along(self.axis).max(0.0);
         let cross = constraint.max.along(self.axis.invert()).max(0.0);
-        // Clamp the ratio so both panes keep at least `MIN_PANE_PX` along the
-        // main axis (the ratio floor alone can leave a pane only a few pixels
-        // wide in a small split). Storing the clamped value keeps the divider
-        // painted where the children actually begin.
-        self.ratio = Self::clamp_ratio(self.ratio, main);
+        // Clamp the ratio so both panes keep their minimum along the main axis
+        // (the ratio floor alone can leave a pane only a few pixels wide in a
+        // small split). Storing the clamped value keeps the divider painted
+        // where the children actually begin.
+        self.ratio = Self::clamp_ratio_with(
+            self.ratio,
+            main,
+            self.min_first_px,
+            self.min_second_px,
+        );
         let first_main = main * self.ratio;
         let second_main = main - first_main;
 
@@ -376,6 +422,104 @@ mod tests {
     /// The resize cursor over the invisible grab band is the boundary's only
     /// affordance, and it stays for the whole of a captured drag. Away from the
     /// band a split leaves the cursor alone.
+    /// A child that records the main-axis extent it was laid out at, and
+    /// paints nothing.
+    struct RecordingChild {
+        main_axis: Axis,
+        extents: Rc<RefCell<Vec<f32>>>,
+    }
+
+    impl Element for RecordingChild {
+        fn layout(
+            &mut self,
+            constraint: SizeConstraint,
+            _ctx: &mut LayoutContext,
+            _app: &AppContext,
+        ) -> Vector2F {
+            self.extents
+                .borrow_mut()
+                .push(constraint.max.along(self.main_axis));
+            constraint.max
+        }
+
+        fn paint(&mut self, _origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {}
+
+        fn size(&self) -> Option<Vector2F> {
+            None
+        }
+
+        fn origin(&self) -> Option<Point> {
+            None
+        }
+
+        fn dispatch_event(
+            &mut self,
+            _event: &DispatchedEvent,
+            _ctx: &mut EventContext,
+            _app: &AppContext,
+        ) -> bool {
+            false
+        }
+    }
+
+    fn recording_split(
+        axis: Axis,
+        ratio: f32,
+        min_first: f32,
+        min_second: f32,
+    ) -> (SplitNode, Rc<RefCell<Vec<f32>>>, Rc<RefCell<Vec<f32>>>) {
+        let first = Rc::new(RefCell::new(Vec::new()));
+        let second = Rc::new(RefCell::new(Vec::new()));
+        let node = SplitNode::new(
+            axis,
+            ratio,
+            Box::new(RecordingChild {
+                main_axis: axis,
+                extents: Rc::clone(&first),
+            }),
+            Box::new(RecordingChild {
+                main_axis: axis,
+                extents: Rc::clone(&second),
+            }),
+        )
+        .with_min_panes(min_first, min_second);
+        (node, first, second)
+    }
+
+    /// Each side of a split stops at its OWN floor: a nested split that needs
+    /// the width of two panes keeps it while the sibling takes what is left.
+    #[test]
+    fn a_split_stops_a_drag_at_each_sides_own_minimum() {
+        // A 1000 px split with a 368 px and a 240 px floor: the ratio is
+        // bounded to [0.368, 0.76].
+        assert!((SplitNode::clamp_ratio_with(0.1, 1000.0, 368.0, 240.0) - 0.368).abs() < 1e-6);
+        assert!((SplitNode::clamp_ratio_with(0.9, 1000.0, 368.0, 240.0) - 0.76).abs() < 1e-6);
+        assert!((SplitNode::clamp_ratio_with(0.5, 1000.0, 368.0, 240.0) - 0.5).abs() < 1e-6);
+
+        // Laid out below the first floor, the split hands the first child
+        // exactly its minimum and the second the rest: no degenerate panes.
+        let app = AppContext::default();
+        let (mut node, first, second) = recording_split(Axis::Horizontal, 0.1, 368.0, 240.0);
+        let _ = node.layout(
+            SizeConstraint::loose(vec2f(1000.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert_eq!(first.borrow().last().copied(), Some(368.0));
+        assert_eq!(second.borrow().last().copied(), Some(632.0));
+
+        // Not even the two floors fit: the equal split keeps both children
+        // alive instead of one collapsing to zero.
+        let (mut node, first, second) = recording_split(Axis::Horizontal, 0.1, 368.0, 368.0);
+        let _ = node.layout(
+            SizeConstraint::loose(vec2f(500.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        assert_eq!(first.borrow().last().copied(), Some(250.0));
+        assert_eq!(second.borrow().last().copied(), Some(250.0));
+    }
+
     #[test]
     fn the_boundary_shows_a_resize_cursor_instead_of_a_line() {
         let app = AppContext::default();

@@ -264,26 +264,49 @@ pub fn build_active_space(
 ) -> Box<dyn Element> {
     let content = match state.spaces.get(state.active_space) {
         Some(space) => {
+            // The responsive last resort: the window is too narrow for every
+            // pane to keep its minimum width, so the active pane is drawn over
+            // the whole pane area (at its minimum) and the others stay in the
+            // tree — growing the window restores them. This keeps the pane the
+            // user is in visible, exactly as the breakpoint contract requires.
+            let focused_pane = state
+                .responsive
+                .focused_only
+                .then(|| leaf_kind_of(&space.root, state.active_pane_id))
+                .flatten()
+                .map(|kind| (state.active_pane_id, kind));
             // One pane at a time is drawn over the whole panes space: the leaf
             // the header's expand control names, instead of the tree. The tree
             // itself is left alone, so retracting puts the pane back in the
             // place it had. An id that names no leaf of *this* space (it was
             // closed, or it belongs to another space) falls through to the tree.
-            if let Some(id) = state.maximized_pane {
-                if let Some(kind) = leaf_kind_of(&space.root, id) {
-                    let leaf = build_leaf(app, state, actions, id, kind);
-                    let maximized: Box<dyn Element> = if is_lifted(state, id) {
-                        Box::new(HiddenInPlace::new(leaf))
-                    } else {
-                        // The maximized pane fills the whole pane area: its tab
-                        // slot is the pane area, so it wears the same accent
-                        // outline as any other tab.
-                        Box::new(SlotFrame::new(leaf, true))
-                    };
-                    maximized
+            let maximized_pane = focused_pane
+                .map(|(id, kind)| (id, kind, true))
+                .or_else(|| {
+                    state
+                        .maximized_pane
+                        .and_then(|id| leaf_kind_of(&space.root, id).map(|kind| (id, kind, false)))
+                });
+            if let Some((id, kind, responsive_focus)) = maximized_pane {
+                let leaf = build_leaf(app, state, actions, id, kind);
+                // A responsive focus keeps the tab's own frame gutter, so the
+                // pane still reads as a panel card on the panel surface; a
+                // maximized pane (the header's expand control) owns the whole
+                // pane area.
+                let leaf: Box<dyn Element> = if responsive_focus {
+                    Padding::new(leaf, EdgeInsets::uniform(PANE_INSET)).finish()
                 } else {
-                    build_space(app, state, actions, space)
-                }
+                    leaf
+                };
+                let maximized: Box<dyn Element> = if is_lifted(state, id) {
+                    Box::new(HiddenInPlace::new(leaf))
+                } else {
+                    // The maximized (or responsive focused) pane fills the whole
+                    // pane area: its tab slot is the pane area, so it wears the
+                    // same accent outline as any other tab.
+                    Box::new(SlotFrame::new(leaf, true))
+                };
+                maximized
             } else {
                 build_space(app, state, actions, space)
             }
@@ -297,11 +320,11 @@ pub fn build_active_space(
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_child(Expanded::new(chat).finish());
-            // The fallback is an agent pane like any other chat leaf: its whole
-            // surface is the agent background (see [`pane_surface`]).
+            // The fallback is a pane card like any other leaf: the panel itself
+            // is the darker background (see [`pane_surface`]).
             Box::new(SlotFrame::new(
                 Container::new(column.finish())
-                    .with_background(Fill::Solid(pane_surface(app, &PaneKind::Chat)))
+                    .with_background(Fill::Solid(pane_surface(app)))
                     .with_border(app.theme.color(ColorToken::Border).into())
                     .finish(),
                 true,
@@ -321,6 +344,31 @@ pub fn build_active_space(
         target,
         state.pane_bounds.clone(),
     ))
+}
+
+/// The minimum width a pane subtree needs along the main axis, in slot pixels:
+/// each leaf keeps `leaf_slot_min` (one pane's minimum plus the frame gutter
+/// inside its slot), a side-by-side split adds its children, and a stacked one
+/// keeps its widest child (the width is shared across the stack).
+///
+/// The responsive layout (`state::ui_state::responsive`) uses the same
+/// definition to decide when the sidebar or the extra panes have to give up
+/// their width, and [`build_pane`] uses it as the split's drag floor, so the
+/// breakpoint and the split can never disagree about a pane's minimum.
+pub(crate) fn pane_min_width(pane: &Pane, leaf_slot_min: f32) -> f32 {
+    match pane {
+        Pane::Leaf { .. } => leaf_slot_min,
+        Pane::Split {
+            dir, first, second, ..
+        } => match dir {
+            SplitDir::Horizontal => {
+                pane_min_width(first, leaf_slot_min) + pane_min_width(second, leaf_slot_min)
+            }
+            SplitDir::Vertical => {
+                pane_min_width(first, leaf_slot_min).max(pane_min_width(second, leaf_slot_min))
+            }
+        },
+    }
 }
 
 /// The kind of the leaf pane `target` holds in this subtree, or `None` when the
@@ -575,6 +623,15 @@ fn build_pane(
             first,
             second,
         } => {
+            // A side-by-side split stops its drag at each side's own minimum
+            // width: a leaf keeps one pane minimum, a nested split keeps the
+            // sum its own panes need, and the neighbour keeps the rest. Stacked
+            // panes share the width, so only their height has a floor (the
+            // split's default). Read the subtree floors before the children are
+            // built: the built elements are the ones the split lays out.
+            let slot_min = crate::state::pane_slot_min_width();
+            let min_first = pane_min_width(first, slot_min);
+            let min_second = pane_min_width(second, slot_min);
             let first = build_pane(app, state, actions, first);
             let second = build_pane(app, state, actions, second);
             // A split with one side lifted collapses onto the side that stays:
@@ -598,6 +655,10 @@ fn build_pane(
                 .with_on_drag_start(move || (on_start.borrow_mut())(split_id))
                 .with_on_drag_move(move |r| (on_move.borrow_mut())(split_id, r))
                 .with_on_drag_end(move || (on_end.borrow_mut())());
+            let node = match dir {
+                SplitDir::Horizontal => node.with_min_panes(min_first, min_second),
+                SplitDir::Vertical => node,
+            };
             Some(Box::new(node))
         }
     }
@@ -913,29 +974,19 @@ pub(crate) const PANE_INSET: f32 = 4.0;
 /// [`tab_outline_rect`] geometry relative to its slot.
 pub(crate) const PANE_AREA_INSET: f32 = 4.0;
 
-/// The background a pane's card paints.
+/// The background a pane's card paints: the darker `Bg`, for every pane kind.
 ///
-/// An agent surface uses the same darker `Bg` the agent content lane paints its
-/// text column on, so the area outside the text column and the column itself
-/// read as one continuous surface — the adjustable column is a width, not a
-/// different material. Every other pane keeps the lighter `Surface` card.
+/// The card is the PANEL itself, and only the panel uses the darker material.
+/// The surface it sits on — the pane area inside [`PANE_AREA_INSET`], the
+/// gutters between and around the tab slots — is the sidebar's `Surface`
+/// (see `build_ui` in the app's `build` module), so the backdrop matches the
+/// sidebar while each pane reads as a darker card on it. An agent pane's card
+/// also matches its own content column, which paints the same `Bg`.
 ///
 /// The returned value is a theme token's colour, never a hardcoded one, so the
 /// dark and light themes both follow their own palette.
-fn pane_surface(app: &AppContext, kind: &PaneKind) -> goble_ui::ColorU {
-    let token = match kind {
-        // The agent view the chat leaf mounts, the worker's conversation view
-        // and a terminal pane's agent mode all draw the same agent surface.
-        // A terminal's shell view paints its own `Bg` output area, so it is the
-        // same darker token either way.
-        PaneKind::Chat | PaneKind::Worker | PaneKind::Terminal => ColorToken::Bg,
-        // Reader and tooling panes keep their lighter card: they are not agent
-        // surfaces and have no content column whose background they must match.
-        PaneKind::File { .. } | PaneKind::Diff { .. } | PaneKind::Settings { .. } => {
-            ColorToken::Surface
-        }
-    };
-    app.theme.color(token)
+fn pane_surface(app: &AppContext) -> goble_ui::ColorU {
+    app.theme.color(ColorToken::Bg)
 }
 
 /// `rect` shrunk by `amount` on every side, never past half its width or
@@ -1244,7 +1295,7 @@ fn build_window(
     minimize: bool,
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
-    let surface = pane_surface(app, &kind);
+    let surface = pane_surface(app);
     let titlebar = build_window_titlebar(app, actions, id, &kind, active, minimize);
     let body = build_leaf_column(app, state, actions, id, kind, false);
     let column = Flex::column()
@@ -1407,14 +1458,14 @@ fn build_leaf_with_lift(
     lift: bool,
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
-    let surface = pane_surface(app, &kind);
+    let surface = pane_surface(app);
     let column = build_leaf_column(app, state, actions, id, kind, lift);
     // The card's own edge stays the ordinary `Border`: the tab's accent outline
     // is drawn on its whole slot by [`SlotOutlineLayer`], around the card and
     // the chrome band together. A card edge in the accent as well would put a
     // second purple rule `PANE_INSET` inside the tab's real border. The fill is
-    // the leaf's own surface (see [`pane_surface`]): an agent pane's card is the
-    // same darker `Bg` as its content column, the rest keep `Surface`.
+    // the panel's own darker surface (see [`pane_surface`]): every pane card —
+    // an agent pane's included — is `Bg` on the panel area's `Surface`.
     let pane = Container::new(column)
         .with_background(Fill::Solid(surface))
         .with_border(app.theme.color(ColorToken::Border).into())
@@ -1600,54 +1651,45 @@ mod tests {
         assert_eq!(PANE_AREA_INSET, 4.0);
     }
 
-    /// An agent pane's card is the same darker `Bg` its agent content lane
-    /// paints its text column on: outside the text column reads exactly like
-    /// inside it, in both themes. The other panes keep their lighter `Surface`
-    /// card, and no value is hardcoded.
+    /// The panel itself is the darker material: EVERY pane card — chat, worker,
+    /// terminal, file, diff, settings — paints `Bg`. The surface the panels are
+    /// rendered on is the sidebar's `Surface` (painted by the app's build), so
+    /// the backdrop matches the sidebar while the panels read darker. Checked in
+    /// both themes, with theme tokens only.
     #[test]
-    fn agent_panes_paint_the_lane_background_on_the_whole_surface() {
-        fn assert_uniform(app: &AppContext) {
+    fn every_panel_card_paints_the_darker_background() {
+        fn assert_panels_are_dark(app: &AppContext) {
             let bg = app.theme.color(ColorToken::Bg);
             let surface = app.theme.color(ColorToken::Surface);
             assert_ne!(bg, surface, "the two tokens are distinct materials");
-            // Every surface that draws the agent view: the whole card is the
-            // token the lane column uses.
-            assert_eq!(pane_surface(app, &PaneKind::Chat), bg);
-            assert_eq!(pane_surface(app, &PaneKind::Worker), bg);
-            assert_eq!(
-                pane_surface(app, &PaneKind::Terminal),
-                bg,
-                "the shell paints its own Bg output area; agent mode is the chat surface"
-            );
-            // A reader/tooling pane keeps the lighter card.
-            assert_eq!(
-                pane_surface(
-                    app,
-                    &PaneKind::File {
-                        path: String::from("/tmp/x")
-                    }
-                ),
-                surface
-            );
-            assert_eq!(
-                pane_surface(app, &PaneKind::Diff { cwd: String::new() }),
-                surface
-            );
-            assert_eq!(
-                pane_surface(
-                    app,
-                    &PaneKind::Settings {
-                        page: crate::ui::SettingsCategory::General
-                    }
-                ),
-                surface
-            );
+            for kind in [
+                PaneKind::Chat,
+                PaneKind::Worker,
+                PaneKind::Terminal,
+                PaneKind::File {
+                    path: String::from("/tmp/x"),
+                },
+                PaneKind::Diff {
+                    cwd: String::new(),
+                },
+                PaneKind::Settings {
+                    page: crate::ui::SettingsCategory::General,
+                },
+            ] {
+                assert_eq!(
+                    pane_surface(app),
+                    bg,
+                    "the panel card ({kind:?}) uses the darker background"
+                );
+            }
         }
 
-        // Dark and light: the relationship is the theme's, not a fixed colour.
-        assert_uniform(&AppContext::default());
+        // Dark: the panels are the window's darker `Bg` on the sidebar's
+        // `Surface` backdrop.
+        assert_panels_are_dark(&AppContext::default());
+        // Light: the same token relationship, no hardcoded colours.
         let mut light = AppContext::default();
         light.theme = goble_ui::theme::Theme::light();
-        assert_uniform(&light);
+        assert_panels_are_dark(&light);
     }
 }

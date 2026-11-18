@@ -2271,8 +2271,9 @@ fn the_instructions_close_the_input_in_a_fixed_row() {
         super::COMPOSER_BAR_RESERVED_HEIGHT
     );
 
-    // A surface that never ships hints pays no row: its card is shorter.
-    let (without_row_size, _) = paint_composer_in(
+    // The strip lives inside the reserved footer: its height is the footer's,
+    // so a surface with the hint has exactly the card it had without it.
+    let (hintless_footer_size, hintless_footer_commands) = paint_composer_in(
         &app,
         &mut ChatComposer::new()
             .with_context_above_editor(true)
@@ -2281,10 +2282,69 @@ fn the_instructions_close_the_input_in_a_fixed_row() {
         vec2f(600.0, 500.0),
     );
     assert!(
-        size.y > without_row_size.y,
-        "a hint-less surface does not reserve the row: {} against {}",
+        line_of(&hintless_footer_commands, "new conversation").is_none(),
+        "a surface that ships no hints draws no entry"
+    );
+    assert!(
+        (size.y - hintless_footer_size.y).abs() < 0.01,
+        "the hint adds no height at all ({} against {})",
         size.y,
-        without_row_size.y
+        hintless_footer_size.y
+    );
+}
+
+/// The owner's height parity: the terminal bar and the agent input are the same
+/// card. The shell bar's ⌘↵ hint rides in the reserved footer, and the agent
+/// composer's hint strip is hosted above its card by the view, so neither card
+/// pays a row for it — both lay out at the reserved bar height.
+#[test]
+fn the_terminal_and_agent_cards_are_the_same_height() {
+    use crate::elements::ShortcutHint;
+
+    let app = AppContext::default();
+    let context = |composer: ChatComposer| {
+        composer
+            .with_context_above_editor(true)
+            .with_edge_to_edge(true)
+            .with_path_label("~/Projects/goble")
+            .with_branch_label("main")
+            .with_on_send(|_| {})
+    };
+    // The terminal bar: the shell's context, its command placeholder and the
+    // one instruction the command line answers (⌘↵ new conversation).
+    let mut terminal = context(ChatComposer::new().with_placeholder(
+        crate::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER,
+    ))
+    .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]);
+    // The agent input: the same context plus the agent controls, and no
+    // in-card hint row (the view draws the agent hints above the card).
+    let mut agent = context(ChatComposer::new())
+        .with_harness_label("This Computer")
+        .with_harness_icon("environment-computer")
+        .with_model_label("DeepSeek Flash")
+        .with_on_attach(|| {});
+
+    let (terminal_size, terminal_commands) =
+        paint_composer_in(&app, &mut terminal, vec2f(876.0, 500.0));
+    let (agent_size, _agent_commands) =
+        paint_composer_in(&app, &mut agent, vec2f(876.0, 500.0));
+    assert!(
+        (terminal_size.y - agent_size.y).abs() < 0.01,
+        "the terminal card must equal the agent card ({} against {})",
+        terminal_size.y,
+        agent_size.y
+    );
+    assert!(
+        (terminal_size.y - super::COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.01,
+        "both are the reserved bar height: {} against {}",
+        terminal_size.y,
+        super::COMPOSER_BAR_RESERVED_HEIGHT
+    );
+    // The hint is drawn, but inside the footer row rather than under it.
+    let texts = drawn_texts(&terminal_commands);
+    assert!(
+        texts.iter().any(|text| text == "new conversation"),
+        "the shell bar still names ⌘↵ new conversation: {texts:?}"
     );
 }
 
@@ -3592,7 +3652,7 @@ fn the_model_chip_opens_the_dsh_card_above_it() {
                 color,
                 corner_radius,
             } if *color == app.theme.color(ColorToken::SurfaceRaised)
-                && (*corner_radius - 12.0).abs() < 0.01
+                && (*corner_radius - 16.0).abs() < 0.01
                 && rect.min_y() < 0.0 =>
             {
                 Some(*rect)

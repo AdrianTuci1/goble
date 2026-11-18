@@ -7,21 +7,31 @@
 //! PNGs through the shared preview rasterizer. It is a visual verification tool,
 //! not a product surface. It measures:
 //!
-//! - the AGENT SURFACE: the pane card's whole background, the text/content
-//!   column and the gutters outside it are the same darker `Bg` token, so
-//!   outside == inside (dark and light are the theme's own tokens);
+//! - the LAYERING: the panel surface the panes are rendered on — the 4 px-inset
+//!   pane area and the gutters between/around the tab slots — is the SIDEBAR's
+//!   `Surface`; only the panel itself (each pane/tab card) is the darker `Bg`.
+//!   An agent card also matches its own content column (both `Bg`), so outside
+//!   the text column reads like inside it, while the backdrop matches the
+//!   sidebar;
 //! - the PANEL SURFACE INSET: the area the panes are rendered on sits 4 px
 //!   inside the window/chrome on all four sides (top: below the bar block;
 //!   right/bottom: the window edges; left: the sidebar), and each tab outline
 //!   keeps its own inset relative to its slot;
 //! - the RESIZE affordance: no thin divider rule is drawn at a split boundary
 //!   or at the sidebar edge — idle or while dragging — and the only affordance
-//!   is the resize cursor over the invisible grab band.
+//!   is the resize cursor over the invisible grab band;
+//! - the RESPONSIVE steps at 1600/1100/900/760: the sidebar auto-collapses at
+//!   the width the pane tree needs (the 1024 floor earlier for a wide tree),
+//!   the next breakpoint hides the agent panel; the panes themselves stop at
+//!   the owner's 360 pt minimum.
 //!
 //! Scenes: 1 pane (1600x900, lane dragged to 700), 2 panes (2600x900, ratio
-//! 0.6), 1 narrow pane (1024x768, lane inactive), and 2 panes with the split and
+//! 0.6), 1 narrow pane (1024x768, lane inactive), 2 panes with the split and
 //! the sidebar edge both grabbed (2600x900) — the dragging frames must draw no
-//! rule either.
+//! rule either — and the same two-pane layout at the responsive widths
+//! 1600/1100/900/760: the sidebar auto-collapses at its measured breakpoint and
+//! the agent panel leaves the view below 768, mirroring DeepSeek Harness's
+//! breakpoint behaviour.
 //!
 //! Usage: cargo run -p goble-app --example pane_chrome_preview
 //! Output: /tmp/goble-work/out/pane-chrome-<scene>.png, with the measured
@@ -60,15 +70,32 @@ enum Scene {
     TwoPanes,
     Narrow,
     ResizeChrome,
+    /// The same two-pane layout at the responsive widths: 1600 (all shown),
+    /// 1100 (sidebar shown, still above the measured breakpoint), 900 (the
+    /// sidebar auto-collapsed) and 760 (secondary panels leave the view).
+    Responsive1600,
+    Responsive1100,
+    Responsive900,
+    Responsive760,
+    /// The agent panel (a secondary surface) open at a wide and at a narrow
+    /// width: shown above 768, gone below it (the responsive second step).
+    Panel1600,
+    Panel760,
 }
 
 impl Scene {
-    fn all() -> [Self; 4] {
+    fn all() -> [Self; 10] {
         [
             Self::OnePane,
             Self::TwoPanes,
             Self::Narrow,
             Self::ResizeChrome,
+            Self::Responsive1600,
+            Self::Responsive1100,
+            Self::Responsive900,
+            Self::Responsive760,
+            Self::Panel1600,
+            Self::Panel760,
         ]
     }
 
@@ -77,6 +104,11 @@ impl Scene {
             Self::OnePane => vec2f(1600.0, 900.0),
             Self::TwoPanes | Self::ResizeChrome => vec2f(2600.0, 900.0),
             Self::Narrow => vec2f(1024.0, 768.0),
+            Self::Responsive1600 => vec2f(1600.0, 900.0),
+            Self::Responsive1100 => vec2f(1100.0, 900.0),
+            Self::Responsive900 => vec2f(900.0, 900.0),
+            Self::Responsive760 | Self::Panel760 => vec2f(760.0, 900.0),
+            Self::Panel1600 => vec2f(1600.0, 900.0),
         }
     }
 
@@ -86,23 +118,37 @@ impl Scene {
             Self::TwoPanes => "pane-chrome-2pane.png",
             Self::Narrow => "pane-chrome-narrow.png",
             Self::ResizeChrome => "pane-chrome-resize-chrome.png",
+            Self::Responsive1600 => "responsive-1600.png",
+            Self::Responsive1100 => "responsive-1100.png",
+            Self::Responsive900 => "responsive-900.png",
+            Self::Responsive760 => "responsive-760.png",
+            Self::Panel1600 => "panel-1600.png",
+            Self::Panel760 => "panel-760.png",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             Self::OnePane => {
-                "1 pane, 1600x900: uniform darker agent surface, lane dragged to 700"
+                "1 pane, 1600x900: panel card darker, backdrop = sidebar, lane dragged to 700"
             }
             Self::TwoPanes => {
-                "2 panes, 2600x900 ratio 0.6: each pane's chrome spans its own slot, no divider"
+                "2 panes, 2600x900 ratio 0.6: darker panels on the sidebar-coloured panel surface"
             }
             Self::Narrow => {
-                "1 narrow pane, 1024x768: lane inactive, uniform agent surface, panel inset"
+                "1 narrow pane, 1024x768: lane inactive, darker panel on the sidebar-coloured backdrop"
             }
             Self::ResizeChrome => {
                 "2 panes with the split grabbed and the sidebar edge grabbed: cursor-only resize"
             }
+            Self::Responsive1600 => "responsive 1600: sidebar + two panes, everything shown",
+            Self::Responsive1100 => "responsive 1100: sidebar still fits beside two panes",
+            Self::Responsive900 => "responsive 900: sidebar auto-collapsed, panes keep width",
+            Self::Responsive760 => {
+                "responsive 760: sidebar collapsed, two panes at their 360 pt minimum"
+            }
+            Self::Panel1600 => "agent panel open at 1600: the secondary surface is shown",
+            Self::Panel760 => "agent panel open at 760: the secondary surface leaves the view",
         }
     }
 }
@@ -195,6 +241,19 @@ fn build_scene(
                 // no rule at either one.
                 s.dragging_pane_id = Some(9);
                 s.sidebar_dragging = true;
+            }
+            Scene::Responsive1600
+            | Scene::Responsive1100
+            | Scene::Responsive900
+            | Scene::Responsive760 => {
+                install_two_panes(&mut s, 0.5);
+            }
+            Scene::Panel1600 | Scene::Panel760 => {
+                install_two_panes(&mut s, 0.5);
+                // The agent panel is the secondary surface the responsive
+                // layout hides at the second breakpoint: open it so the step is
+                // visible and measurable.
+                s.right_sidebar_open = true;
             }
         }
         // A pane snapshot is what makes the pane draw its own chat view (and
@@ -368,11 +427,52 @@ fn print_geometry(
     let bg = app.theme.color(ColorToken::Bg);
     let surface = app.theme.color(ColorToken::Surface);
     let body_top = TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND;
-    let body_left = if s.sidebar_visible {
+    // The panel surface starts right of the sidebar only while the responsive
+    // layout keeps it shown; a collapsed sidebar gives its width back.
+    let body_left = if s.responsive.sidebar_shown(s.sidebar_visible) {
         s.sidebar_width
     } else {
         0.0
     };
+    // The responsive step this frame is in: the decisions the layout made from
+    // the window's measured width, and the surfaces it keeps or hides.
+    let responsive = s.responsive;
+    let sidebar_drawn = commands.iter().find_map(|command| match command {
+        RenderCommand::FillRect { rect, color, .. }
+            if *color == surface && rect.min_x() == 0.0 && rect.height() > window.y / 2.0 =>
+        {
+            Some(*rect)
+        }
+        _ => None,
+    });
+    let panel_drawn = commands.iter().any(|command| {
+        matches!(command, RenderCommand::DrawText { text, .. } if text == "Agent panel")
+    });
+    let frames = pane_bounds(state);
+    println!(
+        "\n   responsive: window {:.0} | sidebar collapsed? {} | secondary hidden? {} | focused only? {}",
+        window.x,
+        responsive.sidebar_collapsed,
+        responsive.secondary_hidden,
+        responsive.focused_only,
+    );
+    println!(
+        "   sidebar: {} | agent panel: {} | panes drawn: {} ({} leaves in the tree)",
+        match sidebar_drawn {
+            Some(rect) => format!("shown x {:.1}..{:.1}", rect.min_x(), rect.max_x()),
+            None => "collapsed".to_string(),
+        },
+        if panel_drawn { "shown" } else { "hidden" },
+        frames.len(),
+        {
+            let mut leaves = Vec::new();
+            if let Some(space) = s.spaces.get(s.active_space) {
+                space.root.leaves(&mut leaves);
+            }
+            leaves.len()
+        }
+    );
+
     let bands = chrome_bands(commands, app);
     let mut slots: Vec<RectF> = Vec::new();
     for (id, pane) in pane_bounds(state) {
@@ -422,12 +522,52 @@ fn print_geometry(
         let inside = topmost_fill(commands, vec2f(inside_x, mid_y));
         let uniform = outside == inside && outside == Some(card_color);
         println!(
-            "     agent surface: card {} | outside text column {:?} | inside text column {:?} -> uniform? {}",
+            "     panel card: {} | outside text column {:?} | inside text column {:?} -> lane matches card? {}",
             color_hex(card_color),
             outside.map(color_hex),
             inside.map(color_hex),
             uniform
         );
+        // The surface the panels are rendered on is the sidebar's `Surface`.
+        let backdrop = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == surface
+                    && *corner_radius == 0.0
+                    && rect.min_y() > TOPBAR_HEIGHT
+                    && rect.width() > window.x / 2.0
+                    && rect.height() > window.y / 2.0 =>
+                {
+                    Some((*rect, *color))
+                }
+                _ => None,
+            });
+        if let Some((backdrop_rect, backdrop_color)) = backdrop {
+            let sidebar = commands.iter().find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == surface
+                        && rect.min_x() == 0.0
+                        && rect.height() > window.y / 2.0 =>
+                {
+                    Some(*color)
+                }
+                _ => None,
+            });
+            println!(
+                "     panel surface backdrop: {} (x {:.1}..{:.1} y {:.1}..{:.1}) | sidebar: {:?} -> same? {}",
+                color_hex(backdrop_color),
+                backdrop_rect.min_x(),
+                backdrop_rect.max_x(),
+                backdrop_rect.min_y(),
+                backdrop_rect.max_y(),
+                sidebar.map(color_hex),
+                sidebar == Some(backdrop_color)
+            );
+        }
 
         // The pane's own chrome bands: the header band at the top of its slot
         // and (when work is in flight) the dock band under it.
@@ -565,15 +705,41 @@ fn print_geometry(
     }
 
     // No drawn rules at the resizable boundaries — neither idle nor while a
-    // drag is in flight (the ResizeChrome scene grabs both).
+    // drag is in flight (the ResizeChrome scene grabs both). A rule elsewhere
+    // is another surface's own chrome (the agent panel's header seam), not a
+    // resize divider.
+    let frames = pane_bounds(state);
+    let mut boundaries: Vec<f32> = frames
+        .windows(2)
+        .map(|pair| (pair[0].1.max_x() + pair[1].1.min_x()) / 2.0)
+        .collect();
+    if s.responsive.sidebar_shown(s.sidebar_visible) {
+        boundaries.push(s.sidebar_width);
+    }
     let rules = thin_rules(commands);
+    let (at_boundary, elsewhere): (Vec<RectF>, Vec<RectF>) = rules.into_iter().partition(|rule| {
+        boundaries.iter().any(|boundary| {
+            (rule.min_x() - boundary).abs() < 2.0
+                || (rule.max_x() - boundary).abs() < 2.0
+                || (((rule.min_x() + rule.max_x()) / 2.0) - boundary).abs() < 2.0
+        })
+    });
     println!(
-        "\n   thin divider rules in the frame: {} (split/sidebar must be 0){}",
-        rules.len(),
-        if rules.is_empty() {
+        "\n   thin divider rules at resizable boundaries: {} (must be 0){}",
+        at_boundary.len(),
+        if at_boundary.is_empty() {
             String::new()
         } else {
-            format!(" -> {rules:?}")
+            format!(" -> {at_boundary:?}")
+        }
+    );
+    println!(
+        "   thin rules elsewhere in the frame (other chrome, not resize): {}{}",
+        elsewhere.len(),
+        if elsewhere.is_empty() {
+            String::new()
+        } else {
+            format!(" -> {elsewhere:?}")
         }
     );
     let frames = commands
@@ -598,7 +764,7 @@ fn print_geometry(
         })
         .count();
     println!(
-        "   Surface fills: {surfaces} | Bg fills: {} (the card is Bg for agent panes)",
+        "   Surface fills: {surfaces} | Bg fills: {} (panel cards are Bg for every pane kind)",
         commands
             .iter()
             .filter(|command| matches!(
@@ -618,22 +784,25 @@ fn print_cursor_probes(
     state: &Rc<RefCell<UiState>>,
     window: Vector2F,
 ) {
-    let (sidebar_width, dragging) = {
+    let (sidebar_width, sidebar_shown, dragging) = {
         let s = state.borrow();
         (
             s.sidebar_width,
+            s.responsive.sidebar_shown(s.sidebar_visible),
             s.dragging_pane_id.is_some() || s.sidebar_dragging,
         )
     };
     let body_top = TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND;
     let mid_y = (body_top + window.y) / 2.0;
 
-    // The sidebar's edge, in the middle of its invisible grab band.
+    // The sidebar's edge, in the middle of its invisible grab band — it only
+    // has one while the responsive layout keeps the sidebar shown.
     let sidebar_edge = vec2f(sidebar_width, mid_y);
     println!(
-        "   cursor at the sidebar edge {:.1}: {:?} (want EwResize)",
+        "   cursor at the sidebar edge {:.1}: {:?} (want {})",
         sidebar_width,
-        probe_cursor(app, root, sidebar_edge)
+        probe_cursor(app, root, sidebar_edge),
+        if sidebar_shown { "EwResize" } else { "Default" }
     );
 
     // The split boundary: the panes are side by side, so it is a vertical edge

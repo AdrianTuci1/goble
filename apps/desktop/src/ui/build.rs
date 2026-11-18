@@ -71,7 +71,12 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // The agent-management dashboard takes the panes' place beside the tools
     // sidebar: the sidebar and the toolbar stay around it, and the panel gets
     // the whole pane area.
-    let main: Box<dyn Element> = if state.agent_dashboard.open {
+    // The responsive layout's second step: below the secondary-panel
+    // breakpoint (or when the panes cannot keep their minimum width), the
+    // dashboard leaves the view and the active pane stays visible — the
+    // DeepSeek Harness rule that the centre column never gives up its minimum.
+    let dashboard_shown = state.agent_dashboard.open && !state.responsive.secondary_hidden;
+    let main: Box<dyn Element> = if dashboard_shown {
         agent_dashboard::build_agent_dashboard(app, state, actions)
     } else {
         let main = shell::build_main(context);
@@ -80,10 +85,16 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             // rendered on — is inset [`panes::PANE_AREA_INSET`] from the
             // window's chrome on every side: the bar block above, the window's
             // right and bottom edges, and the sidebar on the left. The window's
-            // `Bg` frames the panel area. The per-tab slots tile the area inside
-            // the inset, so every tab's outline keeps its own geometry relative
-            // to its slot.
-            Padding::new(main, EdgeInsets::uniform(panes::PANE_AREA_INSET)).finish()
+            // `Bg` frames the panel area (the inset itself), and the surface
+            // inside it is the sidebar's own `Surface`: the backdrop and the
+            // gutters between the tab slots match the sidebar, while the panels
+            // on it are the darker cards (see `panes::pane_surface`). The
+            // per-tab slots tile the area inside the inset, so every tab's
+            // outline keeps its own geometry relative to its slot.
+            let panels = Container::new(main)
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                .finish();
+            Padding::new(panels, EdgeInsets::uniform(panes::PANE_AREA_INSET)).finish()
         } else {
             // Every other page is not a panel surface: it takes the whole main
             // area, the way it always has.
@@ -98,7 +109,12 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // pane. The app topbar and the sidebar stay full width, and the dashboard
     // and the non-chat pages take the whole main area (they are not
     // conversation content, so they are not a panel surface).
-    let body: Box<dyn Element> = if state.sidebar_visible {
+    // The responsive layout's first step: below the breakpoint (measured from
+    // the pane tree's own minimum plus the sidebar) the sidebar auto-collapses,
+    // and the panes take the whole window. A manual re-expand below the
+    // breakpoint keeps the sidebar on (a later step then narrows the panes).
+    let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
+    let body: Box<dyn Element> = if sidebar_shown {
         let on_drag_start = actions.on_sidebar_drag_start.clone();
         let on_drag_move = actions.on_sidebar_drag_move.clone();
         let on_drag_end = actions.on_sidebar_drag_end.clone();
@@ -179,8 +195,10 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // as a right-anchored sheet, with an explicit X close button plus the
     // standard backdrop-click-to-close. `right_sidebar_open` is its open flag.
     let on_close_chat_panel = actions.on_toggle_right_sidebar.clone();
+    // The agent panel is a secondary surface: below the responsive breakpoint
+    // it leaves the view with the dashboard, so the panes keep their width.
     let chat_panel_sheet = Sheet::new(chat::build_chat_panel_overlay(app, state, actions))
-        .with_expanded(state.right_sidebar_open)
+        .with_expanded(state.right_sidebar_open && !state.responsive.secondary_hidden)
         .with_width(SHEET_DEFAULT_WIDTH)
         .with_on_close(move || (on_close_chat_panel.borrow_mut())())
         .finish();
@@ -781,8 +799,15 @@ mod tests {
         );
         assert_eq!(
             topmost_fill(&commands, between),
-            Some(bg),
-            "the 3 pt gutter between the tabs is the window's own Bg: {between:?}"
+            Some(app.theme.color(ColorToken::Surface)),
+            "the 3 pt gutter between the tabs is the panel surface, the sidebar's Surface: {between:?}"
+        );
+        // The layer below the tabs' gutters is the sidebar's Surface, not the
+        // window's darker Bg (the owner's corrected layering).
+        assert_ne!(
+            app.theme.color(ColorToken::Surface),
+            bg,
+            "the panel surface is a different material from the window's Bg"
         );
     }
 
@@ -1708,6 +1733,76 @@ mod tests {
             "and 4 px above the window's bottom edge: {:?}",
             frames[0]
         );
+
+        // The owner's layering: the surface the panels are rendered on is the
+        // SIDEBAR's `Surface` (the panel area's backdrop and the gutters between
+        // tab slots), and the panel card itself is the darker `Bg`.
+        let sidebar = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == surface && rect.min_x() == 0.0 && rect.height() > window.y / 2.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the sidebar paints its surface");
+        let panel_surface = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == surface
+                    && *corner_radius == 0.0
+                    && rect.width() > window.x / 2.0
+                    && rect.height() > window.y / 2.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the panel area paints its surface");
+        assert_eq!(
+            panel_surface,
+            rectf(
+                band.min_x(),
+                band.min_y(),
+                band.max_x() - band.min_x(),
+                (window.y - crate::ui::panes::PANE_AREA_INSET) - band.min_y()
+            ),
+            "the panel surface fills the 4 px-inset pane area exactly: {panel_surface:?}"
+        );
+        assert_eq!(
+            sidebar.min_y(),
+            shell::TOPBAR_HEIGHT + shell::TOPBAR_BOTTOM_BAND,
+            "the sidebar still starts at the body origin: {sidebar:?}"
+        );
+
+        // The gutters around the card show the panel surface (the sidebar's
+        // colour), and the card fill itself is the darker `Bg`.
+        let mid_y = frames[0].min_y() + frames[0].height() / 2.0;
+        let in_gutter = vec2f(
+            frames[0].min_x() - crate::ui::panes::PANE_INSET / 2.0,
+            mid_y,
+        );
+        assert_eq!(
+            topmost_fill(&commands, in_gutter),
+            Some(app.theme.color(ColorToken::Surface)),
+            "the gutter around the panel is the panel surface: {in_gutter:?}"
+        );
+        let card_fill = commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *rect == frames[0] => Some(*color),
+            _ => None,
+        });
+        assert_eq!(
+            card_fill,
+            Some(app.theme.color(ColorToken::Bg)),
+            "the panel card is the darker background: {:?}",
+            frames[0]
+        );
     }
 
     /// No divider line is drawn at the split boundary or at the sidebar edge —
@@ -1729,7 +1824,11 @@ mod tests {
             let command = || {
                 format!("split dragging {split_dragging}, sidebar dragging {sidebar_dragging}")
             };
-            let commands = render_element(&mut root, window(), &app);
+            // Wide enough that the responsive sidebar (this lane's breakpoint
+            // work) keeps it shown beside the two panes: the sidebar edge must
+            // be probeable, and its own collapse has its own test.
+            let size = vec2f(1600.0, 900.0);
+            let commands = render_element(&mut root, size, &app);
 
             let rules = thin_rules(&commands);
             assert!(
@@ -1743,7 +1842,7 @@ mod tests {
             let frames = pane_frames(&state);
             assert_eq!(frames.len(), 2, "two panes: {frames:?}");
             let boundary_x = (frames[0].max_x() + frames[1].min_x()) / 2.0;
-            let mid_y = (sheet_top() + window().y) / 2.0;
+            let mid_y = (sheet_top() + size.y) / 2.0;
             paint_with_pointer(&mut root, &app, vec2f(boundary_x, mid_y));
             assert_eq!(
                 app.window_control.cursor(),
@@ -1788,5 +1887,310 @@ mod tests {
 
     fn sheet_top() -> f32 {
         shell::TOPBAR_HEIGHT + shell::TOPBAR_BOTTOM_BAND
+    }
+
+    /// The sidebar's `Surface` fill — it starts at the window's left edge and
+    /// runs the body's height — when the sidebar is drawn in this frame.
+    fn sidebar_surface(
+        commands: &[RenderCommand],
+        app: &AppContext,
+        size: Vector2F,
+    ) -> Option<RectF> {
+        let surface = app.theme.color(ColorToken::Surface);
+        commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == surface && rect.min_x() == 0.0 && rect.height() > size.y / 2.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+    }
+
+    /// The left edge of the first pane card: the panel surface's inset plus the
+    /// card's own gutter from the body's left edge.
+    fn first_card_left() -> f32 {
+        crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET
+    }
+
+    /// The dashboard's roster search field names it; the dashboard is the
+    /// secondary surface this lane hides at the narrow breakpoint.
+    fn dashboard_drawn(commands: &[RenderCommand]) -> bool {
+        commands.iter().any(|command| {
+            matches!(
+                command,
+                RenderCommand::DrawText { text, .. }
+                    if text.contains("Search agents by name")
+            )
+        })
+    }
+
+    fn click(root: &mut Box<dyn Element>, app: &AppContext, at: Vector2F) {
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, app);
+        }
+    }
+
+    /// The sidebar auto-collapses below its responsive breakpoint and the
+    /// preference restores it when the window grows: with the sidebar gone the
+    /// panes take the frame from the panel inset.
+    #[test]
+    fn the_sidebar_auto_collapses_below_the_breakpoint_and_restores() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let wide = vec2f(1600.0, 900.0);
+        let narrow = vec2f(900.0, 900.0);
+
+        let commands = render_element(&mut root, wide, &app);
+        assert!(
+            sidebar_surface(&commands, &app, wide).is_some(),
+            "a wide window shows the sidebar"
+        );
+        assert!(!state.borrow().responsive.sidebar_collapsed);
+
+        let commands = render_element(&mut root, narrow, &app);
+        assert!(
+            sidebar_surface(&commands, &app, narrow).is_none(),
+            "below the breakpoint the sidebar leaves the view"
+        );
+        assert!(state.borrow().responsive.sidebar_collapsed);
+        let frames = pane_frames(&state);
+        assert_eq!(frames.len(), 1, "the active pane keeps the frame: {frames:?}");
+        assert_eq!(
+            frames[0].min_x(),
+            first_card_left(),
+            "with the sidebar collapsed the panes start at the panel inset: {:?}",
+            frames[0]
+        );
+
+        // Growing the window restores the sidebar from the preference.
+        let commands = render_element(&mut root, wide, &app);
+        assert!(
+            sidebar_surface(&commands, &app, wide).is_some(),
+            "growing back restores the sidebar"
+        );
+        assert!(!state.borrow().responsive.sidebar_collapsed);
+        assert!(state.borrow().sidebar_visible, "the preference was never rewritten");
+    }
+
+    /// A wide pane tree collapses the sidebar earlier than a single pane: the
+    /// breakpoint is the measured pane minimum plus the sidebar, not only the
+    /// DSH constant.
+    #[test]
+    fn a_wide_pane_tree_collapses_the_sidebar_earlier_than_the_floor() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        install_two_panes(&state, 0.5);
+        let breakpoint = state.borrow().responsive_breakpoint();
+        assert!(
+            breakpoint > crate::state::SIDEBAR_AUTO_COLLAPSE,
+            "two panes need more than the DSH floor: {breakpoint}"
+        );
+
+        let kept = render_element(&mut root, vec2f(1100.0, 900.0), &app);
+        assert!(
+            !state.borrow().responsive.sidebar_collapsed,
+            "1100 still fits two panes beside the sidebar"
+        );
+        assert!(sidebar_surface(&kept, &app, vec2f(1100.0, 900.0)).is_some());
+
+        let collapsed = render_element(&mut root, vec2f(1020.0, 900.0), &app);
+        assert!(
+            state.borrow().responsive.sidebar_collapsed,
+            "1000 is below the measured breakpoint {breakpoint}"
+        );
+        assert!(sidebar_surface(&collapsed, &app, vec2f(1020.0, 900.0)).is_none());
+        assert_eq!(pane_frames(&state).len(), 2, "both panes stay visible");
+    }
+
+    /// Below the second breakpoint the secondary surfaces leave the view: the
+    /// dashboard (which would otherwise replace the panes) and the agent panel
+    /// sheet are hidden, and the panes with the active one stay.
+    #[test]
+    fn the_secondary_panels_leave_the_view_below_the_second_breakpoint() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        install_two_panes(&state, 0.5);
+        {
+            let mut s = state.borrow_mut();
+            s.agent_dashboard.open = true;
+            s.right_sidebar_open = true;
+        }
+        let wide = vec2f(1600.0, 900.0);
+        let commands = render_element(&mut root, wide, &app);
+        assert!(
+            dashboard_drawn(&commands),
+            "a wide window keeps the dashboard"
+        );
+        assert!(!state.borrow().responsive.secondary_hidden);
+
+        let narrow = vec2f(760.0, 900.0);
+        let commands = render_element(&mut root, narrow, &app);
+        assert!(
+            !dashboard_drawn(&commands),
+            "below 768 the dashboard leaves the view"
+        );
+        assert!(state.borrow().responsive.secondary_hidden);
+        assert!(!state.borrow().responsive.focused_only, "two panes still fit 760");
+        let frames = pane_frames(&state);
+        assert_eq!(frames.len(), 2, "the panes and the active one stay: {frames:?}");
+        assert!(
+            frames.iter().any(|f| {
+                let point = vec2f(400.0, 500.0);
+                point.x >= f.min_x()
+                    && point.x <= f.max_x()
+                    && point.y >= f.min_y()
+                    && point.y <= f.max_y()
+            }),
+            "the active pane is visible"
+        );
+
+        // Growing restores the secondary surfaces in reverse order: the
+        // dashboard comes back with the width.
+        let commands = render_element(&mut root, wide, &app);
+        assert!(
+            dashboard_drawn(&commands),
+            "growing restores the dashboard"
+        );
+        assert!(!state.borrow().responsive.secondary_hidden);
+    }
+
+    /// The last responsive step: when even the collapsed window cannot give
+    /// every pane its minimum width, only the active pane is drawn (over the
+    /// whole pane area), and the rest restore when the window grows.
+    #[test]
+    fn only_the_active_pane_is_drawn_below_the_panes_minimum() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        install_two_panes(&state, 0.5);
+        let active = state.borrow().active_pane_id;
+
+        let size = vec2f(700.0, 900.0);
+        let _ = render_element(&mut root, size, &app);
+        assert!(
+            state.borrow().responsive.focused_only,
+            "700 cannot give two 360 pt panes their minimum"
+        );
+        let frames = pane_frames(&state);
+        assert_eq!(frames.len(), 1, "only the active pane is drawn: {frames:?}");
+        assert!(
+            state.borrow().pane_bounds.borrow().contains_key(&active),
+            "the active pane is the one kept"
+        );
+        assert_eq!(frames[0].min_x(), first_card_left());
+
+        let _ = render_element(&mut root, vec2f(900.0, 900.0), &app);
+        assert!(!state.borrow().responsive.focused_only);
+        assert_eq!(pane_frames(&state).len(), 2, "both panes come back");
+    }
+
+    /// A manual toggle below the breakpoint re-expands the auto-collapsed
+    /// sidebar; the next breakpoint crossing drops the override, so growing and
+    /// shrinking again restores the auto behaviour.
+    #[test]
+    fn a_narrow_sidebar_toggle_reexpands_until_the_window_grows() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let size = vec2f(900.0, 900.0);
+        let commands = render_element(&mut root, size, &app);
+        assert!(sidebar_surface(&commands, &app, size).is_none());
+        let toggle = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "menu-01" => {
+                    Some(vec2f(origin.x + size / 2.0, origin.y + size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the topbar draws the sidebar toggle");
+        click(&mut root, &app, toggle);
+
+        let commands = render_element(&mut root, size, &app);
+        assert!(
+            sidebar_surface(&commands, &app, size).is_some(),
+            "a narrow toggle re-expands the auto-collapsed sidebar"
+        );
+        assert!(state.borrow().sidebar_visible, "the preference is untouched");
+        assert!(state.borrow().sidebar_narrow_expanded);
+
+        // Growing crosses the breakpoint: the override is dropped and the
+        // preference (visible) keeps the sidebar.
+        let _ = render_element(&mut root, vec2f(1600.0, 900.0), &app);
+        assert!(!state.borrow().sidebar_narrow_expanded);
+        assert!(!state.borrow().responsive.sidebar_collapsed);
+
+        // Narrowing again crosses back: the sidebar auto-collapses again.
+        let commands = render_element(&mut root, size, &app);
+        assert!(sidebar_surface(&commands, &app, size).is_none());
+        assert!(state.borrow().responsive.sidebar_collapsed);
+    }
+
+    /// A split drag stops at the pane minimum: the dragged pane keeps its 360 pt
+    /// (the split floor includes the panes' frame gutters) and the neighbour
+    /// keeps the rest of the pane area.
+    #[test]
+    fn a_split_drag_stops_at_the_pane_minimum_width() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        install_two_panes(&state, 0.5);
+        let size = vec2f(900.0, 900.0);
+        let _ = render_element(&mut root, size, &app);
+        let frames = pane_frames(&state);
+        assert_eq!(frames.len(), 2);
+        let boundary = (frames[0].max_x() + frames[1].min_x()) / 2.0;
+        let mid_y = (sheet_top() + size.y) / 2.0;
+        let mut ctx = EventContext::default();
+        assert!(root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(boundary, mid_y),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert_eq!(state.borrow().dragging_pane_id, Some(9));
+        // The drag is live in the tree rebuilt after the press; move the
+        // boundary to the window's left edge.
+        let _ = render_element(&mut root, size, &app);
+        assert!(root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(4.0, mid_y),
+            },
+            &mut ctx,
+            &app,
+        ));
+        let _ = render_element(&mut root, size, &app);
+        let frames = pane_frames(&state);
+        assert_eq!(frames.len(), 2);
+        assert!(
+            frames[0].width() >= crate::state::PANE_MIN_WIDTH - 0.5,
+            "the dragged pane stops at its minimum, got {:?}",
+            frames[0]
+        );
+        assert!(
+            frames[1].width() > frames[0].width(),
+            "the neighbour keeps the rest: {:?}",
+            frames[1]
+        );
+        let _ = root.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: vec2f(4.0, mid_y),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
     }
 }

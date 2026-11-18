@@ -20,6 +20,13 @@ impl Element for RootView {
         // Apply the live theme (base dark/light + custom primary/secondary/
         // accent from the color wheel) before the tree is rebuilt this frame.
         self.apply_theme();
+        // Responsive layout: the frame's own width decides the sidebar collapse
+        // and the secondary-panel steps, so a resize settles in the frame that
+        // caused it (DeepSeek Harness measures the viewport the same way).
+        let frame_width = constraint.max.x;
+        if frame_width.is_finite() && frame_width > 0.0 {
+            self.state.borrow_mut().update_responsive(frame_width);
+        }
         self.rebuild(app);
         // The frame being laid out is the one the request asked for.
         self.redraw_requested = false;

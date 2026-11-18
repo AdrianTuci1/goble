@@ -1,5 +1,5 @@
 //! The rich input's instruction row: one fixed-height line of shortcut hints
-//! under the footer.
+//! beside the footer's controls.
 //!
 //! The row is a **reserved** surface, not a content-sized one: a surface that
 //! ships hints keeps this row whether a hint is showing or not, so the composer
@@ -62,7 +62,7 @@ impl Element for ComposerHintsRow {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let width = if constraint.max.x.is_finite() && constraint.max.x > 0.0 {
+        let available = if constraint.max.x.is_finite() && constraint.max.x > 0.0 {
             constraint.max.x
         } else {
             FALLBACK_WIDTH
@@ -77,7 +77,7 @@ impl Element for ComposerHintsRow {
             // Leave room for a readable label after the caps; a row too narrow
             // for another entry truncates the list rather than wrapping it.
             let entry_min = caps_size.x + CAPS_LABEL_GAP + LABEL_MIN_WIDTH;
-            if x > 0.0 && x + entry_min > width {
+            if x > 0.0 && x + entry_min > available {
                 break;
             }
             let mut label = Text::new(hint.label().to_string())
@@ -85,7 +85,7 @@ impl Element for ComposerHintsRow {
                 .with_font_size(11.0)
                 .with_max_lines(1)
                 .finish();
-            let remaining = (width - x - caps_size.x - CAPS_LABEL_GAP).max(0.0);
+            let remaining = (available - x - caps_size.x - CAPS_LABEL_GAP).max(0.0);
             let label_size = label.layout(SizeConstraint::loose(vec2f(remaining, height)), ctx, app);
             self.children.push(Placed {
                 element: caps,
@@ -99,10 +99,18 @@ impl Element for ComposerHintsRow {
                 ),
             });
             x += caps_size.x + CAPS_LABEL_GAP + label_size.x + spacing;
-            if x >= width {
+            if x >= available {
                 break;
             }
         }
+        // Content-sized: the row sits beside the footer's other children, so it
+        // reports what it drew, clamped to the space its parent offered. Its
+        // height is always the reserved constant, never the children's.
+        let width = if self.children.is_empty() {
+            0.0
+        } else {
+            (x - spacing).clamp(0.0, available)
+        };
         let size = vec2f(width, height);
         self.size = Some(size);
         size

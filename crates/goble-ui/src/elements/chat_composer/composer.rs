@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::hints_row::ComposerHintsRow;
+use crate::elements::model_tray::MODEL_MENU_VIEWPORT_INSET;
 use super::proposal::CommandProposalUi;
 use crate::color::ColorU;
 use crate::elements::conversation_list_item::truncate_with_ellipsis;
@@ -95,11 +96,10 @@ pub const COMPOSER_INPUT_MIN_HEIGHT: f32 =
     14.0 + COMPOSER_EDITOR_MIN_HEIGHT + COMPOSER_FOOTER_GAP + COMPOSER_FOOTER_HEIGHT + 8.0;
 /// The instruction strip's own height when a host passes hints inside the
 /// input: the capped key's box, whose 11pt label is a 13.2pt line (11 x 1.2).
-/// The row is reserved from the first time a surface ships hints, even while
-/// the list is empty (`ComposerHintsRow` never wraps), so the card height and a
-/// shell pane's reserved bar height are the same with a hint present or absent.
-/// A host that reserves the bar's height adds this row and the footer gap above
-/// it, exactly as the element lays them out.
+/// The strip sits in the reserved footer row ([`COMPOSER_FOOTER_HEIGHT`]), so it
+/// adds **no** height to the card: a hint appearing, disappearing or being
+/// re-worded never moves the card or a shell pane's reserved bar height. The
+/// terminal and agent composers therefore have identical card heights.
 pub const COMPOSER_HINTS_ROW_HEIGHT: f32 = 13.2;
 /// The height a host reserves for this card when it draws a context band and one
 /// instruction row: the shell pane tells its pty this, so the rows the program
@@ -109,9 +109,7 @@ pub const COMPOSER_HINTS_ROW_HEIGHT: f32 = 13.2;
 pub const COMPOSER_BAR_RESERVED_HEIGHT: f32 = COMPOSER_CARD_GUTTER
     + COMPOSER_CARD_INSET
     + CONTEXT_SEGMENT_HEIGHT
-    + COMPOSER_INPUT_MIN_HEIGHT
-    + COMPOSER_FOOTER_GAP
-    + COMPOSER_HINTS_ROW_HEIGHT;
+    + COMPOSER_INPUT_MIN_HEIGHT;
 /// The environment menu is wider than the other dropdowns: its rows carry a
 /// description line under the label ("Clones this repo in a cloud
 /// environment…"), and the reference shows it cut with an ellipsis on one line
@@ -132,6 +130,9 @@ const MODEL_CHIP_MAX_WIDTH: f32 = 360.0;
 const MODEL_CHIP_CHROME: f32 = 8.0 + 4.0 + 12.0 + 4.0;
 /// The gap a shown effort takes between the name and itself.
 const MODEL_CHIP_EFFORT_GAP: f32 = 4.0;
+/// DSH's chip chrome rounding: `--dsw-radius-sm` = 8pt on the
+/// `.trigger` (the composer's shared control radius is tighter, 6pt).
+const MODEL_CHIP_RADIUS: f32 = 8.0;
 /// Below this the effort has no readable word left, so it drops out of the chip
 /// entirely — the way DSH's 1000× shrink factor ellipsizes it away before the
 /// model name loses a pixel.
@@ -1176,7 +1177,12 @@ impl ChatComposer {
         // pty rows, `COMPOSER_BAR_RESERVED_HEIGHT`). Removing the send circle
         // must not shrink the card.
         let submits = self.on_send.is_some() || self.on_cmd_enter.is_some();
-        if left.is_empty() && right.is_none() && self.footer_action.is_none() && !submits {
+        if left.is_empty()
+            && right.is_none()
+            && self.footer_action.is_none()
+            && !submits
+            && !self.hints_enabled
+        {
             return None;
         }
         let sm = app.theme.spacing_px(SpacingToken::Sm);
@@ -1202,6 +1208,11 @@ impl ChatComposer {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
             .with_child(Expanded::new(wrap).finish());
+        // The instruction strip is a child of this reserved row, not a row of
+        // its own: the hint text can never add a line to the card.
+        if self.hints_enabled {
+            row = row.with_child(ComposerHintsRow::new(self.hints.clone()).finish());
+        }
         if let Some(right) = right {
             row = row.with_child(right);
         }
@@ -1472,7 +1483,7 @@ impl ChatComposer {
         let button = ComposerButton::new(content)
             .with_height(28.0)
             .with_h_pad(0.0)
-            .with_radius(COMPOSER_CONTROL_RADIUS)
+            .with_radius(MODEL_CHIP_RADIUS)
             .with_outline(false)
             .with_hover_fill(ColorToken::Selected);
         let button = if let Some(tray) = self.model_tray.clone() {
@@ -1937,13 +1948,6 @@ impl ChatComposer {
         // footer: the shell bar's `⌘↵ new conversation` is the entry the pane
         // shows here rather than over the separator, where the rest of a pane's
         // strip goes.
-        // The instruction row is reserved whenever the host ships hints, and
-        // draws one fixed-height line: a hint appearing, disappearing, being
-        // re-worded or not fitting must never add a row to the card (or move
-        // `COMPOSER_BAR_RESERVED_HEIGHT`), so the list is truncated instead.
-        if self.hints_enabled {
-            input = input.with_child(ComposerHintsRow::new(self.hints.clone()).finish());
-        }
 
         // The segment is borderless (owner feedback: the rich input and its
         // outer ring read cleaner without one). It is a flat `SurfaceRaised`
@@ -2061,7 +2065,11 @@ impl Element for ChatComposer {
         };
         self.layout_width = Some(card_width);
         self.rebuild(app);
-        self.model_tray_bounds.set_width(card_width);
+        // DSH sizes its card against `min(..., 100vw - 24px)`: publish the
+        // composer card's width less the two 12pt viewport insets.
+        self.model_tray_bounds.set_width(
+            (card_width - 2.0 * MODEL_MENU_VIEWPORT_INSET).max(0.0),
+        );
         let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size

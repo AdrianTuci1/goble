@@ -877,7 +877,7 @@ fn render_slash_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Resul
 ///
 /// Which surface's placeholder a scene shows: the plain shell's rich input, or
 /// the agent/chat input.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PlaceholderSurface {
     Terminal,
     Agent,
@@ -909,13 +909,13 @@ fn placeholder_element(
         .with_path_label("brindlepad-web")
         .with_branch_label("main")
         .with_placeholder(surface.placeholder())
-        .with_hints(match surface {
-            PlaceholderSurface::Terminal => {
-                vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]
-            }
-            PlaceholderSurface::Agent => vec![ShortcutHint::new(&["/"], "commands")],
-        })
         .with_on_send(|_| {});
+    // The shell bar ships the one instruction its command line answers (⌘↵ new
+    // conversation), drawn inside the reserved footer row. The agent view hosts
+    // its own hint strip above the card (ChatView), so its card carries none.
+    if surface == PlaceholderSurface::Terminal {
+        composer = composer.with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]);
+    }
     if surface == PlaceholderSurface::Agent {
         composer = composer
             .with_harness_label("This Computer")
@@ -952,6 +952,12 @@ fn render_placeholder(
     let focused = options.focused;
     let mut probe = placeholder_element(&flags, surface, false);
     let content = raster::layout_size(&mut probe, vec2f(width, 4000.0), &app);
+    println!(
+        "{surface:?} composer height: {:.2}pt at width {width}pt (card {:.2}pt + {:.2}pt bottom gutter)",
+        content.y,
+        content.y - goble_ui::elements::COMPOSER_CARD_GUTTER,
+        goble_ui::elements::COMPOSER_CARD_GUTTER,
+    );
     if options.dump_commands {
         let mut element = placeholder_element(&flags, surface, focused);
         let commands = raster::render_commands(&mut element, vec2f(width, 4000.0), &app);

@@ -1932,10 +1932,11 @@ mod tests {
         );
     }
 
-    /// The agent pane is ONE surface: the card's whole background is the same
-    /// darker `Bg` token the adjustable content column paints, so the area
+    /// The panel itself is ONE darker surface: the card's whole background is
+    /// the same `Bg` token the adjustable content column paints, so the area
     /// outside the text column reads exactly like the column — the lane is a
-    /// width, not a different material. Checked in both themes with theme
+    /// width, not a different material — while the panel surface around the
+    /// card is the sidebar's `Surface`. Checked in both themes with theme
     /// tokens only.
     #[test]
     fn the_agent_pane_surface_matches_the_lane_column() {
@@ -2028,9 +2029,21 @@ mod tests {
                 assert_eq!(
                     topmost_fill(&cmds, point),
                     Some(bg),
-                    "the gutter beside the content column is the agent background at {point:?}: {card:?}"
+                    "the gutter beside the content column is the panel background at {point:?}: {card:?}"
                 );
             }
+
+            // The panel surface AROUND the card — the owner's corrected
+            // layering — is the sidebar's `Surface`, not the darker `Bg`.
+            let outside_card = vec2f(
+                pane.min_x() - PANE_INSET / 2.0,
+                pane.min_y() + pane.height() / 2.0,
+            );
+            assert_eq!(
+                topmost_fill(&cmds, outside_card),
+                Some(app.theme.color(ColorToken::Surface)),
+                "the panel surface around the card is the sidebar's Surface: {outside_card:?}"
+            );
         }
 
         // Dark: the window's gray `Bg` across the whole pane.

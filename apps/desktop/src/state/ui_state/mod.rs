@@ -24,6 +24,7 @@ mod onboarding;
 mod pane_move;
 mod panes;
 mod refresh;
+mod responsive;
 mod session;
 mod session_menu;
 mod settings;
@@ -37,6 +38,10 @@ pub use agents::{PaneAgentState, TurnOutcome};
 pub use inbox::{InboxItem, InboxKind};
 pub use onboarding::{ONBOARDING_STEPS, ONBOARDING_USAGE};
 pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
+pub use responsive::{
+    pane_slot_min_width, Responsive, PANE_MIN_WIDTH, RESPONSIVE_HYSTERESIS,
+    SECONDARY_PANEL_BREAKPOINT, SIDEBAR_AUTO_COLLAPSE,
+};
 pub use session_menu::{ArchiveConfirm, SidebarRename, ToastKind, ToastNotice};
 pub use title::prompt_subject;
 pub use workspace_rows::{SidebarWorkspace, SidebarWorkspaceRename};
@@ -358,6 +363,24 @@ pub struct UiState {
     /// Whether the left conversation sidebar is shown. Toggled by the topbar's
     /// sidebar button; the main area fills the window when it is hidden.
     pub sidebar_visible: bool,
+    /// The responsive layout's decisions for the frame being built (see
+    /// [`responsive`]): the sidebar auto-collapse, the secondary panels leaving
+    /// the view, and the focused-pane fallback. Recomputed every frame from the
+    /// measured window width before the snapshot is taken.
+    pub responsive: Responsive,
+    /// The narrow side of the sidebar auto-collapse breakpoint on the last
+    /// frame: the hysteresis memory, and what detects the crossing that drops a
+    /// manual re-expand override.
+    pub responsive_narrow: bool,
+    /// The user re-expanded the auto-collapsed sidebar below the breakpoint
+    /// (DeepSeek Harness's `narrowExpanded`): the preference is untouched, so
+    /// growing the window restores the pre-squeeze layout. Cleared at the next
+    /// breakpoint crossing.
+    pub sidebar_narrow_expanded: bool,
+    /// The window width the responsive decisions were last computed from, so a
+    /// manual sidebar toggle inside a breakpoint can re-solve them immediately
+    /// (the next frame re-measures anyway).
+    pub responsive_width: f32,
     /// Whether the sidebar's conversation list shows every conversation. While
     /// false only a few cards are drawn, followed by a "View all" button.
     pub conversations_expanded: bool,

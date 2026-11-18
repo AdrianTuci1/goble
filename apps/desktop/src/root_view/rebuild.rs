@@ -586,6 +586,7 @@ impl RootView {
                 content_lane_dragging: s.content_lane_dragging,
                 content_lane_drag_edge: s.content_lane_drag_edge,
                 sidebar_visible: s.sidebar_visible,
+                responsive: s.responsive,
                 conversations_expanded: s.conversations_expanded,
                 sidebar_view: s.sidebar_view,
                 starred: {

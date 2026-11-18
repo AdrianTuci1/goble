@@ -386,8 +386,9 @@ pub fn build_topbar(
                 .finish(),
         )
         // The tools panel is a toggle like the dashboard: lit while the
-        // sidebar is out, dark while it is retracted.
-        .with_active(state.sidebar_visible)
+        // sidebar is out (including a manual re-expand below the responsive
+        // breakpoint), dark while it is retracted or auto-collapsed.
+        .with_active(state.responsive.sidebar_shown(state.sidebar_visible))
         .with_size(TOPBAR_ICON_BUTTON_SIZE)
         .with_on_click(move || (on_toggle_sidebar.borrow_mut())())
         .finish(),

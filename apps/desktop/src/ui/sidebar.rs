@@ -2199,12 +2199,11 @@ mod sidebar_surface_tests {
         );
     }
 
-    /// A conversation the agent has answered is named from what was said in it:
-    /// the row reads the subject the agent derived, not the placeholder the
-    /// conversation was created with, and the subject is written to the store so
-    /// the next launch reads it back.
+    /// A conversation is named from the first prompt that started it: the row
+    /// reads the subject the prompt named — a topic, not the message — and the
+    /// subject is written to the store so the next launch reads it back.
     #[test]
-    fn a_conversation_the_agent_answered_reads_its_own_subject() {
+    fn a_conversation_reads_the_subject_its_first_prompt_named() {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = Arc::new(DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
@@ -2214,11 +2213,12 @@ mod sidebar_surface_tests {
         let chat = desktop
             .create_chat(crate::state::NEW_CONVERSATION_TITLE, None, None)
             .expect("a conversation nobody has named");
+        let prompt = "Arata un text colorat in chat";
         desktop
-            .add_chat_message(&chat, "user", "Hello")
+            .add_chat_message(&chat, "user", prompt)
             .expect("the user's prompt");
         desktop
-            .add_chat_message(&chat, "assistant", "Hi! How can I help?")
+            .add_chat_message(&chat, "assistant", "Sure.")
             .expect("the agent's reply");
 
         let view = RootView::new(&app, &desktop, None);
@@ -2229,24 +2229,34 @@ mod sidebar_surface_tests {
             s.show_llm_key_banner = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
+            // The send path names the conversation as the turn starts.
+            assert!(s.name_conversation_from_prompt(&chat, prompt, &desktop));
             s.refresh_conversations(&desktop);
             assert_eq!(
-                s.conversations[0].name, "Initial user onboarding",
-                "the title source reads the subject derived from the conversation"
+                s.conversations[0].name, "Text colorat in chat",
+                "the list reads the subject the prompt named"
             );
         }
         assert_eq!(
             desktop.list_chats()[0].title,
-            "Initial user onboarding",
-            "the derived subject is written to the store"
+            "Text colorat in chat",
+            "the subject is written to the store"
+        );
+        assert_ne!(
+            desktop.list_chats()[0].title, prompt,
+            "the title is the topic, not the message"
         );
 
         let mut root: Box<dyn Element> = Box::new(view);
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
         let drawn = sidebar_list_text(&commands);
         assert!(
-            drawn.iter().any(|text| text == "Initial user onboarding"),
-            "the card reads the derived subject: {drawn:?}"
+            drawn.iter().any(|text| text == "Text colorat in chat"),
+            "the card reads the subject: {drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|text| text == prompt),
+            "the card does not read the message as its title: {drawn:?}"
         );
         // The only "New conversation" run on the list is the create row's own
         // label (the header's square-plus has no text): the placeholder title a
@@ -2261,11 +2271,10 @@ mod sidebar_surface_tests {
         );
     }
 
-    /// The subject is not frozen at the first answer: a later turn that moves
-    /// the conversation to another subject renames it again, in the list and in
-    /// the store.
+    /// The subject is not re-derived from later turns: a conversation keeps the
+    /// subject its first prompt named, however much is said afterwards.
     #[test]
-    fn a_later_turn_renames_the_conversation() {
+    fn a_later_turn_keeps_the_subject_the_first_prompt_named() {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = Arc::new(DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
@@ -2275,11 +2284,12 @@ mod sidebar_surface_tests {
         let chat = desktop
             .create_chat(crate::state::NEW_CONVERSATION_TITLE, None, None)
             .expect("a conversation nobody has named");
+        let prompt = "Arata un text colorat in chat";
         desktop
-            .add_chat_message(&chat, "user", "Hello")
+            .add_chat_message(&chat, "user", prompt)
             .expect("the user's prompt");
         desktop
-            .add_chat_message(&chat, "assistant", "Hi! How can I help?")
+            .add_chat_message(&chat, "assistant", "Sure.")
             .expect("the agent's reply");
 
         let view = RootView::new(&app, &desktop, None);
@@ -2290,12 +2300,20 @@ mod sidebar_surface_tests {
             s.show_llm_key_banner = false;
             s.right_sidebar_open = false;
             s.crons_open = false;
+            s.name_conversation_from_prompt(&chat, prompt, &desktop);
             s.refresh_conversations(&desktop);
-            assert_eq!(s.conversations[0].name, "Initial user onboarding");
+            assert_eq!(s.conversations[0].name, "Text colorat in chat");
+            // A second prompt is not the conversation's first: it does not
+            // rename it, and it does not ask for a new subject.
+            assert!(!s.name_conversation_from_prompt(
+                &chat,
+                "Now make the sidebar show conversation titles",
+                &desktop
+            ));
         }
 
         desktop
-            .add_chat_message(&chat, "user", "Can you add a title to the sidebar?")
+            .add_chat_message(&chat, "user", "Now make the sidebar show conversation titles")
             .expect("the follow-up prompt");
         desktop
             .add_chat_message(&chat, "assistant", "Sure, the card reads it now.")
@@ -2304,32 +2322,33 @@ mod sidebar_surface_tests {
             let mut s = state.borrow_mut();
             s.refresh_conversations(&desktop);
             assert_eq!(
-                s.conversations[0].name, "Add a title to the sidebar",
-                "the later subject replaces the agent's own earlier one"
+                s.conversations[0].name, "Text colorat in chat",
+                "a later turn leaves the first prompt's subject alone"
             );
         }
         assert_eq!(
-            desktop.list_chats()[0].title,
-            "Add a title to the sidebar",
-            "the rename is written to the store too"
+            desktop.list_chats()[0].title, "Text colorat in chat",
+            "the store keeps the first prompt's subject"
         );
         assert_eq!(
             desktop
                 .store_clone()
                 .get_chat_title(&chat)
                 .expect("read the stored title"),
-            Some("Add a title to the sidebar".to_string()),
-            "and it is the title the store holds"
+            Some("Text colorat in chat".to_string())
         );
     }
 
     /// A conversation that has just started is titled in every surface at once:
     /// the sidebar row, the topbar tab label and the pane's own bar read the
-    /// subject derived from the first prompt. The write takes the store path
-    /// (`set_chat_title` → `chats:updated`) and the next frame drains it, so the
-    /// title appears without a restart — the same path a real send takes.
+    /// subject the model generated from the first prompt — a topic, not the
+    /// message. The write takes the store path (`set_chat_title` →
+    /// `chats:updated`) and the next frame drains it, so the title appears
+    /// without a restart — the same path a real send takes.
     #[test]
     fn a_new_conversation_is_titled_in_the_sidebar_tab_and_pane_bar() {
+        use goble_core::llm::{CompletionResponse, MockProvider};
+
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = Arc::new(DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
@@ -2339,7 +2358,8 @@ mod sidebar_surface_tests {
         let bus = goble_desktop_service::CollectingEventBus::new();
         let view = RootView::new(&app, &desktop, Some(bus.clone()));
         let state = view.state_rc();
-        let title = "Arata un text colorat in chat";
+        let prompt = "Arata un text colorat in chat";
+        let subject = "Colorful chat text";
         {
             let mut s = state.borrow_mut();
             s.show_workspace_choice = false;
@@ -2361,26 +2381,51 @@ mod sidebar_surface_tests {
                 Some(crate::state::NEW_CONVERSATION_TITLE.to_string()),
                 "the conversation opens under the placeholder"
             );
-            // The first prompt names it as the turn starts, before any reply
-            // exists (the send path calls exactly this).
-            assert!(s.name_conversation_from_prompt(&chat, title, &desktop));
+            // The send path writes the deterministic subject as the turn
+            // starts, then asks the model for the real subject off the UI
+            // thread; the fallback stands if the model cannot answer.
+            assert!(s.name_conversation_from_prompt(&chat, prompt, &desktop));
+            assert_ne!(
+                desktop
+                    .list_chats()
+                    .into_iter()
+                    .find(|c| c.id == chat)
+                    .map(|c| c.title),
+                Some(prompt.to_string()),
+                "the fallback is a topic, not the message"
+            );
+            let provider = MockProvider::new(
+                "title-test",
+                CompletionResponse::new(subject, Vec::new()),
+            );
+            let runtime = tokio::runtime::Runtime::new().expect("build runtime");
+            runtime
+                .block_on(crate::state::generate_and_store_title(
+                    &desktop,
+                    &provider,
+                    "title-test",
+                    "title-model",
+                    &chat,
+                    prompt,
+                ))
+                .expect("the generated subject");
             // The agent's reply settles the turn. It only acknowledges, so the
-            // conversation keeps the subject the prompt gave it.
+            // conversation keeps the subject the prompt named.
             desktop
-                .add_chat_message(&chat, "user", title)
+                .add_chat_message(&chat, "user", prompt)
                 .expect("the user's prompt");
             desktop
                 .add_chat_message(&chat, "assistant", "Sure.")
                 .expect("the agent's reply");
         }
-        // The title write and the reply both emit `chats:updated` on the real
-        // bus; here the frame is handed the same notification.
+        // The title writes emit `chats:updated` on the real bus; here the frame
+        // is handed the same notification.
         {
             use goble_desktop_service::EventBus;
             bus.emit("chats:updated", serde_json::json!({}));
         }
 
-        // One frame: `drain_events` folds the `chats:updated` the title write
+        // One frame: `drain_events` folds the `chats:updated` the title writes
         // emitted into the list the sidebar and topbar are drawn from.
         let mut root: Box<dyn Element> = Box::new(view);
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
@@ -2392,32 +2437,32 @@ mod sidebar_surface_tests {
             })
             .collect();
         let topbar = crate::ui::shell::TOPBAR_HEIGHT;
-        assert!(
-            drawn.iter().any(|(text, origin)| text == title
-                && origin.x < crate::ui::SIDEBAR_WIDTH
-                && origin.y > topbar),
-            "the sidebar row reads the subject: {drawn:?}"
-        );
-        assert!(
-            drawn
-                .iter()
-                .any(|(text, origin)| text == title && origin.y < topbar),
-            "the topbar tab reads the subject: {drawn:?}"
-        );
-        assert!(
-            drawn.iter().any(|(text, origin)| text == title
+        let in_sidebar = drawn.iter().any(|(text, origin)| {
+            text == subject && origin.x < crate::ui::SIDEBAR_WIDTH && origin.y > topbar
+        });
+        let in_topbar = drawn
+            .iter()
+            .any(|(text, origin)| text == subject && origin.y < topbar);
+        let in_pane_bar = drawn.iter().any(|(text, origin)| {
+            text == subject
                 && origin.x >= crate::ui::SIDEBAR_WIDTH
                 && origin.y > topbar
-                && origin.y < topbar * 2.0),
-            "the pane's own bar reads the subject: {drawn:?}"
-        );
-        // The placeholder is what these surfaces read before the title: none of
-        // them is still drawing it.
+                && origin.y < topbar * 2.0
+        });
+        assert!(in_sidebar, "the sidebar row reads the subject: {drawn:?}");
+        assert!(in_topbar, "the topbar tab reads the subject: {drawn:?}");
+        assert!(in_pane_bar, "the pane's own bar reads the subject: {drawn:?}");
         assert!(
             !drawn
                 .iter()
                 .any(|(text, _)| text == crate::state::NEW_AGENT_TAB_LABEL),
             "the placeholder is gone from the tab and the pane bar: {drawn:?}"
+        );
+        assert!(
+            !drawn
+                .iter()
+                .any(|(text, origin)| text == prompt && origin.y < topbar),
+            "the tab does not read the user's message: {drawn:?}"
         );
     }
 

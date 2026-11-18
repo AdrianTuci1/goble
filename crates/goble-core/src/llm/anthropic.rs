@@ -129,7 +129,9 @@ impl LlmProvider for AnthropicProvider {
             .collect();
         let body = AnthropicRequest {
             model: request.model,
-            max_tokens: 4096,
+            // Anthropic requires the cap; a turn keeps the long-standing 4096
+            // default and an auxiliary call (a title) sets its own small one.
+            max_tokens: request.max_tokens.map_or(4096, |max| max as i32),
             messages,
             temperature: request.temperature,
             system,

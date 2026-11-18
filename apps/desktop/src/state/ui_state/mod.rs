@@ -5,7 +5,8 @@
 //! [`settings`], [`close`], [`mock`], [`spaces`], [`worker`]) as separate
 //! `impl UiState` blocks, which are the same block to the compiler as one.
 //! [`title`] is not one of them: the subject a conversation is named with is
-//! derived from the conversation, not held by the state machine.
+//! derived from its first prompt (the model-backed title request included), not
+//! held by the state machine.
 
 use super::*;
 
@@ -43,14 +44,14 @@ pub use responsive::{
     SECONDARY_PANEL_BREAKPOINT, SIDEBAR_AUTO_COLLAPSE,
 };
 pub use session_menu::{ArchiveConfirm, SidebarRename, ToastKind, ToastNotice};
-pub use title::prompt_subject;
+pub use title::{deterministic_subject, generate_and_store_title, spawn_title_generation};
 pub use workspace_rows::{SidebarWorkspace, SidebarWorkspaceRename};
 
 /// The title a conversation gets when it is created without a subject of its
 /// own. It is a placeholder, not a subject: a tab whose agent holds such a
-/// conversation still reads [`NEW_AGENT_TAB_LABEL`], and the agent replaces it
-/// with a subject derived from the conversation ([`title`]) once it has
-/// answered in it.
+/// conversation still reads [`NEW_AGENT_TAB_LABEL`], and the conversation's
+/// first prompt replaces it with a subject ([`title`]) — the model-generated
+/// title when a provider answers, the deterministic topic phrase otherwise.
 pub const NEW_CONVERSATION_TITLE: &str = "New conversation";
 
 /// The label a tab whose pane holds an agent draws while that agent's

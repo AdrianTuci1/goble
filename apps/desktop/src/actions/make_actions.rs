@@ -195,8 +195,17 @@ fn flush_queued_prompt(
     } else {
         // A prompt submitted from the queue names the conversation the same way
         // a typed one does: only a conversation still under the placeholder is
-        // named, so a queued second prompt leaves the first one's subject alone.
-        state.name_conversation_from_prompt(&chat_id, &prompt, desktop);
+        // named (and only that one asks the model for a subject), so a queued
+        // second prompt leaves the first one's subject alone.
+        if state.name_conversation_from_prompt(&chat_id, &prompt, desktop) {
+            crate::state::spawn_title_generation(
+                desktop,
+                &chat_id,
+                &prompt,
+                &state.settings_llm_provider,
+                &model,
+            );
+        }
         state.begin_turn(pane_id);
         state.agent_busy = true;
     }
@@ -1051,7 +1060,7 @@ pub fn make_actions(
                 state.retitle_unnamed_harness_conversation(
                     &conversation_id,
                     harness,
-                    crate::state::prompt_subject(&text),
+                    crate::state::deterministic_subject(&text),
                     desktop,
                 );
             }

@@ -55,6 +55,12 @@ pub struct CompletionRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     pub temperature: Option<f32>,
+    /// The most tokens the model may generate, when the caller bounds it. A
+    /// conversational turn leaves it unset (the provider's own default applies);
+    /// a short auxiliary call — a conversation title, say — sets a small cap so
+    /// its cost stays nothing like a turn's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }
 
 impl CompletionRequest {
@@ -65,7 +71,20 @@ impl CompletionRequest {
             messages: Vec::new(),
             tools: Vec::new(),
             temperature: None,
+            max_tokens: None,
         }
+    }
+
+    /// Bound the model's output to `max_tokens` (see [`Self::max_tokens`]).
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    /// Set the sampling temperature for this call.
+    pub fn with_temperature(mut self, temperature: Option<f32>) -> Self {
+        self.temperature = temperature;
+        self
     }
 
     pub fn with_system(mut self, content: impl Into<String>) -> Self {

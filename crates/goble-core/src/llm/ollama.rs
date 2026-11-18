@@ -114,6 +114,11 @@ impl LlmProvider for OllamaProvider {
         if let Some(t) = request.temperature {
             options.insert("temperature".to_string(), serde_json::json!(t));
         }
+        // Ollama spells the output-token bound `num_predict`; absent, the
+        // model's own default applies.
+        if let Some(max) = request.max_tokens {
+            options.insert("num_predict".to_string(), serde_json::json!(max));
+        }
         let body = OllamaRequest {
             model: request.model,
             messages: into_ollama_messages(request.messages),

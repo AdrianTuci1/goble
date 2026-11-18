@@ -168,12 +168,22 @@ pub(crate) fn send_agent_prompt_with_attachments(
                 &format!("(nu am putut porni modelul: {e})"),
             );
         } else {
-            // The turn is running over a conversation that may still be under
-            // the placeholder: the prompt is what the user asked for, so it
-            // names the conversation now — the reply refines the name when the
-            // turn settles. A conversation the user named, or one a prompt
-            // already named, keeps that name.
-            state.name_conversation_from_prompt(&chat_id, text, desktop);
+            // The first prompt names the conversation at once: the deterministic
+            // subject ([`crate::state::deterministic_subject`]) is the fallback
+            // that stands when no provider key exists, and the model-backed
+            // title request replaces it with a generated subject when it
+            // returns. It runs beside the turn, never in front of it. A
+            // conversation the user named, or one a prompt already named, keeps
+            // that name and asks the model for nothing.
+            if state.name_conversation_from_prompt(&chat_id, text, desktop) {
+                crate::state::spawn_title_generation(
+                    desktop,
+                    &chat_id,
+                    text,
+                    &state.settings_llm_provider,
+                    &model,
+                );
+            }
             state.begin_turn(pane_id);
             ran_turn = true;
         }

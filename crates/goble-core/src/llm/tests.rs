@@ -108,6 +108,20 @@ fn test_request_builder() {
     assert_eq!(request.tools.len(), 1);
 }
 
+/// A short auxiliary call (a conversation title, say) bounds its own output and
+/// sets its own temperature; a conversational request leaves the cap unset so
+/// the endpoint's own default applies.
+#[test]
+fn an_auxiliary_request_carries_its_own_token_cap() {
+    let request = CompletionRequest::new("openai", "gpt-4o-mini")
+        .with_temperature(Some(0.2))
+        .with_max_tokens(48);
+    assert_eq!(request.max_tokens, Some(48));
+    assert_eq!(request.temperature, Some(0.2));
+    let turn = CompletionRequest::new("openai", "gpt-4o-mini");
+    assert_eq!(turn.max_tokens, None, "a turn keeps the endpoint's default");
+}
+
 #[test]
 fn test_stream_chunk_deserialization() {
     let json = serde_json::json!({

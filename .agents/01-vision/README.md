@@ -26,7 +26,7 @@ stays reversible through `goble-replay` (fork, replay, revert).
 ## Principles
 
 1. **Our renderer, their harness.** The agent execution engine is reused from `~/Projects/grok-build` (see [`04-agent-runtime/harness-reuse-map.md`](../04-agent-runtime/harness-reuse-map.md)); the chat renderer is ours.
-2. **No UI libraries.** Everything paints through `goble-ui` on `wgpu`; the shell tree is built in `app/src/ui`.
+2. **No UI libraries.** Everything paints through `goble-ui` on `wgpu`; the shell tree is built in `apps/desktop/src/ui`.
 3. **Workspace is the deployment unit.** An agent never floats free of a workspace, and a workspace is either local or remote.
 4. **Continuity over teleporting.** Local↔remote routing keeps the conversation state and the agent identity coherent.
 5. **The agent owns its config.** The workspace TOML is something the agent itself reads and can edit.
@@ -34,7 +34,7 @@ stays reversible through `goble-replay` (fork, replay, revert).
 
 ## Boundaries with the existing code
 
-The repo already has a working backend (`goble-core` + `goble-desktop-service` + `goblin-worker`) and a native shell (`app/` = `goble-app`). This folder *extends* the architecture — it does not replace the working pieces. See [`boundaries-and-deferred.md`](boundaries-and-deferred.md).
+The repo already has a working backend (`goble-core` + `goble-desktop-service` + `goblin-worker`) and a native shell (`apps/desktop/` = `goble-app`). This folder *extends* the architecture — it does not replace the working pieces. See [`boundaries-and-deferred.md`](boundaries-and-deferred.md).
 
 ## Related
 

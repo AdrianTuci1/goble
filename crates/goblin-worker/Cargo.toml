@@ -50,6 +50,11 @@ portable-pty = "0.9"
 tokio-tungstenite.workspace = true
 urlencoding = "2"
 
+# Process-group kill for the remote DSH runtime (a cancelled turn must take the
+# harness's tool children with it). Unix only; the worker image is Linux.
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
 [dev-dependencies]
 tokio-test.workspace = true
 tempfile.workspace = true

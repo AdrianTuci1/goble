@@ -67,6 +67,16 @@ pub enum DesktopMessage {
     GetTrace {
         trace_id: String,
     },
+    /// Stop a run the client started and no longer wants.
+    ///
+    /// The worker kills the harness behind `trace_id` (a remote DSH run is
+    /// stopped with a process-group kill, so its tools and children go with
+    /// it) and reports the end on that trace as `agent_finished` with
+    /// `Cancelled`. An unknown or already-finished trace is a no-op: cancelling
+    /// a run that settled in the meantime is not an error.
+    CancelRun {
+        trace_id: String,
+    },
     /// Answer a run that paused on `AskUser`, so the same turn continues from
     /// where it stopped. `trace_id` is the run's session id.
     AnswerUser {
@@ -434,6 +444,18 @@ impl Envelope {
     }
 }
 
+/// Whether a [`DesktopMessage`] that failed to deserialize was rejected because
+/// its `kind` tag is unknown to this build, rather than because a known frame
+/// carried a bad payload.
+///
+/// A worker shares one relay with clients that may be newer than it, so an
+/// unknown frame is ignored instead of failing the connection; a known frame
+/// with a broken payload is still an error. serde reports the two cases
+/// differently, and only the first says `unknown variant`.
+pub fn is_unknown_kind(error: &serde_json::Error) -> bool {
+    error.to_string().starts_with("unknown variant")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,6 +472,38 @@ mod tests {
         let bytes = serde_json::to_vec(&msg).unwrap();
         let decoded: DesktopMessage = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    /// Cancelling a run names only the trace it stops, so a client that does
+    /// not know the frame yet keeps working and one that does can end a remote
+    /// harness run without waiting for it.
+    #[test]
+    fn a_cancel_names_only_the_trace() {
+        let cancel = DesktopMessage::CancelRun {
+            trace_id: "t1".to_string(),
+        };
+        let json = serde_json::to_value(&cancel).unwrap();
+        assert_eq!(json["kind"], "cancel_run");
+        assert_eq!(json["trace_id"], "t1");
+        assert_eq!(
+            serde_json::from_value::<DesktopMessage>(json).unwrap(),
+            cancel
+        );
+    }
+
+    /// A frame with a newer `kind` is told apart from a broken known frame, so a
+    /// worker can ignore the former and still report the latter.
+    #[test]
+    fn an_unknown_kind_is_recognized_as_such() {
+        let unknown =
+            serde_json::from_str::<DesktopMessage>(r#"{"kind":"run_on_mars","trace_id":"t1"}"#)
+                .expect_err("an unknown kind does not deserialize");
+        assert!(is_unknown_kind(&unknown), "{unknown}");
+
+        let bad_payload =
+            serde_json::from_str::<DesktopMessage>(r#"{"kind":"cancel_run","trace_id":42}"#)
+                .expect_err("a broken known frame does not deserialize");
+        assert!(!is_unknown_kind(&bad_payload), "{bad_payload}");
     }
 
     /// The command gate travels as its own pair of frames: the worker proposes

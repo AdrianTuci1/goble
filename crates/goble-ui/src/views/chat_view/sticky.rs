@@ -24,13 +24,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::chat_content::ChatFragmentKind;
-use crate::elements::text::measure_text;
+use crate::elements::chat_typography;
 use crate::elements::{
     AppContext, ChatMessage, ChatRole, Element, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::FontWeight;
-use crate::theme::{ColorToken, FontFamily, SpacingToken};
+use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::theme::ColorToken;
 
 /// The prompt marker that leads the user's own message, its room before the
 /// text, and the paragraph size of the row. They mirror the constants of
@@ -38,10 +38,10 @@ use crate::theme::{ColorToken, FontFamily, SpacingToken};
 /// pinned line is the size and shape of the message it pins; the sticky turn's
 /// tests compare the pin against that row's own render commands, which is what
 /// keeps the two in step.
-const PROMPT_ARROW_SIZE: f32 = 11.0;
-const PROMPT_ARROW_GAP: f32 = 4.0;
-const MESSAGE_FONT_SIZE: f32 = 14.0;
-const MESSAGE_LINE_HEIGHT: f32 = 1.2;
+const PROMPT_ARROW_SIZE: f32 = chat_typography::PROMPT_ARROW_SIZE;
+const PROMPT_ARROW_GAP: f32 = chat_typography::PROMPT_ARROW_GAP;
+const MESSAGE_FONT_SIZE: f32 = chat_typography::BODY_SIZE;
+const MESSAGE_LINE_HEIGHT: f32 = chat_typography::USER_LH;
 
 /// The rule under the pinned row, in points.
 const DIVIDER_HEIGHT: f32 = 1.0;
@@ -207,15 +207,15 @@ struct StickyHeader {
 impl StickyHeader {
     /// The strip's height: one line of the bubble's padded band — the marker's
     /// column and the message's first line, inset by `Md` over and under it.
-    fn height(app: &AppContext) -> f32 {
-        MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT + 2.0 * app.theme.spacing_px(SpacingToken::Md)
+    fn height(_app: &AppContext) -> f32 {
+        MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT + 2.0 * chat_typography::BAND_PADDING_Y
     }
 
     /// Where the marker and the text sit inside the band, as the user's row
     /// lays them out: the marker is centred on the first line's box and the
     /// text starts one marker and one gap past it.
     fn marker_top() -> f32 {
-        (MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT - PROMPT_ARROW_SIZE) / 2.0
+        chat_typography::prompt_marker_top()
     }
 }
 
@@ -267,30 +267,32 @@ impl Element for StickyHeader {
         // The band the user's row draws, its marker and its first line, at the
         // same insets: the strip must read as that band's top edge, not as a
         // surface of its own.
-        let pad = app.theme.spacing_px(SpacingToken::Md);
+        let pad_x = chat_typography::BAND_PADDING_X;
+        let pad_y = chat_typography::BAND_PADDING_Y;
+        let family = chat_typography::chat_font(app);
         renderer.fill_rect(
             rectf(origin.x, top, size.x, size.y),
             app.theme.color(ColorToken::SurfaceRaised),
         );
         renderer.draw_icon(
-            vec2f(origin.x + pad, top + pad + Self::marker_top()),
+            vec2f(origin.x + pad_x, top + pad_y + Self::marker_top()),
             "prompt-arrow",
             PROMPT_ARROW_SIZE,
             app.theme.color(ColorToken::Accent),
         );
-        let text_x = origin.x + pad + PROMPT_ARROW_SIZE + PROMPT_ARROW_GAP;
-        let available = (size.x - pad - PROMPT_ARROW_SIZE - PROMPT_ARROW_GAP - pad).max(0.0);
+        let text_x = origin.x + pad_x + PROMPT_ARROW_SIZE + PROMPT_ARROW_GAP;
+        let available = (size.x - pad_x - PROMPT_ARROW_SIZE - PROMPT_ARROW_GAP - pad_x).max(0.0);
         if available > 0.0 {
-            let line = elide_to_width(&self.text, available);
+            let line = elide_to_width(&self.text, available, family);
             renderer.draw_text_with_font(
-                vec2f(text_x, top + pad),
+                vec2f(text_x, top + pad_y),
                 line,
                 MESSAGE_FONT_SIZE,
                 app.theme.color(ColorToken::Text),
                 available,
                 MESSAGE_LINE_HEIGHT,
                 FontWeight::Regular,
-                FontFamily::System,
+                family,
                 false,
             );
         }
@@ -354,9 +356,18 @@ fn first_line(message: &ChatMessage) -> Option<String> {
 /// `text` cut with an ellipsis so it measures at most `max_width` in the pinned
 /// row's font. The row is one line, so the cut is what keeps a long message
 /// from drawing past the pane.
-fn elide_to_width(text: &str, max_width: f32) -> String {
+fn elide_to_width(text: &str, max_width: f32, family: crate::theme::FontFamily) -> String {
     let width = |candidate: &str| {
-        measure_text(candidate, MESSAGE_FONT_SIZE, MESSAGE_LINE_HEIGHT, f32::INFINITY).x
+        measure_text_family(
+            candidate,
+            MESSAGE_FONT_SIZE,
+            MESSAGE_LINE_HEIGHT,
+            f32::INFINITY,
+            FontWeight::Regular,
+            family,
+            false,
+        )
+        .x
     };
     if width(text) <= max_width {
         return text.to_string();

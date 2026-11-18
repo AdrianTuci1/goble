@@ -9,6 +9,7 @@ use super::*;
 mod attach;
 mod environment;
 mod service;
+mod session_menu;
 mod turns;
 
 fn tmp_state() -> (tempfile::TempDir, Arc<DesktopState>) {

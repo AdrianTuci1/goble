@@ -112,6 +112,19 @@ that trace's `agent_log` and `agent_finished`, and the phone also gives up after
 first, capped at 50, each with its messages. The drawer lists them; a session
 screen loads its thread from there when it opens.
 
+## Remote execution over HTTP
+
+Everything above speaks raw protocol frames over `/ws/client`. A client that
+does not want to keep a WebSocket and filter frames by `trace_id` can use the
+gateway's remote-execution control plane instead: `POST /api/v1/sessions`
+creates or reuses a session binding (worker + conversation), `POST
+/api/v1/sessions/{id}/runs` starts a turn with just `{task, timeout_s?}`, and
+`GET /api/v1/runs/{id}` or the SSE stream `GET /api/v1/runs/{id}/stream`
+delivers the same assistant deltas, tool calls and final answer as typed JSON
+events. It uses the same bearer token or cookie session as the relay, so a
+phone that already pairs for the socket can call it unchanged.
+[gateway-api.md](gateway-api.md) is the contract.
+
 ## Questions
 
 `ask_user` pauses the turn. The phone draws the question above the composer with

@@ -6,7 +6,7 @@ use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatRole, ToolDisplayMode};
 use crate::elements::TerminalFilter;
 use crate::elements::{terminal_block, AppContext, TerminalData, TerminalStatus};
-use crate::geometry::{vec2f, Vector2F};
+use crate::geometry::vec2f;
 use crate::render::RenderCommand;
 use crate::test_util::render_element;
 use crate::platform::text_atlas::FontWeight;
@@ -43,52 +43,57 @@ fn tool_call_draws_no_border_or_card() {
     );
 }
 
-/// grok-build's tool row: the verb is bold and the operand keeps its own
-/// colour. A `read` therefore draws a bold `Read ` before a path in the theme's
-/// warm operand colour, not one plain run.
+/// DSH's tool row: the whole row reads in one tertiary ink at the row's
+/// regular weight. The verb is no longer bold and the operand no longer takes
+/// grok-build's per-kind colour — `tool_subject_color` stays as the revert
+/// seam, but the owner asked for DSH's single ink.
 #[test]
-fn a_tool_row_draws_a_bold_verb_and_an_accented_operand() {
-    let (commands, _) = paint_tool_calls_with_fold(
-        vec![call(
-            "read_file",
-            r#"{"path":"src/lib.rs"}"#,
-            ToolCallStatus::Finished,
-            Some("1: fn main() {}"),
-        )],
-        Some(ToolDisplayMode::Expanded),
-    );
+fn a_tool_row_reads_in_one_quiet_ink_at_regular_weight() {
+    let (commands, _) = paint_tool_calls(vec![call(
+        "read_file",
+        r#"{"path":"src/lib.rs"}"#,
+        ToolCallStatus::Finished,
+        Some("1: fn main() {}"),
+    )]);
     let app = AppContext::default();
-    let run = |needle: &str| {
-        commands.iter().find_map(|command| match command {
-            RenderCommand::DrawText {
-                text,
-                color,
-                font_weight,
-                ..
-            } if text == needle => Some((*color, *font_weight)),
-            _ => None,
-        })
-    };
-
-    let (verb_color, verb_weight) = run("Read ").expect("the bold verb is drawn");
+    let words = commands.iter().find_map(|command| match command {
+        RenderCommand::DrawText {
+            text,
+            color,
+            font_weight,
+            font_family,
+            font_size,
+            line_height,
+            ..
+        } if text.starts_with("Read") => {
+            Some((*color, *font_weight, *font_family, *font_size, *line_height))
+        }
+        _ => None,
+    });
+    let (color, weight, family, size, line_height) = words.expect("the row's words are drawn");
+    assert_eq!(weight, FontWeight::Regular, "DSH's tool row is regular weight");
     assert_eq!(
-        verb_weight,
-        FontWeight::Bold,
-        "the verb is bold, as in grok-build"
+        color,
+        app.theme.color(ColorToken::Muted),
+        "the row reads in the quiet ink"
     );
-    assert_eq!(verb_color, app.theme.color(ColorToken::Text));
-
-    let (path_color, path_weight) = run("src/lib.rs").expect("the operand is drawn");
-    assert_eq!(
-        path_weight,
-        FontWeight::Regular,
-        "the operand stays at the row's regular weight"
+    assert_eq!(family, crate::theme::FontFamily::System, "the row is prose, not mono");
+    assert_eq!(size, 13.0, "DSH's process row is 13 px");
+    assert!(
+        (line_height - 24.0 / 13.0).abs() < 1e-5,
+        "the row sits on a 24 px line, got {line_height}"
     );
-    assert_eq!(
-        path_color,
-        app.theme.color(ColorToken::Path),
-        "the path takes grok-build's warm path colour"
-    );
+    // No run in the row takes grok-build's per-kind colours any more.
+    for per_kind in [ColorToken::Path, ColorToken::Command, ColorToken::Success] {
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { color, text, .. }
+                    if *color == app.theme.color(per_kind) && !text.trim().is_empty()
+            )),
+            "the row must not use the per-kind {per_kind:?} ink"
+        );
+    }
 }
 
 /// A call with nothing to show collapses to a single row — the tool's own
@@ -137,7 +142,7 @@ fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
 
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t.ends_with("List Entities")),
+        texts.iter().any(|t| t.contains("List Entities")),
         "the tool name is drawn as words, got {texts:?}"
     );
     assert!(
@@ -235,7 +240,7 @@ fn command_call_shows_the_command_and_its_output() {
 
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "cargo test -p goble-ui"),
+        texts.iter().any(|t| t.contains("cargo test -p goble-ui")),
         "the command is the block's title and its command line, got {texts:?}"
     );
     assert!(
@@ -247,29 +252,24 @@ fn command_call_shows_the_command_and_its_output() {
         "the raw argument JSON is not shown, got {texts:?}"
     );
 
-    // grok-build's `Run` row: a bold primary verb, then the command in the
-    // pager's yellow.
+    // DSH's `Run` row: one quiet ink, the command included, at the row's
+    // regular weight.
     let app = AppContext::default();
-    let run = |needle: &str| {
-        commands.iter().find_map(|command| match command {
-            RenderCommand::DrawText {
-                text,
-                color,
-                font_weight,
-                ..
-            } if text == needle => Some((*color, *font_weight)),
-            _ => None,
-        })
-    };
+    let row = commands.iter().find_map(|command| match command {
+        RenderCommand::DrawText {
+            text,
+            color,
+            font_weight,
+            ..
+        } if text.contains("Run") && text.contains("cargo test -p goble-ui") => {
+            Some((*color, *font_weight))
+        }
+        _ => None,
+    });
     assert_eq!(
-        run("Run "),
-        Some((app.theme.color(ColorToken::Text), FontWeight::Bold)),
-        "the Run verb is bold primary text"
-    );
-    assert_eq!(
-        run("cargo test -p goble-ui"),
-        Some((app.theme.color(ColorToken::Command), FontWeight::Regular)),
-        "the command takes the pager's command colour"
+        row,
+        Some((app.theme.color(ColorToken::Text), FontWeight::Regular)),
+        "the opened Run row is one primary, regular-weight run"
     );
 }
 
@@ -304,32 +304,43 @@ fn an_agents_command_is_not_a_terminal_block() {
         .filter(|c| matches!(c, RenderCommand::DrawIcon { .. }))
         .count();
     assert_eq!(icons, 0, "an agent's call draws no block controls");
+    // The one frame is DSH's expanded-body card (a rounded fill under a
+    // hairline), not the terminal block's header/chrome.
     let borders = commands
         .iter()
         .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
         .count();
-    assert_eq!(borders, 0, "an agent's call draws no block frame");
+    assert_eq!(borders, 1, "an agent's call draws its body card and no block frame");
 
     // What it does draw: the row that names the command, then the output.
     let runs = text_runs(&commands);
     assert!(
-        runs.iter().any(|(text, _, _, _)| text == command),
+        runs.iter().any(|(text, _, _, _)| text.contains(command)),
         "the row names the command it ran, got {runs:?}"
     );
     assert!(
         runs.iter().any(|(text, _, _, _)| text == output),
         "the output is drawn continuously under it, got {runs:?}"
     );
+    // DSH's tool row is 13 px; the body is the 11 px code tier.
+    let row_size = runs
+        .iter()
+        .find(|(text, _, _, _)| text.contains(command))
+        .map(|(_, _, _, size)| *size)
+        .expect("the row's size");
+    assert_eq!(row_size, 13.0, "the row is DSH's 13 px process tier");
     assert!(
-        runs.iter().all(|(_, _, _, size)| *size == 13.0),
-        "the row and its body are one size, got {runs:?}"
+        runs.iter()
+            .filter(|(text, _, _, _)| text == output)
+            .all(|(_, _, _, size)| *size == 11.0),
+        "the body is the 11 px code tier, got {runs:?}"
     );
 
     // The block's own title is nowhere: the command is drawn once, by the row
     // that names it, not a second time as a block header.
     let titles = runs
         .iter()
-        .filter(|(text, _, _, _)| text == command)
+        .filter(|(text, _, _, _)| text.contains(command))
         .count();
     assert_eq!(titles, 1, "the command is drawn once, got {runs:?}");
 }
@@ -413,7 +424,7 @@ fn read_call_shows_the_path() {
     let (commands, _) = paint_tool_calls_with_run_open(calls, 0);
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "src/lib.rs"),
+        texts.iter().any(|t| t.contains("src/lib.rs")),
         "the opened run's member row carries the path, got {texts:?}"
     );
     assert!(
@@ -442,18 +453,18 @@ fn folded_read_draws_one_line() {
     );
     assert_eq!(
         drawn_texts(&commands),
-        vec!["◈ ".to_string(), "Read 1 file".to_string()],
+        vec!["◈".to_string(), "Read 1 file".to_string()],
         "the folded run draws only its aggregated label behind the dotted diamond"
     );
 
     let (commands, _) = paint_tool_calls_with_run_open(calls, 0);
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "src/lib.rs"),
+        texts.iter().any(|t| t.contains("src/lib.rs")),
         "the opened run's member row carries its path, got {texts:?}"
     );
     assert!(
-        !texts.iter().any(|t| t == "line 1"),
+        !texts.iter().any(|t| t.contains("line 1")),
         "the file body is hidden while the member is folded, got {texts:?}"
     );
 
@@ -472,14 +483,9 @@ fn folded_read_draws_one_line() {
         })
     };
     assert_eq!(
-        run("Read "),
-        Some((app.theme.color(ColorToken::Text), FontWeight::Bold)),
-        "a member of an open chain reads white and bold"
-    );
-    assert_eq!(
-        run("src/lib.rs"),
+        run("Read src/lib.rs"),
         Some((app.theme.color(ColorToken::Text), FontWeight::Regular)),
-        "the member's path reads white inside an open chain"
+        "a member of an open chain reads white at the row's regular weight"
     );
 }
 
@@ -614,7 +620,7 @@ fn expanded_read_draws_a_gutter_and_highlighted_lines_on_a_band() {
 
     // The body is highlighted, not one muted blob: drop the gutter and the
     // header's own runs and require more than one code colour.
-    let header = ["◆ ", "Read ", "src/lib.rs"];
+    let header = ["◆", "Read src/lib.rs"];
     let body_colours: std::collections::HashSet<ColorU> = commands
         .iter()
         .filter_map(|c| match c {
@@ -633,12 +639,32 @@ fn expanded_read_draws_a_gutter_and_highlighted_lines_on_a_band() {
         "the read's lines are highlighted, got {body_colours:?}"
     );
 
-    let band = app.theme.color(ColorToken::Bg);
-    let bands = commands
+    // The body's lines sit on the one card DSH draws them in, so the excerpt
+    // no longer bands each line separately: a rounded card fill and its 0.5 px
+    // hairline are what the body is drawn on.
+    let card = crate::elements::chat_typography::card_radius(&app);
+    let card_fills = commands
         .iter()
-        .filter(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == band))
+        .filter(|c| {
+            matches!(c, RenderCommand::FillRect { color, corner_radius, .. }
+                if *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && (*corner_radius - card).abs() < 0.01)
+        })
         .count();
-    assert_eq!(bands, 10, "each read line draws its own band, got {bands}");
+    assert_eq!(card_fills, 1, "the excerpt sits on one card, got {card_fills}");
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::StrokeRect { width, .. } if (*width - 0.5).abs() < 1e-5
+        )),
+        "the card carries DSH's hairline, got {commands:?}"
+    );
+    let per_line_bands = commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::FillRect { color, corner_radius, .. }
+            if *color == app.theme.color(ColorToken::Bg) && *corner_radius == 0.0))
+        .count();
+    assert_eq!(per_line_bands, 0, "the card owns the surface, not each line");
 }
 
 /// `count` numbered source lines, the shape the harness's `read_file` returns.
@@ -646,13 +672,12 @@ fn source_lines(count: usize) -> String {
     (1..=count).map(|i| format!("fn f{i}() {{}}\n")).collect()
 }
 
-/// A large read is bounded by what is on screen: expanded draws the cap's head
-/// lines and one residue band naming the rest, so a frame's work no longer
+/// A large read is bounded by what is on screen: expanded draws the file's head
+/// only, inside DSH's capped scrollable body card, so a frame's work no longer
 /// follows the file's length.
 #[test]
-fn an_expanded_read_is_capped_and_names_the_lines_it_leaves_out() {
+fn an_expanded_read_is_capped_by_its_body_card() {
     let result = source_lines(2000);
-    let app = AppContext::default();
     let (commands, _) = paint_tool_calls_with_fold(
         vec![call(
             "read_file",
@@ -663,34 +688,42 @@ fn an_expanded_read_is_capped_and_names_the_lines_it_leaves_out() {
         Some(ToolDisplayMode::Expanded),
     );
 
-    let band = app.theme.color(ColorToken::Bg);
-    let bands = commands
+    // The excerpt is drawn inside DSH's capped, scrollable card: only the rows
+    // that fit the card's viewport are painted, so a frame's work follows the
+    // cap and not the file.
+    let app = AppContext::default();
+    let card = commands
         .iter()
-        .filter(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == band))
-        .count();
-    assert_eq!(
-        bands,
-        EXPANDED_LINE_CAP + 1,
-        "the cap's lines and one residue band, got {bands}"
+        .find_map(|c| match c {
+            RenderCommand::FillRect { rect, color, corner_radius }
+                if *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && (*corner_radius - crate::elements::chat_typography::card_radius(&app)).abs() < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the excerpt is drawn on its card");
+    assert!(
+        card.height() <= crate::elements::chat_typography::CARD_MAX_INNER_HEIGHT
+            + 2.0 * crate::elements::chat_typography::CARD_PADDING.top
+            + 1.0,
+        "the card is capped at DSH's max height, got {card:?}"
     );
 
     let rows = drawn_row_texts(&commands);
     assert!(
-        rows.iter().any(|row| row.ends_with("fn f200() {}")),
-        "the cap's last line is drawn, got {rows:?}"
+        rows.len() <= 20,
+        "only the rows that fit the card's viewport are painted, got {}",
+        rows.len()
     );
     assert!(
-        !rows.iter().any(|row| row.ends_with("fn f201() {}")),
-        "the line past the cap is not drawn, got {rows:?}"
+        rows.iter().any(|row| row.contains("f1()")),
+        "the excerpt opens on the file's first line, got {rows:?}"
     );
     assert!(
-        !rows.iter().any(|row| row.ends_with("fn f2000() {}")),
-        "the file's last line is not drawn, got {rows:?}"
-    );
-    let residue = format!("… {} more lines", 2000 - EXPANDED_LINE_CAP);
-    assert!(
-        rows.iter().any(|row| row.contains(residue.as_str())),
-        "one row names the remainder, got {rows:?}"
+        !rows.iter().any(|row| row.contains("fn f200()")),
+        "a line past the viewport is not painted, got {rows:?}"
     );
 }
 
@@ -715,13 +748,15 @@ fn a_capped_read_keeps_the_gutter_numbers_of_the_lines_it_draws() {
         texts.iter().any(|t| t == "   1  "),
         "line 1 is right-aligned in the four-wide gutter, got {texts:?}"
     );
+    // The card's viewport paints only the lines that fit it, numbered as the
+    // file numbers them.
+    let numbers: Vec<usize> = texts
+        .iter()
+        .filter_map(|text| text.trim().parse::<usize>().ok())
+        .collect();
     assert!(
-        texts.iter().any(|t| t == " 200  "),
-        "the cap's last line carries its own number, got {texts:?}"
-    );
-    assert!(
-        !texts.iter().any(|t| t == " 201  "),
-        "no number is drawn past the cap, got {texts:?}"
+        numbers.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "the painted gutter is consecutive, got {numbers:?}"
     );
     assert!(
         !texts.iter().any(|t| t == "2000  "),
@@ -1025,12 +1060,11 @@ fn clicking_a_tool_call_header_cycles_its_fold() {
         "the opened run draws its member row, path included"
     );
 
-    // The member row is on screen now, and its header cycles the call. The
-    // header's own run shifts right once the open row draws its rail, so each
-    // click reads the run's position from the frame it lands on.
+    // The member row is on screen now, and its header cycles the call. Each
+    // click reads the row's position from the frame it lands on.
     let click_member = |bubble: &mut ChatMessageBubble| {
         let commands = paint_bubble(bubble, &app);
-        let header = run_origin(&commands, "Read ");
+        let header = run_origin(&commands, "Read src/lib.rs");
         click_at(bubble, &app, header + vec2f(2.0, 4.0));
     };
     click_member(&mut bubble);
@@ -1072,7 +1106,7 @@ fn edit_call_shows_diff_rows() {
 
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "src/lib.rs"),
+        texts.iter().any(|t| t.contains("src/lib.rs")),
         "the edited path is shown, got {texts:?}"
     );
     let rows = drawn_row_texts(&commands);
@@ -1168,7 +1202,7 @@ fn web_search_call_shows_the_query_and_its_sources() {
 
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|t| t == "rust async"),
+        texts.iter().any(|t| t.contains("rust async")),
         "the query is shown, got {texts:?}"
     );
     assert!(
@@ -1185,11 +1219,11 @@ fn web_search_call_shows_the_query_and_its_sources() {
     );
 }
 
-/// A tool block is bracketed down both sides, in the free margin beside the
-/// text, while the pointer is on it or the group is open. The strokes take no
-/// layout space, so the words keep the prose column's alignment.
+/// A tool block draws no rail or bracket in the margin beside it, whether it
+/// rests folded, sits under the pointer or opens: its words keep the prose
+/// column's alignment on their own.
 #[test]
-fn a_tool_block_is_bracketed_without_moving_its_words() {
+fn a_tool_block_draws_no_rail_and_keeps_its_words_in_place() {
     let app = AppContext::default();
     let read = || {
         call(
@@ -1219,7 +1253,7 @@ fn a_tool_block_is_bracketed_without_moving_its_words() {
         .with_tool_fold(Rc::new(RefCell::new(fold)))
         .with_tool_hover(Rc::new(RefCell::new(None)));
         let commands = if pointer {
-            paint_with_pointer_over(&mut bubble, &app, "◈ ")
+            paint_with_pointer_over(&mut bubble, &app, "◈")
         } else {
             bubble.layout(
                 SizeConstraint::loose(vec2f(400.0, 400.0)),
@@ -1244,74 +1278,41 @@ fn a_tool_block_is_bracketed_without_moving_its_words() {
             })
         };
         let prose = origin_x("Prose starts here.").expect("the prose is drawn");
-        let row_start = origin_x("❯ ")
-            .or_else(|| origin_x("◈ "))
-            .or_else(|| origin_x("◆ "))
+        // DSH's row geometry: the 16 px leading box starts where prose starts
+        // and the words begin one box and one 6 px gap past it.
+        let leading = origin_x("❯")
+            .or_else(|| origin_x("◈"))
+            .or_else(|| origin_x("◆"))
             .unwrap_or_else(|| {
                 panic!("{label}: the run's own header is drawn: {:?}", drawn_texts(&commands))
             });
         assert!(
-            (row_start - prose).abs() < 0.5,
-            "{label}: the words stay in the prose column, got {row_start} against {prose}"
+            (leading - prose).abs() < 0.5,
+            "{label}: the leading box starts in the prose column, got {leading} against {prose}"
+        );
+        let row_start = origin_x("Read").unwrap_or(leading);
+        let expected = prose
+            + crate::elements::chat_typography::LEADING_BOX
+            + crate::elements::chat_typography::GLYPH_GAP;
+        assert!(
+            (row_start - expected).abs() < 0.5,
+            "{label}: the words start past the leading box, got {row_start} against {expected}"
         );
 
-        let brackets: Vec<_> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::Muted)
-                        && rect.size.width <= 2.5
-                        && rect.size.height > 0.0 =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .collect();
-        let bracketed = label != "folded and resting";
-        assert_eq!(
-            brackets.len(),
-            if bracketed { 2 } else { 0 },
-            "{label}: both sides are bracketed, got {brackets:?}"
+        let strokes = rail_strokes(&commands, &app);
+        assert!(
+            strokes.is_empty(),
+            "{label}: no vertical rail is drawn beside the block, got {strokes:?}"
         );
-        if bracketed {
-            let (left, right) = (brackets[0], brackets[1]);
-            assert!(
-                left.min_x() < row_start && right.max_x() > row_start,
-                "{label}: the strokes sit outside the words: {brackets:?} against {row_start}"
-            );
-            assert_eq!(
-                left.min_y(),
-                right.min_y(),
-                "{label}: both strokes start on the block's first line"
-            );
-            assert!(
-                right.max_x() - left.min_x() > 300.0,
-                "{label}: the pair frames the block's width, not just its words: {brackets:?}"
-            );
-        }
     }
 }
 
-/// A call that stands on its own is framed while its body is open; a collapsed
-/// one is framed only under the pointer, so the rail follows the selection.
+/// A call that stands on its own draws no rail in any state: an open body and
+/// a pointer over a collapsed row change the row's own ink and mark — and, when
+/// open, the body card under it — never a frame around the block.
 #[test]
-fn a_standalone_row_is_bracketed_while_open_or_under_the_pointer() {
+fn a_standalone_row_draws_no_rail_while_open_or_under_the_pointer() {
     let app = AppContext::default();
-    let brackets = |commands: &[RenderCommand]| {
-        commands
-            .iter()
-            .filter(|command| {
-                matches!(
-                    command,
-                    RenderCommand::FillRect { rect, color, .. }
-                        if *color == app.theme.color(ColorToken::Muted)
-                            && rect.size.width <= 2.5
-                            && rect.size.height > 0.0
-                )
-            })
-            .count()
-    };
     let paint = |bubble: &mut ChatMessageBubble, pointer: bool, prefix: &str| {
         if pointer {
             return paint_with_pointer_over(bubble, &app, prefix);
@@ -1345,11 +1346,11 @@ fn a_standalone_row_is_bracketed_while_open_or_under_the_pointer() {
     );
     for (label, pointer) in [("away", false), ("under the pointer", true)] {
         let mut open = bubble(read.clone(), ToolDisplayMode::Expanded);
-        let commands = paint(&mut open, pointer, "❯ ");
-        assert_eq!(
-            brackets(&commands),
-            2,
-            "an opened row keeps its rail with the pointer {label}"
+        let commands = paint(&mut open, pointer, "❯");
+        let strokes = rail_strokes(&commands, &app);
+        assert!(
+            strokes.is_empty(),
+            "an opened row draws no rail with the pointer {label}, got {strokes:?}"
         );
     }
 
@@ -1360,16 +1361,13 @@ fn a_standalone_row_is_bracketed_while_open_or_under_the_pointer() {
         ToolCallStatus::Finished,
         Some("done"),
     );
-    for (label, pointer, expected) in [
-        ("away", false, 0),
-        ("under the pointer", true, 2),
-    ] {
+    for (label, pointer) in [("away", false), ("under the pointer", true)] {
         let mut collapsed = bubble(spawn.clone(), ToolDisplayMode::Collapsed);
-        let commands = paint(&mut collapsed, pointer, "◆ ");
-        assert_eq!(
-            brackets(&commands),
-            expected,
-            "a collapsed stand-alone row is framed only under the pointer ({label})"
+        let commands = paint(&mut collapsed, pointer, "◆");
+        let strokes = rail_strokes(&commands, &app);
+        assert!(
+            strokes.is_empty(),
+            "a collapsed stand-alone row draws no rail ({label}), got {strokes:?}"
         );
     }
 }
@@ -1392,10 +1390,10 @@ fn an_open_row_keeps_the_arrow_in_place_of_the_diamond() {
         let runs = text_runs(&commands);
         let mark = runs
             .iter()
-            .find(|(text, ..)| text == "❯ " || text == "◆ ")
+            .find(|(text, ..)| text == "❯" || text == "◆")
             .expect("the row draws its mark");
         assert_eq!(
-            mark.0, "❯ ",
+            mark.0, "❯",
             "an opened row swaps the diamond for the arrow ({mode:?})"
         );
         assert_eq!(
@@ -1404,96 +1402,6 @@ fn an_open_row_keeps_the_arrow_in_place_of_the_diamond() {
             "an opened row reads white ({mode:?})"
         );
     }
-}
-
-/// The rail is decided while the block paints: a hover cell still naming the
-/// row from an earlier frame cannot keep the strokes on screen once the pointer
-/// has left.
-#[test]
-fn a_closed_rows_rail_leaves_with_the_pointer() {
-    let app = AppContext::default();
-    let spawn = call(
-        "run_agent",
-        r#"{"description":"map the call sites"}"#,
-        ToolCallStatus::Finished,
-        Some("done"),
-    );
-    let key = tool_fold_key(&spawn, 0);
-
-    let mut probe = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
-        .with_tool_calls(vec![spawn.clone()])
-        .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(
-            key.clone(),
-            ToolDisplayMode::Collapsed,
-        )]))))
-        .with_tool_hover(Rc::new(RefCell::new(None)));
-    probe.layout(
-        SizeConstraint::loose(vec2f(400.0, 400.0)),
-        &mut LayoutContext::default(),
-        &app,
-    );
-    let mut ctx = PaintContext::new(Renderer::new());
-    probe.paint(vec2f(0.0, 0.0), &mut ctx, &app);
-    let origin = ctx
-        .renderer
-        .take()
-        .and_then(|renderer| {
-            renderer.commands().iter().find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text.starts_with("◆ ") => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-        })
-        .expect("the collapsed row draws its diamond");
-
-    let strokes = |cursor: Vector2F| {
-        let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
-            .with_tool_calls(vec![spawn.clone()])
-            .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(
-                key.clone(),
-                ToolDisplayMode::Collapsed,
-            )]))))
-            .with_tool_hover(Rc::new(RefCell::new(Some(key.clone()))));
-        bubble.layout(
-            SizeConstraint::loose(vec2f(400.0, 400.0)),
-            &mut LayoutContext::default(),
-            &app,
-        );
-        let mut ctx = PaintContext::new(Renderer::new());
-        ctx.cursor_inside = true;
-        ctx.cursor_position = cursor;
-        bubble.paint(vec2f(0.0, 0.0), &mut ctx, &app);
-        ctx.renderer
-            .take()
-            .map(|renderer| {
-                renderer
-                    .commands()
-                    .iter()
-                    .filter(|command| {
-                        matches!(
-                            command,
-                            RenderCommand::FillRect { rect, color, .. }
-                                if *color == app.theme.color(ColorToken::Muted)
-                                    && rect.size.width <= 2.5
-                                    && rect.size.height > 0.0
-                        )
-                    })
-                    .count()
-            })
-            .unwrap_or_default()
-    };
-
-    assert_eq!(
-        strokes(vec2f(origin.x + 4.0, origin.y + 4.0)),
-        2,
-        "the row is framed while the pointer is on it"
-    );
-    assert_eq!(
-        strokes(vec2f(origin.x + 4.0, origin.y + 220.0)),
-        0,
-        "the rail cannot outlive the pointer"
-    );
 }
 
 /// A call under the pointer swaps its diamond for the arrow and reads white,
@@ -1530,16 +1438,16 @@ fn a_tool_row_under_the_pointer_shows_the_arrow() {
     let runs = text_runs(&commands);
     let mark = runs
         .iter()
-        .find(|(text, _, _, _)| text == "❯ " || text == "◆ ")
+        .find(|(text, _, _, _)| text == "❯" || text == "◆")
         .expect("the row draws its mark");
-    assert_eq!(mark.0, "❯ ", "the pointer swaps the diamond for the arrow");
+    assert_eq!(mark.0, "❯", "the pointer swaps the diamond for the arrow");
     assert_eq!(
         mark.1,
         app.theme.color(ColorToken::Text),
         "the row under the pointer reads white"
     );
     assert!(
-        runs.iter().any(|(text, ..)| text == "Read "),
+        runs.iter().any(|(text, ..)| text.starts_with("Read")),
         "the words are still drawn beside the arrow, got {runs:?}"
     );
 }
@@ -1582,7 +1490,7 @@ fn the_chain_label_reads_quiet_until_selected() {
     );
     let resting_texts = drawn_texts(&resting);
     assert!(
-        resting_texts.iter().any(|text| text == "◈ "),
+        resting_texts.iter().any(|text| text == "◈"),
         "a resting chain wears the dotted diamond, got {resting_texts:?}"
     );
     assert!(
@@ -1599,7 +1507,7 @@ fn the_chain_label_reads_quiet_until_selected() {
     );
     let open_texts = drawn_texts(&open);
     assert!(
-        open_texts.iter().any(|text| text == "❯ "),
+        open_texts.iter().any(|text| text == "❯"),
         "an open chain swaps its mark for the arrow, got {open_texts:?}"
     );
 
@@ -1631,21 +1539,21 @@ fn the_chain_label_reads_quiet_until_selected() {
     assert!(
         drawn_texts(&hovered_commands)
             .iter()
-            .any(|text| text == "❯ "),
+            .any(|text| text == "❯"),
         "the chain under the pointer draws its arrow"
     );
     assert!(
         !drawn_texts(&hovered_commands)
             .iter()
-            .any(|text| text == "src/lib.rs"),
+            .any(|text| text.contains("src/lib.rs")),
         "a bright chain stays closed until it is clicked"
     );
 }
 
-/// The card reads as one 12 px transcript line whatever the fold map says, and
+/// The card reads as one 13 / 24 process line whatever the fold map says, and
 /// it always carries the control that enters the child.
 #[test]
-fn a_sub_agent_card_is_twelve_px_in_both_folds() {
+fn a_sub_agent_card_is_thirteen_px_in_both_folds() {
     let call = spawn_call(ToolCallStatus::Running);
     let record = record(
         "conv-child-1",
@@ -1660,21 +1568,20 @@ fn a_sub_agent_card_is_twelve_px_in_both_folds() {
             HashMap::from([(call.id.clone(), record.clone())]),
             mode,
         );
-        let sizes: HashMap<String, f32> = text_runs(&commands)
+        let sizes: Vec<f32> = text_runs(&commands)
             .into_iter()
-            .map(|(text, _, _, size)| (text, size))
+            .map(|(_, _, _, size)| size)
             .collect();
-        assert_eq!(
-            sizes.get("Agent "),
-            Some(&12.0),
-            "the card reads at 12 px in every fold"
+        assert!(
+            sizes.iter().all(|size| (*size - 13.0).abs() < 1e-5),
+            "the card reads at DSH's 13 px in every fold, got {sizes:?}"
         );
         assert!(
             commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::DrawIcon { name, .. } if name == "arrow-up"
             )),
-            "the card draws its open control, got {sizes:?}"
+            "the card draws its open control"
         );
     }
 }
@@ -1895,16 +1802,23 @@ fn two_collapsed_tool_rows_touch_and_an_open_one_keeps_its_gap() {
         let mut ys: Vec<f32> = commands
             .iter()
             .filter_map(|c| match c {
-                RenderCommand::DrawText { origin, .. } => Some((origin.y * 10.0).round() / 10.0),
+                RenderCommand::DrawText { origin, .. } => Some(origin.y),
                 _ => None,
             })
             .collect();
         ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        ys.dedup();
-        ys
+        // A row's leading glyph sits a few points off its words' baseline; one
+        // row is one cluster, not two.
+        let mut rows: Vec<f32> = Vec::new();
+        for y in ys {
+            if rows.last().is_none_or(|last| y - last > 6.0) {
+                rows.push(y);
+            }
+        }
+        rows
     };
 
-    let md = app.theme.spacing_px(crate::theme::SpacingToken::Md);
+    let band = crate::elements::chat_typography::BAND_PADDING_Y * 2.0;
     let sm = app.theme.spacing_px(crate::theme::SpacingToken::Sm);
     // A call still running draws no body, so a pair of them isolates the gap.
     let pending = |path: &str| {
@@ -1919,7 +1833,7 @@ fn two_collapsed_tool_rows_touch_and_an_open_one_keeps_its_gap() {
 
     let (one, one_height) = paint_tool_calls(vec![pending("src/lib.rs")]);
     assert_eq!(baselines(&one).len(), 1, "a collapsed read is one row");
-    let row_height = one_height - 2.0 * md;
+    let row_height = one_height - band;
 
     let (touching, two_height) = paint_tool_calls(pending_calls());
     let rows = baselines(&touching);
@@ -1971,11 +1885,11 @@ fn an_asked_question_draws_as_an_ask_user_row() {
     );
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|text| text == "Ask User "),
+        texts.iter().any(|text| text.contains("Ask User")),
         "the row leads with the tool's name read as words: {texts:?}"
     );
     assert!(
-        texts.iter().any(|text| text == "Which environment?"),
+        texts.iter().any(|text| text.contains("Which environment?")),
         "the question is the row's operand: {texts:?}"
     );
     assert!(
@@ -1995,15 +1909,11 @@ fn an_asked_question_draws_as_an_ask_user_row() {
     );
 }
 
-/// A member the user opened inside an opened run is bracketed on its own: the
-/// run's pair of strokes ends above it, and the member's own pair frames its
-/// A member the user opened inside an opened run is bracketed on its own: the
-/// run's pair of strokes ends above it, and the member's own pair frames its
-/// header and its body. Both pairs sit in the same gutter, so the rail reads as
-/// one line that steps aside for the block it holds instead of running through
-/// it.
+/// A member the user opened inside an open run is a block of its own: the run's
+/// header and its folded members stand above it, and its own header and body
+/// under them. Neither the run nor the member draws a rail around its rows.
 #[test]
-fn an_opened_member_inside_an_open_run_is_framed_on_its_own() {
+fn an_opened_member_inside_an_open_run_draws_no_rail() {
     let app = AppContext::default();
     let mut calls = vec![
         call(
@@ -2028,49 +1938,41 @@ fn an_opened_member_inside_an_open_run_is_framed_on_its_own() {
     ]);
     let (commands, _) = paint_tool_calls_with_fold_map(calls, fold);
 
-    let strokes = bracket_strokes(&commands, &app);
-    assert_eq!(
-        strokes.len(),
-        4,
-        "the run keeps a pair of its own and the opened member gets one, got {strokes:?}"
+    let strokes = rail_strokes(&commands, &app);
+    assert!(
+        strokes.is_empty(),
+        "neither the run nor the opened member draws a rail, got {strokes:?}"
     );
-    let (run_pair, member_pair) = (&strokes[..2], &strokes[2..]);
-    assert_eq!(
-        run_pair[0].min_y(),
-        run_pair[1].min_y(),
-        "the run's pair starts together: {strokes:?}"
-    );
-    assert_eq!(
-        member_pair[0].min_y(),
-        member_pair[1].min_y(),
-        "the member's pair starts together: {strokes:?}"
+
+    // The run's header, the folded member beside it, the opened member's row and
+    // the body it opened read top to bottom, in that order.
+    let header = run_origin(&commands, "Read 1 file");
+    let folded_row = run_origin(&commands, "Read src/a.rs");
+    let member_row = run_origin(&commands, "Read src/b.rs");
+    // The opened member's body is the one card under the rows.
+    let member_body = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                corner_radius,
+                ..
+            } if *corner_radius > 0.0 && rect.size.height > 8.0 => Some(*rect),
+            _ => None,
+        })
+        .expect("the opened member's body is drawn as a card");
+    assert!(
+        header.y < folded_row.y,
+        "the run's header stands above its members, got {header:?} against {folded_row:?}"
     );
     assert!(
-        run_pair[0].max_y() < member_pair[0].min_y(),
-        "the run's strokes stop above the member's own block, got {strokes:?}"
-    );
-    // The member's pair starts on its own row and carries on under it, into the
-    // body the row opened: that is the block the rail is drawn around now.
-    let member_row = run_origin(&commands, "src/b.rs");
-    assert!(
-        run_pair[0].max_y() <= member_row.y,
-        "the run's pair ends at or above the member's row, got {strokes:?} against {member_row:?}"
+        folded_row.y < member_row.y,
+        "the folded member stands above the opened one, got {folded_row:?} against {member_row:?}"
     );
     assert!(
-        member_pair[0].min_y() <= member_row.y,
-        "the member's pair starts on its own row, got {strokes:?} against {member_row:?}"
+        member_row.y < member_body.min_y(),
+        "the opened member's body sits under its row, got {member_row:?} against {member_body:?}"
     );
-    assert!(
-        member_pair[0].max_y() > member_row.y + 1.0,
-        "the member's pair runs on past its header into its body, got {strokes:?} against {member_row:?}"
-    );
-    for pair in strokes.chunks(2) {
-        assert!(
-            (pair[0].min_x() - strokes[0].min_x()).abs() < 0.5
-                && (pair[1].max_x() - strokes[1].max_x()).abs() < 0.5,
-            "every stroke sits in the same gutter, got {strokes:?}"
-        );
-    }
 }
 
 /// A double click inside an opened section closes it again. The two clicks the
@@ -2096,14 +1998,24 @@ fn a_double_click_on_an_opened_section_collapses_it() {
         .with_tool_hover(Rc::new(RefCell::new(None)));
 
     let commands = paint_bubble(&mut bubble, &app);
-    // A point in the section's body: the rows there carry no gesture of their
-    // own, so the block the rail frames is what answers the double click.
-    let section = bracket_strokes(&commands, &app)
-        .into_iter()
-        .next()
-        .expect("the opened section keeps its rail");
-    let body = vec2f(section.min_x() + 10.0, section.max_y() - 4.0);
-    double_click_at(&mut bubble, &app, body);
+    // A point in the block's body card: the rows there carry no gesture of
+    // their own, so the block is what answers the double click.
+    let body = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                corner_radius,
+                ..
+            } if *corner_radius > 0.0 && rect.size.height > 8.0 => Some(*rect),
+            _ => None,
+        })
+        .expect("the opened body is drawn as a card");
+    double_click_at(
+        &mut bubble,
+        &app,
+        vec2f(body.min_x() + 10.0, body.max_y() - 4.0),
+    );
     assert_eq!(
         fold.borrow().get(&key),
         Some(&ToolDisplayMode::Collapsed),
@@ -2166,7 +2078,7 @@ fn a_double_click_on_a_closed_row_leaves_it_closed() {
     let row = commands
         .iter()
         .find_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if text.starts_with("◆ ") => {
+            RenderCommand::DrawText { origin, text, .. } if text.starts_with('◆') => {
                 Some(*origin)
             }
             _ => None,
@@ -2186,7 +2098,7 @@ fn a_double_click_on_a_closed_row_leaves_it_closed() {
 }
 
 /// A double click inside an opened member closes that member and leaves the run
-/// around it open: the innermost block the rail frames answers first.
+/// around it open: the innermost block answers first.
 #[test]
 fn a_double_click_inside_an_opened_member_closes_that_member() {
     let app = AppContext::default();
@@ -2219,16 +2131,29 @@ fn a_double_click_inside_an_opened_member_closes_that_member() {
         .with_tool_hover(Rc::new(RefCell::new(None)));
 
     let commands = paint_bubble(&mut bubble, &app);
-    // The member's own pair is the second block the rail draws; a point near
-    // its bottom is in the member's body.
-    let strokes = bracket_strokes(&commands, &app);
-    assert_eq!(
-        strokes.len(),
-        4,
-        "the run and the opened member are each framed, got {strokes:?}"
+    let strokes = rail_strokes(&commands, &app);
+    assert!(
+        strokes.is_empty(),
+        "the run and the opened member draw no rail, got {strokes:?}"
     );
-    let member = strokes[2];
-    double_click_at(&mut bubble, &app, vec2f(member.min_x() + 10.0, member.max_y() - 4.0));
+    // A point in the opened member's own body card: the block closest to it
+    // answers.
+    let body = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                corner_radius,
+                ..
+            } if *corner_radius > 0.0 && rect.size.height > 8.0 => Some(*rect),
+            _ => None,
+        })
+        .expect("the opened member's body is drawn as a card");
+    double_click_at(
+        &mut bubble,
+        &app,
+        vec2f(body.min_x() + 10.0, body.max_y() - 4.0),
+    );
     assert_eq!(
         fold.borrow().get(&member_key),
         Some(&ToolDisplayMode::Collapsed),

@@ -4,7 +4,7 @@
 **Owns:** the accessibility rules the browser and phone shells are held to
 **Applies to:** `apps/web` and `apps/mobile` (the TypeScript clients)
 
-The Rust desktop app (`app/`, `crates/goble-ui`) is **out of scope** here: it
+The Rust desktop app (`apps/desktop/`, `crates/goble-ui`) is **out of scope** here: it
 draws its own frames and has no accessibility layer (no AT-SPI, no VoiceOver),
 which is a separate project, not a token change.
 

@@ -16,7 +16,7 @@
 # Windows still carries their binaries next to the app.
 #
 # This script never touches Tauri, npm or the legacy crates/goble-desktop tree:
-# the product shell is `app/` (package goble-app, binary goble-app).
+# the product shell is `apps/desktop/` (package goble-app, binary goble-app).
 
 set -euo pipefail
 

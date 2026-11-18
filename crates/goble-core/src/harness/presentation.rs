@@ -63,7 +63,11 @@ pub fn is_hidden_tool(name: &str) -> bool {
 /// when this harness would have spelled it differently.
 pub fn tool_kind_for(name: &str) -> ToolKind {
     match name.to_lowercase().as_str() {
-        "run_terminal_command" | "run_terminal_cmd" | "bash" | "shell" | "execute"
+        "run_terminal_command"
+        | "run_terminal_cmd"
+        | "bash"
+        | "shell"
+        | "execute"
         | "run_command" => ToolKind::Execute,
         "read" | "read_file" => ToolKind::Read,
         "search_replace" | "edit" | "apply_patch" | "strreplace" | "edit_file" => ToolKind::Edit,
@@ -395,7 +399,10 @@ fn entry_count(result: Option<&str>) -> String {
     let Some(result) = result else {
         return String::new();
     };
-    let count = result.lines().filter(|line| !line.trim().is_empty()).count();
+    let count = result
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
     if count == 0 {
         return String::new();
     }
@@ -499,7 +506,10 @@ mod tests {
     /// rather than by the file it lives in.
     #[test]
     fn a_skill_read_is_named_by_the_skill() {
-        let row = row("read_file", r#"{"path":"/home/u/.grok/skills/deploy/SKILL.md"}"#);
+        let row = row(
+            "read_file",
+            r#"{"path":"/home/u/.grok/skills/deploy/SKILL.md"}"#,
+        );
         assert_eq!(row.kind, ToolKind::Skill);
         assert_eq!(row.verb, "Skill ");
         assert_eq!(row.subject, "deploy");
@@ -572,7 +582,10 @@ mod tests {
 
     #[test]
     fn a_fetch_and_a_tool_search_name_their_operand() {
-        assert_eq!(row("read_url", r#"{"url":"https://x.example"}"#).verb, "Fetch ");
+        assert_eq!(
+            row("read_url", r#"{"url":"https://x.example"}"#).verb,
+            "Fetch "
+        );
         assert_eq!(
             row("read_url", r#"{"url":"https://x.example"}"#).subject,
             "https://x.example"
@@ -622,7 +635,10 @@ mod tests {
     fn a_tool_name_reads_as_words() {
         assert_eq!(tool_display_name("read_file"), "Read File");
         assert_eq!(tool_display_name("ask_user"), "Ask User");
-        assert_eq!(tool_display_name("mcp__postgres__query"), "MCP Postgres Query");
+        assert_eq!(
+            tool_display_name("mcp__postgres__query"),
+            "MCP Postgres Query"
+        );
         assert_eq!(tool_display_name("credentials"), "credentials");
         // A camel-case name is words too, never the identifier itself.
         assert_eq!(tool_display_name("readFile"), "Read File");

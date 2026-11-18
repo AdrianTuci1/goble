@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::{CommandRunner, ProcessCommandRunner};
 use crate::error::SandboxError;
-use crate::provider::{SandboxHandle, SandboxProvider, SandboxRequest, SandboxStatus};
+use crate::provider::{
+    ReleaseOutcome, SandboxBinding, SandboxHandle, SandboxProvider, SandboxRequest, SandboxStatus,
+    SnapshotRef, SnapshotSupport,
+};
 
 const PROVIDER: &str = "modal";
 const DEFAULT_PYTHON: &str = "python3";
@@ -20,6 +23,14 @@ const BRIDGE_OVERRIDE: &str = "GOBLE_MODAL_BRIDGE";
 /// Modal exposes no public REST API, so the adapter runs
 /// `scripts/modal_sandbox.py` with a JSON payload on stdin. The interpreter and
 /// script are overridable with `GOBLE_MODAL_PYTHON` and `GOBLE_MODAL_BRIDGE`.
+///
+/// Modal is the one adapter with real filesystem snapshots: a teardown through
+/// [`SandboxProvider::release`] snapshots and terminates in a single bridge
+/// process (`snapshot_filesystem()` then `terminate()`), and
+/// [`SandboxProvider::create_from_snapshot`] starts the replacement from the
+/// recorded snapshot id with `modal.Image.from_id()`. The whole sandbox
+/// filesystem — `/workspace`, the worker's home, the harness state — is what
+/// the snapshot captures, which is exactly what a resumed conversation needs.
 pub struct ModalProvider {
     token_id: String,
     token_secret: String,
@@ -92,6 +103,50 @@ impl ModalProvider {
         }
         Ok(output.stdout)
     }
+
+    /// Create the sandbox, optionally from a filesystem snapshot. The bridge
+    /// chooses `Image.from_id(snapshot)` over the request's image when a
+    /// snapshot is named.
+    async fn create_inner(
+        &self,
+        request: &SandboxRequest,
+        snapshot: Option<&SnapshotRef>,
+    ) -> Result<SandboxHandle, SandboxError> {
+        let snapshot_id = snapshot
+            .map(|snapshot| snapshot.snapshot_id.trim())
+            .filter(|id| !id.is_empty());
+        let payload = CreatePayload {
+            app_name: &request.sandbox_name,
+            image: &request.image,
+            command: &request.command,
+            env: &request.env,
+            timeout_secs: request.timeout_secs,
+            snapshot_id,
+        };
+        let stdout = self.bridge("create", &payload).await?;
+        let created: CreatedSandbox = parse_json(&stdout, "Modal create response")?;
+        let sandbox_id = created.sandbox_id.trim();
+        if sandbox_id.is_empty() {
+            return Err(SandboxError::Parse {
+                context: "Modal create response",
+                message: "sandbox_id is empty".to_string(),
+            });
+        }
+        Ok(SandboxHandle::from_request(PROVIDER, sandbox_id, request))
+    }
+
+    /// The snapshot id one bridge answer names, when it names one.
+    ///
+    /// A `null` or blank id means the bridge found nothing to snapshot (the
+    /// sandbox was already gone or stopped), which is not an error.
+    fn snapshot_from(payload: SnapshotPayload) -> Option<SnapshotRef> {
+        let id = payload.snapshot_id?;
+        let id = id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        Some(SnapshotRef::new(PROVIDER, id))
+    }
 }
 
 fn required_credential(value: Option<&str>, key: &'static str) -> Result<String, SandboxError> {
@@ -131,6 +186,9 @@ struct CreatePayload<'a> {
     command: &'a [String],
     env: &'a BTreeMap<String, String>,
     timeout_secs: u64,
+    /// Present only when the new sandbox restores a filesystem snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_id: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,6 +206,12 @@ struct StatusPayload {
     status: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SnapshotPayload {
+    #[serde(default)]
+    snapshot_id: Option<String>,
+}
+
 fn parse_json<T: DeserializeOwned>(text: &str, context: &'static str) -> Result<T, SandboxError> {
     serde_json::from_str(text.trim()).map_err(|error| SandboxError::Parse {
         context,
@@ -161,24 +225,63 @@ impl SandboxProvider for ModalProvider {
         PROVIDER
     }
 
+    /// Modal hands out real filesystem snapshots (`Sandbox.snapshot_filesystem`).
+    fn snapshot_support(&self) -> SnapshotSupport {
+        SnapshotSupport::Filesystem
+    }
+
     async fn create(&self, request: &SandboxRequest) -> Result<SandboxHandle, SandboxError> {
-        let payload = CreatePayload {
-            app_name: &request.sandbox_name,
-            image: &request.image,
-            command: &request.command,
-            env: &request.env,
-            timeout_secs: request.timeout_secs,
-        };
-        let stdout = self.bridge("create", &payload).await?;
-        let created: CreatedSandbox = parse_json(&stdout, "Modal create response")?;
-        let sandbox_id = created.sandbox_id.trim();
-        if sandbox_id.is_empty() {
-            return Err(SandboxError::Parse {
-                context: "Modal create response",
-                message: "sandbox_id is empty".to_string(),
+        self.create_inner(request, None).await
+    }
+
+    async fn create_from_snapshot(
+        &self,
+        request: &SandboxRequest,
+        snapshot: &SnapshotRef,
+    ) -> Result<SandboxHandle, SandboxError> {
+        if !snapshot.is_filled() {
+            return Err(SandboxError::InvalidRequest {
+                message: "a Modal resume needs a non-empty snapshot id".to_string(),
             });
         }
-        Ok(SandboxHandle::from_request(PROVIDER, sandbox_id, request))
+        self.create_inner(request, Some(snapshot)).await
+    }
+
+    /// Resume the project's sandbox: restore the recorded snapshot when the
+    /// binding has one, otherwise start from the request's image.
+    async fn resume(
+        &self,
+        request: &SandboxRequest,
+        binding: &SandboxBinding,
+    ) -> Result<SandboxHandle, SandboxError> {
+        match binding.snapshot_for(PROVIDER) {
+            Some(snapshot) => self.create_from_snapshot(request, snapshot).await,
+            None => self.create(request).await,
+        }
+    }
+
+    /// Snapshot the sandbox filesystem. `Ok(None)` when Modal no longer knows
+    /// the sandbox, or when it has already stopped and cannot be snapshotted.
+    async fn snapshot(&self, handle: &SandboxHandle) -> Result<Option<SnapshotRef>, SandboxError> {
+        let payload = SandboxIdPayload {
+            sandbox_id: &handle.sandbox_id,
+        };
+        let stdout = self.bridge("snapshot", &payload).await?;
+        let snapshot: SnapshotPayload = parse_json(&stdout, "Modal snapshot response")?;
+        Ok(Self::snapshot_from(snapshot))
+    }
+
+    /// Snapshot and terminate in one bridge process, so an idle close cannot
+    /// lose the snapshot to a half-finished teardown. A sandbox that is already
+    /// gone reports no snapshot and is not an error.
+    async fn release(&self, handle: &SandboxHandle) -> Result<ReleaseOutcome, SandboxError> {
+        let payload = SandboxIdPayload {
+            sandbox_id: &handle.sandbox_id,
+        };
+        let stdout = self.bridge("snapshot_and_terminate", &payload).await?;
+        let snapshot: SnapshotPayload =
+            parse_json(&stdout, "Modal snapshot_and_terminate response")?;
+        Ok(ReleaseOutcome::destroyed(Self::snapshot_from(snapshot)))
     }
 
     async fn destroy(&self, handle: &SandboxHandle) -> Result<(), SandboxError> {

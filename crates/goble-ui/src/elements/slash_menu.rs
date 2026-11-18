@@ -1,17 +1,24 @@
-//! The rich input's full-width bands: the commands the draft can run, and the
-//! models a pane's turns can run, listed directly above the input the way
-//! grok-build lists them.
+//! The rich input's full-width menu card: the commands the draft can run, and
+//! the models a pane's turns can run, drawn in the slot above the input.
 //!
-//! They are not overlays and they do not take the keyboard: the editor keeps the
-//! caret and the draft stays the query, so the command list narrows as the user
-//! types after the `/`. The composer routes the keys that take a row — Up and
-//! Down to move, Enter or Tab to take the selection, Escape to put the list away
-//! — and a band draws what it was given and reports what the pointer chose.
+//! The design follows DeepSeek Harness's composer menus
+//! (`ui-input-trigger`'s `MenuView` for the slash list, `ui-model-selection`'s
+//! `ModelSelect` for the model card): a rounded menu surface with a 4pt casing,
+//! one source/section heading, and 34pt rows that read
+//! `glyph · title · right-aligned description`, with a single shared
+//! highlight that both the pointer and the keyboard move.
 //!
-//! A band is square and spans the input's whole width: it reads as the top of
-//! the input block, not as a floating card over it. Both menus are the same band
-//! ([`MenuBand`]), so the two can never drift apart in their geometry or in how
-//! a row answers the pointer.
+//! The bands are not overlays and they do not take the keyboard: the editor
+//! keeps the caret and the draft stays the query, so the command list narrows
+//! as the user types after the `/`. The composer routes the keys that take a
+//! row — Up and Down to move, Enter or Tab to take the selection, Escape to put
+//! the list away — and a band draws what it was given and reports what the
+//! pointer chose.
+//!
+//! A band is a DSH card, not a slab: it is inset to line up with the composer
+//! card under it, rounded, padded and lifted by 4pt of air, so the two read as
+//! one composite input. Both menus are the same band (`MenuBand`), so the two
+//! can never drift apart in their geometry or in how a row answers the pointer.
 //!
 //! Self-drawn rather than composed from children: every row has the same fixed
 //! height, so the panel's own geometry is the hit-test geometry, and the row
@@ -21,10 +28,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::icon::icon_atlas_name;
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, PopupMenuItem,
-    SizeConstraint,
+    AppContext, Element, EventContext, LayoutContext, MenuClose, MenuId, MenuPointer, PaintContext,
+    Point, PopupMenuItem, SizeConstraint,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, RectF, Vector2F};
@@ -40,18 +48,44 @@ pub const SLASH_MENU_ROWS: usize = 8;
 /// with no width at all.
 const FALLBACK_WIDTH: f32 = 360.0;
 
-const ROW_HEIGHT: f32 = 24.0;
-/// The row a pointer is in is the row it hit; the band is dense, the way the
-/// command list it mirrors is.
-const ROW_INSET: f32 = 12.0;
-/// The gap between a command and the description that follows it.
-const DESCRIPTION_GAP: f32 = 14.0;
-/// The description column never takes more than this share of the width, so a
-/// long command name does not squeeze what it does off the row.
-const NAME_COLUMN_SHARE: f32 = 0.45;
-const NAME_FONT_SIZE: f32 = 12.0;
+/// The card's side inset: the composer card keeps this gutter from the surface
+/// it is drawn on, so the menu card lines up with it exactly.
+const CARD_INSET: f32 = 12.0;
+/// The casing's padding, the same 4pt the DSH menu surface keeps.
+const CARD_PADDING: f32 = 4.0;
+/// The air between the menu card and the input block under it (DSH's
+/// `bottom: calc(100% + 4px)`).
+const CARD_GAP: f32 = 4.0;
+/// The radius of the menu card and of the row highlight inside it.
+const CARD_RADIUS: f32 = 8.0;
+const ROW_RADIUS: f32 = 6.0;
+
+/// One row: DSH's 34pt minimum cell, its 8pt side inset and the 6pt gap between
+/// the glyph, the title and the description.
+const ROW_HEIGHT: f32 = 34.0;
+const ROW_PAD_X: f32 = 8.0;
+const ROW_GAP: f32 = 6.0;
+const ICON_SIZE: f32 = 14.0;
+const CHECK_SIZE: f32 = 14.0;
+
+/// A source/section heading row: 4pt above, the 16pt line, 2pt below.
+const HEADING_HEIGHT: f32 = 22.0;
+const HEADING_PAD_X: f32 = 8.0;
+const HEADING_PAD_TOP: f32 = 4.0;
+
+/// The status row a list with nothing to say draws inside its card.
+const STATUS_HEIGHT: f32 = 28.0;
+
+const NAME_FONT_SIZE: f32 = 13.0;
+const NAME_LINE_HEIGHT: f32 = 20.0;
 const DESCRIPTION_FONT_SIZE: f32 = 12.0;
-const LINE_HEIGHT: f32 = 1.2;
+const DESCRIPTION_LINE_HEIGHT: f32 = 18.0;
+const HEADING_FONT_SIZE: f32 = 11.0;
+const HEADING_LINE_HEIGHT: f32 = 16.0;
+
+/// The title keeps its own column: a long command name never runs into what the
+/// description says about it.
+const NAME_COLUMN_SHARE: f32 = 0.4;
 
 /// What a draft's first character asks the input to list: the harness's
 /// commands, the skills it can load, or the workspace's paths.
@@ -73,6 +107,17 @@ impl DraftTrigger {
             DraftTrigger::Command => '/',
             DraftTrigger::Skill => '$',
             DraftTrigger::Mention => '@',
+        }
+    }
+
+    /// The source heading the band draws over its rows: DSH names the command
+    /// source `Commands` and the skill source `Skills`; the path source is
+    /// Goble's own and reads `Paths`.
+    pub fn heading(self) -> &'static str {
+        match self {
+            DraftTrigger::Command => "Commands",
+            DraftTrigger::Skill => "Skills",
+            DraftTrigger::Mention => "Paths",
         }
     }
 
@@ -111,8 +156,8 @@ pub fn slash_menu_open(draft: &str, dismissed: bool) -> bool {
     !dismissed && DraftTrigger::from_draft(draft).is_some()
 }
 
-/// One command the menu offers: the name as it is typed after the prefix, and
-/// what running it does.
+/// One command the menu offers: the name as it is typed after the prefix, what
+/// running it does, and the glyph that names its kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SlashMenuItem {
     pub name: String,
@@ -120,6 +165,9 @@ pub struct SlashMenuItem {
     /// The character the row is typed with: `/` for a command, `$` for a
     /// skill, `@` for a path.
     pub prefix: char,
+    /// The glyph drawn at the row's leading edge, as an icon-atlas name. `None`
+    /// draws a text-only row.
+    pub icon: Option<&'static str>,
 }
 
 impl SlashMenuItem {
@@ -128,6 +176,7 @@ impl SlashMenuItem {
             name: name.into(),
             description: description.into(),
             prefix: '/',
+            icon: None,
         }
     }
 
@@ -138,6 +187,12 @@ impl SlashMenuItem {
         self
     }
 
+    /// Draw this row with a glyph at its leading edge.
+    pub fn with_icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
     /// The command as the row draws it: the name with the prefix it is typed
     /// with.
     pub fn typed(&self) -> String {
@@ -145,30 +200,36 @@ impl SlashMenuItem {
     }
 }
 
-/// One row of a band: what it reads, the muted second column beside it (empty
-/// draws none), and whether it is the value in force — which reads in the
-/// accent colour, the way a popup menu marks the item it is on.
+/// One row of a band: what it reads, the muted description that ends the row on
+/// the right, whether it is the value in force (which draws a trailing check,
+/// the DSH selection marker), and its glyph.
 struct BandRow {
     label: String,
     description: String,
     current: bool,
+    icon: Option<&'static str>,
 }
 
 /// One drawn row: the row it shows, where it sits relative to the band's
 /// origin, and its own pointer state.
+#[derive(Clone)]
 struct DrawnRow {
     row: usize,
     rect: RectF,
     state: InteractiveState,
 }
 
-/// A band: the rows it draws, the window around the selection, and the
-/// callbacks a row reports to.
+/// A band: the card's rows, the window around the selection, and the callbacks
+/// a row reports to.
 ///
 /// Both menus are this element — see the module docs — so the geometry, the hit
 /// testing and the paint live here once.
 struct MenuBand {
     rows: Vec<BandRow>,
+    /// The source/section heading over the rows. `None` draws no heading. The
+    /// two bands that share this element must both carry one (or neither): the
+    /// host draws them in one slot and their first rows must line up.
+    heading: Option<&'static str>,
     /// What a band with no rows at all says.
     empty_text: &'static str,
     /// The chosen row, host-owned: the element is rebuilt every frame, so an
@@ -177,25 +238,40 @@ struct MenuBand {
     on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     drawn: Vec<DrawnRow>,
-    /// The width the row labels occupy, so the second column lines up.
-    name_column: f32,
+    /// The window's shared open-menu identity, when the band is drawn as a menu
+    /// (the slash card and the model card are). `None` leaves a bare band — the
+    /// one a test lays out — out of the open-menu state.
+    menu: Option<(MenuId, MenuClose)>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
 impl MenuBand {
-    fn new(rows: Vec<BandRow>, empty_text: &'static str, index: Rc<RefCell<usize>>) -> Self {
+    fn new(
+        rows: Vec<BandRow>,
+        heading: Option<&'static str>,
+        empty_text: &'static str,
+        index: Rc<RefCell<usize>>,
+    ) -> Self {
         Self {
             rows,
+            heading,
             empty_text,
             index,
             on_move: None,
             on_accept: None,
             drawn: Vec::new(),
-            name_column: 0.0,
+            menu: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Carry the host menu identity a [`SlashMenu`]/[`ModelMenu`] was given into
+    /// the band it builds each frame.
+    fn apply_menu(mut self, menu: Option<(MenuId, MenuClose)>) -> Self {
+        self.menu = menu;
+        self
     }
 
     /// Fired when the selection moves (arrow keys, or the pointer onto a row).
@@ -207,6 +283,16 @@ impl MenuBand {
     fn with_on_accept(mut self, callback: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>) -> Self {
         self.on_accept = callback;
         self
+    }
+
+    /// Hand the card's surface to the window and end the menu paint, so the
+    /// pointer over the card belongs to it and nothing behind it hovers there.
+    /// Called on every path out of `paint` once the card started painting.
+    fn publish(&self, ctx: &mut PaintContext, app: &AppContext, card: RectF) {
+        ctx.leave_menu_surface();
+        if let Some((id, close)) = self.menu.clone() {
+            app.open_menus.report(id, close, vec![card], MenuPointer::Events);
+        }
     }
 
     /// The selection, clamped to the rows this band was given.
@@ -236,20 +322,33 @@ impl MenuBand {
         }
     }
 
-    fn panel_height(&self) -> f32 {
-        self.visible_rows().max(1) as f32 * ROW_HEIGHT
+    /// The heading row's height, when the band draws one.
+    fn heading_height(&self) -> f32 {
+        if self.heading.is_some() && !self.rows.is_empty() {
+            HEADING_HEIGHT
+        } else {
+            0.0
+        }
     }
 
-    /// The drawn bounds of one visible row, relative to the band's origin. The
-    /// rows run edge to edge: the band is the top of the input, not a card
-    /// floating over it.
-    fn row_rect(position: usize, width: f32) -> RectF {
-        rectf(0.0, position as f32 * ROW_HEIGHT, width.max(0.0), ROW_HEIGHT)
+    /// The card's height, excluding the 4pt of air under it.
+    fn card_height(&self) -> f32 {
+        let body = if self.rows.is_empty() {
+            STATUS_HEIGHT
+        } else {
+            self.visible_rows().max(1) as f32 * ROW_HEIGHT
+        };
+        CARD_PADDING * 2.0 + self.heading_height() + body
     }
 
-    /// Where one line of `font_size` sits in a row: vertically centred.
-    fn line_offset(font_size: f32) -> f32 {
-        (ROW_HEIGHT - font_size * LINE_HEIGHT) / 2.0
+    /// The drawn bounds of one visible row, relative to the band's origin.
+    fn row_rect(&self, position: usize, width: f32) -> RectF {
+        rectf(
+            CARD_INSET + CARD_PADDING,
+            CARD_PADDING + self.heading_height() + position as f32 * ROW_HEIGHT,
+            width.max(0.0),
+            ROW_HEIGHT,
+        )
     }
 
     /// A row's bounds in the frame's coordinates.
@@ -289,6 +388,11 @@ impl MenuBand {
             }
         }
     }
+
+    /// Draw one line of `font_size` at the row's vertical centre.
+    fn line_y(bounds: RectF, line_height: f32) -> f32 {
+        bounds.min_y() + (ROW_HEIGHT - line_height).max(0.0) / 2.0
+    }
 }
 
 impl Element for MenuBand {
@@ -303,114 +407,185 @@ impl Element for MenuBand {
         } else {
             FALLBACK_WIDTH
         };
+        let card_width = (width - CARD_INSET * 2.0).max(0.0);
+        let row_width = (card_width - CARD_PADDING * 2.0).max(0.0);
         let first = self.window_start();
         self.drawn = (0..self.visible_rows())
             .map(|position| DrawnRow {
                 row: first + position,
-                rect: Self::row_rect(position, width),
+                rect: self.row_rect(position, row_width),
                 state: InteractiveState::default(),
             })
             .collect();
 
-        // The second column starts in one place, so the list reads down the page
-        // rather than stepping right with every row's label.
-        let widest = self.drawn.iter().fold(0.0f32, |widest, row| {
-            let label = &self.rows[row.row].label;
-            widest.max(
-                measure_text_family(
-                    label,
-                    NAME_FONT_SIZE,
-                    LINE_HEIGHT,
-                    f32::INFINITY,
-                    FontWeight::Regular,
-                    FontFamily::System,
-                    false,
-                )
-                .x,
-            )
-        });
-        self.name_column = ROW_INSET + widest + DESCRIPTION_GAP;
-        self.name_column = self
-            .name_column
-            .min(width * NAME_COLUMN_SHARE + ROW_INSET + DESCRIPTION_GAP);
-
-        let size = Vector2F::new(width, self.panel_height());
+        let size = Vector2F::new(width, self.card_height() + CARD_GAP);
         self.size = Some(size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        // The card is one of the window's menus while it paints: it claims the
+        // shared state (closing any other menu) and owns the pointer over its
+        // own surface.
+        if let Some((id, close)) = self.menu.clone() {
+            if app.open_menus.id() != Some(id) {
+                app.open_menus.open(id, close);
+            }
+        }
+        ctx.enter_menu_surface();
         // The hover query reads the paint context, and taking the renderer
         // borrows it, so the pointer is resolved first.
         self.track_hover(ctx);
 
         let size = self.size.unwrap_or(Vector2F::zero());
-        let panel = rectf(origin.x, origin.y, size.x, size.y);
+        let card = rectf(
+            origin.x + CARD_INSET,
+            origin.y,
+            (size.x - CARD_INSET * 2.0).max(0.0),
+            (size.y - CARD_GAP).max(0.0),
+        );
+        let radius = CARD_RADIUS;
+        let height = self.heading_height();
+        let selected = self.selection();
+        let drawn = self.drawn.clone();
+        let rows = &self.rows;
+        let heading = self.heading;
+        let empty_text = self.empty_text;
         let renderer = match ctx.renderer.as_mut() {
             Some(renderer) => renderer,
-            None => return,
+            None => {
+                self.publish(ctx, app, card);
+                return;
+            }
         };
-        // Square and full width: a band over the input, not a rounded card.
-        renderer.fill_rect(panel, app.theme.color(ColorToken::SurfaceRaised));
-        renderer.stroke_rect(panel, app.theme.color(ColorToken::Border), 1.0, 0.0);
+        // The DSH menu surface: one rounded card over the input block, with the
+        // surface's own fill and a hairline so it separates from the card under
+        // it. Not a slab: the card is the menu, and the 4pt under it is air.
+        renderer.fill_rounded_rect(card, app.theme.color(ColorToken::SurfaceRaised), radius);
+        renderer.stroke_rect(card, app.theme.color(ColorToken::Border), 1.0, radius);
 
-        if self.rows.is_empty() {
-            let row = rectf(panel.min_x(), panel.min_y(), panel.width(), ROW_HEIGHT);
+        if rows.is_empty() {
             renderer.draw_text(
                 Vector2F::new(
-                    row.min_x() + ROW_INSET,
-                    row.min_y() + Self::line_offset(NAME_FONT_SIZE),
+                    card.min_x() + CARD_PADDING + HEADING_PAD_X,
+                    card.min_y() + CARD_PADDING + (STATUS_HEIGHT - DESCRIPTION_LINE_HEIGHT) / 2.0,
                 ),
-                self.empty_text,
-                NAME_FONT_SIZE,
+                empty_text.to_string(),
+                DESCRIPTION_FONT_SIZE,
                 app.theme.color(ColorToken::Muted),
-                (row.width() - ROW_INSET * 2.0).max(0.0),
-                LINE_HEIGHT,
+                (card.width() - CARD_PADDING * 2.0 - HEADING_PAD_X * 2.0).max(0.0),
+                DESCRIPTION_LINE_HEIGHT / DESCRIPTION_FONT_SIZE,
             );
+            self.publish(ctx, app, card);
             return;
         }
 
-        let selected = self.selection();
-        for drawn in &self.drawn {
-            let bounds = self.absolute(drawn.rect);
-            if selected == Some(drawn.row) {
-                renderer.fill_rect(bounds, app.theme.color(ColorToken::Selected));
-            }
-            let row = &self.rows[drawn.row];
-            // The value in force keeps its own colour, so the list says which
-            // row the input already holds as well as which one is chosen.
+        // The source/section heading, DSH's small grey row over the list.
+        if let Some(heading) = heading.filter(|_| height > 0.0) {
             renderer.draw_text(
                 Vector2F::new(
-                    bounds.min_x() + ROW_INSET,
-                    bounds.min_y() + Self::line_offset(NAME_FONT_SIZE),
+                    card.min_x() + CARD_PADDING + HEADING_PAD_X,
+                    card.min_y() + CARD_PADDING + HEADING_PAD_TOP,
                 ),
+                heading.to_string(),
+                HEADING_FONT_SIZE,
+                app.theme.color(ColorToken::Muted),
+                (card.width() - CARD_PADDING * 2.0 - HEADING_PAD_X * 2.0).max(0.0),
+                HEADING_LINE_HEIGHT / HEADING_FONT_SIZE,
+            );
+        }
+
+        for drawn in &drawn {
+            let bounds = self.absolute(drawn.rect);
+            if selected == Some(drawn.row) {
+                renderer.fill_rounded_rect(
+                    bounds,
+                    app.theme.color(ColorToken::Selected),
+                    ROW_RADIUS,
+                );
+            }
+            let row = &rows[drawn.row];
+            let content_left = bounds.min_x() + ROW_PAD_X;
+            let mut text_left = content_left;
+            if let Some(icon) = row.icon {
+                renderer.draw_icon(
+                    Vector2F::new(
+                        content_left,
+                        bounds.min_y() + (ROW_HEIGHT - ICON_SIZE).max(0.0) / 2.0,
+                    ),
+                    icon_atlas_name(icon),
+                    ICON_SIZE,
+                    app.theme.color(ColorToken::Muted),
+                );
+                text_left += ICON_SIZE + ROW_GAP;
+            }
+            let check_width = if row.current { CHECK_SIZE + ROW_GAP } else { 0.0 };
+            let available = (bounds.max_x() - ROW_PAD_X - text_left - check_width).max(0.0);
+            let measured_name = measure_text_family(
+                &row.label,
+                NAME_FONT_SIZE,
+                NAME_LINE_HEIGHT / NAME_FONT_SIZE,
+                f32::INFINITY,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            )
+            .x;
+            let name_area = measured_name.min(available * NAME_COLUMN_SHARE);
+            let name_y = Self::line_y(bounds, NAME_LINE_HEIGHT);
+            renderer.draw_text(
+                Vector2F::new(text_left, name_y),
                 row.label.clone(),
                 NAME_FONT_SIZE,
-                app.theme.color(if row.current {
-                    ColorToken::Accent
-                } else {
-                    ColorToken::Text
-                }),
-                // The label keeps its own column: a label too long for it is
-                // truncated rather than run over the second column.
-                (self.name_column - ROW_INSET - DESCRIPTION_GAP).max(0.0),
-                LINE_HEIGHT,
+                app.theme.color(ColorToken::Text),
+                name_area,
+                NAME_LINE_HEIGHT / NAME_FONT_SIZE,
             );
-            if !row.description.is_empty() && self.name_column < bounds.width() {
-                renderer.draw_text(
+            if !row.description.is_empty() {
+                let desc_area = (available - name_area - ROW_GAP).max(0.0);
+                if desc_area > 0.0 {
+                    let measured = measure_text_family(
+                        &row.description,
+                        DESCRIPTION_FONT_SIZE,
+                        DESCRIPTION_LINE_HEIGHT / DESCRIPTION_FONT_SIZE,
+                        f32::INFINITY,
+                        FontWeight::Regular,
+                        FontFamily::System,
+                        false,
+                    )
+                    .x;
+                    // DSH right-aligns the description so every row ends on the
+                    // same edge; a description too long for the column starts
+                    // at the column's left edge and ellipsizes there.
+                    let desc_x = if measured <= desc_area {
+                        bounds.max_x() - ROW_PAD_X - check_width - measured
+                    } else {
+                        text_left + name_area + ROW_GAP
+                    };
+                    renderer.draw_text(
+                        Vector2F::new(desc_x, Self::line_y(bounds, DESCRIPTION_LINE_HEIGHT)),
+                        row.description.clone(),
+                        DESCRIPTION_FONT_SIZE,
+                        app.theme.color(ColorToken::Muted),
+                        desc_area,
+                        DESCRIPTION_LINE_HEIGHT / DESCRIPTION_FONT_SIZE,
+                    );
+                }
+            }
+            if row.current {
+                renderer.draw_icon(
                     Vector2F::new(
-                        bounds.min_x() + self.name_column,
-                        bounds.min_y() + Self::line_offset(DESCRIPTION_FONT_SIZE),
+                        bounds.max_x() - ROW_PAD_X - CHECK_SIZE,
+                        bounds.min_y() + (ROW_HEIGHT - CHECK_SIZE).max(0.0) / 2.0,
                     ),
-                    row.description.clone(),
-                    DESCRIPTION_FONT_SIZE,
-                    app.theme.color(ColorToken::Muted),
-                    (bounds.width() - self.name_column - ROW_INSET).max(0.0),
-                    LINE_HEIGHT,
+                    icon_atlas_name("check"),
+                    CHECK_SIZE,
+                    app.theme.color(ColorToken::Text),
                 );
             }
         }
+        self.publish(ctx, app, card);
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -471,6 +646,10 @@ pub struct SlashMenu {
     index: Rc<RefCell<usize>>,
     on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    /// The window's open-menu identity while the card is up (the host names it
+    /// and hands the dismiss handle). `None` for a card a caller draws outside
+    /// the window's menu state (tests, the render tools).
+    menu: Option<(MenuId, MenuClose)>,
     band: Option<MenuBand>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -483,10 +662,20 @@ impl SlashMenu {
             index,
             on_move: None,
             on_accept: None,
+            menu: None,
             band: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Register the card as the window's open menu while it is up: opening it
+    /// closes any other menu, an outside press closes it through `close`, and
+    /// the pointer over its card belongs to it. The host names the card
+    /// (`"composer.slash"`) and passes the dismiss its own state uses.
+    pub fn with_menu(mut self, id: MenuId, close: MenuClose) -> Self {
+        self.menu = Some((id, close));
+        self
     }
 
     /// Fired when the selection moves (arrow keys, or the pointer onto a row).
@@ -501,6 +690,17 @@ impl SlashMenu {
         self
     }
 
+    /// The source heading over the rows: DSH names the command source
+    /// `Commands`, the skill source `Skills`; the path source reads `Paths`.
+    fn heading(&self) -> Option<&'static str> {
+        match self.items.first().map(|item| item.prefix) {
+            Some('/') => Some(DraftTrigger::Command.heading()),
+            Some('$') => Some(DraftTrigger::Skill.heading()),
+            Some('@') => Some(DraftTrigger::Mention.heading()),
+            _ => None,
+        }
+    }
+
     /// What the band says when the query matches nothing. The three lists empty
     /// out for different reasons — a command list has no name match, a skill
     /// list may have nothing installed — so the row says which it is.
@@ -512,8 +712,9 @@ impl SlashMenu {
         }
     }
 
-    /// The band this menu draws: the commands as they are typed, and not one of
-    /// them in force — a draft is not one of the commands until it is run.
+    /// The band this menu draws: the commands as they are typed, each with its
+    /// glyph and its description, and not one of them in force — a draft is not
+    /// one of the commands until it is run.
     fn band(&self) -> MenuBand {
         MenuBand::new(
             self.items
@@ -522,13 +723,16 @@ impl SlashMenu {
                     label: item.typed(),
                     description: item.description.clone(),
                     current: false,
+                    icon: item.icon,
                 })
                 .collect(),
+            self.heading(),
             self.empty_label(),
             self.index.clone(),
         )
         .with_on_move(self.on_move.clone())
         .with_on_accept(self.on_accept.clone())
+        .apply_menu(self.menu.clone())
     }
 }
 
@@ -574,18 +778,22 @@ impl Element for SlashMenu {
     }
 }
 
-/// The models a pane's turns can run, drawn as the same band the slash commands
-/// use: what the model control opens, over the input's own width.
+/// The models a pane's turns can run, drawn as the same DSH card the slash
+/// commands use. This is the legacy flat list the host draws in the band slot
+/// (`ChatView::model_menu`) when it does not wire the composer's own model
+/// popup; the composer's DSH model menu is [`super::model_tray`].
 ///
 /// A row is the model's own name — the id the turn is run with — and the model
-/// the pane runs now reads in the accent colour, so the list says where the
-/// selection already is. The row of the model in force is where the composer
-/// opens the selection, so Enter takes the model the pane already has.
+/// the pane runs now draws the trailing check, DSH's selection marker, so the
+/// list says where the selection already is. The row of the model in force is
+/// where the composer opens the selection, so Enter takes the model the pane
+/// already has.
 pub struct ModelMenu {
     items: Vec<PopupMenuItem>,
     index: Rc<RefCell<usize>>,
     on_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
+    menu: Option<(MenuId, MenuClose)>,
     band: Option<MenuBand>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -598,10 +806,18 @@ impl ModelMenu {
             index,
             on_move: None,
             on_accept: None,
+            menu: None,
             band: None,
             size: None,
             origin: None,
         }
+    }
+
+    /// Register the flat model list as the window's open menu while it is up,
+    /// with the same claim/hover/dismiss rules as the slash card.
+    pub fn with_menu(mut self, id: MenuId, close: MenuClose) -> Self {
+        self.menu = Some((id, close));
+        self
     }
 
     /// Fired when the selection moves (arrow keys, or the pointer onto a row).
@@ -622,18 +838,21 @@ impl ModelMenu {
                 .iter()
                 .map(|item| BandRow {
                     label: item.label.clone(),
-                    // A model is a name and nothing else: the second column
-                    // belongs to the command list, which has to say what
-                    // running a command does.
+                    // A model is a name and nothing else: the description
+                    // column belongs to the command list, which has to say
+                    // what running a command does.
                     description: String::new(),
                     current: item.selected,
+                    icon: item.icon,
                 })
                 .collect(),
+            Some("Models"),
             "No models configured",
             self.index.clone(),
         )
         .with_on_move(self.on_move.clone())
         .with_on_accept(self.on_accept.clone())
+        .apply_menu(self.menu.clone())
     }
 }
 
@@ -687,8 +906,9 @@ mod tests {
 
     fn items() -> Vec<SlashMenuItem> {
         vec![
-            SlashMenuItem::new("new", "Start a fresh conversation"),
-            SlashMenuItem::new("clear", "Clear this conversation's transcript"),
+            SlashMenuItem::new("new", "Start a fresh conversation").with_icon("new-chat"),
+            SlashMenuItem::new("clear", "Clear this conversation's transcript")
+                .with_icon("trash-02"),
         ]
     }
 
@@ -713,11 +933,11 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn drawn_texts(menu: &mut SlashMenu, app: &AppContext) -> Vec<String> {
-        drawn(menu, app)
-            .into_iter()
+    fn texts(commands: &[RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text),
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
                 _ => None,
             })
             .collect()
@@ -734,7 +954,7 @@ mod tests {
     }
 
     /// The same band opens for the harness's skills and the workspace's paths,
-    /// each under its own prefix, and each carries its own query.
+    /// each under its own prefix, and each carries its own query and heading.
     #[test]
     fn a_skill_and_a_path_open_the_same_band_under_their_own_prefix() {
         assert_eq!(
@@ -754,21 +974,28 @@ mod tests {
         assert_eq!(DraftTrigger::Mention.query("@src/ui"), "src/ui");
         assert!(slash_menu_open("$penpot", false));
         assert!(slash_menu_open("@src", false));
-        assert!(!slash_menu_open("@src", true));
+        assert!(!slash_menu_open("@src", true), "escape dismisses the band");
         assert!(
             !slash_menu_open("$penpot explain the sinks", false),
             "a completed token leaves the band to the prompt"
         );
         assert_eq!(
-            SlashMenuItem::new("penpot", "Design files").with_prefix('$').typed(),
+            SlashMenuItem::new("penpot", "Design files")
+                .with_prefix('$')
+                .typed(),
             "$penpot"
         );
+        assert_eq!(DraftTrigger::Command.heading(), "Commands");
+        assert_eq!(DraftTrigger::Skill.heading(), "Skills");
+        assert_eq!(DraftTrigger::Mention.heading(), "Paths");
     }
 
-    /// The band spans the whole width it is given: it is the top of the input,
-    /// not a panel inset into it.
+    /// The band spans the whole slot it is given; its card is inset to line up
+    /// with the composer card under it and keeps the 4pt of air beneath it.
     #[test]
-    fn the_band_spans_the_width_it_is_given() {
+    fn the_band_is_the_dsh_card_over_the_composer() {
+        use crate::elements::COMPOSER_CARD_GUTTER;
+
         let app = AppContext::default();
         let mut menu = SlashMenu::new(items(), Rc::new(RefCell::new(0)));
         let size = menu.layout(
@@ -777,43 +1004,134 @@ mod tests {
             &app,
         );
         assert_eq!(size.x, 640.0);
-        assert!(size.y > 0.0);
+        let commands = drawn(&mut menu, &app);
+        let card = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::SurfaceRaised) => {
+                    Some((*rect, *corner_radius))
+                }
+                _ => None,
+            })
+            .expect("the menu card is a raised fill");
+        assert!(
+            (card.0.min_x() - COMPOSER_CARD_GUTTER).abs() < 0.5,
+            "the card lines up with the composer card: {card:?}"
+        );
+        assert!(
+            (card.0.width() - (640.0 - COMPOSER_CARD_GUTTER * 2.0)).abs() < 0.5,
+            "and ends on the card's other edge: {card:?}"
+        );
+        assert!(
+            (card.1 - CARD_RADIUS).abs() < 0.01,
+            "the card is rounded, not a slab"
+        );
+        assert!(
+            (size.y - (card.0.height() + CARD_GAP)).abs() < 0.5,
+            "the band keeps the DSH air between the card and the input"
+        );
     }
 
-    /// A row is the command as it is typed and what it does — the chord that
-    /// runs it is not repeated on the row.
+    /// The list opens under a source heading (DSH's `Commands` group title) and
+    /// every row is `icon · title · right-aligned description`: no chord and no
+    /// second column of its own.
     #[test]
-    fn a_row_is_the_command_and_what_it_does() {
+    fn a_row_is_the_glyph_the_command_and_what_it_does() {
         let app = AppContext::default();
         let mut menu = SlashMenu::new(items(), Rc::new(RefCell::new(0)));
-        let texts = drawn_texts(&mut menu, &app);
-        assert!(texts.iter().any(|text| text == "/new"), "got {texts:?}");
+        let commands = drawn(&mut menu, &app);
+        let labels = texts(&commands);
+        assert!(labels.iter().any(|text| text == "Commands"), "got {labels:?}");
+        assert!(labels.iter().any(|text| text == "/new"), "got {labels:?}");
         assert!(
-            texts.iter().any(|text| text == "Start a fresh conversation"),
-            "got {texts:?}"
+            labels
+                .iter()
+                .any(|text| text == "Start a fresh conversation"),
+            "got {labels:?}"
         );
         assert!(
-            !texts.iter().any(|text| text.contains('⌘') || text.contains('↵')),
-            "no chord is drawn in the list: {texts:?}"
+            !labels.iter().any(|text| text.contains('⌘') || text.contains('↵')),
+            "no chord is drawn in the list: {labels:?}"
         );
+        let icons: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            icons.iter().any(|name| name.contains("new-chat")),
+            "the row's glyph is drawn: {icons:?}"
+        );
+        // The highlighted first row carries the shared fill; the rows below it
+        // are cards drawn straight on the menu surface.
+        let selected = commands.iter().any(|command| {
+            matches!(command, RenderCommand::FillRect { color, .. }
+                if *color == app.theme.color(ColorToken::Selected))
+        });
+        assert!(selected, "the highlighted row is the shared highlight");
     }
 
-    /// A query that matches nothing says so instead of drawing an empty band.
+    /// The description is right-aligned: a short one ends on the card's right
+    /// edge, which is what makes the titles read as one left column.
+    #[test]
+    fn the_description_is_right_aligned_on_the_row() {
+        let app = AppContext::default();
+        let mut menu = SlashMenu::new(items(), Rc::new(RefCell::new(0)));
+        let commands = drawn(&mut menu, &app);
+        let first = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Start a fresh conversation" =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the description is drawn");
+        let last = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "/new" => Some(*origin),
+                _ => None,
+            })
+            .expect("the title is drawn");
+        assert!(first.x > last.x, "the description follows the title");
+        assert!(first.y > 0.0);
+    }
+
+    /// A query that matches nothing says so inside the card instead of drawing
+    /// an empty band.
     #[test]
     fn an_empty_list_says_so() {
         let app = AppContext::default();
         let mut menu = SlashMenu::new(Vec::new(), Rc::new(RefCell::new(0)));
-        let texts = drawn_texts(&mut menu, &app);
+        let commands = drawn(&mut menu, &app);
+        let labels = texts(&commands);
         assert!(
-            texts.iter().any(|text| text == "No matching commands"),
-            "got {texts:?}"
+            labels.iter().any(|text| text == "No matching commands"),
+            "got {labels:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. }
+                    if *color == app.theme.color(ColorToken::SurfaceRaised)
+            )),
+            "the empty state lives in the menu card: {commands:?}"
         );
     }
 
-    /// The model menu is the same band over the same width, one row per model,
-    /// with the model the pane runs now reading in the accent colour.
+    /// The model menu is the same card in the same slot, one row per model, with
+    /// the model the pane runs now drawing DSH's trailing check.
     #[test]
-    fn the_model_menu_lists_the_models_in_the_same_band() {
+    fn the_model_menu_is_the_same_card_with_a_check_marker() {
         let app = AppContext::default();
         let mut menu = ModelMenu::new(models(), Rc::new(RefCell::new(0)));
         let size = menu.layout(
@@ -821,32 +1139,20 @@ mod tests {
             &mut LayoutContext::default(),
             &app,
         );
-        assert_eq!(size.x, 640.0, "the band spans the input's own width");
+        assert_eq!(size.x, 640.0, "the card spans the slot it is given");
 
-        let mut ctx = PaintContext::new(Renderer::new());
-        menu.paint(vec2f(0.0, 0.0), &mut ctx, &app);
-        let commands = ctx
-            .renderer
-            .take()
-            .map(|renderer| renderer.commands().to_vec())
-            .unwrap_or_default();
-        let labels: Vec<String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
+        let commands = drawn(&mut menu, &app);
+        let labels = texts(&commands);
+        assert!(labels.iter().any(|text| text == "Models"), "got {labels:?}");
         assert!(labels.iter().any(|text| text == "gpt-4o"), "got {labels:?}");
         assert!(labels.iter().any(|text| text == "o3-mini"), "got {labels:?}");
-        let accent = commands.iter().any(|command| {
-            matches!(
-                command,
-                RenderCommand::DrawText { text, color, .. }
-                    if text == "o3-mini" && *color == app.theme.color(ColorToken::Accent)
-            )
-        });
-        assert!(accent, "the model in force reads in the accent colour");
+        let checks = commands
+            .iter()
+            .filter(|command| {
+                matches!(command, RenderCommand::DrawIcon { name, .. } if name.contains("check"))
+            })
+            .count();
+        assert_eq!(checks, 1, "exactly the model in force is checked");
     }
 
     /// A model menu with nothing to offer says so, the way the command list
@@ -856,16 +1162,121 @@ mod tests {
         let app = AppContext::default();
         let mut menu = ModelMenu::new(Vec::new(), Rc::new(RefCell::new(0)));
         let commands = drawn(&mut menu, &app);
-        let labels: Vec<String> = commands
-            .into_iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text),
-                _ => None,
-            })
-            .collect();
+        let labels = texts(&commands);
         assert!(
             labels.iter().any(|text| text == "No models configured"),
             "got {labels:?}"
+        );
+    }
+
+    // ---- the window's shared open-menu state ------------------------------
+
+    /// One frame of the real loop for a band: layout, seed the open-menu gate
+    /// from the registry (as the root view does), paint, reconcile.
+    fn band_frame(menu: &mut dyn Element, app: &AppContext, cursor: Option<Vector2F>) {
+        menu.layout(
+            SizeConstraint::loose(vec2f(640.0, 400.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        if let Some(point) = cursor {
+            ctx.cursor_position = point;
+            ctx.cursor_inside = true;
+        }
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        app.open_menus.begin_paint();
+        menu.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        app.open_menus.end_paint();
+    }
+
+    /// The slash card is one of the window's menus: it claims the shared state
+    /// while it paints, the pointer over its card hovers the card and not the
+    /// input block behind it, and the host's dismiss handle closes it.
+    #[test]
+    fn the_open_slash_card_claims_the_open_menu_state_and_owns_the_pointer() {
+        use crate::elements::{HoverRow, Text};
+
+        let app = AppContext::default();
+        let dismissed = Rc::new(RefCell::new(false));
+        let close: MenuClose = {
+            let dismissed = Rc::clone(&dismissed);
+            Rc::new(RefCell::new(move || *dismissed.borrow_mut() = true))
+        };
+        let mut menu: Box<dyn Element> = SlashMenu::new(items(), Rc::new(RefCell::new(0)))
+            .with_menu("composer.slash", close)
+            .finish();
+
+        band_frame(&mut *menu, &app, None);
+        assert_eq!(
+            app.open_menus.id(),
+            Some("composer.slash"),
+            "the open slash card is the window's open menu"
+        );
+        let surface = app
+            .open_menus
+            .surfaces()
+            .into_iter()
+            .next()
+            .expect("the card reported its face");
+
+        // The pointer on the card: a row painted behind it must not hover.
+        let point = vec2f(surface.min_x() + 20.0, surface.min_y() + 20.0);
+        band_frame(&mut *menu, &app, Some(point));
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_position = point;
+        ctx.cursor_inside = true;
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        let hover_cell: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let mut behind = HoverRow::new(Text::new("behind").finish())
+            .with_hover_key(Rc::clone(&hover_cell), "behind");
+        behind.layout(
+            SizeConstraint::loose(vec2f(300.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        behind.paint(vec2f(point.x - 20.0, point.y - 10.0), &mut ctx, &app);
+        assert_eq!(
+            *hover_cell.borrow(),
+            None,
+            "the input block behind the slash card must not hover"
+        );
+
+        // The root view's dismiss path closes it through the host's handle.
+        app.open_menus.close();
+        assert!(
+            *dismissed.borrow(),
+            "the registry closed the card through the host's dismiss"
+        );
+        assert!(!app.open_menus.is_open());
+    }
+
+    /// Opening the slash card closes a menu that was already up: one menu at a
+    /// time across the window.
+    #[test]
+    fn opening_the_slash_card_closes_the_menu_that_was_open() {
+        let app = AppContext::default();
+        let previous_closed = Rc::new(RefCell::new(false));
+        let previous_close: MenuClose = {
+            let previous_closed = Rc::clone(&previous_closed);
+            Rc::new(RefCell::new(move || *previous_closed.borrow_mut() = true))
+        };
+        app.open_menus.open("some.other.menu", previous_close);
+
+        let dismissed = Rc::new(RefCell::new(false));
+        let close: MenuClose = {
+            let dismissed = Rc::clone(&dismissed);
+            Rc::new(RefCell::new(move || *dismissed.borrow_mut() = true))
+        };
+        let mut menu: Box<dyn Element> = SlashMenu::new(items(), Rc::new(RefCell::new(0)))
+            .with_menu("composer.slash", close)
+            .finish();
+        band_frame(&mut *menu, &app, None);
+
+        assert_eq!(app.open_menus.id(), Some("composer.slash"));
+        assert!(
+            *previous_closed.borrow(),
+            "the menu that was open was closed by the slash card opening"
         );
     }
 }

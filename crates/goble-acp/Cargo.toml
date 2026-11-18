@@ -1,0 +1,38 @@
+[package]
+name = "goble-acp"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version = "1.86"
+description = "Agent Client Protocol (ACP) stdio bridge that drives Goble gateway sessions."
+
+[lib]
+name = "goble_acp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "goble-acp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+futures.workspace = true
+goble-gateway = { path = "../goble-gateway" }
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
+
+[lints]
+workspace = true

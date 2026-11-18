@@ -11,7 +11,7 @@ The UI is split into a library and an in-app builder:
 - `crates/goble-ui` — the **library**. Platform-agnostic elements (buttons,
   inputs, lists, chat, sheets), the theme, text measurement/rasterization, and
   the winit/wgpu window backend. This crate is compiled into the app binary.
-- `app/src/ui` — the **in-app shell**. `build_ui` and the snapshot/action
+- `apps/desktop/src/ui` — the **in-app shell**. `build_ui` and the snapshot/action
   types (`UiSnapshot` / `UiActions` / `AiSnapshot` / `AiActions`) plus the
   per-screen modules (`chat`, `sidebar`, `shell`, `crons`, `connectors`,
   `vault`, `model_form`) live here, in the `goble-app` crate, mirroring how
@@ -179,12 +179,12 @@ gray (`0x9a9a9a`), and UI highlights use `Selected`/`Hover`/`Muted`.
 ## Composing a full screen (checklist)
 
 1. **State snapshot**: add fields to `UiSnapshot` (or `AiSnapshot`) in
-   `app/src/ui/mod.rs`; add matching callbacks to `UiActions`.
-2. **Builder module**: create `app/src/ui/<screen>.rs` with a
+   `apps/desktop/src/ui/mod.rs`; add matching callbacks to `UiActions`.
+2. **Builder module**: create `apps/desktop/src/ui/<screen>.rs` with a
    `build_<screen>(app, state, actions) -> Box<dyn Element>` function. Compose
    primitive elements; never store state in elements.
 3. **Wiring**: call the builder from `shell::build_main` (or a sheet/drawer in
-   `app/src/ui/mod.rs::build_ui`).
+   `apps/desktop/src/ui/mod.rs::build_ui`).
 4. **Layout checks**: the top-level column is `MainAxisSize::Max` +
    `Stretch`; any area that must fill leftover height is wrapped in
    `Expanded`; full-width bars contain a `MainAxisSize::Max` row.
@@ -194,7 +194,7 @@ gray (`0x9a9a9a`), and UI highlights use `Selected`/`Hover`/`Muted`.
 
 - There is no live hot reload. `scripts/dev-ui.sh` builds and runs
   `goble-app`; with `cargo-watch` installed it rebuilds and restarts the app
-  whenever any `app` or `crates` source file changes.
+  whenever any `apps/desktop` or `crates` source file changes.
 - Editing the snapshot/action structs is fine — there is no ABI boundary, so a
   normal rebuild picks everything up.
 
@@ -234,7 +234,7 @@ Flex::column()
     .finish()
 ```
 
-Make a full-width flat bar (see `app/src/ui/chat.rs`):
+Make a full-width flat bar (see `apps/desktop/src/ui/chat.rs`):
 
 ```rust
 Container::new(

@@ -569,6 +569,11 @@ mod docker {
                 "goble.sandbox=1".to_string(),
                 "--label".to_string(),
                 "goble.project=project-1".to_string(),
+                // The workspace lives on a named volume, so it outlives the
+                // container and the next one mounts the same files back.
+                "--mount".to_string(),
+                "type=volume,source=goble-ws-goble-goble-2fbfef8fa780,target=/workspace/goble"
+                    .to_string(),
                 "-e".to_string(),
                 "GOBLE_GATEWAY_URL=wss://gateway.example/ws/worker".to_string(),
                 "-e".to_string(),
@@ -579,6 +584,48 @@ mod docker {
         );
         assert_eq!(call.stdin, None);
         assert!(call.env.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_workspace_volume_name_is_stable_for_a_project() {
+        assert_eq!(
+            goble_remote::docker::workspace_volume("goble-goble-2fbfef8fa780"),
+            "goble-ws-goble-goble-2fbfef8fa780"
+        );
+        // Two creates for one project mount one volume; another project's name
+        // does not collide.
+        assert_ne!(
+            goble_remote::docker::workspace_volume("goble-a"),
+            goble_remote::docker::workspace_volume("goble-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resume_mounts_the_same_workspace_with_a_new_container() {
+        let runner = MockRunner::ok("container-restarted\n");
+        let provider = DockerProvider::with_runner(runner.clone());
+        let binding = goble_remote::SandboxBinding {
+            provider: "docker".to_string(),
+            sandbox_name: "goble-goble-2fbfef8fa780".to_string(),
+            sandbox_id: Some("old-container".to_string()),
+            snapshot: None,
+            native_session_id: Some("conversation-1".to_string()),
+            workspace_path: "/workspace/goble".to_string(),
+        };
+
+        let resumed = provider
+            .resume(&request(), &binding)
+            .await
+            .expect("resume creates a new container on the same volume");
+
+        assert_eq!(resumed.sandbox_id, "container-restarted");
+        let call = runner.only_call();
+        assert!(
+            call.args.iter().any(|arg| arg
+                == "type=volume,source=goble-ws-goble-goble-2fbfef8fa780,target=/workspace/goble"),
+            "the workspace volume is mounted: {:?}",
+            call.args
+        );
     }
 
     #[tokio::test]

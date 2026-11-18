@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::dsh_runner::{self, DshConfig};
 use crate::runner::Runner;
 use crate::state::{map_daemon_event, AppState};
 
@@ -170,6 +171,17 @@ pub(crate) async fn run_connection(
                                     }
                                     continue;
                                 }
+                                // A remote-DSH turn runs in its own task instead of
+                                // blocking this connection: the loop has to stay free
+                                // to read a `cancel_run` (and the next request) while
+                                // the harness is working. The native runtime keeps the
+                                // existing sequential handling.
+                                if dsh_runner::dsh_runtime_selected()
+                                    && dsh_runner::spawn_thread_reply(state.clone(), &desktop_msg)
+                                        .is_some()
+                                {
+                                    continue;
+                                }
                                 let trace_id = desktop_trace_id(&desktop_msg);
                                 if let Err(e) =
                                     handle_desktop_message(&state, &runner, desktop_msg).await
@@ -203,11 +215,19 @@ pub(crate) async fn run_connection(
                                     }
                                 }
                             }
-                            Err(_) => {
+                            Err(error) => {
+                                // A frame whose `kind` this worker does not know
+                                // comes from a newer client: ignore it rather than
+                                // failing a connection this worker cannot answer. A
+                                // known frame with a broken payload is still reported.
+                                if goble_core::protocol::is_unknown_kind(&error) {
+                                    tracing::warn!("ignoring a desktop frame: {error}");
+                                    continue;
+                                }
                                 state.emit(WorkerMessage::AgentFinished {
                                     trace_id: "unknown".to_string(),
                                     status: goble_core::execution::ExecutionStatus::Failure(
-                                        "invalid message".to_string(),
+                                        format!("invalid message: {error}"),
                                     ),
                                 });
                             }
@@ -266,7 +286,8 @@ fn desktop_trace_id(msg: &DesktopMessage) -> Option<String> {
         DesktopMessage::RunAgent { trace_id, .. }
         | DesktopMessage::RunAgentForThreadReply { trace_id, .. }
         | DesktopMessage::AnswerUser { trace_id, .. }
-        | DesktopMessage::AnswerCommand { trace_id, .. } => Some(trace_id.clone()),
+        | DesktopMessage::AnswerCommand { trace_id, .. }
+        | DesktopMessage::CancelRun { trace_id } => Some(trace_id.clone()),
         _ => None,
     }
 }
@@ -508,6 +529,30 @@ async fn handle_desktop_message(
                 }
                 threads.insert(trace_id.clone(), thread_id.clone());
             }
+            // A worker image built with the remote DSH runtime drives the
+            // harness installed in its sandbox (through the same
+            // `run_agent_for_thread_reply` frame, so clients and the gateway need
+            // no new request kind). Every other worker keeps the native harness.
+            if dsh_runner::dsh_runtime_selected() {
+                let config = DshConfig::from_env(Some(state.config.lock().workspace_root.clone()));
+                let content = dsh_runner::run_thread_reply(
+                    state,
+                    &config,
+                    trace_id.clone(),
+                    thread_id.clone(),
+                    agent_id,
+                    prompt,
+                )
+                .await?;
+                if let Some(content) = content {
+                    state.emit(WorkerMessage::ThreadAgentReply {
+                        trace_id,
+                        thread_id,
+                        content,
+                    });
+                }
+                return Ok(());
+            }
             let secrets = state.secrets.lock().values().cloned().collect();
             let content = runner
                 .run_agent_for_thread_reply(
@@ -527,6 +572,20 @@ async fn handle_desktop_message(
                     trace_id,
                     thread_id,
                     content,
+                });
+            }
+        }
+        // Stop a running harness. Only the remote runtimes the worker drives
+        // (DSH) can be cancelled: the native harness runs in-process and has no
+        // kill switch exposed over this protocol. A trace that already settled
+        // is a no-op, so a client racing the end of a turn is not punished.
+        DesktopMessage::CancelRun { trace_id } => {
+            if !state.dsh_runs.cancel(&trace_id) {
+                state.emit(WorkerMessage::AgentLog {
+                    trace_id,
+                    step_id: "worker".to_string(),
+                    level: goble_core::execution::LogLevel::Warn,
+                    message: "no cancellable run is live for this trace".to_string(),
                 });
             }
         }
@@ -664,6 +723,15 @@ async fn handle_desktop_message(
             state.emit(WorkerMessage::EntityList { entity_type, items });
         }
         DesktopMessage::TriggerSnapshot => {
+            // The DeepSeek account credentials live in the harness home while a
+            // run is in flight; a snapshot of the sandbox filesystem must not
+            // carry them (dsh-remote deletes them before its snapshot for the
+            // same reason). A run that is still active re-installs the file it
+            // needs from the vault or the sandbox environment.
+            let dsh_config = DshConfig::from_env(Some(state.config.lock().workspace_root.clone()));
+            if let Err(error) = dsh_config.cleanup_before_snapshot() {
+                tracing::warn!("could not remove the DSH credentials before snapshot: {error}");
+            }
             if let Some(provider) = state.snapshot_provider() {
                 if let Some(cluster_key) = state.cluster_key() {
                     let store = state.store()?;

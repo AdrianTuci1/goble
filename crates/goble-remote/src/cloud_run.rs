@@ -6,6 +6,20 @@
 //! interactive workspace on GCP is a GCE VM or a GKE pod running
 //! `goblin-worker`, reached through the `ssh` adapter or the relay.
 //!
+//! # Durable sessions on Cloud Run
+//!
+//! Cloud Run gives no filesystem to snapshot: an execution's container disk is
+//! gone when the execution finishes, so [`SandboxProvider::snapshot`] has
+//! nothing to take. The honest equivalent would be a *state tarball*: an
+//! execution that writes `/workspace` to object storage, and a new execution
+//! that restores it before the worker starts. That needs a GCS bucket named in
+//! the agent table, and the config schema has no field for one today, so this
+//! adapter reports [`SnapshotSupport::None`] instead of pretending. What does
+//! survive is the *conversation*: the provisioner passes
+//! `GOBLE_NATIVE_SESSION_ID`, the new execution starts with the harness session
+//! id, and the code is re-cloned from `GOBLE_REPO_URL`. Files the previous
+//! execution changed and never pushed are lost, and the binding says so.
+//!
 //! The config table names the GCP project in `environment` and the Cloud Run
 //! location in `region`; `image` is the worker image, which must live in a
 //! registry Cloud Run can pull from (Artifact Registry or GCR). The bearer
@@ -22,7 +36,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::{CommandRunner, ProcessCommandRunner};
 use crate::error::SandboxError;
-use crate::provider::{SandboxHandle, SandboxProvider, SandboxRequest, SandboxStatus};
+use crate::provider::{
+    SandboxHandle, SandboxProvider, SandboxRequest, SandboxStatus, SnapshotSupport,
+};
 
 /// Cloud Run's regional endpoint.
 pub const DEFAULT_API_URL: &str = "https://run.googleapis.com";
@@ -78,7 +94,11 @@ pub fn job_id(sandbox_name: &str) -> String {
         .saturating_sub(prefix.len())
         .saturating_sub(tail.len())
         .saturating_sub(1);
-    let head_start = if name.starts_with(prefix) { prefix.len() } else { 0 };
+    let head_start = if name.starts_with(prefix) {
+        prefix.len()
+    } else {
+        0
+    };
     let head: String = name[head_start..].chars().take(budget).collect();
     let head = head.trim_end_matches('-');
     if tail.is_empty() || head.is_empty() {
@@ -157,10 +177,11 @@ impl CloudRunProvider {
         config: &goble_core::config::RemoteAgentConfig,
         runner: Arc<dyn CommandRunner>,
     ) -> Result<Self, SandboxError> {
-        let project = filled(config.environment.as_deref()).ok_or(SandboxError::MissingCredential {
-            provider: PROVIDER,
-            key: "GOOGLE_CLOUD_PROJECT",
-        })?;
+        let project =
+            filled(config.environment.as_deref()).ok_or(SandboxError::MissingCredential {
+                provider: PROVIDER,
+                key: "GOOGLE_CLOUD_PROJECT",
+            })?;
         let location = filled(config.region.as_deref()).ok_or(SandboxError::MissingCredential {
             provider: PROVIDER,
             key: "GOOGLE_CLOUD_REGION",
@@ -212,7 +233,10 @@ impl CloudRunProvider {
             }
         }
         let args = ["auth".to_string(), "print-access-token".to_string()];
-        let output = self.runner.run(GCLOUD, &args, None, &BTreeMap::new()).await?;
+        let output = self
+            .runner
+            .run(GCLOUD, &args, None, &BTreeMap::new())
+            .await?;
         if !output.success() {
             return Err(SandboxError::Command {
                 command: GCLOUD.to_string(),
@@ -356,9 +380,10 @@ impl Execution {
             return true;
         }
         self.status.as_ref().is_some_and(|status| {
-            status.conditions.iter().any(|condition| {
-                condition.kind == "Completed" && condition.status == "True"
-            })
+            status
+                .conditions
+                .iter()
+                .any(|condition| condition.kind == "Completed" && condition.status == "True")
         })
     }
 }
@@ -383,6 +408,13 @@ impl SandboxProvider for CloudRunProvider {
         PROVIDER
     }
 
+    /// A Cloud Run execution has no filesystem outside its own container, and
+    /// the state-tarball equivalent needs a bucket the config cannot name yet;
+    /// the conversation id is what survives. See the module docs.
+    fn snapshot_support(&self) -> SnapshotSupport {
+        SnapshotSupport::None
+    }
+
     async fn create(&self, request: &SandboxRequest) -> Result<SandboxHandle, SandboxError> {
         let job = job_id(&request.sandbox_name);
         let body = self.job_body(request);
@@ -392,7 +424,10 @@ impl SandboxProvider for CloudRunProvider {
         let existing = self.send(self.client.get(self.job_url(&job))).await?;
         let (status, existing_body) = self.read(existing).await?;
         let (method, url) = match status {
-            404 => (reqwest::Method::POST, format!("{}?jobId={job}", self.jobs_url())),
+            404 => (
+                reqwest::Method::POST,
+                format!("{}?jobId={job}", self.jobs_url()),
+            ),
             200..=299 => (reqwest::Method::PUT, self.job_url(&job)),
             _ => {
                 return Err(SandboxError::Http {
@@ -402,7 +437,9 @@ impl SandboxProvider for CloudRunProvider {
                 })
             }
         };
-        let response = self.send(self.client.request(method, url).json(&body)).await?;
+        let response = self
+            .send(self.client.request(method, url).json(&body))
+            .await?;
         let (status, body) = self.read(response).await?;
         if !(200..300).contains(&status) {
             return Err(SandboxError::Http {
@@ -494,7 +531,10 @@ mod tests {
 
     #[test]
     fn a_short_workspace_name_is_its_own_job_id() {
-        assert_eq!(job_id("goble-goble-2fbfef8fa780"), "goble-goble-2fbfef8fa780");
+        assert_eq!(
+            job_id("goble-goble-2fbfef8fa780"),
+            "goble-goble-2fbfef8fa780"
+        );
         assert_eq!(job_id("Goble_Goble"), "goble-goble");
         assert_eq!(job_id("  "), "goble-job");
         assert_eq!(job_id("9lives"), "goble-9lives");
@@ -502,7 +542,10 @@ mod tests {
 
     #[test]
     fn a_long_slug_keeps_the_prefix_and_the_key_inside_49_characters() {
-        let long = format!("goble-{}-2fbfef8fa780", "a-very-long-workspace-slug".repeat(4));
+        let long = format!(
+            "goble-{}-2fbfef8fa780",
+            "a-very-long-workspace-slug".repeat(4)
+        );
         let id = job_id(&long);
         assert!(id.len() <= MAX_JOB_ID, "{id} is {} chars", id.len());
         assert!(id.starts_with("goble-"), "{id}");
@@ -510,12 +553,16 @@ mod tests {
         assert!(!id.contains("--"), "{id}");
         assert!(id.starts_with(|c: char| c.is_ascii_lowercase()), "{id}");
         assert!(
-            id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            id.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
             "{id}"
         );
 
         // Two slugs that agree on their first characters still differ.
-        let sibling = format!("goble-{}-2fbfef8fa780", "a-very-long-workspace-slug".repeat(4).replace('a', "b"));
+        let sibling = format!(
+            "goble-{}-2fbfef8fa780",
+            "a-very-long-workspace-slug".repeat(4).replace('a', "b")
+        );
         assert_ne!(job_id(&sibling), id);
     }
 
@@ -523,7 +570,10 @@ mod tests {
     fn labels_are_sanitized_to_what_cloud_run_accepts() {
         let metadata = BTreeMap::from([
             ("goble.project".to_string(), "projects/goble".to_string()),
-            ("goble.workspace".to_string(), "Goble@Adrians-Mac".to_string()),
+            (
+                "goble.workspace".to_string(),
+                "Goble@Adrians-Mac".to_string(),
+            ),
             ("".to_string(), "x".to_string()),
         ]);
         let labels = labels(&metadata);
@@ -535,7 +585,11 @@ mod tests {
             labels.get("goble-workspace").map(String::as_str),
             Some("goble-adrians-mac")
         );
-        assert_eq!(labels.len(), 2, "a key with no usable characters is dropped");
+        assert_eq!(
+            labels.len(),
+            2,
+            "a key with no usable characters is dropped"
+        );
     }
 
     #[test]

@@ -114,8 +114,8 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
     );
     assert_eq!(
         header.2,
-        FontWeight::Bold,
-        "grok-build's Thought label is bold, got {header:?}"
+        FontWeight::Regular,
+        "DSH's reasoning disclosure row is regular weight, got {header:?}"
     );
     assert_eq!(header.0, "Thought", "the finished label is exactly grok-build's");
     assert!(
@@ -131,6 +131,33 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
 
     // The app-owned flag is what opens the row.
     expanded.borrow_mut().insert(key.to_string(), true);
+    // DSH's reasoning row: 13 / 24 title, 13 / 20 body, system family.
+    let header_run = collapsed
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                font_size,
+                line_height,
+                font_family,
+                ..
+            } if text.contains("Thought") => {
+                Some((*font_size, *line_height, *font_family))
+            }
+            _ => None,
+        })
+        .expect("the reasoning title is drawn");
+    assert_eq!(header_run.0, 13.0, "the reasoning title is 13 px");
+    assert!(
+        (header_run.1 - 24.0 / 13.0).abs() < 1e-5,
+        "the reasoning title sits on a 24 px line, got {}",
+        header_run.1
+    );
+    assert_eq!(
+        header_run.2,
+        crate::theme::FontFamily::System,
+        "the reasoning row is prose, not mono"
+    );
     let open_commands = reasoning_commands(&expanded, key);
     let open: Vec<String> = open_commands
         .iter()
@@ -169,7 +196,7 @@ fn a_notice_draws_quiet_at_note_size() {
         .find(|(text, ..)| text.starts_with("Context 82%"))
         .unwrap_or_else(|| panic!("the notice is drawn, got {commands:?}"));
     assert_eq!(run.1, app.theme.color(ColorToken::Muted), "the notice is quiet");
-    assert_eq!(run.3, 12.0, "the notice sits below the message's size");
+    assert_eq!(run.3, 13.0, "DSH's notice row is the 13 px process tier");
 }
 
 #[test]
@@ -302,10 +329,11 @@ fn fenced_code_block_paints_in_the_mono_family() {
     );
 }
 
-/// H5: a fenced block is a full-width panel band, never a rounded box, and
-/// the fence label and the highlighted body survive the change.
+/// DSH's fenced block is a quiet code card: the code-block surface behind a
+/// 0.5 px hairline at the card radius, with the fence label and the
+/// highlighted body surviving the change.
 #[test]
-fn fenced_code_block_is_a_band_not_a_rounded_box() {
+fn fenced_code_block_is_a_hairline_card() {
     let app = AppContext::default();
     let message = ChatMessage::from_markdown(ChatRole::Assistant, "```rust\nlet x = 1;\n```");
     let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, message.fragments);
@@ -319,21 +347,28 @@ fn fenced_code_block_is_a_band_not_a_rounded_box() {
     let commands = paint_ctx.renderer.take().unwrap().commands().to_vec();
 
     let band = app.theme.color(ColorToken::SurfaceRaised);
+    let card_radius = crate::elements::chat_typography::card_radius(&app);
+    let card = commands.iter().find_map(|c| match c {
+        RenderCommand::FillRect {
+            rect,
+            color,
+            corner_radius,
+        } if *color == band && (*corner_radius - card_radius).abs() < 0.01 => Some(*rect),
+        _ => None,
+    });
     assert!(
-        !commands.iter().any(|c| matches!(
-            c,
-            RenderCommand::FillRect { color, corner_radius, .. }
-                if *color == band && *corner_radius > 0.0
-        )),
-        "the fence must not be a rounded box, got {commands:?}"
+        card.is_some(),
+        "the fence is DSH's rounded code card at radius {card_radius}, got {commands:?}"
     );
     assert!(
         commands.iter().any(|c| matches!(
             c,
-            RenderCommand::FillRect { color, corner_radius, .. }
-                if *color == band && *corner_radius == 0.0
+            RenderCommand::StrokeRect { color, width, corner_radius, .. }
+                if *color == app.theme.color(ColorToken::Border)
+                    && (*width - 0.5).abs() < 1e-5
+                    && (*corner_radius - card_radius).abs() < 0.01
         )),
-        "the fence must sit on a flat band, got {commands:?}"
+        "the card carries DSH's 0.5 px hairline, got {commands:?}"
     );
 
     let texts = text_runs(&commands);
@@ -352,6 +387,15 @@ fn fenced_code_block_is_a_band_not_a_rounded_box() {
         body_colours.len() > 1,
         "the fenced body must stay highlighted, got {body_colours:?}"
     );
+    // DSH's fenced body is 11 / 19; the banner is 11 px too.
+    let sizes: std::collections::HashSet<u32> = commands
+        .iter()
+        .filter_map(|c| match c {
+            RenderCommand::DrawText { font_size, .. } => Some(font_size.round() as u32),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sizes, [11].into_iter().collect(), "the fence draws at 11 px");
 }
 
 /// The agent's coloured output is chat text: the escapes colour the glyphs and

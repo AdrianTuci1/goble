@@ -234,7 +234,11 @@ fn a_codebase_search_skips_build_and_dependency_trees() {
     std::fs::write(root.join("README.md"), "the needle is not here\n").unwrap();
     for skipped in ["target/debug", "node_modules/pkg", "dist", ".git"] {
         std::fs::create_dir_all(root.join(skipped)).unwrap();
-        std::fs::write(root.join(skipped).join("generated.rs"), "needle in a build tree\n").unwrap();
+        std::fs::write(
+            root.join(skipped).join("generated.rs"),
+            "needle in a build tree\n",
+        )
+        .unwrap();
     }
 
     let args = serde_json::json!({ "pattern": "needle" });

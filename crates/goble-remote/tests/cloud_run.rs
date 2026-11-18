@@ -377,7 +377,7 @@ async fn the_token_is_taken_from_the_table_before_gcloud_is_asked() {
     let mut config = agent_at(&base_url);
     config.api_key = Some("sa-bearer-token".to_string());
     let provider =
-        CloudRunProvider::with_runner(&config, Arc::clone(&runner)).expect("build the adapter");
+        CloudRunProvider::with_runner(&config, runner.clone()).expect("build the adapter");
 
     provider.create(&request()).await.expect("create");
     assert_eq!(

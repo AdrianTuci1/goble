@@ -5,16 +5,16 @@ use std::rc::Rc;
 use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, ToolCall, ToolDisplayMode};
 use crate::elements::running_indicator::SPINNER_FRAMES;
+use crate::elements::chat_typography;
 use crate::elements::{
     resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Expanded, Flex, HoverRow, Icon,
     InlineText, MainAxisSize, TextSpan,
 };
 use crate::geometry::vec2f;
-use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use goble_core::harness::{subagent_subject, tool_row, ToolCallStatus, ToolKind};
+use super::tool_block_gesture::ToolBlockGesture;
 use super::tool_body::build_tool_call_body;
-use super::tool_bracket::ToolBracket;
 
 /// The mark every tool row draws before its words, whatever its family or
 /// state: grok-build's filled diamond.
@@ -32,15 +32,16 @@ const HOVER_ARROW: &str = "❯ ";
 /// state never collides with the call that anchors the run.
 const VERB_GROUP_KEY_PREFIX: &str = "verb-group:";
 
-/// The row's own text size. A sub-agent's card is a step smaller: it is the
-/// status line of a delegation, not a paragraph of the reply.
-pub(super) const TOOL_ROW_FONT_SIZE: f32 = 13.0;
+/// The row's own text size: DSH's 13 px process-row tier, from the shared chat
+/// type sheet. A sub-agent's card reads at the same size; only its controls are
+/// a step smaller.
+#[allow(dead_code)] // kept as the module's public statement of the row size
+pub(super) const TOOL_ROW_FONT_SIZE: f32 = chat_typography::ROW_SIZE;
 
-/// A sub-agent card's text and its controls. grok-build draws a sub-agent as a
-/// single small status line with an animated bullet and its control targets at
-/// the row's far edge, so the card reads as chrome over the reply rather than
-/// as another command the agent ran.
-const SUB_AGENT_FONT_SIZE: f32 = 12.0;
+/// A sub-agent card's controls. grok-build draws a sub-agent as a single small
+/// status line with an animated bullet and its control targets at the row's far
+/// edge, so the card reads as chrome over the reply rather than as another
+/// command the agent ran.
 const SUB_AGENT_CONTROL_SIZE: f32 = 12.0;
 
 /// Resolve a model [`ModelSpan`] (text + style) into a renderable [`TextSpan`]
@@ -122,19 +123,16 @@ fn recorded_diffstat(diff: &str) -> String {
     }
 }
 
-/// The colour of the operand a row names: a path takes grok-build's warm
-/// orange, a command its yellow, a search's pattern and glob the success
-/// colour, and a row with no operand class the row's own text colour. A
-/// collapsed row is muted whole, exactly as the pager folds it.
+/// The colour of the operand a row names. DSH draws the whole tool row in one
+/// tertiary ink, so every kind flattens to Goble's quiet ink; the per-kind
+/// colour language is kept below as the one-line revert seam if the owner ever
+/// wants grok-build's warm path / yellow command back.
 fn tool_subject_color(
-    kind: ToolKind,
-    mode: ToolDisplayMode,
+    _kind: ToolKind,
+    _mode: ToolDisplayMode,
     app: &crate::elements::AppContext,
 ) -> ColorU {
-    if mode == ToolDisplayMode::Collapsed {
-        return app.theme.color(ColorToken::Muted);
-    }
-    match kind {
+    let _revert = |kind: ToolKind| match kind {
         ToolKind::Read
         | ToolKind::Create
         | ToolKind::Delete
@@ -144,7 +142,23 @@ fn tool_subject_color(
         ToolKind::Execute => app.theme.color(ColorToken::Command),
         ToolKind::Search | ToolKind::WebSearch => app.theme.color(ColorToken::Success),
         _ => app.theme.color(ColorToken::Text),
-    }
+    };
+    chat_typography::chat_ink_quiet(app)
+}
+
+/// A row's leading glyph in DSH's fixed 16 px cell: the mark is Goble's own
+/// (`◆`, `◈`, `❯`), drawn as a text run at the cell's own line height so its
+/// baseline is the row's words' baseline.
+fn leading_glyph(mark: &str, color: ColorU, app: &crate::elements::AppContext) -> Box<dyn Element> {
+    chat_typography::leading_text(mark, color, app)
+}
+
+/// A process-row run: the Settings family, so both a row's words and its
+/// glyphs follow the theme family.
+fn row_span(text: String, color: ColorU, app: &crate::elements::AppContext) -> TextSpan {
+    TextSpan::plain(text)
+        .with_color(color)
+        .with_family(chat_typography::chat_font(app))
 }
 
 /// The buckets a chain's header summarises, using grok-build's vocabulary. A
@@ -513,7 +527,7 @@ pub(crate) fn tool_fold_targets(
 /// band behind it. A closed chain reads quiet; the pointer or an open chain
 /// turns it white and swaps the diamond for the arrow. The failed suffix stays
 /// in the error colour. A click opens or folds the whole chain. The run is
-/// delimited by the rail around it, not by punctuation inside its words.
+/// delimited by its aggregated header, not by punctuation inside its words.
 fn verb_group_header(
     label: &str,
     failed: usize,
@@ -526,45 +540,45 @@ fn verb_group_header(
     let open = verb_group_open(fold, key);
     let hovered = hover.borrow().as_deref() == Some(key);
     // The header carries the arrow whenever the block reads as selected: open,
-    // under the pointer, or with one of its member rows under it — the same
-    // states the bracket frames.
+    // under the pointer, or with one of its member rows under it — the states
+    // an open call or a run under the pointer reads in.
     let active = open || hovered || member_hovered;
     let base = app.theme.color(if active {
         ColorToken::Text
     } else {
         ColorToken::Muted
     });
-    let run = |text: String, color: ColorU, weight: FontWeight| -> TextSpan {
-        TextSpan::plain(text)
-            .with_color(color)
-            .with_family(FontFamily::Mono)
-            .with_weight(weight)
-    };
-    let mut spans = vec![
-        run(
-            if active { HOVER_ARROW } else { VERB_GROUP_MARK }.to_string(),
-            base,
-            FontWeight::Regular,
-        ),
-        run(label.to_string(), base, FontWeight::Bold),
-    ];
+    // DSH's disclosure row: a 16 px leading box + 6 px gap, then the row's
+    // words at 13 / 24 in the quiet ink (hover / open reads primary).
+    let glyph = leading_glyph(
+        if active { HOVER_ARROW } else { VERB_GROUP_MARK },
+        base,
+        app,
+    );
+    let mut spans = vec![row_span(label.to_string(), base, app)];
     if failed > 0 {
-        spans.push(run(
+        spans.push(row_span(
             format!(" · {failed} failed"),
             app.theme.color(ColorToken::Error),
-            FontWeight::Regular,
+            app,
         ));
     }
+    let words = InlineText::new(spans)
+        .with_font_size(chat_typography::ROW_SIZE)
+        .with_line_height(chat_typography::ROW_LH)
+        .finish();
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(chat_typography::GLYPH_GAP)
+        .with_child(glyph)
+        .with_child(Expanded::new(words).with_flex(1.0).finish())
+        .finish();
 
     let toggle = fold.clone();
     let key = key.to_string();
     let close_key = key.clone();
-    HoverRow::new(
-        InlineText::new(spans)
-            .with_font_size(TOOL_ROW_FONT_SIZE)
-            .with_line_height(1.4)
-            .finish(),
-    )
+    HoverRow::new(row)
     .with_quiet_hover()
     .with_hover_key(hover.clone(), key.clone())
     .with_on_click(move || {
@@ -634,12 +648,17 @@ fn single_call_column(
     // past its right edge.
     let mut call_column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0)
+        // DSH's expanded body sits 4 px under the row that names it.
+        .with_spacing(4.0)
         .with_child(header);
 
     if record.is_none() {
-        for row in build_tool_call_body(call, mode, record, app) {
-            call_column = call_column.with_child(row);
+        let rows = build_tool_call_body(call, mode, record, app);
+        if !rows.is_empty() {
+            // DSH draws an expanded body as one quiet card under the row, its
+            // left edge on the row's text origin, with the body capped and
+            // scrollable past the cap.
+            call_column = call_column.with_child(super::tool_body::tool_body_card(&key, rows, app));
         }
     }
     (call_column.finish(), mode == ToolDisplayMode::Collapsed)
@@ -657,11 +676,10 @@ fn single_call_column(
 /// survives the per-frame rebuild, and clicking the header advances it.
 ///
 /// Consecutive folded calls stack into one chain, exactly as grok-build folds
-/// them: `◈ Ran 3 commands, Read 2 files, Edited 1 file +12/-3`. The chain is
-/// delimited by a rail in the gutter rather than by punctuation in its label.
-/// A spawn and a question end the chain and keep their own rows. Opening the
-/// chain shows its members, and a member the user opened stays visible without
-/// splitting it.
+/// them: `◈ Ran 3 commands, Read 2 files, Edited 1 file +12/-3`. The chain opens
+/// with its aggregated header, and no rail is drawn beside its rows. A spawn and
+/// a question end the chain and keep their own rows. Opening the chain shows its
+/// members, and a member the user opened stays visible without splitting it.
 pub(super) fn build_tool_call_rows(
     tool_calls: &[ToolCall],
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
@@ -711,10 +729,10 @@ pub(super) fn build_tool_call_rows(
                 on_action,
                 app,
             );
-            // A call with its body open reads as selected, so it keeps the rail
-            // the group's members get; a collapsed one is framed by hover only.
-            // A double click anywhere in the section it frames closes it again.
-            let element = ToolBracket::new(element, !collapsed, hover.clone(), vec![key.clone()])
+            // A double click anywhere in the block closes it again. The block
+            // draws no frame: an open body is its own selected read, a
+            // collapsed one changes only under the pointer.
+            let element = ToolBlockGesture::new(element)
                 .with_on_double_click(collapse_on_double_click(fold, key))
                 .finish();
             column = push(column, element, collapsed);
@@ -758,13 +776,12 @@ pub(super) fn build_tool_call_rows(
                 .any(|key| hovered == Some(key.as_str()))
         };
         let (label, _running, failed) = verb_group_label(&tool_calls[start..end], start, fold);
-        // The run's rail is drawn per segment rather than around the whole run:
-        // a member the user opened is a block of its own, so the run's strokes
-        // stop where that block begins instead of continuing through its body.
-        // `segment` gathers the piece being drawn — the header and the folded
-        // members beside it — and is flushed into `brackets` whenever an opened
-        // member interrupts it.
-        let mut brackets: Vec<Box<dyn Element>> = Vec::new();
+        // The run's gesture is attached per segment rather than around the whole
+        // run: a member the user opened is a block of its own, so a double click
+        // inside it closes the member rather than the run. `segment` gathers the
+        // piece being drawn — the header and the folded members beside it — and
+        // is flushed into `blocks` whenever an opened member interrupts it.
+        let mut blocks: Vec<Box<dyn Element>> = Vec::new();
         let mut segment = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0)
@@ -780,7 +797,6 @@ pub(super) fn build_tool_call_rows(
         // The header is what the first segment always holds, so it is never
         // empty; a segment started after an opened member is, until a folded
         // member lands in it.
-        let mut segment_keys = vec![group_key.clone()];
         let mut segment_empty = false;
         // Folded, a run shows only its header — except for a member the user
         // already opened, which grok-build keeps on screen and transparent.
@@ -809,50 +825,44 @@ pub(super) fn build_tool_call_rows(
             );
             if collapsed {
                 segment = segment.with_child(element);
-                segment_keys.push(member_key);
                 segment_empty = false;
                 continue;
             }
-            // An opened member is bracketed on its own: the run's strokes end
-            // above it, its pair frames its header and its body alone, and the
-            // next piece of the run starts a segment of its own.
+            // An opened member is its own block: the run's gesture covers only
+            // the header and the folded members beside it, the member's own
+            // gesture covers its header and its body, and the next piece of the
+            // run starts a segment of its own.
             if !segment_empty {
-                brackets.push(
-                    ToolBracket::new(
-                        segment.finish(),
-                        open,
-                        hover.clone(),
-                        std::mem::take(&mut segment_keys),
-                    )
-                    .with_on_double_click(collapse_on_double_click(fold, group_key.clone()))
-                    .finish(),
+                blocks.push(
+                    ToolBlockGesture::new(segment.finish())
+                        .with_on_double_click(collapse_on_double_click(fold, group_key.clone()))
+                        .finish(),
                 );
             }
             segment = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(2.0);
             segment_empty = true;
-            brackets.push(
-                ToolBracket::new(element, true, hover.clone(), vec![member_key.clone()])
+            blocks.push(
+                ToolBlockGesture::new(element)
                     .with_on_double_click(collapse_on_double_click(fold, member_key))
                     .finish(),
             );
         }
         if !segment_empty {
-            brackets.push(
-                ToolBracket::new(segment.finish(), open, hover.clone(), segment_keys)
+            blocks.push(
+                ToolBlockGesture::new(segment.finish())
                     .with_on_double_click(collapse_on_double_click(fold, group_key.clone()))
                     .finish(),
             );
         }
-        // The block is bracketed in the free margin beside the text — both
-        // strokes, no inset — while the group is open or the pointer is on any
-        // of its rows. The label carries no punctuation of its own.
+        // The run carries one gesture over its rows and draws no frame: the
+        // label carries no punctuation of its own.
         let mut group = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0);
-        for bracket in brackets {
-            group = group.with_child(bracket);
+        for block in blocks {
+            group = group.with_child(block);
         }
         column = push(column, group.finish(), !open);
         index = end.max(start + 1);
@@ -934,86 +944,76 @@ pub(super) fn tool_call_header(
         return sub_agent_card(record, sub_agent_model, spinner_phase, on_action, app);
     }
 
-    // The row is one line of runs: the verb in bold, the operand and the
-    // detail, each at its own colour and separated by the spaces they already
-    // carry. A member of an open chain is indented under its header and read
-    // white; a stand-alone row starts where prose starts.
-    // One wrapping flow rather than a row of runs: a long operand or detail
+    // The row is one wrapping flow: the verb, the operand and the detail,
+    // separated by the spaces they already carry. A long operand or detail
     // breaks inside the transcript's width, and an over-wide token breaks
     // inside it too, instead of being drawn past the pane's right edge.
-    let run = |text: String, color: ColorU, weight: FontWeight| -> TextSpan {
-        TextSpan::plain(text)
-            .with_color(color)
-            .with_family(FontFamily::Mono)
-            .with_weight(weight)
-    };
-    // Every call wears the diamond, whatever its family or fold; the pointer
-    // swaps it for the arrow in the same two columns. A row the user opened
-    // keeps the arrow with the pointer off it: the open body is read as the
-    // row's selected state, not as a closed row beside it.
+    //
+    // DSH's tool row reads in one tertiary ink (hover / open reads primary),
+    // its verb at the row's regular weight; Goble's own diamond, dotted
+    // diamond and hover arrow keep their characters and their 16 px box.
     let hovered = hover.borrow().as_deref() == Some(key);
-    let active = hovered || mode != ToolDisplayMode::Collapsed;
-    let mark_color = if chain_open || active {
-        ColorToken::Text
-    } else {
-        ColorToken::Muted
-    };
-    let mut spans = vec![run(
-        if active { HOVER_ARROW } else { TOOL_MARK }.to_string(),
-        app.theme.color(mark_color),
-        FontWeight::Regular,
-    )];
+    let active = chain_open || hovered || mode != ToolDisplayMode::Collapsed;
+    let quiet = chat_typography::chat_ink_quiet(app);
+    let primary = chat_typography::chat_ink(app);
+    let text_ink = if active { primary } else { quiet };
+    let glyph = leading_glyph(
+        if active { HOVER_ARROW } else { TOOL_MARK },
+        text_ink,
+        app,
+    );
+    // Deliberate deviation from DSH's `[title] gap8 [2×2 dot] gap8 [summary]`
+    // split: Goble's row is one wrapping prose flow (a long path or command
+    // breaks inside the pane instead of being truncated), and a fixed 2×2 box
+    // cannot sit between two runs of one wrapping `InlineText`. The dot tokens
+    // (`DOT_SIZE`/`DOT_RADIUS`/`DOT_GAP`) stay in the type sheet as the seam
+    // for a future single-line truncating row; the row's ink and weight are
+    // DSH's.
+    let mut spans: Vec<TextSpan> = Vec::new();
     if !parsed.verb.is_empty() {
-        let token = if chain_open || hovered {
-            ColorToken::Text
-        } else {
-            match mode {
-                ToolDisplayMode::Collapsed => ColorToken::Muted,
-                _ => ColorToken::Text,
-            }
-        };
-        spans.push(run(
-            parsed.verb.to_string(),
-            app.theme.color(token),
-            FontWeight::Bold,
-        ));
+        spans.push(row_span(parsed.verb.to_string(), text_ink, app));
     }
     if !parsed.subject.is_empty() {
-        // The operand keeps its own colour while folded: it is the one thing a
-        // folded row is read for. A member of an open chain reads white with
-        // the rest of the chain's own words; only a thought stays quiet, and a
-        // thought is never a member of a chain.
-        let color = if chain_open {
-            app.theme.color(ColorToken::Text)
+        // The operand keeps the row's ink; the per-kind colour language lives
+        // in `tool_subject_color` as the revert seam.
+        let color = if active {
+            primary
         } else {
             tool_subject_color(parsed.kind, mode, app)
         };
-        spans.push(run(
-            parsed.subject.clone(),
-            color,
-            FontWeight::Regular,
-        ));
+        spans.push(row_span(parsed.subject.clone(), color, app));
     }
     // One space between the operand and the detail, whether the family spells
-    // its detail with a leading space (` (2 entries)`, ` +1/-1`) or not.
+    // its detail with a leading space (` (2 entries)`, ` +1/-1`) or not. A
+    // failed call's summary is DSH's error ink; a stopped one would be the warn
+    // label, which Goble has no separate status for.
     let detail = parsed.detail.trim_start();
     if !detail.is_empty() {
-        spans.push(run(
-            format!(" {detail}"),
-            app.theme.color(ColorToken::Muted),
-            FontWeight::Regular,
-        ));
+        let color = if call.status == ToolCallStatus::Error {
+            app.theme.color(ColorToken::Error)
+        } else if active {
+            primary
+        } else {
+            quiet
+        };
+        spans.push(row_span(format!(" {detail}"), color, app));
     }
+    let words = InlineText::new(spans)
+        .with_font_size(chat_typography::ROW_SIZE)
+        .with_line_height(chat_typography::ROW_LH)
+        .finish();
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(chat_typography::GLYPH_GAP)
+        .with_child(glyph)
+        .with_child(Expanded::new(words).with_flex(1.0).finish())
+        .finish();
 
     let toggle = fold.clone();
     let hover_key = key.to_string();
     let toggle_key = key.to_string();
-    HoverRow::new(
-        InlineText::new(spans)
-            .with_font_size(TOOL_ROW_FONT_SIZE)
-            .with_line_height(1.4)
-            .finish(),
-    )
+    HoverRow::new(row)
     .with_quiet_hover()
     .with_hover_key(hover.clone(), hover_key)
     .with_on_click(move || {
@@ -1047,43 +1047,25 @@ fn sub_agent_card(
     } else {
         record.status_affordance()
     };
-    let run = |text: String, color: ColorU, weight: FontWeight| -> TextSpan {
-        TextSpan::plain(text)
-            .with_color(color)
-            .with_family(FontFamily::Mono)
-            .with_weight(weight)
-    };
+    // DSH's sub-agent row: one 13 / 24 process line in the quiet ink, with the
+    // status mark keeping its own state colour (warn while running, the
+    // record's affordance once it ends).
+    let quiet = chat_typography::chat_ink_quiet(app);
     let detail = sub_agent_detail(record, model);
     let mut spans = vec![
-        run(
-            format!("{mark} "),
-            app.theme.color(token),
-            FontWeight::Regular,
-        ),
-        run(
-            "Agent ".to_string(),
-            app.theme.color(ColorToken::Text),
-            FontWeight::Bold,
-        ),
-        run(
-            sub_agent_subject(record),
-            app.theme.color(ColorToken::Muted),
-            FontWeight::Regular,
-        ),
+        row_span(format!("{mark} "), app.theme.color(token), app),
+        row_span("Agent ".to_string(), quiet, app),
+        row_span(sub_agent_subject(record), quiet, app),
     ];
     if !detail.trim().is_empty() {
         // A running child's detail already opens with its own `·`; an ended
         // one's phrase gets one here, so every card reads as one line.
         let separator = if detail.starts_with('·') { " " } else { " · " };
-        spans.push(run(
-            format!("{separator}{detail}"),
-            app.theme.color(ColorToken::Muted),
-            FontWeight::Regular,
-        ));
+        spans.push(row_span(format!("{separator}{detail}"), quiet, app));
     }
     let line = InlineText::new(spans)
-        .with_font_size(SUB_AGENT_FONT_SIZE)
-        .with_line_height(1.4)
+        .with_font_size(chat_typography::ROW_SIZE)
+        .with_line_height(chat_typography::ROW_LH)
         .finish();
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let mut row = Flex::row()
@@ -1152,12 +1134,13 @@ pub(super) fn tool_body_row(
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
     // Inline flow, like the header: a long command or path breaks at the
-    // transcript's width, and an over-wide token breaks inside it.
+    // transcript's width, and an over-wide token breaks inside it. DSH draws a
+    // tool body with the code stack at 11 / 16.
     InlineText::new(vec![TextSpan::plain(text.into())
         .with_color(app.theme.color(color))
         .with_family(FontFamily::Mono)])
-    .with_font_size(TOOL_ROW_FONT_SIZE)
-    .with_line_height(1.4)
+    .with_font_size(chat_typography::CODE_SIZE)
+    .with_line_height(chat_typography::CODE_SMALL_LH)
     .finish()
 }
 
@@ -1167,18 +1150,14 @@ pub(super) fn tool_body_row(
 /// inside the reply.
 pub(super) fn tool_body_span_row(
     spans: Vec<TextSpan>,
-    app: &crate::elements::AppContext,
+    _app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
-    crate::elements::Container::new(
-        crate::elements::InlineText::new(spans)
-            .with_font_size(TOOL_ROW_FONT_SIZE)
-            .with_line_height(1.4)
-            .finish(),
-    )
-    .with_background(crate::elements::Fill::Solid(
-        app.theme.color(ColorToken::Bg),
-    ))
-    .finish()
+    // The one card the caller wraps the body in owns the surface, so a run
+    // carries no band of its own; only the runs' terminal colours differ.
+    InlineText::new(spans)
+        .with_font_size(chat_typography::CODE_SIZE)
+        .with_line_height(chat_typography::CODE_SMALL_LH)
+        .finish()
 }
 
 /// A string argument, when the call carries one.

@@ -5,16 +5,35 @@ use async_trait::async_trait;
 
 use crate::command::{CommandOutput, CommandRunner, ProcessCommandRunner};
 use crate::error::SandboxError;
-use crate::provider::{SandboxHandle, SandboxProvider, SandboxRequest, SandboxStatus};
+use crate::provider::{
+    SandboxBinding, SandboxHandle, SandboxProvider, SandboxRequest, SandboxStatus, SnapshotSupport,
+};
 
 const PROVIDER: &str = "docker";
 const PROGRAM: &str = "docker";
+const WORKSPACE_VOLUME_PREFIX: &str = "goble-ws-";
+
+/// The named volume a project's workspace lives on.
+///
+/// The volume outlives the container: `docker rm -f` deletes the container but
+/// keeps a named volume, so the next container for the same stable sandbox name
+/// mounts the same `/workspace/<slug>` and sees the files the last one wrote.
+/// `docker volume rm` is the only thing that deletes it.
+pub fn workspace_volume(sandbox_name: &str) -> String {
+    format!("{WORKSPACE_VOLUME_PREFIX}{sandbox_name}")
+}
 
 /// Docker through the local CLI.
 ///
 /// Containers are named with the stable sandbox name and labelled so `docker
 /// ps --filter label=goble.sandbox=1` finds them. There is no inbound port and
 /// no VNC: the worker inside connects out to the gateway.
+///
+/// Docker has no filesystem snapshot. Its durable-session equivalent is the
+/// workspace volume ([`workspace_volume`]): terminate the container and the
+/// files are still there, create a new container with the same name and it
+/// mounts them back. Process state is not kept, so the harness conversation
+/// resumes from its native session id, not from memory.
 pub struct DockerProvider {
     runner: Arc<dyn CommandRunner>,
 }
@@ -55,7 +74,27 @@ impl SandboxProvider for DockerProvider {
         PROVIDER
     }
 
+    /// The workspace volume survives the container, but there is no snapshot.
+    fn snapshot_support(&self) -> SnapshotSupport {
+        SnapshotSupport::Workspace
+    }
+
+    /// Resume by mounting the project's workspace volume: the container is new,
+    /// the files are the ones the previous container left.
+    async fn resume(
+        &self,
+        request: &SandboxRequest,
+        _binding: &SandboxBinding,
+    ) -> Result<SandboxHandle, SandboxError> {
+        self.create(request).await
+    }
+
     async fn create(&self, request: &SandboxRequest) -> Result<SandboxHandle, SandboxError> {
+        let mount = format!(
+            "type=volume,source={},target={}",
+            workspace_volume(&request.sandbox_name),
+            request.workspace_path
+        );
         let mut args = vec![
             "run".to_string(),
             "-d".to_string(),
@@ -65,6 +104,8 @@ impl SandboxProvider for DockerProvider {
             "goble.sandbox=1".to_string(),
             "--label".to_string(),
             format!("goble.project={}", request.project_id),
+            "--mount".to_string(),
+            mount,
         ];
         for (key, value) in &request.env {
             args.push("-e".to_string());

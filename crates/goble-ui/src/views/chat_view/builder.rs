@@ -58,6 +58,35 @@ impl ChatView {
         self
     }
 
+    /// Meter this view's content column with the app's content lane: the
+    /// transcript, hints and composer are centred inside the pane's own width
+    /// (the app's width axis: ratio 0.64 clamped 680-920, a per-pane
+    /// preference wins, a narrow pane stays full width), while the pane header
+    /// stays an overlay at the full pane width and never resizes with it.
+    ///
+    /// The host owns the preference and the drag state per pane; the view only
+    /// hands the lane's gestures back. A view that is not wired stays at the
+    /// width it is given (standalone element tests and previews).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_content_lane(
+        mut self,
+        preference: Option<f32>,
+        dragging: bool,
+        drag_edge: Option<crate::elements::LaneEdge>,
+        on_drag_start: Rc<RefCell<dyn FnMut(f32, crate::elements::LaneEdge, f32, f32)>>,
+        on_drag_move: Rc<RefCell<dyn FnMut(f32)>>,
+        on_drag_end: Rc<RefCell<dyn FnMut()>>,
+    ) -> Self {
+        self.content_lane = true;
+        self.content_lane_pref = preference;
+        self.content_lane_dragging = dragging;
+        self.content_lane_drag_edge = drag_edge;
+        self.on_content_lane_drag_start = Some(on_drag_start);
+        self.on_content_lane_drag_move = Some(on_drag_move);
+        self.on_content_lane_drag_end = Some(on_drag_end);
+        self
+    }
+
     pub fn with_header(mut self, header: Box<dyn Element>) -> Self {
         self.header = Some(header);
         self
@@ -255,14 +284,15 @@ impl ChatView {
     }
 
     /// The tokens this conversation has spent, from the provider's own counts.
-    /// Drawn as the transcript's footer disclosure; accounting only.
+    /// Drawn as the transcript's footer usage pill, whose click opens the
+    /// details panel; accounting only, never a price.
     pub fn with_usage(mut self, usage: TokenUsage) -> Self {
         self.usage = usage;
         self
     }
 
-    /// Share the usage disclosure's expanded state with the host, so it
-    /// survives the per-frame rebuild.
+    /// Share the usage popover's open state with the host, so it survives the
+    /// per-frame rebuild.
     pub fn with_usage_open(mut self, open: Rc<RefCell<bool>>) -> Self {
         self.usage_open = open;
         self
@@ -358,8 +388,8 @@ impl ChatView {
         self
     }
 
-    /// The instruction strip the pane draws over the separator above its input:
-    /// the gestures this pane's input answers, as key caps and names.
+    /// The instruction strip the pane draws above its input: the gestures this
+    /// pane's input answers, as key caps and names.
     pub fn with_composer_hints(mut self, hints: Vec<ShortcutHint>) -> Self {
         self.composer_hints = hints;
         self

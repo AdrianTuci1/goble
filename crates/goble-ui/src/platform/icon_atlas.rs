@@ -22,6 +22,13 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("close", "close.svg"),
     icon_bytes!("minimize-01", "minimize-01.svg"),
     icon_bytes!("maximize-01", "maximize-01.svg"),
+    // The pane's fullscreen control (DeepSeek Harness' panel chrome): four
+    // filled corners to expand the pane over the space, two inward arrows to
+    // restore it. They are separate glyphs from `maximize-01`/`minimize-01`,
+    // which other controls (floating-window chrome, the diff panel's
+    // open-in-editor) keep using.
+    icon_bytes!("fullscreen-enter", "fullscreen-enter.svg"),
+    icon_bytes!("fullscreen-exit", "fullscreen-exit.svg"),
     icon_bytes!("upper-left-triangle", "upper-left-triangle.svg"),
     icon_bytes!("menu-01", "menu-01.svg"),
     icon_bytes!("search", "search.svg"),
@@ -40,6 +47,35 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("layers-three-01", "layers-three-01.svg"),
     icon_bytes!("users-02", "users-02.svg"),
     icon_bytes!("chevron-down", "chevron-down.svg"),
+    // The mirror of the disclosure chevron: the model control says "the list
+    // opens up", the way the reference composer's chip does.
+    icon_bytes!("chevron-up", "chevron-up.svg"),
+    // The "Workspaces" sidebar's row set (DeepSeek Harness artwork): stroke
+    // folders with the hover disclosure triangles, the section header's
+    // sliders/project-add controls, the star-as-pin markers and the running
+    // status ring.
+    icon_bytes!("folder-close", "folder-close.svg"),
+    icon_bytes!("folder-open", "folder-open.svg"),
+    icon_bytes!("triangle-right-fill", "triangle-right-fill.svg"),
+    icon_bytes!("triangle-down-fill", "triangle-down-fill.svg"),
+    icon_bytes!("new-chat", "new-chat.svg"),
+    icon_bytes!("project-add", "project-add.svg"),
+    icon_bytes!("sliders-two", "sliders-two.svg"),
+    icon_bytes!("pin-fill", "pin-fill.svg"),
+    icon_bytes!("pin-outline", "pin-outline.svg"),
+    icon_bytes!("status-running", "status-running.svg"),
+    // The Workspaces header's view-options menu: the ordering rows.
+    icon_bytes!("chevrons-up-down", "chevrons-up-down.svg"),
+    icon_bytes!("clock", "clock.svg"),
+    icon_bytes!("flat-list", "flat-list.svg"),
+    // The sidebar session menu's own rows (DSH's `workspace.*` glyphs): the
+    // rename pencil, the archive box, its restore arrow, the "hide archived"
+    // box with the slash, and the archived-only box with the check.
+    icon_bytes!("edit", "edit.svg"),
+    icon_bytes!("archive", "archive.svg"),
+    icon_bytes!("unarchive", "unarchive.svg"),
+    icon_bytes!("archive-off", "archive-off.svg"),
+    icon_bytes!("archive-check", "archive-check.svg"),
     // The prompt marker before a user's own message: a wide, short-armed
     // chevron. The bundled mono face draws `❯` tall and narrow, so the row's
     // marker comes from its own asset instead of that glyph.
@@ -61,6 +97,13 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("agentmode", "agentmode.svg"),
     icon_bytes!("conversation-local", "conversation-local.svg"),
     icon_bytes!("conversation-remote", "conversation-remote.svg"),
+    // The rich input's environment control wears T3 Code's marks: its computer
+    // (lucide `monitor`) for a local environment and its cloud (lucide `cloud`)
+    // for a worker. The two DSH conversation glyphs above still name the same
+    // places where the coarse pair is asked for (the topbar and sidebar keep
+    // them); this pair is the reference app's artwork for the control itself.
+    icon_bytes!("environment-computer", "environment-computer.svg"),
+    icon_bytes!("environment-cloud", "environment-cloud.svg"),
     icon_bytes!("mic", "mic.svg"),
     icon_bytes!("key", "key.svg"),
     icon_bytes!("sliders", "sliders.svg"),
@@ -133,9 +176,18 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("harness-traecli", "harness-traecli.svg"),
     icon_bytes!("harness-vtcode", "harness-vtcode.svg"),
     icon_bytes!("git-branch", "git-branch.svg"),
+    // The DSH fork/branch mark: a trunk forking into two round nodes. It is a
+    // fork affordance, not a git-graph glyph, so `git-branch` above keeps the
+    // git concept.
+    icon_bytes!("branch", "branch.svg"),
+    // The conversation footer's token-usage pill and details title.
+    icon_bytes!("database", "database.svg"),
     icon_bytes!("stop", "stop.svg"),
     icon_bytes!("arrow-up", "arrow-up.svg"),
     icon_bytes!("arrow-left", "arrow-left.svg"),
+    // The send circle's arrow: the mirror of `arrow-left`, for the composer's
+    // send affordance parity with the reference.
+    icon_bytes!("arrow-right", "arrow-right.svg"),
     // The keyboard keys the instruction strips draw as caps. The bundled text
     // faces carry none of the modifier symbols (`⌘ ⇧ ⌥ ⌃ ↵ ⌫`), so a cap that
     // drew its character would paint the font's `.notdef` box instead.
@@ -598,6 +650,80 @@ mod tests {
         );
     }
 
+    /// The DSH-derived glyphs this task adds: the footer's usage `database`, the
+    /// fork `branch`, the pane's `fullscreen-enter`/`fullscreen-exit` pair and
+    /// the composer's mirrored `arrow-right`. Each has to rasterize with ink in
+    /// the atlas's one tint; the fullscreen pair also has to read as its two
+    /// distinct states — four filled corners to expand, two inward arrows to
+    /// restore (no ink at the outer corners).
+    #[test]
+    fn the_dsh_misc_icons_rasterize_with_the_expected_ink() {
+        let icon = |name: &str| {
+            ICON_FILES
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .unwrap_or_else(|| panic!("{name} is registered"))
+                .1
+        };
+        let raster = |name: &str| {
+            rasterize_icon(icon(name)).unwrap_or_else(|| panic!("{name} rasterizes"))
+        };
+        for name in ["database", "branch", "arrow-right"] {
+            let (alpha, width, height) = raster(name);
+            assert!(width > 0 && height > 0, "{name} rasterized to an empty box");
+            assert!(alpha.iter().any(|&a| a > 0), "{name} draws ink");
+        }
+
+        // `fullscreen-enter` is four filled corner brackets: every quadrant's
+        // outer corner holds ink.
+        let (alpha, width, height) = raster("fullscreen-enter");
+        let ink = |x: u32, y: u32| alpha[(y * width + x) as usize] > 0;
+        let corner_ink = |left: bool, top: bool| -> bool {
+            let (x0, x1) = if left {
+                (0, width / 4)
+            } else {
+                (width - width / 4, width)
+            };
+            let (y0, y1) = if top {
+                (0, height / 4)
+            } else {
+                (height - height / 4, height)
+            };
+            (y0..y1).any(|y| (x0..x1).any(|x| ink(x, y)))
+        };
+        for (left, top) in [(true, true), (false, true), (true, false), (false, false)] {
+            assert!(
+                corner_ink(left, top),
+                "the enter glyph fills the {left}/{top} corner"
+            );
+        }
+
+        // `fullscreen-exit` is two stroke arrows pointing inward: ink in the
+        // box, none in those same outer corners.
+        let (alpha, width, height) = raster("fullscreen-exit");
+        let ink = |x: u32, y: u32| alpha[(y * width + x) as usize] > 0;
+        assert!(alpha.iter().any(|&a| a > 0), "the exit glyph draws ink");
+        let corner_empty = |left: bool, top: bool| -> bool {
+            let (x0, x1) = if left {
+                (0, width / 8)
+            } else {
+                (width - width / 8, width)
+            };
+            let (y0, y1) = if top {
+                (0, height / 8)
+            } else {
+                (height - height / 8, height)
+            };
+            (y0..y1).all(|y| (x0..x1).all(|x| !ink(x, y)))
+        };
+        for (left, top) in [(true, true), (false, true), (true, false), (false, false)] {
+            assert!(
+                corner_empty(left, top),
+                "the exit glyph leaves the {left}/{top} corner to the enter glyph"
+            );
+        }
+    }
+
     #[test]
     fn conversation_icons_rasterize() {
         let mut found = 0;
@@ -615,6 +741,56 @@ mod tests {
         assert_eq!(found, 2, "expected both environment conversation icons");
     }
 
+    /// The rich input's environment pair from T3 Code: the computer (lucide
+    /// `monitor`) for a local environment and the cloud (lucide `cloud`) for a
+    /// worker. Both are stroke glyphs, so the atlas has to rasterize their
+    /// lines: the computer's screen is a hollow frame with a stand reaching the
+    /// bottom of the box, and the cloud's outline leaves the bottom corners.
+    #[test]
+    fn the_environment_icons_rasterize_as_the_t3_glyphs() {
+        let bytes = |name: &str| {
+            ICON_FILES
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .unwrap_or_else(|| panic!("{name} is registered"))
+                .1
+        };
+        let raster = |name: &str| {
+            rasterize_icon(bytes(name)).unwrap_or_else(|| panic!("{name} rasterizes"))
+        };
+        let ink = |alpha: &[u8], width: u32, x: u32, y: u32| -> bool {
+            alpha[(y * width + x) as usize] > 0
+        };
+
+        let (alpha, width, height) = raster("environment-computer");
+        assert!(alpha.iter().any(|&a| a > 0), "the computer draws ink");
+        assert!(
+            (0..width).any(|x| ink(&alpha, width, x, height / 8)),
+            "the computer's top rail is drawn"
+        );
+        assert!(
+            !ink(&alpha, width, width / 2, height / 2),
+            "the computer's screen is a frame, not a filled box"
+        );
+        assert!(
+            (height * 3 / 4..height)
+                .any(|y| ink(&alpha, width, width / 2, y)),
+            "the computer's stand reaches the bottom of the box"
+        );
+
+        let (alpha, width, height) = raster("environment-cloud");
+        assert!(alpha.iter().any(|&a| a > 0), "the cloud draws ink");
+        assert!(
+            (height / 3..height / 2)
+                .any(|y| (0..width).any(|x| ink(&alpha, width, x, y))),
+            "the cloud's middle band is drawn"
+        );
+        assert!(
+            !ink(&alpha, width, width / 8, height - 1),
+            "the cloud leaves the bottom-left corner to the box"
+        );
+    }
+
     /// The remote-routing glyph is drawn from its own asset, so it has to
     /// rasterize like the conversation icons it sits beside.
     #[test]
@@ -628,5 +804,30 @@ mod tests {
             img.0.iter().any(|&a| a > 0),
             "icon cloud rendered no opaque pixels"
         );
+    }
+
+    /// The sidebar session menu's five glyphs are each a real asset: the rename
+    /// pencil, the archive box, the restore arrow, the "hide archived" slash and
+    /// the archived-only check. A path the rasterizer cannot parse would leave
+    /// an empty row in the tray or the view-options menu, so each has to
+    /// rasterize with ink in its box.
+    #[test]
+    fn the_session_menu_icons_rasterize() {
+        let mut found = 0;
+        for name in ["edit", "archive", "unarchive", "archive-off", "archive-check"] {
+            let (_, bytes) = ICON_FILES
+                .iter()
+                .find(|(icon, _)| *icon == name)
+                .unwrap_or_else(|| panic!("icon {name} is registered"));
+            let (alpha, width, height) =
+                rasterize_icon(bytes).unwrap_or_else(|| panic!("icon {name} should rasterize"));
+            assert!(width > 0 && height > 0, "{name} rasterized to an empty box");
+            assert!(
+                alpha.iter().any(|&a| a > 0),
+                "{name} rendered no opaque pixels"
+            );
+            found += 1;
+        }
+        assert_eq!(found, 5, "expected all five session-menu icons");
     }
 }

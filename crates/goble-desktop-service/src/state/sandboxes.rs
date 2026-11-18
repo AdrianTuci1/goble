@@ -11,7 +11,9 @@ use goble_persistence::{Project, ProjectSandbox};
 /// Build the durable binding for `project` on `provider`, opened from `host`.
 ///
 /// The binding starts without a provider handle: the caller creates the sandbox
-/// and fills `sandbox_id` once the provider has accepted the name.
+/// and fills `sandbox_id` once the provider has accepted the name. The snapshot
+/// and native session id start empty too; they are filled once a sandbox has
+/// been snapshotted or a harness has reported its conversation.
 pub fn binding_for_project(project: &Project, provider: &str, host: &str) -> ProjectSandbox {
     let identity = WorkspaceIdentity::new(&project.project_id.0, &project.directory, host);
     ProjectSandbox {
@@ -20,6 +22,8 @@ pub fn binding_for_project(project: &Project, provider: &str, host: &str) -> Pro
         sandbox_name: identity.sandbox_name,
         sandbox_id: None,
         workspace_path: identity.sandbox_path,
+        snapshot_id: None,
+        native_session_id: None,
         updated_at: chrono::Utc::now().to_rfc3339(),
     }
 }
@@ -51,6 +55,11 @@ mod tests {
         assert_eq!(first.sandbox_name, "goble-goble-2fbfef8fa780");
         assert_eq!(first.workspace_path, "/workspace/goble");
         assert_eq!(first.sandbox_id, None);
+        // A fresh binding has no durable state yet: the handle arrives when the
+        // sandbox is created, the snapshot when it is first taken and the
+        // conversation when a harness reports one.
+        assert_eq!(first.snapshot_id, None);
+        assert_eq!(first.native_session_id, None);
         assert!(!first.updated_at.is_empty());
     }
 

@@ -97,11 +97,10 @@ pub(crate) async fn execute_tool_call(
         "codebase_search" => {
             let arguments = call.arguments.clone();
             let workspace_dir = workspace_dir.to_path_buf();
-            let output = tokio::task::spawn_blocking(move || {
-                codebase_search(&arguments, &workspace_dir)
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("codebase_search task failed: {error}"))?;
+            let output =
+                tokio::task::spawn_blocking(move || codebase_search(&arguments, &workspace_dir))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("codebase_search task failed: {error}"))?;
             text(output)
         }
         "install_mcp_server" => text(install_mcp_server(mcp_manager, store, &call.arguments).await),

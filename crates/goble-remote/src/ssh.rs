@@ -6,7 +6,10 @@ use async_trait::async_trait;
 
 use crate::command::{CommandOutput, CommandRunner, ProcessCommandRunner};
 use crate::error::SandboxError;
-use crate::provider::{SandboxHandle, SandboxProvider, SandboxRequest, SandboxStatus};
+use crate::provider::{
+    ReleaseOutcome, SandboxBinding, SandboxHandle, SandboxProvider, SandboxRequest, SandboxStatus,
+    SnapshotSupport,
+};
 
 const PROVIDER: &str = "ssh";
 const SSH_PROGRAM: &str = "ssh";
@@ -26,6 +29,13 @@ const WORKER_BINARY: &str = "goblin";
 ///
 /// The worker is started with `nohup env KEY=value ... goblin`, and its pid is
 /// kept in `<install_dir>/goble-worker.pid` for status and teardown.
+///
+/// SSH has no filesystem snapshot. Its durable-session equivalent is the
+/// install directory, which is an ordinary directory on the host: an idle
+/// [`SandboxProvider::release`] stops the worker but keeps the directory (and
+/// the checkout inside it), so the next run starts the worker against the same
+/// files. [`SandboxProvider::destroy`] is the explicit full teardown that
+/// removes the directory.
 pub struct SshProvider {
     target: SshTarget,
     image: Option<String>,
@@ -127,6 +137,13 @@ impl SshProvider {
         )
     }
 
+    fn stop_script(&self, dir: &str) -> String {
+        format!(
+            "dir={dir}\npid_file=\"$dir/goble-worker.pid\"\nif [ -f \"$pid_file\" ]; then\n  pid=$(cat \"$pid_file\")\n  if [ -n \"$pid\" ]; then\n    kill \"$pid\" 2>/dev/null || true\n    n=0\n    while kill -0 \"$pid\" 2>/dev/null && [ \"$n\" -lt 50 ]; do\n      sleep 0.1\n      n=$((n + 1))\n    done\n    kill -9 \"$pid\" 2>/dev/null || true\n  fi\nfi\nif pgrep -f -- \"$dir/goblin\" >/dev/null 2>&1; then\n  pkill -f -- \"$dir/goblin\" 2>/dev/null || true\n  sleep 0.2\n  pkill -9 -f -- \"$dir/goblin\" 2>/dev/null || true\nfi\nrm -f \"$pid_file\"\necho stopped",
+            dir = shell_quote(dir),
+        )
+    }
+
     fn status_script(&self, dir: &str) -> String {
         format!(
             "dir={dir}\npid_file=\"$dir/goble-worker.pid\"\nif [ ! -d \"$dir\" ]; then\n  echo missing\n  exit 0\nfi\nif [ -f \"$pid_file\" ]; then\n  pid=$(cat \"$pid_file\")\n  if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then\n    echo running\n    exit 0\n  fi\nfi\nif pgrep -f -- \"$dir/goblin\" >/dev/null 2>&1; then\n  echo running\nelse\n  echo paused\nfi",
@@ -139,6 +156,30 @@ impl SshProvider {
 impl SandboxProvider for SshProvider {
     fn kind(&self) -> &'static str {
         PROVIDER
+    }
+
+    /// The remote install directory outlives the worker process; there is no
+    /// snapshot object to hand over.
+    fn snapshot_support(&self) -> SnapshotSupport {
+        SnapshotSupport::Workspace
+    }
+
+    /// Resume by starting the worker again in the same install directory.
+    async fn resume(
+        &self,
+        request: &SandboxRequest,
+        _binding: &SandboxBinding,
+    ) -> Result<SandboxHandle, SandboxError> {
+        self.create(request).await
+    }
+
+    /// Stop the worker and keep the install directory — the closest thing SSH
+    /// has to a snapshot. The next run starts the worker against the same files.
+    async fn release(&self, handle: &SandboxHandle) -> Result<ReleaseOutcome, SandboxError> {
+        let dir = self.install_dir_for(handle);
+        let output = self.ssh(self.stop_script(&dir)).await?;
+        self.checked(output, format!("ssh stop {dir}")).await?;
+        Ok(ReleaseOutcome::kept())
     }
 
     async fn create(&self, request: &SandboxRequest) -> Result<SandboxHandle, SandboxError> {

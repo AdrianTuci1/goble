@@ -140,10 +140,7 @@ export function SubagentPane({
             </Text>
           ) : (
             messages.map((message) => (
-              <View
-                key={message.id}
-                style={[styles.row, message.role === "user" && styles.rowUser]}
-              >
+              <View key={message.id} style={styles.row}>
                 <View
                   style={[
                     styles.bubble,
@@ -236,17 +233,16 @@ const styles = StyleSheet.create({
     paddingVertical: space.xxl,
     textAlign: "center",
   },
+  // Both roles share one full-width column: the row stretches its bubble to the
+  // same 860px content width and the text always starts at the same left edge.
+  // The role is told by the fill/border and the author label, never by width.
   row: {
-    alignItems: "flex-start",
-  },
-  rowUser: {
-    alignItems: "flex-end",
+    alignItems: "stretch",
   },
   bubble: {
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 4,
-    maxWidth: "86%",
     paddingHorizontal: space.lg,
     paddingVertical: space.md,
   },
@@ -262,12 +258,14 @@ const styles = StyleSheet.create({
     ...typography.eyebrow,
     color: palette.subtle,
     fontSize: 10,
+    textAlign: "left",
   },
   body: {
     ...typography.body,
     color: palette.text,
     fontSize: 14,
     lineHeight: 20,
+    textAlign: "left",
   },
   state: {
     alignItems: "center",

@@ -322,10 +322,10 @@ fn a_sub_agent_card_carries_its_open_and_stop_controls() {
     );
 }
 
-/// The card reads a step under the reply: 12 px, like grok-build's status line,
-/// rather than the tool row's 13.
+/// The card reads at DSH's process-row size: 13 / 24, the same tier as the tool
+/// row it stands beside.
 #[test]
-fn a_sub_agent_card_reads_a_step_under_the_tool_rows() {
+fn a_sub_agent_card_reads_at_the_process_row_size() {
     let call = spawn_call(ToolCallStatus::Running);
     let record = record(
         "conv-child-1",
@@ -347,8 +347,8 @@ fn a_sub_agent_card_reads_a_step_under_the_tool_rows() {
         })
         .collect();
     assert!(
-        sizes.iter().all(|size| *size <= 12.0),
-        "the card's text stays under the tool row's size, got {sizes:?}"
+        sizes.iter().all(|size| (*size - 13.0).abs() < 1e-5),
+        "the card reads at the 13 px process tier, got {sizes:?}"
     );
 }
 
@@ -407,7 +407,7 @@ fn a_resting_row_carries_its_diamond() {
     assert!(
         text_runs(&commands)
             .iter()
-            .any(|(text, _, _, _)| text == "◈ "),
+            .any(|(text, _, _, _)| text == "◈"),
         "a command's folded header wears the dotted diamond"
     );
 }

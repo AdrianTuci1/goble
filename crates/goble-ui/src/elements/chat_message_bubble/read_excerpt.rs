@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use crate::elements::chat_content::{ToolCall, ToolDisplayMode};
-use crate::elements::{Container, CrossAxisAlignment, Element, Fill, Flex, InlineText, TextSpan};
+use crate::elements::{CrossAxisAlignment, Element, Flex, InlineText, TextSpan};
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::ToolCallStatus;
@@ -322,15 +322,15 @@ pub(super) fn read_excerpt_line(
     read_excerpt_band(spans, app)
 }
 
-/// A band row of the excerpt: the runs drawn on the darkest background, so the
-/// file reads as its own surface within the bubble.
-pub(super) fn read_excerpt_band(spans: Vec<TextSpan>, app: &crate::elements::AppContext) -> Box<dyn Element> {
-    Container::new(
-        InlineText::new(spans)
-            .with_font_size(12.0)
-            .with_line_height(1.4)
-            .finish(),
-    )
-    .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-    .finish()
+/// One row of the excerpt. The excerpt is a tool body, so it reads in the code
+/// stack at DSH's 11 / 16 tool-body tier; the card the body is wrapped in owns
+/// the surface, so a row carries no band of its own.
+pub(super) fn read_excerpt_band(
+    spans: Vec<TextSpan>,
+    _app: &crate::elements::AppContext,
+) -> Box<dyn Element> {
+    InlineText::new(spans)
+        .with_font_size(crate::elements::chat_typography::CODE_SIZE)
+        .with_line_height(crate::elements::chat_typography::CODE_SMALL_LH)
+        .finish()
 }

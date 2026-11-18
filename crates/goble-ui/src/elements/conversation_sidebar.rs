@@ -44,6 +44,21 @@ pub struct ConversationEntry {
     /// read the conversation's own messages can say it was never answered, so
     /// an entry built without them is shown rather than silently dropped.
     pub has_agent_reply: bool,
+    /// When the conversation last changed, as the store's raw RFC3339 stamp.
+    /// The sidebar's rows format their own compact relative time from it; a
+    /// caller that only has a display label (a mock, an older surface) leaves
+    /// it empty and the sidebar falls back to `timestamp`.
+    pub updated_at: Option<String>,
+    /// When the conversation was created, raw RFC3339, for the row's hover
+    /// card. Empty when the caller does not know.
+    pub created_at: Option<String>,
+    /// Whether the conversation is archived: the sidebar's archived filter
+    /// hides it from the default list, its row reads as history (muted, no
+    /// status, no pin) and the app blocks opening it.
+    pub archived: bool,
+    /// Whether the conversation is starred. The sidebar's Starred block reads
+    /// this alongside its own snapshot set, so the row and the block agree.
+    pub starred: bool,
 }
 
 impl Default for ConversationEntry {
@@ -59,6 +74,10 @@ impl Default for ConversationEntry {
             directory: String::new(),
             harness: "goble".to_string(),
             has_agent_reply: true,
+            updated_at: None,
+            created_at: None,
+            archived: false,
+            starred: false,
         }
     }
 }
@@ -81,6 +100,10 @@ impl ConversationEntry {
             directory: String::new(),
             harness: "goble".to_string(),
             has_agent_reply: true,
+            updated_at: None,
+            created_at: None,
+            archived: false,
+            starred: false,
         }
     }
 
@@ -118,6 +141,34 @@ impl ConversationEntry {
     /// list; see [`ConversationEntry::has_agent_reply`].
     pub fn with_has_agent_reply(mut self, has_agent_reply: bool) -> Self {
         self.has_agent_reply = has_agent_reply;
+        self
+    }
+
+    /// The store's raw RFC3339 `updated_at`, so the sidebar can format the
+    /// compact DSH relative time (`4min`, `17h`) without changing the
+    /// preformatted `timestamp` other surfaces still read.
+    pub fn with_updated_at(mut self, updated_at: impl Into<String>) -> Self {
+        let updated_at = updated_at.into();
+        self.updated_at = (!updated_at.trim().is_empty()).then_some(updated_at);
+        self
+    }
+
+    /// The store's raw RFC3339 `created_at`, for the row's hover card.
+    pub fn with_created_at(mut self, created_at: impl Into<String>) -> Self {
+        let created_at = created_at.into();
+        self.created_at = (!created_at.trim().is_empty()).then_some(created_at);
+        self
+    }
+
+    /// Mark the conversation archived (see [`ConversationEntry::archived`]).
+    pub fn with_archived(mut self, archived: bool) -> Self {
+        self.archived = archived;
+        self
+    }
+
+    /// Mark the conversation starred (see [`ConversationEntry::starred`]).
+    pub fn with_starred(mut self, starred: bool) -> Self {
+        self.starred = starred;
         self
     }
 }

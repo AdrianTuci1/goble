@@ -1,15 +1,19 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::elements::chat_content::{SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
+use crate::elements::chat_typography;
 use crate::elements::{
-    parse_unified_diff, Diff, DiffLine, DiffLineKind, Element, Hunk, InlineText, TerminalData,
-    TerminalLine, TerminalStatus, TextSpan,
+    parse_unified_diff, Axis, ConstrainedBox, Container, CrossAxisAlignment, Diff, DiffLine,
+    DiffLineKind, EdgeInsets, Element, Flex, Hunk, InlineText, Padding, ScrollState, Scrollable,
+    TerminalData, TerminalLine, TerminalStatus, TextSpan,
 };
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::{one_line, tool_kind_for, web_search_sources, ToolCallStatus, ToolKind};
 use super::read_excerpt::{read_excerpt, read_excerpt_column, EXPANDED_LINE_CAP};
-use super::tool_call::{argument_str, tool_body_row, tool_body_span_row, TOOL_ROW_FONT_SIZE};
+use super::tool_call::{argument_str, tool_body_row, tool_body_span_row};
 
 /// First / last body lines a truncated read draws, and the fewer lines a
 /// truncated command's output draws — grok-build's per-block truncation counts.
@@ -27,6 +31,73 @@ pub(super) const MAX_LINE_CHARS: usize = 2_000;
 /// so it can be read; past this many bytes the rest is elided and named, so a
 /// frame's cost stops following the result's length.
 pub(super) const MAX_BODY_BYTES: usize = 16 * 1024;
+
+/// The expanded-body scroll regions this thread keeps, and how many. The tree
+/// is rebuilt every frame, so a body's scroll offset has to live somewhere
+/// that outlives the element instance; the app threads its own maps for the
+/// tool folds and terminal filters, but an expanded body's nested scroll has no
+/// such map, so it is memoised here on the render path exactly like the
+/// highlighted-block memo in [`super::read_excerpt`]: no lock, no worker, and
+/// bounded so a long conversation cannot grow it without limit.
+const BODY_SCROLL_ENTRIES: usize = 32;
+
+thread_local! {
+    static BODY_SCROLL: RefCell<Vec<(String, Rc<RefCell<ScrollState>>)>> =
+        RefCell::new(Vec::new());
+}
+
+/// The scroll region of the expanded body drawn under the tool row `key`,
+/// created on first use and kept for the next frame so a wheel over an
+/// expanded body actually moves it.
+fn body_scroll_state(key: &str) -> Rc<RefCell<ScrollState>> {
+    BODY_SCROLL.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((_, state)) = cache.iter().find(|(cached, _)| cached == key) {
+            return Rc::clone(state);
+        }
+        let state = Rc::new(RefCell::new(ScrollState::default()));
+        if cache.len() >= BODY_SCROLL_ENTRIES {
+            cache.remove(0);
+        }
+        cache.push((key.to_string(), Rc::clone(&state)));
+        state
+    })
+}
+
+/// An expanded tool body as the one card DSH draws it in: the quiet code-block
+/// surface, a 0.5 px hairline, the card radius, DSH's own inset, indented to
+/// the row's text origin ([`chat_typography::BODY_INDENT`]) and capped with a
+/// nested scroll past [`chat_typography::CARD_MAX_INNER_HEIGHT`].
+pub(super) fn tool_body_card(
+    key: &str,
+    rows: Vec<Box<dyn Element>>,
+    app: &crate::elements::AppContext,
+) -> Box<dyn Element> {
+    let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    for row in rows {
+        column = column.with_child(row);
+    }
+    let scroll = Scrollable::new(column.finish(), Axis::Vertical)
+        .with_state(body_scroll_state(key))
+        .with_fit_content(true)
+        .finish();
+    let card = Container::new(
+        ConstrainedBox::new(scroll)
+            .with_max_height(chat_typography::CARD_MAX_INNER_HEIGHT)
+            .finish(),
+    )
+    .with_background(chat_typography::card_surface(app))
+    .with_border(chat_typography::card_border(app))
+    .with_corner_radius(chat_typography::card_radius(app))
+    .with_padding(chat_typography::CARD_PADDING)
+    .finish();
+    // The body sits under the row's text origin, not under its glyph box.
+    Padding::new(
+        card,
+        EdgeInsets::new(chat_typography::BODY_INDENT, 0.0, 0.0, 0.0),
+    )
+    .finish()
+}
 
 /// `line` cut to [`MAX_LINE_CHARS`] characters, with `…` where it was cut.
 pub(super) fn elide_line(line: &str) -> Cow<'_, str> {
@@ -710,8 +781,8 @@ fn argument_rows(
                     .with_family(FontFamily::Mono)
                     .with_color(app.theme.color(ColorToken::Text)),
             ])
-            .with_font_size(TOOL_ROW_FONT_SIZE)
-            .with_line_height(1.4)
+            .with_font_size(chat_typography::CODE_SIZE)
+            .with_line_height(chat_typography::CODE_SMALL_LH)
             .finish()
         })
         .collect()

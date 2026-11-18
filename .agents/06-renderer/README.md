@@ -11,9 +11,9 @@ The renderer is ours and built from scratch on `wgpu` + `winit` in Rust. It is t
 ```mermaid
 flowchart TD
   harness["agent harness (grok-build reus)"] -->|"events"| bus["event bus"]
-  bus --> state["app state (app/src)"]
-  state --> actions["actions (app/src)"]
-  actions --> shell["app/src/ui tree"]
+  bus --> state["app state (apps/desktop/src)"]
+  state --> actions["actions (apps/desktop/src)"]
+  actions --> shell["apps/desktop/src/ui tree"]
   shell --> gobleui["goble-ui (wgpu/winit)"]
 ```
 
@@ -22,8 +22,8 @@ flowchart TD
 | Layer | Crate | Role |
 | --- | --- | --- |
 | Base UI/rendering | `goble-ui` | elements, layout, paint, wgpu/winit platform, theme, text atlas |
-| UI tree | `app/src/ui` | the in-app element tree (`build_ui`) + snapshot/action types |
-| App shell | `app/` (`goble-app`) | state + actions + `RootView` + runtime orchestration (`crate::runtime`) |
+| UI tree | `apps/desktop/src/ui` | the in-app element tree (`build_ui`) + snapshot/action types |
+| App shell | `apps/desktop/` (`goble-app`) | state + actions + `RootView` + runtime orchestration (`crate::runtime`) |
 | Backend | `goble-desktop-service` | `DesktopState` (the real data/actions) |
 
 ## Design direction

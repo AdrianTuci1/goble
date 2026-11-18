@@ -2,27 +2,34 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::elements::chat_content::{group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, ListItem, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, MainAxisAlignment, Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text, TextSpan, TopbarButton};
+use crate::color::ColorU;
+use crate::elements::chat_content::{group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, InlineStyle, ListItem, SubAgentRow, ToolCall, ToolDisplayMode};
+use crate::elements::chat_typography;
+use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, MainAxisAlignment, Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text, TextSpan, TopbarButton};
 use crate::event::DispatchedEvent;
-use crate::geometry::Vector2F;
+use crate::geometry::{vec2f, Vector2F};
 use crate::platform::text_atlas::FontWeight;
-use crate::theme::{ColorToken, FontFamily, SpacingToken};
-use super::quote_rail::QuoteRail;
+use crate::theme::{ColorToken, SpacingToken};
+use super::quote_rail::{QuoteRail, QUOTE_RAIL_WIDTH};
 use crate::elements::table_grid::{self, TableCell, TableGrid};
 use crate::elements::terminal_block::TerminalBlockPlumbing;
-use super::tool_call::{build_tool_call_rows, to_text_span, TOOL_ROW_FONT_SIZE};
+use super::tool_call::{build_tool_call_rows, to_text_span};
 
 /// The prompt marker that leads a user's own message. grok-build's `❯` is a
 /// wide, short-armed chevron at the user accent, and the bundled mono face
-/// draws that glyph tall and narrow, so the marker is its own glyph.
-const PROMPT_ARROW_SIZE: f32 = 11.0;
-/// The room between the marker and the message's first character.
-const PROMPT_ARROW_GAP: f32 = 4.0;
+/// draws that glyph tall and narrow, so the marker is its own glyph. The size
+/// and the room before the text are pinned in the shared chat type sheet so
+/// the sticky pin draws the same line.
+const PROMPT_ARROW_SIZE: f32 = chat_typography::PROMPT_ARROW_SIZE;
+const PROMPT_ARROW_GAP: f32 = chat_typography::PROMPT_ARROW_GAP;
 /// The paragraph size of a transcript row; the marker is centred on the
-/// first line's box rather than on the row's top edge.
-const MESSAGE_FONT_SIZE: f32 = 14.0;
-const MESSAGE_LINE_HEIGHT: f32 = 1.2;
+/// first line's box rather than on the row's top edge. DSH's 14 px content
+/// size, from the shared chat type sheet.
+const MESSAGE_FONT_SIZE: f32 = chat_typography::BODY_SIZE;
+/// An assistant paragraph's line height: DSH's 14 / 24.
+const MESSAGE_LINE_HEIGHT: f32 = chat_typography::BODY_LH;
+/// The user's own message: DSH's 14 / 22 bubble line height.
+const USER_MESSAGE_LINE_HEIGHT: f32 = chat_typography::USER_LH;
 /// How much of a still-streaming thought its row draws: its newest lines, and
 /// at most one window of characters, so a thought written as a few long
 /// paragraphs stays about seven wrapped rows. The tail is what the model is
@@ -30,6 +37,26 @@ const MESSAGE_LINE_HEIGHT: f32 = 1.2;
 /// text atlas rasterizes for it — from growing with the whole thought.
 const LIVE_REASONING_LINES: usize = 6;
 const LIVE_REASONING_CHARS: usize = 600;
+
+/// Whether a block is prose (the markdown body, which DSH separates with its
+/// 16 px block gap) or a process step (a reasoning row, a notice, a command
+/// block, which keep the tighter step rhythm).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockFlow {
+    Prose,
+    Process,
+}
+
+impl BlockFlow {
+    fn of(block: &ChatBlock) -> Self {
+        match block {
+            ChatBlock::Reasoning { .. }
+            | ChatBlock::Notice { .. }
+            | ChatBlock::Terminal(_) => Self::Process,
+            _ => Self::Prose,
+        }
+    }
+}
 
 /// The end of a thought that is still streaming, started on a line boundary
 /// and led by an ellipsis row when anything was left out.
@@ -251,34 +278,79 @@ impl ChatMessageBubble {
     }
 
     fn rebuild(&mut self, app: &crate::elements::AppContext) {
-        let padding = app.theme.spacing_px(SpacingToken::Md);
-        let spacing = app.theme.spacing_px(SpacingToken::Sm);
+        // DSH's markdown block gap is 16 px; the process rows keep the older,
+        // tighter rhythm (a reasoning row and a notice are steps of the reply
+        // rather than prose blocks).
+        let prose_gap = chat_typography::block_gap(app);
+        let process_gap = app.theme.spacing_px(SpacingToken::Sm);
 
         // A transcript row is a full-width band, not a pill: the agent's own
         // reply (and the tool rows above it) draws no box at all — no fill, no
         // border, no corner radius — and the user's own message is the one
-        // surface, a square grey band that spans the pane. `Md` (12 px at the
-        // default density) is the transcript's padding at both edges, so no
-        // line of text touches the pane's border.
+        // surface, a square band that spans the pane. DSH's bubble padding —
+        // 10 px vertical, 16 px horizontal — is the transcript's inset at both
+        // edges, so no line of text touches the pane's border. The band stays
+        // square: DSH's 20 px radius belongs to its inset, right-aligned bubble,
+        // while Goble's rows share the assistant row's full-width column.
         let bg = match self.role {
             ChatRole::User => Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)),
             ChatRole::Assistant | ChatRole::Tool => Fill::None,
         };
 
-        let mut column = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(spacing);
+        let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
         // The assistant's own words lead the calls they announce: the harness
         // stores a step's preamble in the same row as its calls, and grok-build
         // paints that message before the calls it made. The calls are part of
         // the reply and take no terminal plumbing: a call never draws a block,
         // a copy button or a filter, which belong to a command the user ran.
-        for block in group_fragments_into_blocks(&self.fragments) {
-            column = column.with_child(self.render_block(&block, app));
+        //
+        // The gaps are per pair rather than the column's uniform spacing: DSH's
+        // prose-block gap is 16 px, while the process rows (reasoning, notices)
+        // keep the tighter step rhythm. A heading carries its own DSH top
+        // margin: 32 px over the blocks, i.e. the gap plus the rest of the
+        // margin; h4's margin is the 16 px gap alone.
+        let blocks = group_fragments_into_blocks(&self.fragments);
+        let mut previous: Option<BlockFlow> = None;
+        for block in &blocks {
+            let flow = BlockFlow::of(block);
+            let gap = match previous {
+                None => 0.0,
+                Some(BlockFlow::Prose) if flow == BlockFlow::Prose => prose_gap,
+                Some(_) => process_gap,
+            };
+            if gap > 0.0 {
+                column = column.with_child(Empty::new().with_size(vec2f(0.0, gap)).finish());
+            }
+            let mut element = self.render_block(block, app);
+            // DSH's heading margins: h1–h3 keep 32 px above and 16 below, h4
+            // 16 either side. The pair gap already supplies 16 below; the top
+            // margin is split between the pair gap and a padding on the
+            // heading, so the space above a heading is 32 from the prose above
+            // it, or the whole margin when it opens the message.
+            if let ChatBlock::Heading { level, .. } = block {
+                if *level <= 3 {
+                    let top = (chat_typography::H1_TOP_MARGIN - gap).max(0.0);
+                    if top > 0.0 {
+                        element = Padding::new(element, EdgeInsets::new(0.0, top, 0.0, 0.0)).finish();
+                    }
+                }
+            }
+            column = column.with_child(element);
+            previous = Some(flow);
         }
 
         if !self.tool_calls.is_empty() {
+            // The reply's own prose hands the calls the same gap it gives the
+            // next paragraph; a process row keeps the tight step rhythm.
+            let gap = match previous {
+                Some(BlockFlow::Prose) => prose_gap,
+                Some(BlockFlow::Process) => process_gap,
+                None => 0.0,
+            };
+            if gap > 0.0 {
+                column = column.with_child(Empty::new().with_size(vec2f(0.0, gap)).finish());
+            }
             column = column.with_child(build_tool_call_rows(
                 &self.tool_calls,
                 &self.tool_fold,
@@ -295,11 +367,13 @@ impl ChatMessageBubble {
         // line, the way grok-build's prompt row does: the marker sits beside
         // the text and every wrapped line starts at the same x, so a long
         // message hangs under its first character. The agent's rows carry no
-        // marker; their tool marks are part of the reply itself.
+        // marker; their tool marks are part of the reply itself. Both rows are
+        // full-width and left-aligned: the marker is the only permitted
+        // difference between their text origins (DSH's own user bubble is a
+        // right-aligned capped inset, which the owner explicitly rejected).
         let content: Box<dyn Element> = match self.role {
             ChatRole::User => {
-                let line_box = MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT;
-                let marker_top = (line_box - PROMPT_ARROW_SIZE) / 2.0;
+                let marker_top = chat_typography::prompt_marker_top();
                 Flex::row()
                     .with_main_axis_size(MainAxisSize::Max)
                     .with_cross_axis_alignment(CrossAxisAlignment::Start)
@@ -321,38 +395,72 @@ impl ChatMessageBubble {
         };
 
         // No width cap and no radius: the row is laid out at whatever the
-        // transcript gives it, which is the pane's full width.
+        // transcript gives it, which is the pane's full width. The marker and
+        // the assistant's own rows share the column's left edge.
+        let band_padding = EdgeInsets::new(
+            chat_typography::BAND_PADDING_X,
+            chat_typography::BAND_PADDING_Y,
+            chat_typography::BAND_PADDING_X,
+            chat_typography::BAND_PADDING_Y,
+        );
         self.root = Some(
             Container::new(content)
                 .with_background(bg)
-                .with_padding(EdgeInsets::uniform(padding))
+                .with_padding(band_padding)
                 .finish(),
         );
     }
 
     fn render_block(&self, block: &ChatBlock, app: &crate::elements::AppContext) -> Box<dyn Element> {
-        let padding = app.theme.spacing_px(SpacingToken::Md);
         match block {
             ChatBlock::Paragraph(spans) => {
+                // Prose takes the Settings family through the one seam; an
+                // inline code span keeps the mono family the span resolver
+                // gave it, because DSH draws inline code with its code stack.
+                // The user's own row is DSH's 14 / 22 bubble line; the agent's
+                // prose is the 14 / 24 markdown base.
+                let line_height = if self.role == ChatRole::User {
+                    USER_MESSAGE_LINE_HEIGHT
+                } else {
+                    MESSAGE_LINE_HEIGHT
+                };
+                let family = chat_typography::chat_font(app);
                 let text_spans = spans
                     .iter()
-                    .map(|s| to_text_span(s, app, &self.on_action))
+                    .map(|s| {
+                        let span = to_text_span(s, app, &self.on_action);
+                        if matches!(s.style, InlineStyle::Code) {
+                            span
+                        } else {
+                            span.with_family(family)
+                        }
+                    })
                     .collect();
                 self.recorded(InlineText::new(text_spans))
                     .with_font_size(MESSAGE_FONT_SIZE)
+                    .with_line_height(line_height)
                     .finish()
             }
             ChatBlock::Heading { level, text } => {
-                let font_size = match level {
-                    1 => 20.0,
-                    2 => 18.0,
-                    3 => 16.0,
-                    _ => 14.0,
+                // DSH's markdown heading ladder: 21/30, 19/28, 18/26, 14/24,
+                // the first three bold and h4 semibold.
+                let (font_size, line_height, weight) = match level {
+                    1 => (chat_typography::H1_SIZE, chat_typography::H1_LH, FontWeight::Bold),
+                    2 => (chat_typography::H2_SIZE, chat_typography::H2_LH, FontWeight::Bold),
+                    3 => (chat_typography::H3_SIZE, chat_typography::H3_LH, FontWeight::Bold),
+                    _ => (
+                        chat_typography::H4_SIZE,
+                        chat_typography::H4_LH,
+                        FontWeight::SemiBold,
+                    ),
                 };
                 self.recorded_text(
                     Text::new(text.clone())
                         .with_theme_color(ColorToken::Text, app)
-                        .with_font_size(font_size),
+                        .with_font_family(chat_typography::chat_font(app))
+                        .with_font_size(font_size)
+                        .with_line_height(line_height)
+                        .with_weight(weight),
                 )
                 .finish()
             }
@@ -361,7 +469,12 @@ impl ChatMessageBubble {
                 // label rides along with the body, and the body is coloured by
                 // that language when it resolves (otherwise it stays plain).
                 let mut code_element = Code::new(code.clone())
-                    .with_font_size(13.0)
+                    // DSH's fenced body: 11 / 19 in the code stack, with an
+                    // 11 px language banner.
+                    .with_font_size(chat_typography::CODE_SIZE)
+                    .with_language_font_size(chat_typography::CODE_LANGUAGE_SIZE)
+                    .with_language_line_height(chat_typography::CODE_LANGUAGE_LH)
+                    .with_line_height(chat_typography::CODE_LH)
                     .with_theme_color(ColorToken::Text, app)
                     // The transcript has one width and no horizontal scroll, so
                     // a fence wraps at the pane's edge instead of running off
@@ -373,17 +486,20 @@ impl ChatMessageBubble {
                         .with_language_theme_color(ColorToken::Muted, app)
                         .with_highlight(lang);
                 }
-                // A fenced block is a full-width panel band — the same band
-                // treatment the read excerpt and the terminal block use — not
-                // a rounded card.
+                // DSH's code card: radius 16, a 0.5px hairline and the quiet
+                // code-block surface, inset by the block gap.
                 Container::new(
                     Flex::column()
                         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                         .with_child(self.recorded_code(code_element).finish())
                         .finish(),
                 )
-                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_padding(EdgeInsets::uniform(padding))
+                .with_background(chat_typography::card_surface(app))
+                .with_border(chat_typography::card_border(app))
+                .with_corner_radius(chat_typography::card_radius(app))
+                .with_padding(EdgeInsets::uniform(
+                    app.theme.spacing_px(SpacingToken::Lg),
+                ))
                 .finish()
             }
             ChatBlock::Ansi { text } => {
@@ -402,7 +518,8 @@ impl ChatMessageBubble {
                             // A run with no foreground keeps the theme's text
                             // colour, exactly as a reset returns a terminal to
                             // its default.
-                            let mut span = TextSpan::plain(run.text);
+                            let mut span = TextSpan::plain(run.text)
+                                .with_family(chat_typography::chat_font(app));
                             if let Some(color) = run.color {
                                 span = span.with_color(color);
                             }
@@ -434,11 +551,15 @@ impl ChatMessageBubble {
             .finish(),
             ChatBlock::Table { header, rows } => self.render_table(header, rows, app),
             ChatBlock::Rule => Divider::horizontal().finish(),
+            // A notice is DSH's compaction-marker row: one quiet
+            // process-sized line, no band behind it.
             ChatBlock::Notice { text } => self
                 .recorded_text(
                     Text::new(text.clone())
-                        .with_theme_color(ColorToken::Muted, app)
-                        .with_font_size(12.0),
+                        .with_color(chat_typography::chat_ink_quiet(app))
+                        .with_font_family(chat_typography::chat_font(app))
+                        .with_font_size(chat_typography::ROW_SIZE)
+                        .with_line_height(chat_typography::ROW_LH),
                 )
                 .finish(),
             ChatBlock::Image { alt, url } => {
@@ -504,20 +625,27 @@ impl ChatMessageBubble {
 
         let toggle = self.reasoning_expanded.clone();
         let key = key.to_string();
-        let header = Chip::flat(
+        // DSH's disclosure row: 13 / 24 regular, tertiary ink that brightens to
+        // secondary under the pointer; system family. The hover ink is a second
+        // run the chip paints in place of the first while the pointer is over
+        // it — the resting run is built before paint knows where the pointer is.
+        let run = |ink: ColorU| {
             Text::new(label)
-                .with_theme_color(ColorToken::Muted, app)
-                .with_font_family(FontFamily::Mono)
-                .with_font_size(TOOL_ROW_FONT_SIZE)
-                .with_weight(FontWeight::Bold)
-                .finish(),
-        )
-        .with_on_click(move || {
-            let mut expanded = toggle.borrow_mut();
-            let entry = expanded.entry(key.clone()).or_insert(false);
-            *entry = !*entry;
-        })
-        .finish();
+                .with_color(ink)
+                .with_font_family(chat_typography::chat_font(app))
+                .with_font_size(chat_typography::ROW_SIZE)
+                .with_line_height(chat_typography::ROW_LH)
+                .with_weight(FontWeight::Regular)
+                .finish()
+        };
+        let header = Chip::flat(run(chat_typography::chat_ink_quiet(app)))
+            .with_hover_variant(run(chat_typography::chat_ink(app)))
+            .with_on_click(move || {
+                let mut expanded = toggle.borrow_mut();
+                let entry = expanded.entry(key.clone()).or_insert(false);
+                *entry = !*entry;
+            })
+            .finish();
 
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -535,16 +663,20 @@ impl ChatMessageBubble {
             } else {
                 reasoning_tail(text)
             };
+            // The body is DSH's compact markdown: 13 / 20, system family, the
+            // row's quiet ink, indented 22 px from the row's text origin (the
+            // quote rail's own 2 px stroke plus the gap below).
             column = column.with_child(
                 QuoteRail::new(
                     self.recorded_text(
                         Text::new(body)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_family(FontFamily::Mono)
-                            .with_font_size(TOOL_ROW_FONT_SIZE),
+                            .with_color(chat_typography::chat_ink_quiet(app))
+                            .with_font_family(chat_typography::chat_font(app))
+                            .with_font_size(chat_typography::ROW_SIZE)
+                            .with_line_height(chat_typography::ROW_TIGHT_LH),
                     )
                     .finish(),
-                    app.theme.spacing_px(SpacingToken::Sm),
+                    chat_typography::BODY_INDENT - QUOTE_RAIL_WIDTH,
                 )
                 .finish(),
             );
@@ -555,7 +687,9 @@ impl ChatMessageBubble {
     /// Render a nested block stack (a blockquote's or list item's content) in a
     /// column so it keeps its paragraph structure.
     fn render_blocks(&self, blocks: &[ChatBlock], app: &crate::elements::AppContext) -> Box<dyn Element> {
-        let spacing = app.theme.spacing_px(SpacingToken::Sm);
+        // DSH's assistant block gap is 16 px; the nested stacks (a quote's or a
+        // list item's blocks) keep it, so paragraphs stay distinct.
+        let spacing = chat_typography::block_gap(app);
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(spacing);
@@ -596,8 +730,10 @@ impl ChatMessageBubble {
                 .with_child(
                     self.recorded_text(
                         Text::new(marker)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(14.0),
+                            .with_color(chat_typography::chat_ink_quiet(app))
+                            .with_font_family(chat_typography::chat_font(app))
+                            .with_font_size(chat_typography::BODY_SIZE)
+                            .with_line_height(chat_typography::BODY_LH),
                     )
                     .finish(),
                 )
@@ -680,13 +816,20 @@ impl ChatMessageBubble {
                 let text = cells.get(index).cloned().unwrap_or_default();
                 let span = crate::elements::TextSpan::plain(text)
                     .with_color(app.theme.color(ColorToken::Text))
+                    .with_family(chat_typography::chat_font(app))
                     .with_weight(if header {
-                        FontWeight::SemiBold
+                        // DSH's table head is the 500 weight; `Medium` is the
+                        // bundled Roboto's closest static weight.
+                        FontWeight::Medium
                     } else {
                         FontWeight::Regular
                     });
                 let cell = self
-                    .recorded(InlineText::new(vec![span]).with_font_size(14.0))
+                    .recorded(
+                        InlineText::new(vec![span])
+                            .with_font_size(chat_typography::TABLE_SIZE)
+                            .with_line_height(chat_typography::TABLE_LH),
+                    )
                     .finish();
                 grid.cell(cell, *weight)
             })

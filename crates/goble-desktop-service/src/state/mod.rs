@@ -45,6 +45,7 @@ mod mcp;
 mod remote;
 mod sandboxes;
 mod settings;
+mod settings_file;
 mod translator;
 mod turns;
 mod types;
@@ -60,11 +61,16 @@ mod tests;
 pub use attach::{AttachedSession, SessionAttach};
 pub use catalog::ModelGroup;
 pub use remote::{
-    deploy, sandbox_request, RemoteDeploy, RemoteSandbox, GATEWAY_URL_ENV, PROJECT_ID_ENV,
-    REMOTE_DEPLOY_EVENT, REPO_BRANCH_ENV, REPO_URL_ENV, WORKER_ID_ENV, WORKER_TOKEN_ENV,
-    WORKSPACE_PATH_ENV,
+    acquire, deploy, sandbox_binding, sandbox_request, AcquiredSandbox, RemoteDeploy, RemoteRelease,
+    RemoteSandbox, SandboxResume, GATEWAY_URL_ENV, NATIVE_SESSION_ENV, PROJECT_ID_ENV,
+    REMOTE_DEPLOY_EVENT, REMOTE_RELEASE_EVENT, REPO_BRANCH_ENV, REPO_URL_ENV, WORKER_ID_ENV,
+    WORKER_TOKEN_ENV, WORKSPACE_PATH_ENV,
 };
 pub use sandboxes::{binding_for_local_project, binding_for_project};
+pub use settings_file::{
+    HarnessDraft, HostDraft, McpDraft, McpTransportDraft, ModelDraft, ModelProbeDraft,
+    SettingsChangedEvent,
+};
 pub use workflow_scheduler::start_workflow_scheduler;
 pub use types::{
     AgentInfo, Chat, ChatMessage, ClusterIdentityInfo, CommandProposedEvent, ExecutionInfo, Intent,
@@ -116,6 +122,13 @@ pub struct DesktopState {
     /// read failed. The file is the identity of a group; this is only the page's
     /// last view of it.
     environment: Mutex<environment::EnvironmentCache>,
+    /// The one writer for the three settings files (`config.toml`,
+    /// `environment.toml`, `hosts.toml`), built from `config_path`. It owns the
+    /// per-file lock, the revision cache and the atomic `0600` write protocol.
+    settings_editor: Mutex<Option<Arc<goble_core::config::ConfigEditor>>>,
+    /// The external-edit watcher for the settings files, kept alive with the
+    /// state: dropping the state stops its thread.
+    settings_watch: Mutex<Option<settings_file::SettingsWatch>>,
     /// The daemon core (embedded): owns the harness registry and execution
     /// ledger. DesktopState is the composition root for the embedded daemon, so
     /// it seeds the registry and drives the daemon instead of constructing a

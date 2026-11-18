@@ -9,8 +9,8 @@
 mod bubble;
 mod quote_rail;
 mod read_excerpt;
+mod tool_block_gesture;
 mod tool_body;
-mod tool_bracket;
 mod tool_call;
 #[cfg(test)]
 mod tests;
@@ -23,5 +23,3 @@ pub(crate) use tool_call::{tool_fold_targets, ToolFoldTarget};
 pub(crate) use quote_rail::QUOTE_RAIL_WIDTH;
 #[cfg(test)]
 pub(crate) use read_excerpt::read_excerpt;
-#[cfg(test)]
-pub(crate) use tool_body::SUB_AGENT_TRANSCRIPT_NOTE;

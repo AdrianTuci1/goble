@@ -12,7 +12,7 @@ pub mod mac;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-pub use window::{run_with_root, WindowControl};
+pub use window::{run_with_root, CursorKind, WindowControl};
 
 pub mod current {
     cfg_if::cfg_if! {
@@ -41,6 +41,47 @@ pub mod fallback {
     /// explicit "no file chosen" everywhere else.
     pub fn pick_file() -> Option<String> {
         None
+    }
+
+    /// Open the platform's directory picker and return the folder the user
+    /// chose.
+    ///
+    /// The "add workspace" flow's one step that needs the OS: a Workspace in
+    /// the sidebar is a directory, and picking it is the native part (see
+    /// `mac::pick_directory`). A target with no native picker answers `None`,
+    /// so the flow adds nothing rather than inventing a path.
+    pub fn pick_directory() -> Option<String> {
+        None
+    }
+
+    /// Reveal `path` in the platform's file manager (DSH's "Show in Finder",
+    /// the workspace row's second menu action). macOS implements it with
+    /// `NSWorkspace` in [`super::mac`]; the other targets open the containing
+    /// folder in their own file manager, and an unknown target honestly answers
+    /// `false` rather than pretending something opened.
+    pub fn reveal_in_file_manager(path: &str) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let folder = std::path::Path::new(path)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(path));
+            return std::process::Command::new("xdg-open")
+                .arg(folder)
+                .spawn()
+                .is_ok();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return std::process::Command::new("explorer")
+                .arg(format!("/select,{path}"))
+                .spawn()
+                .is_ok();
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            let _ = path;
+            false
+        }
     }
 
     pub fn default_font_family() -> &'static str {

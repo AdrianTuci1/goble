@@ -16,6 +16,10 @@ pub struct SearchInput {
     compact: bool,
     icon: bool,
     extra_height: f32,
+    /// The run's font size; `None` keeps the field's historical default.
+    text_size: Option<f32>,
+    /// The box's corner radius; `None` keeps the square field.
+    corner_radius: Option<f32>,
     /// The insertion point, shared with the host so it survives the per-frame
     /// rebuild. Without one the field edits at the end of its value.
     caret: Option<Rc<RefCell<usize>>>,
@@ -35,6 +39,8 @@ impl SearchInput {
             compact: false,
             icon: true,
             extra_height: 0.0,
+            text_size: None,
+            corner_radius: None,
             caret: None,
             on_change: None,
             on_focus_change: None,
@@ -96,6 +102,19 @@ impl SearchInput {
     /// has a comfortable click target.
     pub fn with_extra_height(mut self, px: f32) -> Self {
         self.extra_height = px;
+        self
+    }
+
+    /// Set the run's font size (the sidebar's Workspaces field uses 13pt).
+    pub fn with_text_size(mut self, size: f32) -> Self {
+        self.text_size = Some(size);
+        self
+    }
+
+    /// Round the field's box (the sidebar's Workspaces field uses the theme
+    /// radius). The default stays square.
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = Some(radius);
         self
     }
 
@@ -174,19 +193,39 @@ impl SearchInput {
             if self.focused {
                 run = run.with_child(caret_beam(app));
             }
-            run = run.with_child(text_run(self.placeholder.clone(), ColorToken::Muted, app));
+            run = run.with_child(text_run_sized(
+                self.placeholder.clone(),
+                ColorToken::Muted,
+                self.text_size,
+                app,
+            ));
         } else if self.focused {
             let chars: Vec<char> = self.value.chars().collect();
             let (before, after) = chars.split_at(self.caret_index());
             if !before.is_empty() {
-                run = run.with_child(text_run(before.iter().collect(), ColorToken::Text, app));
+                run = run.with_child(text_run_sized(
+                    before.iter().collect(),
+                    ColorToken::Text,
+                    self.text_size,
+                    app,
+                ));
             }
             run = run.with_child(caret_beam(app));
             if !after.is_empty() {
-                run = run.with_child(text_run(after.iter().collect(), ColorToken::Text, app));
+                run = run.with_child(text_run_sized(
+                    after.iter().collect(),
+                    ColorToken::Text,
+                    self.text_size,
+                    app,
+                ));
             }
         } else {
-            run = run.with_child(text_run(self.value.clone(), ColorToken::Text, app));
+            run = run.with_child(text_run_sized(
+                self.value.clone(),
+                ColorToken::Text,
+                self.text_size,
+                app,
+            ));
         }
         // Fill the available width so the box has equal margins on both sides
         // when placed in a stretched column (e.g. the sidebar).
@@ -203,6 +242,9 @@ impl SearchInput {
         let mut container = Container::new(row)
             .with_padding(EdgeInsets::new(padding, v_pad, padding, v_pad))
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
+        if let Some(radius) = self.corner_radius {
+            container = container.with_corner_radius(radius);
+        }
         if self.focused {
             container = container.with_border(app.theme.color(ColorToken::Focus).into());
         } else {
@@ -332,11 +374,23 @@ impl Element for SearchInput {
 
 /// One run of the field's text. The value is drawn in two of these with the
 /// caret's beam between them; the placeholder is drawn in one.
-fn text_run(text: String, color: ColorToken, app: &AppContext) -> Box<dyn Element> {
-    Text::new(text)
+/// The field's run at an explicit size (the default keeps the historical
+/// `Text` default; a restyled host like the sidebar passes its own).
+fn text_run_sized(
+    text: String,
+    color: ColorToken,
+    size: Option<f32>,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let run = Text::new(text)
         .with_theme_color(color, app)
-        .with_max_lines(1)
-        .finish()
+        .with_max_lines(1);
+    let run = if let Some(size) = size {
+        run.with_font_size(size)
+    } else {
+        run
+    };
+    run.finish()
 }
 
 #[cfg(test)]

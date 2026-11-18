@@ -57,6 +57,80 @@ binary, or an `http(s)` URL). `region` and `environment` are provider-specific:
 on `box`, `environment` is the named Boat environment; on `cloud_run`,
 `environment` is the GCP project id.
 
+## Durable sessions: snapshot and resume
+
+A remote session is a binding, not a process. The `project_sandboxes` row keeps
+the durable state, and every deploy either reuses the live sandbox, restores a
+dead one, or creates a fresh one — it never silently starts clean when the
+binding held state.
+
+| Column | Meaning |
+|---|---|
+| `provider` | Adapter kind that owns the sandbox and its snapshots |
+| `sandbox_name`, `workspace_path` | Stable identity from `WorkspaceIdentity` |
+| `sandbox_id` | Provider handle of the sandbox that exists now (`NULL` once destroyed) |
+| `snapshot_id` | Last provider-side filesystem snapshot; restored by the next deploy |
+| `native_session_id` | Harness conversation to resume; passed to the worker as `GOBLE_NATIVE_SESSION_ID` |
+| `updated_at` | Last activity; the idle reaper measures from it |
+
+`goble_remote::SandboxBinding` and `goble_remote::SnapshotRef` are the
+provider-neutral form of that row. `goble_remote::SandboxProvider` gained
+optional methods with defaults, so an adapter without snapshots keeps its old
+behaviour exactly: `snapshot_support()`, `snapshot()`,
+`create_from_snapshot()`, `resume()` and `release()` (snapshot first, then
+destroy, both attempted; a provider that keeps the sandbox itself returns
+`ReleaseOutcome::kept()` instead).
+
+### Per-provider support matrix
+
+| Provider | Level | Snapshot | Restore | Notes |
+|---|---|---|---|---|
+| `modal` | `filesystem` | real: `Sandbox.snapshot_filesystem()` | real: `modal.Image.from_id()` | Release runs *snapshot then terminate* in one bridge process (`snapshot_and_terminate`); `create` carries `snapshot_id` and ignores the request image |
+| `e2b` | `pause_resume` | no snapshot object | real: `POST /sandboxes/{id}/resume` | Release pauses instead of deleting; a paused sandbox keeps filesystem and memory, and the binding keeps `sandbox_id` |
+| `docker` | `workspace` | unsupported | best effort: named volume `goble-ws-<sandbox>` mounted at the workspace path | `docker rm -f` keeps the named volume; the next container mounts the same files. Process state is not kept. |
+| `ssh` | `workspace` | unsupported | best effort: install directory | Release stops the worker and keeps the directory; `destroy` is still the full teardown that removes it |
+| `cloud_run` | `none` | unsupported | conversation only | Cloud Run has no durable disk. The documented state-tarball equivalent needs a GCS bucket named in the agent table and the config has no field for one, so the adapter reports `none` rather than faking it. Code is re-cloned from `GOBLE_REPO_URL`; the harness conversation resumes from the native session id. |
+| `daytona`, `box` | `none` | unsupported | conversation only | Their native snapshot/pause APIs are not wired here; a dead sandbox starts from the image and the deploy report says `created` |
+
+`created_without_snapshot` in the deploy report means exactly that promise is
+kept: the binding held a snapshot, the provider cannot restore it, and a fresh
+sandbox ran instead.
+
+### Lifecycle and configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GOBLE_SANDBOX_IDLE_SECS` | `1800` | Idle window before the reaper snapshots and stops a project sandbox; `0` disables the reaper |
+| `GOBLE_SANDBOX_SNAPSHOT_ON_CLOSE` | on | `0`, `false` or `no` makes a close a plain destroy, so state is not kept |
+
+`DesktopState::deploy_remote_agent` resumes or creates;
+`release_remote_agent` stops one project's sandbox and leaves the binding
+resumable; `reap_idle_remote_agents` releases every binding idle past the
+window; `record_remote_native_session` stores the conversation a worker
+reports. Deploy and release report on `remote:deploy` / `remote:release`; the
+deploy report carries `resumed` (`reused` / `restored` / `created` /
+`created_without_snapshot`), `snapshot_id`, `native_session_id` and
+`snapshot_support`.
+
+The worker receives `GOBLE_NATIVE_SESSION_ID` whenever the binding knows a
+conversation, so a DSH harness maps it to `--session-id` and continues the
+conversation even though the sandbox that ran the previous turn is gone.
+
+### Migration
+
+`project_sandboxes` is migrated in place when the store opens: the nullable
+`snapshot_id` and `native_session_id` columns are added when missing. Existing
+rows keep their binding and read back with `NULL` for both new fields; no
+re-save step is needed. Re-opening an already-migrated database is a no-op.
+
+### Verification
+
+```bash
+cargo test -p goble-remote        # adapters, trait defaults, Modal bridge (fake SDK)
+cargo test -p goble-persistence   # binding round-trip and the in-place migration
+cargo test -p goble-desktop-service state::remote
+```
+
 ## Worker image
 
 A remote agent runs `goblin` inside a container the provider pulls, so the
@@ -84,6 +158,17 @@ leader through a Kubernetes `Lease` and snapshots to a mounted volume
 the provisioner passes `GOBLE_GATEWAY_URL` and `GOBLE_WORKER_TOKEN` as sandbox
 env and the worker dials out. `GET /health` on port 8787 is the readiness
 report the image's `HEALTHCHECK` reads.
+
+### DSH runtime variant
+
+The same Dockerfile also builds an image whose worker drives the DeepSeek
+Harness headless profile installed in the sandbox instead of the native
+harness: `docker build -f deploy/worker/Dockerfile --build-arg RUNTIME=dsh`
+(see [remote-dsh-runtime.md](remote-dsh-runtime.md)). It is the plain worker
+image plus the harness and `GOBLE_HARNESS=dsh`; the gateway connection, the
+desktop protocol, `/health` and the entrypoint are unchanged, so a
+`[remote_agents.<name>]` table points at it the same way. Credentials are copied
+into the sandbox per run and deleted afterwards, never baked into the image.
 
 What a table puts in `image`:
 
@@ -220,11 +305,15 @@ cargo run -p goble-gateway -- \
   --bind 127.0.0.1:8788 \
   --pin-file ~/.goble/gateway-pin \
   --worker-token-file ~/.goble/gateway-worker-token \
-  --public-url http://127.0.0.1:8788
+  --public-url http://127.0.0.1:8788 \
+  --data-dir ~/.goble/gateway
 ```
 
 At startup the gateway prints a PIN when none is supplied and prints a generated
-worker token once. Sessions live in memory and expire after 12 hours.
+worker token once. Browser sessions live in memory and expire after 12 hours.
+The control plane's session bindings are the one thing kept on disk: they are
+written to `sessions.json` under `--data-dir` (default `~/.goble/gateway`), so a
+restart keeps the same worker + conversation binding per name.
 
 Routes:
 
@@ -233,10 +322,22 @@ Routes:
 | `GET /` | PIN login (redirects to `/app/` when logged in) |
 | `POST /login`, `POST /logout` | Session cookie lifecycle |
 | `GET /app/` | Expo web app (session required) |
-| `GET /api/workers` | Connected workers as JSON |
+| `GET /api/workers`, `GET /api/v1/workers` | Connected workers as JSON |
+| `POST /api/v1/session` | PIN → bearer token for native clients |
 | `GET /panel` | Transport console for raw frame debugging |
 | `GET /ws/worker?id=<id>` | Worker endpoint, bearer token |
 | `GET /ws/client?worker=<id>` | Browser endpoint, session cookie |
+| `POST /api/v1/sessions`, `GET /api/v1/sessions[/{id}]` | Session bindings (worker + conversation), created/reused by name |
+| `POST /api/v1/sessions/{id}/runs` | Dispatch a run, one per session, returns a run id |
+| `GET /api/v1/runs/{id}`, `.../events`, `.../stream` | Run status, replayable event log, SSE replay + live |
+| `POST /api/v1/sessions/{id}/cancel` | Settle a run and ask the worker to stop it |
+
+The `/api/v1/sessions` and `/api/v1/runs` routes are the remote-execution
+control plane: everything a phone, a web client, or an ACP bridge needs to drive
+an agent in a sandbox over plain HTTP and SSE instead of raw protocol frames. It
+uses the same bearer/cookie session as `/api/workers` and is documented in
+[gateway-api.md](gateway-api.md).
+
 
 The gateway accepts loopback Host headers plus `--public-url` and repeated
 `--allow-host` values. It speaks plain HTTP/WebSocket; terminate TLS with
@@ -262,7 +363,7 @@ crate's `web/` directory. If the bundle is absent, `/app/` returns a build page.
 ## Cloud agents in the desktop app
 
 A conversation routed to Remote is a viewer pane: the transcript and the
-composer, with the worker connection's state over them (`app/src/ui/worker.rs`).
+composer, with the worker connection's state over them (`apps/desktop/src/ui/worker.rs`).
 The ways in:
 
 - the "▾" environment menu's **Cloud agent** row (after "New terminal" and "New
@@ -306,7 +407,7 @@ cargo test -p goble-remote        # every provider, Cloud Run included
 cargo test -p goble-core config   # config schema, hub.toml, setup status and briefs
 cargo test -p goble-cli setup     # the write surface
 cargo test -p goble-app --test setup_flow
-cargo test -p goble-gateway
+cargo test -p goble-gateway      # relay + remote-execution control plane (see gateway-api.md)
 npm run web:build
 cargo test -p goblin-worker
 cargo check --workspace --all-targets

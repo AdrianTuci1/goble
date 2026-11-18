@@ -1,0 +1,90 @@
+//! UI builder for the native Goble app.
+//!
+//! Builds the complete element tree from a [`UiSnapshot`] / [`AiSnapshot`]
+//! every frame. Lives in the executable (matching warp-new's "thick app"
+//! model) so the app owns both the state and the tree; there is no separate
+//! hot-reusable dylib or ABI boundary anymore.
+//!
+//! One module per surface: the pane-tree model ([`pane`]), the plain snapshots
+//! the tree is built from ([`snapshot`]), the host callbacks that mutate app
+//! state ([`actions`]), the value types the panels render ([`types`]) and the
+//! builder itself ([`build`]). Their items are re-exported here, so
+//! `crate::ui::X` keeps naming them.
+
+pub mod agent_dashboard;
+pub mod chat;
+pub mod color_picker;
+pub mod connectors;
+pub mod crons;
+pub mod diff_panel;
+pub mod explorer;
+pub mod file_view;
+pub mod global_search;
+pub mod harness;
+pub mod hosts;
+pub mod inbox;
+pub mod media;
+pub mod model_form;
+pub mod onboarding;
+pub mod palette;
+pub mod panes;
+pub mod pickers;
+pub mod projects;
+pub mod shell;
+pub mod shortcuts_help;
+pub mod sidebar;
+pub mod space_bar;
+pub mod session_menu;
+pub mod tab_menu;
+pub mod terminal;
+pub mod vault;
+pub mod worker;
+
+mod actions;
+mod build;
+mod pane;
+pub mod settings;
+mod shortcut_hints;
+mod snapshot;
+mod top_overlay;
+mod types;
+
+pub use actions::{
+    AgentDashboardAction, AiActions, DiffPanelAction, FloatStartHandler, MediaActions,
+    ProjectsActions, UiActions,
+};
+pub use build::{build_ui, BuildContext};
+pub use pane::{
+    DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane,
+    PaneDropTarget, PaneKind, PaneRect, Space, SplitDir,
+};
+pub use snapshot::{
+    AiSnapshot, ComposerContext, MediaNode, MediaProject, MediaSession, MediaSnapshot,
+    PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, SubAgentViewSnapshot,
+    UiSnapshot, WorkerPaneSnapshot, WorkflowViewSnapshot,
+};
+pub use tab_menu::{TabMenuAction, TabMenuTab};
+pub use types::{
+    AgentDashboardGrouping, AgentDashboardState, AppTab, ArchivedFilter, CostEntry, CronEntry,
+    ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind, LlmFormField, McpSearchEntry,
+    McpServerEntry, OnboardingAction, RemoteAgentEntry, RemoteDeploy, SearchRow, SettingsCategory,
+    SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
+    WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry, WorkflowStepEntry, WorkspaceRouting,
+};
+
+/// Width of the left conversation sidebar.
+pub const SIDEBAR_WIDTH: f32 = 300.0;
+
+/// Width of the connectors sheet (wider than the default panels).
+pub const CONNECTORS_WIDTH: f32 = 480.0;
+
+#[cfg(test)]
+mod diff_panel_tests;
+#[cfg(test)]
+mod pane_tests;
+#[cfg(test)]
+mod open_menu_tests;
+#[cfg(test)]
+mod sidebar_menu_tests;
+#[cfg(test)]
+mod settings_category_tests;

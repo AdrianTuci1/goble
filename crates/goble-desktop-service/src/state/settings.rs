@@ -179,6 +179,26 @@ impl DesktopState {
         Ok(())
     }
 
+    /// The sidebar's Workspaces list — the directories the user added with the
+    /// Workspaces header's "+" — as a JSON blob of `{ path, title }` rows.
+    /// `None` when the user has never added one.
+    ///
+    /// This is the durable half of the add-workspace flow: a Workspace row in
+    /// the sidebar is a real directory the user picked, so it must come back on
+    /// the next launch even when no conversation has run in it yet (the folder
+    /// groups the sidebar derives from `chats.working_dir` only cover
+    /// directories that already hold sessions).
+    pub fn get_ui_workspaces(&self) -> Option<String> {
+        self.store.lock().get_setting("ui.workspaces").ok().flatten()
+    }
+
+    /// Persist the sidebar's Workspaces list as a JSON blob, replacing any
+    /// prior one.
+    pub fn set_ui_workspaces(&self, json: &str) -> anyhow::Result<()> {
+        self.store.lock().set_setting("ui.workspaces", json)?;
+        Ok(())
+    }
+
     /// Whether the user has completed (or dismissed) the first-run onboarding
     /// flow. A returning run skips the onboarding overlays and the
     /// getting-started tip when this is set.

@@ -1,7 +1,7 @@
 # Goble — Project structure
 
 This document describes the file structure of the Goble workspace. It reflects the **current** state
-and marks the **target additions** (new crates and domain modules in `app/`) according to the
+and marks the **target additions** (new crates and domain modules in `apps/desktop/`) according to the
 grok-build architectural approach (small crates per concern) + warp-new (thick-app).
 
 > Conventions: `[target]` = doesn't exist yet, to be created. `[refactor]` = exists, but is being
@@ -13,10 +13,10 @@ grok-build architectural approach (small crates per concern) + warp-new (thick-a
 
 ```
 goble/
-├─ Cargo.toml                 # workspace: members = ["app", "crates/*"]
+├─ Cargo.toml                 # workspace: members = ["apps/desktop", "crates/*"]
 ├─ package.json               # npm workspace: workspaces = ["apps/*"]; typecheck + web:build
-├─ app/                       # GUIPRODUCT shell (goble-app, native wgpu/winit) → thin client over daemon
-├─ apps/                      # Expo clients: common (shared TS) + mobile (phone) + web (desktop shell)
+├─ apps/                      # product surfaces: desktop (Rust app) + common (shared TS) + mobile (phone) + web (desktop shell)
+│  └─ desktop/                # GUIPRODUCT shell (goble-app, native wgpu/winit) → thin client over daemon
 ├─ crates/                    # composable crates; the daemon core is framework-agnostic
 ├─ deploy/                    # goblin Dockerfile + goblin-cluster Helm chart
 ├─ scripts/                   # dev-ui.sh, install-goblin.sh, release.sh
@@ -26,7 +26,7 @@ goble/
 
 ---
 
-## `app/` — GUI (thick-app, presentation only)
+## `apps/desktop/` — GUI (thick-app, presentation only)
 
 The GUI is a **thin client**: view snapshots, actions, element tree. It contains no execution
 semantics. It talks to the daemon across a boundary (`DaemonClient`).
@@ -51,12 +51,12 @@ semantics. It talks to the daemon across a boundary (`DaemonClient`).
 | `ui/vault.rs`, `ui/model_form.rs` | sheets/dialogs |
 | `integration_testing/` | headless UI tests (not browser): `ui_render`, `chat_flow`, `cron_flow`, `vault_flow`, `connector_flow`, `first_run_flow`, `harness_flow`, `projects_flow`, `common` |
 
-### New domains in `app/` (warp-new pattern: one domain = `app/src/<domain>/`)
+### New domains in `apps/desktop/` (warp-new pattern: one domain = `apps/desktop/src/<domain>/`)
 
 ```
-app/src/projects/    # [implemented] per-directory observability: projects + sessions + "what's running"
-app/src/media/       # [implemented] medium selector (Local / VM / Remote / Browser / Container)
-app/src/voice/       # [model-only] microphone + live STT→TTS transcript (kept on hold)
+apps/desktop/src/projects/  # [implemented] per-directory observability: projects + sessions + "what's running"
+apps/desktop/src/media/     # [implemented] medium selector (Local / VM / Remote / Browser / Container)
+apps/desktop/src/voice/     # [model-only] microphone + live STT→TTS transcript (kept on hold)
 ```
 
 Each follows the `ai/` model: `state.rs` + `actions.rs` + `mod.rs`; in `ui/mod.rs` add `XSnapshot` +
@@ -64,7 +64,10 @@ Each follows the `ai/` model: `state.rs` + `actions.rs` + `mod.rs`; in `ui/mod.r
 
 ---
 
-## `apps/` — the Expo clients (TypeScript)
+## `apps/` — the desktop app and the Expo clients
+
+`apps/desktop` is the Rust app crate and is not an npm workspace (npm ignores an `apps/*` directory
+without a `package.json`).
 
 The browser and phone clients are one Expo codebase split into three npm workspaces. The root
 `package.json` declares `workspaces: ["apps/*"]`, so one `npm ci` installs a single hoisted
@@ -104,8 +107,8 @@ in-memory/browser default.
 
 ## `crates/` — the core (daemon + shared types)
 
-Thick-app rule: a module goes into `crates/` if it **does not depend on `app/`/wgpu** and is reusable
-(or the daemon uses it). `crates/` never depends on `app/`.
+Thick-app rule: a module goes into `crates/` if it **does not depend on `apps/desktop/`/wgpu** and is reusable
+(or the daemon uses it). `crates/` never depends on `apps/desktop/`.
 
 ### Existing
 
@@ -137,7 +140,7 @@ Thick-app rule: a module goes into `crates/` if it **does not depend on `app/`/w
 ## Daemon: two composition roots, one core `[refactor]`
 
 ```
-            GUI (app/)                     ──thin client──►  DaemonClient (goble-daemon-client)
+            GUI (apps/desktop/)            ──thin client──►  DaemonClient (goble-daemon-client)
                  │                                         (in-process OR over mTLS WX)
                  │                                          DaemonPort (goble-daemon)
                  ▼

@@ -63,11 +63,30 @@ fn an_expanded_result_is_bounded_by_its_byte_cap() {
         rows <= 400,
         "the expanded body's rows follow the cap, not the result: {rows} rows"
     );
+    // DSH caps an expanded body in a scrollable card, so the elision row it
+    // names lives below the card's viewport; the cap is what the frame paints.
+    let app = AppContext::default();
+    let card = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, corner_radius }
+                if *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && (*corner_radius
+                        - crate::elements::chat_typography::card_radius(&app))
+                    .abs()
+                        < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the expanded body is drawn on DSH's card");
+    let cap = crate::elements::chat_typography::CARD_MAX_INNER_HEIGHT
+        + 2.0 * crate::elements::chat_typography::CARD_PADDING.top
+        + 1.0;
     assert!(
-        drawn_texts(&commands)
-            .iter()
-            .any(|row| row.contains("more bytes")),
-        "one row names the bytes the cap left out"
+        card.height() <= cap,
+        "the body card is capped at DSH's max height ({cap}), got {card:?}"
     );
 }
 

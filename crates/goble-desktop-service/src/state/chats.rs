@@ -141,6 +141,51 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Archive a conversation, or restore it (`archived = false`).
+    ///
+    /// The archive stamp is durable (`chats.archived_at`, NULL while listed
+    /// normally) and the write emits `chats:updated`, so the sidebar's archived
+    /// filter repaints through the existing event path. The conversation keeps
+    /// its order slot and its messages: archiving is a listing state, not a
+    /// delete.
+    pub fn set_chat_archived(&self, id: &str, archived: bool) -> anyhow::Result<()> {
+        let archived_at = archived.then(|| Utc::now().to_rfc3339());
+        self.store
+            .lock()
+            .set_chat_archived(id, archived_at.as_deref())?;
+        self.emit("chats:updated", ());
+        Ok(())
+    }
+
+    /// When a conversation was archived, or `None` while it is listed normally.
+    pub fn chat_archived(&self, id: &str) -> anyhow::Result<Option<String>> {
+        self.store.lock().get_chat_archived(id)
+    }
+
+    /// Every archived top-level conversation id, for the sidebar's filter.
+    pub fn archived_chat_ids(&self) -> anyhow::Result<Vec<String>> {
+        self.store.lock().archived_chat_ids()
+    }
+
+    /// Persist a conversation's Star/pin state (the sidebar's Starred block and
+    /// its Star/Unstar menu row). Emits `chats:updated` like the other writes.
+    pub fn set_chat_starred(&self, id: &str, starred: bool) -> anyhow::Result<()> {
+        self.store.lock().set_chat_starred(id, starred)?;
+        self.emit("chats:updated", ());
+        Ok(())
+    }
+
+    /// Whether a conversation is starred.
+    pub fn chat_starred(&self, id: &str) -> anyhow::Result<bool> {
+        self.store.lock().get_chat_starred(id)
+    }
+
+    /// Every starred top-level conversation id, so the Starred block survives a
+    /// restart instead of living only in the running app's memory.
+    pub fn starred_chat_ids(&self) -> anyhow::Result<Vec<String>> {
+        self.store.lock().starred_chat_ids()
+    }
+
     /// Record the CLI harness session the conversation ran in.
     ///
     /// The write reaches the store, the in-memory list the sidebar is built

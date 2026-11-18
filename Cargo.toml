@@ -1,5 +1,5 @@
 [workspace]
-members = ["app",
+members = ["apps/desktop",
   "crates/*",
 ]
 # Vendored third-party source, kept verbatim. Excluded so that workspace-wide
@@ -47,6 +47,12 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-ve
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
+# Comment/format-preserving TOML document edits (the settings file writer).
+toml_edit = "0.22"
+
+# file watching + advisory file locks for the settings files
+notify = "8"
+fs2 = "0.4"
 
 # crypto
 ring = "0.17"

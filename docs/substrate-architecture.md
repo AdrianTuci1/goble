@@ -58,17 +58,17 @@ Goble presents this behavior **for any harness**, through the reversibility seam
 |---|---|---|---|
 | 1 | **BYOH / harness-agnostic** | Reversibility is injected by the daemon from the event stream any harness already emits — the transcript is reversible for all; *env restore* is optional via `HarnessRuntime::snapshot`/`restore` (default `None`). On a BYOH substrate, task-signature permissions (`ReadOnly`/`ReadWrite` grants per repo) are the only safe path to "the agent controls the medium". | **implemented** |
 | 2 | **Interaction — voice** | Streaming STT (client + `StreamingSttEvent`) + TTS, `audio` feature (off by default) so it compiles without native audio deps. Voice is a medium interaction channel (*relayable* through the seam), not a separate feature. | **model implemented**; native backend `[target]` |
-| 3 | **Interaction — terminal** | A terminal window manager with the harness integrated: panes are real terminals with OSC 133/DCS command blocks; the agent's commands are claimed and run in the user's own shell; a pane can be local, SSH-bound, or fed by a remote worker. | **implemented** (`goble-terminal`, `app/` panes, the claim protocol, worker/viewer panes) |
-| 4 | **Per-project observability** | Per directory: what's running, what's scheduled, which session is active, what finished. This is the **primary** panel, not a secondary one. "Agent" degrades to a run config. | **implemented**: daemon records carry `project_id`/`medium_id`; durable `projects`/`sessions`/`tasks`; app/ `projects` panel |
+| 3 | **Interaction — terminal** | A terminal window manager with the harness integrated: panes are real terminals with OSC 133/DCS command blocks; the agent's commands are claimed and run in the user's own shell; a pane can be local, SSH-bound, or fed by a remote worker. | **implemented** (`goble-terminal`, `apps/desktop/` panes, the claim protocol, worker/viewer panes) |
+| 4 | **Per-project observability** | Per directory: what's running, what's scheduled, which session is active, what finished. This is the **primary** panel, not a secondary one. "Agent" degrades to a run config. | **implemented**: daemon records carry `project_id`/`medium_id`; durable `projects`/`sessions`/`tasks`; apps/desktop/ `projects` panel |
 | 5 | **Normal remote deploy** | **Headless/remote** daemon on a VPS/K8s over mTLS WebSocket + **embedded** daemon in-process in the GUI binary. Two composition roots, one `DaemonPort`. | **implemented** (`goblin-worker` and `DesktopState` both drive `goble-daemon`; headless now gets reversibility + `run_workflow`) |
-| 6 | **Medium selector** | An agent-controllable terminal substrate (warp-terminal style); toggle between media (local/VM/remote worker/browser). | **implemented** (app/ medium selector maps the chosen medium onto `HarnessTurn.medium_id`/`project_id`) |
+| 6 | **Medium selector** | An agent-controllable terminal substrate (warp-terminal style); toggle between media (local/VM/remote worker/browser). | **implemented** (apps/desktop/ medium selector maps the chosen medium onto `HarnessTurn.medium_id`/`project_id`) |
 
 ---
 
 ## 4. Technical architecture (layering)
 
 ```
-GUI (app/, thick-app on goble-ui wgpu/winit)
+GUI (apps/desktop/, thick-app on goble-ui wgpu/winit)
         │  thin client
         ▼
    DaemonClient (goble-daemon-client)      ── in-process  or  over mTLS WebSocket
@@ -83,8 +83,8 @@ GUI (app/, thick-app on goble-ui wgpu/winit)
 - **Types rule**: `types <- protocol <- runtime` — model types (`goble-harness-types`, `goble-voice`,
   `goble-workflow`) don't depend on transport; protocol (wire) and runtime
   (trait + registry) follow in turn.
-- **Thick-app rule**: a module goes into `crates/` if it doesn't depend on `app/`/`wgpu`. `crates/*`
-  never depends on `app/`.
+- **Thick-app rule**: a module goes into `crates/` if it doesn't depend on `apps/desktop/`/`wgpu`. `crates/*`
+  never depends on `apps/desktop/`.
 - **Feature flags** (`FeatureFlag` + cargo features) for heavy subsystems (audio, sandbox backends),
   keeping the common-path build light.
 

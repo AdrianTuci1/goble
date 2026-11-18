@@ -23,11 +23,30 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod document;
+pub mod editor;
 pub mod hub;
+pub mod import;
 mod migrate;
+pub mod schema;
 pub mod setup;
+pub mod watch;
 #[cfg(test)]
 mod tests;
+
+pub use document::{
+    host_views, sha256_hex, ApiKeySource, AppView, ConfigDocument, ConfigError, ConfigFile,
+    ConfigOp, ConfigProblem, ConfigRevision, ConfigSections, ConfigValue, ConfigView,
+    EnvValueView, EnvVarView, FieldError, GroupView, HarnessView, HostView, McpView, ModelView,
+    RemoteAgentView, RemoteView, SecretState, ThemeView, TypedDocument,
+};
+pub use editor::{seed_default_document, write_atomic_private, ConfigEditor, EditOutcome};
+pub use import::{import_store_prefs_once, ImportOutcome};
+pub use schema::{
+    apply_op, apply_ops, default_value, field_spec, is_default, redacted_view, validate,
+    view_for, ConfigFieldSpec, FieldKind, SettingsPage, APPROVAL_MODES, FIELDS,
+};
+pub use watch::{poll_for_changes, ConfigChange, ConfigWatcher, CONFIG_WATCH_DEBOUNCE};
 
 pub use hub::HubConfig;
 pub use migrate::{LegacyModelConfig, LlmConfig, ProviderConfig};
@@ -117,21 +136,41 @@ pub const CONFIG_HEADER: &str = "\
 #   [remote_agents.local]
 #   provider = \"docker\"
 #
+# [app] is goble's own section: the settings the Settings tab owns — the
+# friendly name, scrolling, editor behaviour and approval mode. A key that is
+# absent means its default, so Settings writes a key only when you change it,
+# and resetting a row removes the key. Per-agent-CLI overrides live under
+# [harness.<id>], where the id is a catalog entry (claude, codex, grok, …):
+# `enabled`, a `command` override, `args` and `env`.
+#
+#   [app]
+#   friendly_name = \"Ada\"
+#   scroll_speed = 50
+#   vim_mode = false
+#
+#   [harness.codex]
+#   command = \"/opt/homebrew/bin/codex\"
+#   args = [\"--full-auto\"]
+#
 # Sections this app does not model (grok's [cli], [ui], [privacy], the
-# marketplace) are kept exactly as they were written. Editing this file by hand
-# is expected: the app reads it when it starts, and writes it back — this header
-# included — when a setting that lives here changes.
+# marketplace) are kept exactly as they were written — comments, ordering and
+# unknown keys included: the app edits this file as a document, never by
+# re-serializing what it parsed. Editing this file by hand is expected: the app
+# reads it when it starts and when the file changes on disk, and writes back only
+# the paths a setting changed.
 
 ";
 
 /// The top-level sections this schema models. Everything else a file carries
 /// (grok's `[cli]`, `[ui]`, `[marketplace]`, `[privacy]`, …) is kept verbatim in
 /// [`GobleConfig::extra`] so a save does not drop another tool's settings.
-const SECTIONS: [&str; 7] = [
+const SECTIONS: [&str; 9] = [
+    "app",
     "model",
     "models",
     "mcp_servers",
     "theme",
+    "harness",
     "llm",
     "remote_agents",
     "remote",
@@ -151,6 +190,15 @@ pub struct GobleConfig {
     /// goble's live MCP registry is the store; this section is the file's copy.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
+    /// `[app]` — the settings the desktop Settings UI owns: identity, scrolling,
+    /// editor behaviour, approvals. goble's own section; grok's `[ui]` is a
+    /// different section and stays untouched in [`GobleConfig::extra`].
+    #[serde(skip_serializing_if = "AppConfig::is_unset")]
+    pub app: AppConfig,
+    /// `[harness.<id>]` — per-agent-CLI overrides: an enable flag, a command
+    /// override, extra args and environment variables. goble's own section.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub harness: BTreeMap<String, HarnessConfig>,
     /// `[theme]` — goble's own appearance settings.
     pub theme: ThemeConfig,
     /// The pre-grok `[llm]` section, read only. [`GobleConfig::absorb_legacy`]
@@ -187,6 +235,94 @@ impl ModelsConfig {
     }
 }
 
+/// `[app]` — the settings the desktop Settings UI owns.
+///
+/// Every field is optional on purpose: an absent key means the default, so
+/// "reset to default" is an unset that removes the key, never a write of the
+/// default value. The section is goble's own; grok's `[ui]` section is a
+/// different tool's and is preserved verbatim in [`GobleConfig::extra`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AppConfig {
+    /// The name onboarding asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub friendly_name: Option<String>,
+    /// What the user said they use Goble for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<String>,
+    /// Whether anonymous usage data is shared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<bool>,
+    /// Whether the in-app turn-finished announcement is shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_app_notifications: Option<bool>,
+    /// Natural scrolling for the wheel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invert_scroll: Option<bool>,
+    /// Wheel speed, 1..=100.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_speed: Option<i64>,
+    /// Interface text scale, 0.6..=2.0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f64>,
+    /// Whether closing a file pane with unsaved edits saves it first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_save_on_close: Option<bool>,
+    /// How a proposed command reaches the shell: always-approve, manual, plan
+    /// or auto-review.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<String>,
+    /// Whether `ask_user` questions are auto-approved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_approve: Option<bool>,
+    /// Whether the rich input is in modal (vim) editing mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vim_mode: Option<bool>,
+}
+
+impl AppConfig {
+    /// Whether the section says nothing, so a save can leave it out.
+    pub fn is_unset(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whether the section holds no key at all.
+    pub fn is_empty(&self) -> bool {
+        self.is_unset()
+    }
+}
+
+/// One `[harness.<id>]` table: the per-agent-CLI overrides the Providers page
+/// writes. The catalog still owns the name, the icon and the default command;
+/// this table only overrides what a user changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HarnessConfig {
+    /// Whether the harness is offered at all.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    /// A command (path or name) that overrides the catalog's first command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Extra arguments passed at launch.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Extra environment variables set at launch.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for HarnessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
+}
+
 /// One `[model.<slug>]` table: a model goble can talk to, with the endpoint and
 /// the key that reach it. The field names and their optionality mirror grok's
 /// `[model.<id>]`, so the same table is readable by both.
@@ -204,6 +340,10 @@ pub struct ModelConfig {
     /// The literal API key, inline, as grok writes it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// The environment variable to read the key from instead of an inline
+    /// `api_key`. An inline key wins when both are set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
     /// Maximum tokens per response.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
@@ -626,12 +766,32 @@ impl GobleConfig {
             };
         }
 
+        section!("app", config.app);
         section!("model", config.model);
         section!("models", config.models);
         section!("mcp_servers", config.mcp_servers);
         section!("theme", config.theme);
         section!("llm", config.llm);
         section!("remote", config.remote);
+
+        // A per-harness override is read one table at a time, like a remote
+        // agent: an id this build does not know costs that override, not the
+        // rest of the file.
+        if let Some(value) = table.get("harness") {
+            match value.as_table() {
+                Some(entries) => {
+                    for (id, entry) in entries {
+                        match entry.clone().try_into::<HarnessConfig>() {
+                            Ok(parsed) => {
+                                config.harness.insert(id.clone(), parsed);
+                            }
+                            Err(e) => problems.push(format!("[harness.{id}] ignored: {e}")),
+                        }
+                    }
+                }
+                None => problems.push("[harness] ignored: not a table".to_string()),
+            }
+        }
 
         // The remote agents are read one table at a time: a provider name this
         // build does not know costs that agent, not the others and not the

@@ -36,35 +36,6 @@ fn a_failed_turn_draws_its_reason_in_the_transcript() {
 }
 
 #[test]
-fn the_composer_draws_the_working_trees_diff_and_its_files() {
-    use crate::elements::{DiffFileStat, DiffSummary};
-    use crate::render::RenderCommand;
-    use crate::test_util::render_element;
-
-    let app = AppContext::default();
-    let open = Rc::new(RefCell::new(true));
-    let summary = DiffSummary::new(vec![
-        DiffFileStat::new("src/lib.rs", 9, 2),
-        DiffFileStat::new("README.md", 3, 0),
-    ]);
-    let mut view = ChatView::new().with_composer_diff(summary, open).finish();
-    let commands = render_element(&mut view, vec2f(700.0, 500.0), &app);
-    let texts: Vec<&str> = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    for expected in ["+12", "-2", "src/lib.rs", "README.md"] {
-        assert!(
-            texts.iter().any(|text| *text == expected),
-            "the diff control and its menu draw {expected:?}: {texts:?}"
-        );
-    }
-}
-
-#[test]
 fn chat_view_layouts_with_messages() {
     let app = AppContext::default();
     let messages = vec![ChatMessage::new(
@@ -118,9 +89,44 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     ];
     let mut view = ChatView::new().with_messages(messages).finish();
     let commands = render_element(&mut view, vec2f(width, 480.0), &app);
-    let counts = command_counts(&commands);
-    assert_eq!(counts.stroke_rect, 0, "no transcript row draws a border");
+    // The composer is borderless (owner feedback): no row of the pane — and no
+    // composer surface — draws an outline. The composer's two surfaces are
+    // rounded *fills*: the `Surface` card at `COMPOSER_CARD_RADIUS` and its
+    // `SurfaceRaised` input segment at `COMPOSER_INPUT_RADIUS`, so a rounded box
+    // in the command list is the composer, never a transcript row's pill.
+    let outlines = commands
+        .iter()
+        .filter(|command| matches!(command, RenderCommand::StrokeRect { .. }))
+        .count();
+    assert_eq!(
+        outlines, 0,
+        "no pane row or composer surface draws a border"
+    );
+    let rounded: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect {
+                corner_radius, ..
+            } if *corner_radius > 0.0 => Some(*corner_radius),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        rounded
+            .iter()
+            .any(|radius| (*radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01),
+        "the composer card is a rounded fill: {rounded:?}"
+    );
+    assert!(
+        rounded
+            .iter()
+            .any(|radius| (*radius - crate::elements::COMPOSER_INPUT_RADIUS).abs() < 0.01),
+        "the composer's input segment is a rounded fill: {rounded:?}"
+    );
+    let _ = command_counts(&commands);
 
+    // The user's message band is the pane-wide square fill; the composer's
+    // input segment is rounded, so the square fill can only be the message.
     let band = commands
         .iter()
         .find_map(|command| match command {
@@ -128,7 +134,7 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
                 rect,
                 color,
                 corner_radius,
-            } if *color == app.theme.color(ColorToken::SurfaceRaised) => {
+            } if *color == app.theme.color(ColorToken::SurfaceRaised) && *corner_radius == 0.0 => {
                 Some((*rect, *corner_radius))
             }
             _ => None,
@@ -157,8 +163,8 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     let user_x = text_x("Salut");
     let reply_x = text_x("Bine ai venit");
     assert!(
-        (10.0..=15.0).contains(&reply_x),
-        "the agent's row keeps 10-15 px of padding, got {reply_x}"
+        (14.0..=17.0).contains(&reply_x),
+        "the agent's row keeps DSH's 16 px band inset, got {reply_x}"
     );
 
     // The user's message opens with the prompt marker on its first line, so
@@ -497,12 +503,15 @@ fn the_pane_header_tray_paints_over_the_transcript_and_fits_the_view() {
     let commands = render_element(&mut view, vec2f(width, 480.0), &app);
 
     let raised = app.theme.color(ColorToken::SurfaceRaised);
+    // The tray hangs under the pane header, in the top of the view; the
+    // composer's input segment is also a raised fill, so the panel is picked by
+    // where it is, not by being the first raised fill in the frame.
     let (panel_index, panel) = commands
         .iter()
         .enumerate()
         .find_map(|(index, command)| match command {
             RenderCommand::FillRect { rect, color, .. }
-                if *color == raised && rect.height() > 40.0 =>
+                if *color == raised && rect.height() > 40.0 && rect.min_y() < 200.0 =>
             {
                 Some((index, *rect))
             }
@@ -620,6 +629,7 @@ fn the_work_dock_sits_under_the_header_and_above_the_transcript() {
 
 #[test]
 fn chat_view_renders_the_queued_prompt_as_a_borderless_band() {
+    use crate::render::RenderCommand;
     use crate::test_util::{command_counts, render_element};
 
     let app = AppContext::default();
@@ -639,9 +649,44 @@ fn chat_view_renders_the_queued_prompt_as_a_borderless_band() {
         counts.draw_text > 0,
         "the queued prompt should render its label and text"
     );
+    // The composer is borderless (owner feedback), so the pane draws no
+    // outline at all; the queued prompt is a flat band rather than a card, so
+    // the only rounded surfaces in the pane are the composer's own card and
+    // input segment — the queued prompt adds none of its own.
+    let outlines = commands
+        .iter()
+        .filter(|command| matches!(command, RenderCommand::StrokeRect { .. }))
+        .count();
     assert_eq!(
-        counts.stroke_rect, 0,
-        "the queued prompt paints a band, not a bordered card"
+        outlines, 0,
+        "the borderless composer and the queued band draw no outline"
+    );
+    let rounded: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect {
+                corner_radius, ..
+            } if *corner_radius > 0.0 => Some(*corner_radius),
+            _ => None,
+        })
+        .collect();
+    // The composer's own rounded surfaces: the card and its input segment.
+    // The rich input draws no send control any more (the owner removed the
+    // circular send button), and nothing else in this pane is rounded.
+    let composer_radii = [
+        crate::elements::COMPOSER_CARD_RADIUS,
+        crate::elements::COMPOSER_INPUT_RADIUS,
+    ];
+    assert_eq!(
+        rounded.len(),
+        composer_radii.len(),
+        "only the composer's card and input segment are rounded; the queued prompt paints no card of its own: {rounded:?}"
+    );
+    assert!(
+        composer_radii
+            .iter()
+            .all(|wanted| rounded.iter().any(|radius| (radius - wanted).abs() < 0.01)),
+        "the rounded surfaces are the composer's own: {rounded:?}"
     );
 }
 
@@ -1382,7 +1427,7 @@ fn the_transcript_draws_the_tool_rows_the_lock_covers() {
             _ => None,
         })
         .collect();
-    for expected in ["◈ ", "Reading 1 file, Editing 1 file +1/-1"] {
+    for expected in ["◈", "Reading 1 file, Editing 1 file +1/-1"] {
         assert!(
             texts.iter().any(|text| text == expected),
             "the transcript draws {expected:?}, got {texts:?}"
@@ -1529,15 +1574,17 @@ fn a_composerless_view_shows_no_input_line_and_hands_escape_to_its_handler() {
     );
 }
 
-/// The transcript's closing footer: a Fork affordance, and the conversation's
-/// token usage beside it. Neither is a physical button — the footer draws no
-/// band at rest, and the pointer over one draws its band — and the counts are
-/// the provider's own: with none reported the slot says so rather than drawing
-/// a zero.
+/// The transcript's closing footer is DeepSeek Harness' completed-turn usage
+/// area: a muted `database` pill reading `Usage 490 tok` beside the Fork action
+/// (the DSH branch glyph), both 28 px rows that rest without a band and band
+/// under the pointer. A press opens the details panel above the pill; the panel
+/// carries only the fields the provider reported and lists the Goble additions
+/// (Consumed = spend, Total = call size) rather than inventing DSH's routes,
+/// cache write or reasoning buckets.
 #[test]
 fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
     use crate::elements::interactive::contains;
-    use crate::elements::{LayoutContext, PaintContext, SizeConstraint};
+    use crate::elements::{HoverChipLayer, LayoutContext, PaintContext, SizeConstraint};
     use crate::geometry::RectF;
     use crate::render::{RenderCommand, Renderer};
     use goble_core::llm::TokenUsage;
@@ -1563,6 +1610,17 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
             .unwrap_or_default()
     }
 
+    /// The frame's last layer: the floating boxes queued during paint (the
+    /// usage panel rides this, above the transcript's clip).
+    fn paint_layer(app: &AppContext) -> Vec<RenderCommand> {
+        let mut ctx = PaintContext::new(Renderer::new());
+        HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default()
+    }
+
     fn fills(commands: &[RenderCommand]) -> Vec<RectF> {
         commands
             .iter()
@@ -1578,6 +1636,16 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
             .iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn icons(commands: &[RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
                 _ => None,
             })
             .collect()
@@ -1632,23 +1700,49 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         .with_on_fork(move || *forked_clone.borrow_mut() += 1)
         .finish();
 
-    // At rest: both affordances are there, and neither is a filled control.
+    // At rest: DSH's pill and glyph, and neither affordance is a filled control.
     let rest = paint_with(&mut view, None, &app);
     let drawn = texts(&rest);
+    let drawn_icons = icons(&rest);
     assert!(
         drawn.iter().any(|t| t == "Fork"),
         "no fork affordance: {drawn:?}"
     );
     assert!(
-        drawn.iter().any(|t| t == "490 tokens"),
-        "the meter shows the spend: prompt tokens that missed the cache plus output: {drawn:?}"
+        drawn.iter().any(|t| t == "Usage 490 tok"),
+        "the pill reads the conversation's spend in DSH's idiom: {drawn:?}"
     );
     assert!(
-        !drawn.iter().any(|t| t.contains("cached")),
-        "the detail stays collapsed until asked for: {drawn:?}"
+        !drawn.iter().any(|t| t == "490 tokens"),
+        "the old accent readout is gone: {drawn:?}"
     );
+    assert!(
+        !drawn.iter().any(|t| t.contains("cached") || t.contains("Input")),
+        "the details panel stays closed until asked for: {drawn:?}"
+    );
+    assert!(
+        drawn_icons.iter().any(|name| name == "branch"),
+        "the Fork row carries the DSH branch glyph: {drawn_icons:?}"
+    );
+    assert!(
+        drawn_icons.iter().any(|name| name == "database"),
+        "the pill carries the usage glyph: {drawn_icons:?}"
+    );
+    assert!(
+        !drawn_icons.iter().any(|name| name == "activity"),
+        "the old activity glyph is gone from the footer: {drawn_icons:?}"
+    );
+    assert!(
+        !drawn_icons.iter().any(|name| name == "git-branch"),
+        "the git-graph glyph is not the fork mark: {drawn_icons:?}"
+    );
+
     let fork_origin = text_origin(&rest, "Fork");
-    let usage_origin = text_origin(&rest, "490 tokens");
+    let usage_origin = text_origin(&rest, "Usage 490 tok");
+    assert_eq!(
+        fork_origin.y, usage_origin.y,
+        "the two affordances are one closing row"
+    );
     let probe = |origin: Vector2F| origin + vec2f(1.0, 1.0);
     let resting = bands(&rest);
     assert!(
@@ -1661,12 +1755,18 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         !resting
             .iter()
             .any(|band| contains(*band, probe(usage_origin))),
-        "a resting usage readout draws no band: {resting:?}"
+        "a resting usage pill draws no band: {resting:?}"
     );
 
-    // The pointer over one draws that one's band, and the other keeps none.
+    // The pointer over one draws that one's 28 px band, and the other keeps none.
+    let _ = paint_layer(&app);
     let over_fork = paint_with(&mut view, Some(probe(fork_origin)), &app);
     let fork_band = band_at(&rest, &over_fork, probe(fork_origin));
+    assert!(
+        (fork_band.height() - 28.0).abs() < 0.05,
+        "the band is DSH's 28 px pill, got {}",
+        fork_band.height()
+    );
     assert!(
         !contains(fork_band, probe(usage_origin)),
         "the band belongs to the fork row: {fork_band:?}"
@@ -1676,29 +1776,64 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
             .into_iter()
             .find(|band| contains(*band, probe(usage_origin))),
         None,
-        "the fork's band does not reach the usage readout"
+        "the fork's band does not reach the usage pill"
     );
 
+    let _ = paint_layer(&app);
     let over_usage = paint_with(&mut view, Some(probe(usage_origin)), &app);
     let usage_band = band_at(&rest, &over_usage, probe(usage_origin));
+    assert_eq!(usage_band.height(), 28.0);
     assert!(
         !contains(usage_band, probe(fork_origin)),
         "the band belongs to the usage row: {usage_band:?}"
     );
 
-    // Expanding the disclosure reveals the breakdown: the cached share rides
-    // inside the input figure, so the line never reads as a sum.
+    // Expanding the disclosure reveals DSH's accounting panel above the pill.
     *open.borrow_mut() = true;
-    let expanded = paint_with(&mut view, None, &app);
-    let drawn = texts(&expanded);
-    let detail = drawn
-        .iter()
-        .find(|t| t.contains("cached"))
-        .unwrap_or_else(|| panic!("no usage detail: {drawn:?}"));
-    assert!(detail.contains("Input 1,234 (800 cached)"), "{detail}");
-    assert!(detail.contains("Output 56"), "{detail}");
-    assert!(detail.contains("Spent 490"), "{detail}");
-
+    let _expanded = paint_with(&mut view, None, &app);
+    assert!(
+        app.hover_chips.borrow().len() == 1,
+        "the open panel queued itself for the frame's last layer"
+    );
+    let layer = paint_layer(&app);
+    assert!(
+        app.hover_chips.borrow().is_empty(),
+        "the last layer drains the queue every frame"
+    );
+    let drawn = texts(&layer);
+    for needle in [
+        "Turn usage",
+        "Cache hit",
+        "64.8%",
+        "Uncached input",
+        "434",
+        "Cached input",
+        "800",
+        "Output",
+        "56",
+        "Consumed",
+        "490",
+        "Total",
+        "1,290",
+    ] {
+        assert!(
+            drawn.iter().any(|text| text == needle),
+            "the panel shows {needle:?}: {drawn:?}"
+        );
+    }
+    // The panel hangs above the pill, DSH's anchor with its 8 px gap.
+    let panel = fills(&layer)
+        .into_iter()
+        .find(|rect| rect.width() >= 300.0 && rect.height() > 100.0)
+        .expect("the panel's raised surface is drawn");
+    assert!(
+        panel.max_y() <= usage_origin.y - 8.0,
+        "the panel opens above the pill: {panel:?} against {usage_origin:?}"
+    );
+    assert!(
+        panel.min_y() >= 0.0,
+        "and inside the pane's top edge: {panel:?}"
+    );
     // A conversation whose provider has reported nothing keeps the slot and
     // says so, with no number invented to fill it, and no disclosure to open.
     let mut bare = ChatView::new()
@@ -1714,12 +1849,265 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         "the usage slot states that nothing was reported: {drawn:?}"
     );
     assert!(
-        !drawn.iter().any(|t| t.contains("tokens")),
+        !drawn.iter().any(|t| t.contains("tok")),
         "no fabricated zero: {drawn:?}"
     );
     let usage_origin = text_origin(&rest, "no usage yet");
     let over_usage = paint_with(&mut bare, Some(probe(usage_origin)), &app);
-    let _ = band_at(&rest, &over_usage, probe(usage_origin));
+    assert_eq!(
+        bands(&over_usage).into_iter().find(|band| contains(*band, probe(usage_origin))),
+        None,
+        "the empty slot is a reading, not a control: no hover band"
+    );
+}
+
+/// The details panel names only the fields the provider actually reported: a
+/// provider with no cache accounting gets the plain `Input` label and no cache
+/// rows (unknown is not a miss), while a reported miss is drawn as `0%` / `0`.
+#[test]
+fn the_details_panel_names_only_the_fields_the_provider_reported() {
+    use crate::elements::{HoverChipLayer, LayoutContext, PaintContext, SizeConstraint};
+    use crate::render::{RenderCommand, Renderer};
+    use goble_core::llm::TokenUsage;
+
+    fn paint_panel(usage: TokenUsage) -> Vec<String> {
+        let app = AppContext::default();
+        let open = std::rc::Rc::new(std::cell::RefCell::new(true));
+        let mut view = ChatView::new()
+            .with_messages(vec![ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text("Hi")],
+            )])
+            .with_usage(usage)
+            .with_usage_open(open)
+            .with_on_fork(|| {})
+            .finish();
+        let size = vec2f(600.0, 800.0);
+        let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext, &app);
+        let mut ctx = PaintContext::new(Renderer::new());
+        view.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        let mut layer_ctx = PaintContext::new(Renderer::new());
+        HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut layer_ctx, &app);
+        layer_ctx
+            .renderer
+            .take()
+            .map(|renderer| {
+                renderer
+                    .commands()
+                    .iter()
+                    .filter_map(|command| match command {
+                        RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    let unknown = paint_panel(TokenUsage {
+        input: 1_234,
+        cached: None,
+        output: 56,
+    });
+    for needle in [
+        "Turn usage",
+        "Input",
+        "1,234",
+        "Output",
+        "56",
+        "Consumed",
+        "1,290",
+        "Total",
+        "1,290",
+    ] {
+        assert!(
+            unknown.iter().any(|text| text == needle),
+            "the uncached panel shows {needle:?}: {unknown:?}"
+        );
+    }
+    for gone in ["Cache hit", "Cached input", "Uncached input", "Cache write", "Provider / model"] {
+        assert!(
+            !unknown.iter().any(|text| text == gone),
+            "the panel does not invent {gone:?}: {unknown:?}"
+        );
+    }
+
+    // A reported miss is a figure, not an omission.
+    let reported = paint_panel(TokenUsage {
+        input: 1_000,
+        cached: Some(0),
+        output: 10,
+    });
+    for needle in ["Cache hit", "0%", "Cached input"] {
+        assert!(
+            reported.iter().any(|text| text == needle),
+            "a reported cache miss shows {needle:?}: {reported:?}"
+        );
+    }
+}
+
+/// The pill and its panel are drawn from theme tokens, so the same anatomy
+/// reads on the light palette as on the default dark one.
+#[test]
+fn the_usage_area_follows_the_light_theme_too() {
+    use crate::elements::{HoverChipLayer, LayoutContext, PaintContext, SizeConstraint};
+    use crate::render::{RenderCommand, Renderer};
+    use goble_core::llm::TokenUsage;
+
+    let app = AppContext {
+        theme: crate::theme::Theme::light(),
+        ..AppContext::default()
+    };
+    let open = std::rc::Rc::new(std::cell::RefCell::new(true));
+    let mut view: Box<dyn Element> = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Hi")],
+        )])
+        .with_usage(TokenUsage {
+            input: 1_234,
+            cached: Some(800),
+            output: 56,
+        })
+        .with_usage_open(open)
+        .with_on_fork(|| {})
+        .finish();
+    let _ = view.layout(
+        SizeConstraint::loose(vec2f(600.0, 800.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut ctx = PaintContext::new(Renderer::new());
+    view.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+    let _ = ctx.renderer.take().map(|renderer| renderer.commands().to_vec());
+
+    let mut layer_ctx = PaintContext::new(Renderer::new());
+    HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut layer_ctx, &app);
+    let layer = layer_ctx
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec())
+        .unwrap_or_default();
+    let drawn: Vec<String> = layer
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(drawn.iter().any(|text| text == "Turn usage"), "{drawn:?}");
+    assert!(drawn.iter().any(|text| text == "64.8%"), "{drawn:?}");
+    assert!(
+        layer.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect { color, .. }
+                if *color == app.theme.color(ColorToken::SurfaceRaised)
+        )),
+        "the light theme's raised surface is the panel fill"
+    );
+    assert!(
+        layer.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { color, .. } if *color == app.theme.color(ColorToken::Text)
+        )),
+        "the panel's values use the light theme's text colour"
+    );
+}
+
+/// The usage disclosure closes without a second press on the pill: an outside
+/// pointer press, Escape (consumed only while open) and a scroll of its anchor
+/// each put it away.
+#[test]
+fn the_usage_popover_closes_without_a_second_click() {
+    use crate::elements::{Element, EventContext, LayoutContext, PaintContext, SizeConstraint};
+    use crate::event::{DispatchedEvent, ModifiersState};
+    use crate::render::Renderer;
+    use goble_core::llm::TokenUsage;
+
+    let app = AppContext::default();
+    let open = std::rc::Rc::new(std::cell::RefCell::new(true));
+    let mut view: Box<dyn Element> = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Hi")],
+        )])
+        .with_usage(TokenUsage {
+            input: 1_234,
+            cached: Some(800),
+            output: 56,
+        })
+        .with_usage_open(open.clone())
+        .with_on_fork(|| {})
+        .finish();
+    let size = vec2f(600.0, 800.0);
+    let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let mut ctx = EventContext;
+
+    // A press anywhere outside the panel and the pill closes it, and keeps its
+    // own meaning.
+    assert!(!view.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: vec2f(10.0, 40.0),
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    ));
+    assert!(!*open.borrow(), "an outside press closes the panel");
+
+    *open.borrow_mut() = true;
+    let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let handled = view.dispatch_event(
+        &DispatchedEvent::KeyDown {
+            key: "Escape".to_string(),
+            modifiers: ModifiersState::default(),
+        },
+        &mut ctx,
+        &app,
+    );
+    assert!(handled, "the open panel consumes Escape");
+    assert!(!*open.borrow(), "and closes itself");
+
+    *open.borrow_mut() = true;
+    let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+    let mut paint_ctx = PaintContext::new(Renderer::new());
+    view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
+    let handled = view.dispatch_event(
+        &DispatchedEvent::Scroll {
+            delta: vec2f(0.0, -10.0),
+            precise: false,
+        },
+        &mut ctx,
+        &app,
+    );
+    assert!(!handled, "the wheel keeps its own meaning");
+    assert!(!*open.borrow(), "the panel closes when its anchor scrolls");
+}
+
+/// The pure formatting helpers: DSH's compact counts and its cache-hit share,
+/// which never rounds a partial hit to 100%.
+#[test]
+fn usage_formatting_helpers_match_the_reference() {
+    use super::transcript::{cache_hit_percent, compact_tokens};
+
+    assert_eq!(compact_tokens(490), "490");
+    assert_eq!(compact_tokens(12_345), "12.3K");
+    assert_eq!(compact_tokens(517_000), "517K");
+    assert_eq!(compact_tokens(1_234_567), "1.2M");
+
+    assert_eq!(cache_hit_percent(0, 0), None, "no prompt input, no share");
+    assert_eq!(cache_hit_percent(1_234, 1_234), Some("100".to_string()));
+    assert_eq!(cache_hit_percent(0, 1_000), Some("0%".to_string()));
+    assert_eq!(
+        cache_hit_percent(999_999, 1_000_000),
+        Some("99.9".to_string()),
+        "a partial hit never rounds up to a full one"
+    );
+    assert_eq!(cache_hit_percent(800, 1_234), Some("64.8%".to_string()));
 }
 
 /// The closing row waits for the turn: while the agent is still working, or
@@ -1784,6 +2172,22 @@ fn the_footer_waits_until_the_turn_finishes() {
         "a pending decision draws no closing row: {labels:?}"
     );
 
+    // A stale disclosure flag is put away while the footer is not drawn, so a
+    // turn that ends later does not open a panel nobody asked for.
+    let open = std::rc::Rc::new(std::cell::RefCell::new(true));
+    let mut busy = ChatView::new()
+        .with_messages(messages.clone())
+        .with_usage(usage)
+        .with_usage_open(open.clone())
+        .with_on_fork(|| {})
+        .with_turn_status(TurnStatus::busy(TurnActivity::Thinking, None, 0))
+        .finish();
+    let _ = drawn(&mut busy);
+    assert!(
+        !*open.borrow(),
+        "a footer-less frame resets the disclosure flag"
+    );
+
     let mut done = ChatView::new()
         .with_messages(messages)
         .with_usage(usage)
@@ -1792,17 +2196,18 @@ fn the_footer_waits_until_the_turn_finishes() {
     let labels = drawn(&mut done);
     assert!(
         labels.iter().any(|text| text == "Fork")
-            && labels.iter().any(|text| text.contains("tokens")),
+            && labels.iter().any(|text| text == "Usage 490 tok"),
         "once the turn is over the row is back: {labels:?}"
     );
 }
 
-/// The instructions the caller hands the view are drawn over the input's
-/// separator, as the content's last row above it — the warp-new placement, where
-/// the shortcuts view sits between the transcript and the input it describes.
-/// A view handed none draws neither strip nor a gap where one would have been.
+/// The instructions the caller hands the view are drawn above the input, as
+/// the content's last row — the warp-new placement, where the shortcuts view
+/// sits between the transcript and the input it describes. A view handed none
+/// draws neither strip nor a gap where one would have been, and no rule
+/// separates the content from the floating composer card.
 #[test]
-fn the_composer_hints_sit_over_the_separator_and_only_when_given() {
+fn the_composer_hints_sit_above_the_composer_and_only_when_given() {
     use crate::elements::ShortcutHint;
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
@@ -1819,8 +2224,27 @@ fn the_composer_hints_sit_over_the_separator_and_only_when_given() {
             _ => None,
         })
     };
-    // The pane-wide rules this frame drew: the input's separator is the one
-    // over the bottom of the view.
+    // The composer is a floating, borderless card now, so its rounded
+    // `Surface` fill is what locates the input block.
+    let composer_card = |commands: &[RenderCommand]| -> crate::geometry::RectF {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::Surface)
+                    && (*corner_radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the composer draws its card")
+    };
+    // The old horizontal rule over the input is gone: no pane-wide thin fill
+    // may divide the content from the composer card.
     let rules = |commands: &[RenderCommand]| -> Vec<f32> {
         commands
             .iter()
@@ -1836,19 +2260,19 @@ fn the_composer_hints_sit_over_the_separator_and_only_when_given() {
     };
 
     let mut plain = ChatView::new().with_messages(messages.clone()).finish();
-    let commands = render_element(&mut plain, vec2f(width, 520.0), &app);
+    let plain_commands = render_element(&mut plain, vec2f(width, 520.0), &app);
     for text in ["commands", "tasks", "⌘"] {
         assert!(
-            line_of(&commands, text).is_none(),
+            line_of(&plain_commands, text).is_none(),
             "a view with no hints draws no strip ({text:?})"
         );
     }
-    let plain_rules = rules(&commands);
-    assert_eq!(
-        plain_rules.len(),
-        1,
-        "one separator divides input from content"
+    assert!(
+        rules(&plain_commands).is_empty(),
+        "no separator divides the input from the content: {:?}",
+        rules(&plain_commands)
     );
+    let plain_card = composer_card(&plain_commands);
 
     let mut view = ChatView::new()
         .with_messages(messages)
@@ -1863,30 +2287,38 @@ fn the_composer_hints_sit_over_the_separator_and_only_when_given() {
     assert_eq!(strip, tasks, "the strip is one line");
 
     // The strip is the last row of the content: under the transcript, over the
-    // separator, over the editor.
+    // composer card, over the editor.
     let transcript = line_of(&commands, "Hi").expect("the message is drawn");
     let editor = line_of(&commands, "Ask anything...").expect("the editor is drawn");
     assert!(transcript < strip, "the strip closes the content");
-    let separator = rules(&commands)
-        .into_iter()
-        .find(|y| *y > strip)
-        .unwrap_or_else(|| panic!("a separator under the strip (strip at {strip})"));
-    assert!(strip < separator, "the strip is over the separator");
+    let card = composer_card(&commands);
     assert!(
-        separator < editor,
-        "and the separator is the input's top edge"
+        strip < card.min_y(),
+        "the strip is over the input card: strip {strip}, card top {}",
+        card.min_y()
     );
-    // The strip costs the pane nothing but its own height: the separator stays
-    // where it would have been without it, since the input below is unchanged.
     assert!(
-        (separator - plain_rules[0]).abs() < 0.5,
-        "the input did not move: separator at {separator} against {} without the strip",
-        plain_rules[0]
+        card.min_y() < editor,
+        "and the card's top edge is over the editor: card {} against editor {editor}",
+        card.min_y()
+    );
+    assert!(
+        rules(&commands).is_empty(),
+        "no rule separates the strip from the composer: {:?}",
+        rules(&commands)
+    );
+    // The strip costs the content nothing but its own height: the card stays
+    // exactly where it was in a view handed no hints.
+    assert!(
+        (card.min_y() - plain_card.min_y()).abs() < 0.5,
+        "the input did not move: card at {} against {} without the strip",
+        card.min_y(),
+        plain_card.min_y()
     );
 }
 
 /// The strip sits *low* over the input it names: the block is pinned to the
-/// input under it, so what decides the caps' height over the separator is the
+/// input under it, so what decides the caps' height above the card is the
 /// inset beneath them — a gap of `sm` above them would instead push the whole
 /// block up and leave the caps where they were.
 #[test]
@@ -1910,18 +2342,6 @@ fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
         .finish();
     let commands = render_element(&mut view, vec2f(width, 520.0), &app);
 
-    // The pane-wide rules this frame drew.
-    let rules: Vec<f32> = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::FillRect { rect, .. }
-                if rect.height() <= 2.0 && rect.width() >= width - 0.5 =>
-            {
-                Some(rect.min_y())
-            }
-            _ => None,
-        })
-        .collect();
     let strip = commands
         .iter()
         .find_map(|command| match command {
@@ -1929,16 +2349,24 @@ fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
             _ => None,
         })
         .expect("the strip is drawn");
-    let separator = rules
+    // The composer card is the block under the strip: the borderless floating
+    // card's rounded `Surface` fill is its top edge.
+    let card_top = commands
         .iter()
-        .copied()
-        .filter(|y| *y > strip)
-        .fold(f32::INFINITY, f32::min);
-    assert!(
-        separator.is_finite(),
-        "the input draws its separator under the strip (strip {strip}, rules {rules:?})"
-    );
-    // The strip's caps: the small square boxes over the separator, the flat
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::Surface)
+                && (*corner_radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01 =>
+            {
+                Some(rect.min_y())
+            }
+            _ => None,
+        })
+        .expect("the composer draws its card");
+    // The strip's caps: the small square boxes over the card, the flat
     // bordered key caps the strip draws. The block's own content edge is their
     // bottom, because the caps are its tallest row.
     let caps: Vec<crate::geometry::RectF> = commands
@@ -1948,7 +2376,7 @@ fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
                 rect,
                 corner_radius,
                 ..
-            } if *corner_radius == 0.0 && rect.height() < 20.0 && rect.max_y() <= separator => {
+            } if *corner_radius == 0.0 && rect.height() < 20.0 && rect.max_y() <= card_top => {
                 Some(*rect)
             }
             _ => None,
@@ -1960,41 +2388,42 @@ fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
         .fold(f32::NEG_INFINITY, f32::max);
     assert!(
         caps_bottom.is_finite(),
-        "the strip draws its key caps (strip {strip}, separator {separator}, caps {caps:?})"
+        "the strip draws its key caps (strip {strip}, card top {card_top}, caps {caps:?})"
     );
-    let gap = separator - caps_bottom;
+    let gap = card_top - caps_bottom;
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let md = app.theme.spacing_px(SpacingToken::Md);
     let rise = super::transcript::STRIP_RISE;
-    // The column's own gap above the separator (`md`) plus the inset under the
-    // caps, which is `STRIP_RISE` less than the block's `sm`.
+    // The column's own gap above the card (`md`) plus the inset under the caps,
+    // which is `STRIP_RISE` less than the block's `sm`.
     let expected = md + (sm - rise);
     assert!(
         (gap - expected).abs() < 0.5,
-        "the caps sit {expected} px over the separator — the column's md plus the \
+        "the caps sit {expected} px over the card — the column's md plus the \
          strip's own `sm - STRIP_RISE` — six points lower than the block's own \
-         `sm` inset put them: gap {gap}, strip {strip}, separator {separator}, \
-         caps {caps:?}, rules {rules:?}"
+         `sm` inset put them: gap {gap}, strip {strip}, card top {card_top}, \
+         caps {caps:?}"
     );
     assert!(gap > 0.0, "and stay over it: {gap}");
 }
 
-/// The input's first row sits `xs` under the separator, the same edge the
-/// shell pane's bar keeps: the rule and the composer are one block, so the
-/// column's `md` spacing does not open a gap under the rule.
+/// The composer card is the pane's bottom block and no rule sits between it
+/// and the content: the floating input is its own surface (the old separator
+/// over the rich input is gone), and it pins to the pane's bottom edge.
 #[test]
-fn the_input_hugs_its_separator_like_the_shell_bar() {
+fn the_input_card_is_the_bottom_block_with_no_rule_over_it() {
     use crate::elements::ShortcutHint;
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
 
     let app = AppContext::default();
     let width = 600.0;
+    let height = 520.0;
     let mut view = ChatView::new()
         .with_composer_path("~/Projects/goble")
         .with_composer_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
         .finish();
-    let commands = render_element(&mut view, vec2f(width, 520.0), &app);
+    let commands = render_element(&mut view, vec2f(width, height), &app);
 
     let editor = commands
         .iter()
@@ -2005,47 +2434,110 @@ fn the_input_hugs_its_separator_like_the_shell_bar() {
             _ => None,
         })
         .expect("the rich input is drawn");
-    let (separator, separator_bottom) = commands
+    // No horizontal rule anywhere over the input: the old separator between
+    // the content and the rich input is gone.
+    let rules: Vec<f32> = commands
         .iter()
         .filter_map(|command| match command {
             RenderCommand::FillRect { rect, .. }
                 if rect.height() <= 2.0 && rect.width() >= width - 0.5 && rect.min_y() < editor =>
             {
-                Some((rect.min_y(), rect.max_y()))
-            }
-            _ => None,
-        })
-        .fold((f32::NEG_INFINITY, f32::NEG_INFINITY), |a, b| {
-            if b.0 > a.0 {
-                b
-            } else {
-                a
-            }
-        });
-    assert!(
-        separator.is_finite(),
-        "the input draws its separator over the editor at {editor}"
-    );
-
-    // The context pills are the row directly under the rule: the tallest
-    // bordered controls of the block, above the editor.
-    let pills_top = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::StrokeRect { rect, .. }
-                if rect.height() >= 20.0 && rect.min_y() > separator && rect.max_y() < editor =>
-            {
                 Some(rect.min_y())
             }
             _ => None,
         })
-        .fold(f32::INFINITY, f32::min);
-    let xs = app.theme.spacing_px(SpacingToken::Xs);
+        .collect();
     assert!(
-        (pills_top - separator_bottom - xs).abs() < 0.5,
-        "the pills sit {xs} under the separator, like the shell bar: gap {}, \
-         pills {pills_top}, separator {separator}..{separator_bottom}, editor {editor}",
-        pills_top - separator_bottom
+        rules.is_empty(),
+        "no rule separates the input from the content: {rules:?}"
+    );
+
+    // The composer card's rounded top edge is the input's top edge, and the
+    // card pins the pane's bottom.
+    let composer_card = commands
+        .iter()
+        .find_map(|command| match command {
+            // The card is a `Surface` fill at the card radius: the composer is
+            // borderless now, so the outline that used to locate it is gone.
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::Surface)
+                && (*corner_radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the composer draws its card");
+    // The card is the pane's bottom block: nothing is painted under it (its own
+    // inset keeps it a few points off the very edge, like the card's sides).
+    assert!(
+        composer_card.max_y() > height - 20.0,
+        "the input pins to the pane's bottom: card {:?} in a {height} tall view",
+        composer_card
+    );
+    let below = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. }
+                if origin.y > composer_card.max_y() + 0.5 =>
+            {
+                Some((text.clone(), *origin))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        below.is_empty(),
+        "nothing is painted under the composer card: {below:?}"
+    );
+    assert!(
+        composer_card.min_y() < editor,
+        "the card's top edge is over the editor: card {:?}, editor {editor}",
+        composer_card
+    );
+
+    // The card's context band is the row between the card's top and the input
+    // segment: the directory control's glyph sits 12 under the card's top, over
+    // the editor, inside the card.
+    let folder = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawIcon { origin, name, .. } if name == "folder" => Some(*origin),
+            _ => None,
+        })
+        .expect("the context band draws its directory control");
+    assert!(
+        folder.y > composer_card.min_y() && folder.y < editor,
+        "the context band is over the editor, inside the card: folder {folder:?}, \
+         card top {}, editor {editor}",
+        composer_card.min_y()
+    );
+    let segment = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - crate::elements::COMPOSER_INPUT_RADIUS).abs() < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the composer draws its input segment");
+    assert!(
+        (segment.min_x() - composer_card.min_x()
+            - crate::elements::COMPOSER_CARD_INSET)
+            .abs()
+            < 0.5
+            && segment.min_y() > folder.y,
+        "the input segment is inset inside the card under the context band: \
+         segment {segment:?}, card {composer_card:?}, folder {folder:?}"
     );
 }
 
@@ -2107,8 +2599,8 @@ fn the_model_band_opens_over_the_strip_like_the_command_list() {
         "a closed model list draws no rows: {frame:?}"
     );
 
-    // Open: the rows are above the strip, which is above the input's separator
-    // and its editor.
+    // Open: the rows are above the strip, which is above the composer card and
+    // its editor.
     *open.borrow_mut() = true;
     let mut opened = build(open.clone(), index.clone()).finish();
     let frame = render_element(&mut opened, vec2f(width, 520.0), &app);
@@ -2116,28 +2608,31 @@ fn the_model_band_opens_over_the_strip_like_the_command_list() {
     let strip = line_of(&frame, "commands");
     // The draft the composer was handed, drawn by the editor under the strip.
     let editor = line_of(&frame, "hi");
-    let separator = frame
+    // The composer card is the input block under the strip (borderless, so its
+    // rounded `Surface` fill is its top edge).
+    let card_top = frame
         .iter()
-        .filter_map(|command| match command {
-            RenderCommand::FillRect { rect, .. }
-                if rect.height() <= 2.0 && rect.width() >= width - 0.5 =>
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::Surface)
+                && (*corner_radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01 =>
             {
                 Some(rect.min_y())
             }
             _ => None,
         })
-        // The input's separator is the rule just under the strip.
-        .filter(|y| *y > strip)
-        .fold(f32::INFINITY, f32::min);
-    assert!(separator.is_finite(), "the input draws its separator");
+        .expect("the composer draws its card");
     assert!(
         model_row < strip,
         "the list opens above the strip, not under the input: {model_row} against {strip}"
     );
     assert!(
-        strip < separator && separator < editor,
-        "and the strip keeps its place over the separator and the editor: \
-         {strip} {separator} {editor}"
+        strip < card_top && card_top < editor,
+        "and the strip keeps its place over the input card and the editor: \
+         {strip} {card_top} {editor}"
     );
 
     // The same view with a command draft: the command list is the band on the
@@ -2447,7 +2942,7 @@ mod the_footers_place {
 
         let rest = frame(&mut view, size, &app, None);
         let fork = text_origin(&rest, "Fork");
-        let usage = text_origin(&rest, "490 tokens");
+        let usage = text_origin(&rest, "Usage 490 tok");
         assert_eq!(fork.y, usage.y, "the two affordances are one closing row");
         assert!(
             usage.x > fork.x,
@@ -2499,7 +2994,6 @@ mod the_footers_place {
             let hovered = frame(&mut view, size, &app, Some(probe));
             let footer = hovered_row(&rest, &hovered, probe);
             let viewport = viewport(&rest);
-
             assert_eq!(
                 scroll.borrow().max_offset(),
                 0.0,
@@ -3261,7 +3755,6 @@ mod sticky_turn {
         let app = AppContext::default();
         let width = 600.0;
         let size = vec2f(width, 480.0);
-        let pad = app.theme.spacing_px(SpacingToken::Md);
         let messages = conversation("Fix the login bug", 40);
         let (scroll, bands) = at_top(&messages, size, &app);
         scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) / 2.0);
@@ -3274,8 +3767,12 @@ mod sticky_turn {
             "the pin is one line of the bubble's padded band"
         );
         assert!(
-            (band.height() - (14.0 * 1.2 + 2.0 * pad)).abs() < 0.01,
-            "the band is a padded 14 px line, got {}",
+            (band.height()
+                - (14.0 * crate::elements::chat_typography::USER_LH
+                    + 2.0 * crate::elements::chat_typography::BAND_PADDING_Y))
+            .abs()
+                < 0.01,
+            "the band is DSH's padded 14 / 22 user line, got {}",
             band.height()
         );
 
@@ -3545,4 +4042,498 @@ mod sticky_turn {
             );
         }
     }
+}
+
+/// The in-chat notice surfaces — the queued prompt band, the failed-turn block
+/// and the footer pills — draw DSH's type at defaults: the queued prompt is the
+/// user's own 14 / 22 line over a 13 / 24 label, the failure title is 13 / 20
+/// semibold in the error ink over a 13 / 20 quiet reason, and the usage pill is
+/// a 12 / 20 quiet label with a 14 px glyph in DSH's 28 px pill.
+#[test]
+fn the_notice_surfaces_draw_dsh_type() {
+    use crate::elements::chat_typography;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+    use goble_core::llm::TokenUsage;
+
+    let app = AppContext::default();
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("Partial answer")],
+    )];
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_queued_prompt(Some("run the tests".to_string()))
+        .with_turn_error(Some("Incorrect API key provided".to_string()))
+        .with_usage(TokenUsage {
+            input: 400,
+            cached: Some(100),
+            output: 90,
+        })
+        .finish();
+    let commands = render_element(&mut view, vec2f(600.0, 900.0), &app);
+
+    let run = |prefix: &str| {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text,
+                    font_size,
+                    line_height,
+                    color,
+                    font_weight,
+                    font_family,
+                    ..
+                } if text.starts_with(prefix) => Some((
+                    *font_size,
+                    *line_height,
+                    *color,
+                    *font_weight,
+                    *font_family,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the run {prefix:?} is drawn"))
+    };
+
+    // The queued prompt: DSH's user-message type over the quiet label.
+    let prompt = run("run the tests");
+    assert_eq!(prompt.0, 14.0, "the queued prompt is the 14 px user line");
+    assert!(
+        (prompt.1 - chat_typography::USER_LH).abs() < 1e-5,
+        "the queued prompt sits on the 22 px user line, got {}",
+        prompt.1
+    );
+    assert_eq!(prompt.2, app.theme.color(ColorToken::Text));
+    let pending = run("Pending message");
+    assert_eq!(pending.0, 13.0, "the queued header is the process tier");
+    assert!((pending.1 - chat_typography::ROW_LH).abs() < 1e-5);
+    assert_eq!(pending.2, app.theme.color(ColorToken::Muted));
+
+    // The failed turn: 13 / 20 semibold error title, 13 / 20 quiet reason.
+    let title = run("Agent turn failed");
+    assert_eq!(title.0, 13.0);
+    assert!((title.1 - chat_typography::ROW_TIGHT_LH).abs() < 1e-5);
+    assert_eq!(title.2, app.theme.color(ColorToken::Error));
+    assert_eq!(title.3, crate::platform::text_atlas::FontWeight::SemiBold);
+    let reason = run("Incorrect API key provided");
+    assert_eq!(reason.0, 13.0);
+    assert!((reason.1 - chat_typography::ROW_TIGHT_LH).abs() < 1e-5);
+    assert_eq!(reason.2, app.theme.color(ColorToken::Muted));
+
+    // The usage pill: a 12 / 20 label and a 14 px glyph in a 28 px pill.
+    let label = run("Usage ");
+    assert_eq!(label.0, 12.0);
+    assert!((label.1 - chat_typography::PILL_LH).abs() < 1e-5);
+    assert_eq!(label.2, app.theme.color(ColorToken::Muted));
+    let icons: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawIcon { name, size, .. } if name == "database" => Some(*size),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        icons.iter().any(|size| (*size - 14.0).abs() < 1e-5),
+        "the usage pill's glyph is 14 px, got {icons:?}"
+    );
+}
+
+// ---- Per-pane content lane: the content column, the full-width header ------
+
+/// A stand-in for the pane's header overlay in the lane tests: it takes the
+/// whole width it is given and paints it in `color`, `height` tall.
+struct ProbeHeader {
+    height: f32,
+    color: crate::color::ColorU,
+    size: Option<Vector2F>,
+    origin: Option<crate::elements::Point>,
+}
+
+impl Element for ProbeHeader {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        let size = vec2f(constraint.max.x, self.height);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(
+        &mut self,
+        origin: Vector2F,
+        ctx: &mut crate::elements::PaintContext,
+        _app: &AppContext,
+    ) {
+        self.origin = Some(crate::elements::Point::from_vec2f(origin, Default::default()));
+        let size = self.size.unwrap_or(Vector2F::zero());
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.fill_rect(
+                crate::geometry::rectf(origin.x, origin.y, size.x, size.y),
+                self.color,
+            );
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<crate::elements::Point> {
+        self.origin
+    }
+}
+
+/// A chat view wired to the per-pane content lane, over one message, with its
+/// drag gestures recorded. `header` is the pane's own topbar overlay, if any.
+fn laned_view_with_header(
+    preference: Option<f32>,
+    header: Option<Box<dyn Element>>,
+) -> (
+    Box<dyn Element>,
+    Rc<std::cell::RefCell<Vec<(f32, crate::elements::LaneEdge, f32, f32)>>>,
+) {
+    let starts: Rc<std::cell::RefCell<Vec<(f32, crate::elements::LaneEdge, f32, f32)>>> =
+        Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorded = Rc::clone(&starts);
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Hi")],
+        )])
+        .with_content_lane(
+            preference,
+            false,
+            None,
+            Rc::new(std::cell::RefCell::new(
+                move |pointer_x: f32, edge, base_width: f32, column: f32| {
+                    recorded
+                        .borrow_mut()
+                        .push((pointer_x, edge, base_width, column));
+                },
+            )),
+            Rc::new(std::cell::RefCell::new(|_x: f32| {})),
+            Rc::new(std::cell::RefCell::new(|| {})),
+        );
+    if let Some(header) = header {
+        view = view.with_header(header);
+    }
+    (view.finish(), starts)
+}
+
+fn laned_view(
+    preference: Option<f32>,
+) -> (
+    Box<dyn Element>,
+    Rc<std::cell::RefCell<Vec<(f32, crate::elements::LaneEdge, f32, f32)>>>,
+) {
+    laned_view_with_header(preference, None)
+}
+
+/// The view's content column: the widest `Bg` fill the lane paints the content
+/// in. (The view's other backgrounds are `Surface`/raised.)
+fn view_content_column(
+    commands: &[crate::render::RenderCommand],
+    app: &AppContext,
+) -> RectF {
+    use crate::render::RenderCommand;
+    let bg = app.theme.color(ColorToken::Bg);
+    commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == bg => Some(*rect),
+            _ => None,
+        })
+        .max_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
+        .expect("the lane paints the content column")
+}
+
+/// The lane meters the content against the width the view is given: the ratio
+/// column on a wide view, full width on a narrow one.
+#[test]
+fn the_chat_content_is_centred_in_the_width_the_view_is_given() {
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let (mut wide, _starts) = laned_view(None);
+    let commands = render_element(&mut wide, vec2f(1600.0, 900.0), &app);
+    let column = view_content_column(&commands, &app);
+    assert!(
+        (column.width() - 920.0).abs() < 0.5,
+        "64% of 1600 clamps to the 920 ceiling: {column:?}"
+    );
+    assert!(
+        (column.min_x() - 340.0).abs() < 0.5,
+        "the column is centred: {column:?}"
+    );
+
+    let (mut narrow, _starts) = laned_view(None);
+    let commands = render_element(&mut narrow, vec2f(800.0, 900.0), &app);
+    let column = view_content_column(&commands, &app);
+    assert!(
+        (column.width() - 800.0).abs() < 0.5 && (column.min_x() - 0.0).abs() < 0.5,
+        "under 856 the lane is a full-width pass-through: {column:?}"
+    );
+}
+
+/// The pane header is an overlay at the full pane width and does NOT resize
+/// with the content lane: the content column is capped and centred under it,
+/// and the lane's draggable edges start below the header band, so a press on
+/// the header stays the header's own gesture.
+#[test]
+fn the_pane_header_spans_the_full_width_over_the_centred_content() {
+    use crate::elements::LaneEdge;
+    use crate::event::DispatchedEvent;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let header = ProbeHeader {
+        height: 36.0,
+        color: app.theme.color(ColorToken::Surface),
+        size: None,
+        origin: None,
+    }
+    .finish();
+    let (mut view, starts) = laned_view_with_header(None, Some(header));
+    let commands = render_element(&mut view, vec2f(1600.0, 900.0), &app);
+
+    // The header: a full-width, 36-tall Surface band at the top of the view.
+    let surface = app.theme.color(ColorToken::Surface);
+    let band = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == surface
+                    && (rect.height() - 36.0).abs() < 0.5
+                    && (rect.min_x() - 0.0).abs() < 0.5 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the header band is painted");
+    assert!(
+        (band.width() - 1600.0).abs() < 0.5,
+        "the pane header spans the whole pane, not the lane column: {band:?}"
+    );
+    let column = view_content_column(&commands, &app);
+    assert!(
+        (column.width() - 920.0).abs() < 0.5 && (column.min_x() - 340.0).abs() < 0.5,
+        "the content is still the centred column: {column:?}"
+    );
+
+    // The lane's right strip: 24 px outside the column's right edge.
+    let strip_x = 340.0 + 920.0 + 24.0 + 5.0;
+    let mut ctx = crate::elements::EventContext::default();
+    let press = |y: f32| DispatchedEvent::MouseDown {
+        position: vec2f(strip_x, y),
+        button: 0,
+    };
+    assert!(
+        !view.dispatch_event(&press(10.0), &mut ctx, &app),
+        "a press on the pane header band is not a lane drag"
+    );
+    assert!(
+        starts.borrow().is_empty(),
+        "no drag starts over the header: {:?}",
+        starts.borrow()
+    );
+    assert!(
+        view.dispatch_event(&press(100.0), &mut ctx, &app),
+        "under the header the strip grabs the press"
+    );
+    assert_eq!(
+        *starts.borrow(),
+        vec![(strip_x, LaneEdge::Right, 920.0, 1600.0)]
+    );
+}
+
+/// A committed per-pane preference lays that view's content out at its width;
+/// a preference cannot activate a narrow view.
+#[test]
+fn a_committed_lane_preference_lays_the_content_at_that_width() {
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let (mut wide, _starts) = laned_view(Some(1000.0));
+    let commands = render_element(&mut wide, vec2f(1600.0, 900.0), &app);
+    let column = view_content_column(&commands, &app);
+    assert!(
+        (column.width() - 1000.0).abs() < 0.5 && (column.min_x() - 300.0).abs() < 0.5,
+        "the preference wins over the ratio: {column:?}"
+    );
+
+    let (mut narrow, _starts) = laned_view(Some(1000.0));
+    let commands = render_element(&mut narrow, vec2f(800.0, 900.0), &app);
+    let column = view_content_column(&commands, &app);
+    assert!(
+        (column.width() - 800.0).abs() < 0.5,
+        "a preference cannot activate a narrow lane: {column:?}"
+    );
+}
+
+/// The pane's chrome band spans the pane while the cards inside it are bounded
+/// to the conversation column: the work dock's band is a full-width square
+/// `Surface` band under the header, and its announcement cards start and end at
+/// the lane the transcript under them is centred in.
+#[test]
+fn the_work_dock_band_spans_the_pane_while_its_cards_are_lane_bounded() {
+    use crate::elements::chat_content::{WorkDock, WorkGroup, WorkRow, WorkSection};
+    use crate::elements::{chat_typography, lane_column};
+    use crate::geometry::RectF;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let app = AppContext::default();
+    let width = 1600.0;
+    let groups = vec![WorkGroup::new(
+        WorkSection::Subagents,
+        vec![WorkRow::new("c1", "Subagent", "Audit the migration").spinning(true)],
+        true,
+    )];
+    // The dock bounds its cards to the view's lane; the band itself stays the
+    // full pane width.
+    let dock = WorkDock::new(groups).with_content_lane(None).finish();
+    let header = ProbeHeader {
+        height: 36.0,
+        color: app.theme.color(ColorToken::Surface),
+        size: None,
+        origin: None,
+    }
+    .finish();
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::Assistant,
+            vec![ChatFragment::text("Hi")],
+        )])
+        .with_header(header)
+        .with_work_dock(Some(dock))
+        .with_content_lane(
+            None,
+            false,
+            None,
+            Rc::new(RefCell::new(
+                |pointer_x: f32, edge: crate::elements::LaneEdge, base: f32, column: f32| {
+                    let _ = (pointer_x, edge, base, column);
+                },
+            )),
+            Rc::new(RefCell::new(|_: f32| {})),
+            Rc::new(RefCell::new(|| {})),
+        )
+        .finish();
+    let commands = render_element(&mut view, vec2f(width, 900.0), &app);
+
+    // The band: square, full pane width, directly under the header.
+    let surface = app.theme.color(ColorToken::Surface);
+    let band = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == surface
+                && *corner_radius == 0.0
+                && rect.height() > 40.0
+                && rect.min_y() >= 35.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the dock paints its full-width band");
+    assert_eq!(band.min_x(), 0.0, "the band reaches the pane's edge: {band:?}");
+    assert_eq!(band.max_x(), width, "and its other edge: {band:?}");
+    assert_eq!(band.width(), width);
+    assert!(
+        (band.min_y() - 36.0).abs() < 0.5,
+        "the band starts where the header ends: {band:?}"
+    );
+
+    // The cards: the lane column, inset by the band's own padding.
+    let radius = chat_typography::announcement_radius(&app);
+    let cards: Vec<RectF> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::StrokeRect {
+                rect,
+                corner_radius,
+                ..
+            } if (*corner_radius - radius).abs() < 0.01 => Some(*rect),
+            _ => None,
+        })
+        .collect();
+    assert!(!cards.is_empty(), "the dock draws its announcement card");
+    let (gutter, lane) = lane_column(width, None);
+    let md = app.theme.spacing_px(crate::theme::SpacingToken::Md);
+    for card in &cards {
+        assert!(
+            (card.min_x() - (gutter + md)).abs() < 0.5,
+            "the card starts at the lane's inset edge: {card:?} vs gutter {gutter}"
+        );
+        assert!(
+            (card.max_x() - (gutter + lane - md)).abs() < 0.5,
+            "and ends at the lane's other edge: {card:?}"
+        );
+    }
+    // The transcript's own column is the same lane: the chrome lines up with
+    // the conversation under it.
+    let column = view_content_column(&commands, &app);
+    assert!(
+        (column.min_x() - gutter).abs() < 0.5 && (column.width() - lane).abs() < 0.5,
+        "the conversation column is the lane the cards use: {column:?} vs {gutter}/{lane}"
+    );
+    let band_centre = (band.min_x() + band.max_x()) / 2.0;
+    let card_centre = (cards[0].min_x() + cards[0].max_x()) / 2.0;
+    assert!(
+        (band_centre - card_centre).abs() < 0.5,
+        "the bounded cards are centred in the band: {card_centre} vs {band_centre}"
+    );
+}
+
+/// The adjustable conversation column is the darker `Bg` token while the pane
+/// around it keeps its `Surface`: the lane reads as a distinct darker column
+/// (the pane card and gutters are the app's `Surface` behind the view).
+#[test]
+fn the_lane_column_paints_the_darker_background() {
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let (mut view, _starts) = laned_view(None);
+    let commands = render_element(&mut view, vec2f(1600.0, 900.0), &app);
+
+    let bg = app.theme.color(ColorToken::Bg);
+    let column = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == bg => Some(*rect),
+            _ => None,
+        })
+        .max_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
+        .expect("the lane paints its content column");
+    assert_eq!(
+        (column.width(), column.min_x()),
+        (920.0, 340.0),
+        "the darker column is the centred lane: {column:?}"
+    );
+    assert_ne!(
+        bg,
+        app.theme.color(ColorToken::Surface),
+        "the column's token is distinct from the pane surface"
+    );
+    let luminance = |color: crate::color::ColorU| {
+        0.2126 * color.r as f32 + 0.7152 * color.g as f32 + 0.0722 * color.b as f32
+    };
+    assert!(
+        luminance(bg) < luminance(app.theme.color(ColorToken::Surface)),
+        "the column reads darker than the pane's surface"
+    );
 }

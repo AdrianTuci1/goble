@@ -741,3 +741,157 @@ fn test_secret_groups_roundtrip_and_lifecycle() {
         "no entry outlives the group it belonged to"
     );
 }
+
+/// The sidebar's Archive action writes a real timestamp and the archived
+/// listing reads exactly the top-level rows it names: clearing the stamp
+/// restores the conversation, and a sub-agent's own chat row (which the sidebar
+/// never lists) can be archived without leaking into the filter.
+#[test]
+fn test_chat_archived_roundtrip() {
+    let store = Store::open_in_memory().unwrap();
+    let ts = "2024-01-01T00:00:00Z";
+    store
+        .insert_chat("c1", "Demo", None, None, ts, ts)
+        .unwrap();
+    store
+        .insert_chat("c2", "Other", None, None, ts, ts)
+        .unwrap();
+    store
+        .insert_subagent_chat("s1", "Child", "c1", None, None, ts, ts)
+        .unwrap();
+
+    assert!(store.archived_chat_ids().unwrap().is_empty());
+    assert_eq!(store.get_chat_archived("c1").unwrap(), None);
+
+    store
+        .set_chat_archived("c1", Some("2024-02-01T00:00:00Z"))
+        .unwrap();
+    assert_eq!(
+        store.get_chat_archived("c1").unwrap(),
+        Some("2024-02-01T00:00:00Z".to_string())
+    );
+    assert_eq!(store.archived_chat_ids().unwrap(), vec!["c1".to_string()]);
+    assert_eq!(
+        store.get_chat_archived("c2").unwrap(),
+        None,
+        "archiving one conversation leaves the others alone"
+    );
+
+    // A sub-agent's own chat carries `parent_chat_id`; the sidebar never lists
+    // it, so it never reaches the archived filter either.
+    store
+        .set_chat_archived("s1", Some("2024-02-01T00:00:00Z"))
+        .unwrap();
+    assert_eq!(store.archived_chat_ids().unwrap(), vec!["c1".to_string()]);
+
+    // Restoring clears the stamp: the id leaves the archived set and the row
+    // returns to its normal slot.
+    store.set_chat_archived("c1", None).unwrap();
+    assert!(store.archived_chat_ids().unwrap().is_empty());
+    assert_eq!(store.get_chat_archived("c1").unwrap(), None);
+
+    // Unknown conversations are a no-op rather than an error.
+    store.set_chat_archived("missing", Some(ts)).unwrap();
+    assert_eq!(store.get_chat_archived("missing").unwrap(), None);
+}
+
+/// The Star/Unstar menu row persists a pin: the Starred block reads the
+/// `starred_chat_ids` set, and only top-level conversations are in it (a
+/// sub-agent's own chat row is never a sidebar card).
+#[test]
+fn test_chat_starred_roundtrip() {
+    let store = Store::open_in_memory().unwrap();
+    let ts = "2024-01-01T00:00:00Z";
+    store
+        .insert_chat("c1", "Demo", None, None, ts, ts)
+        .unwrap();
+    store
+        .insert_chat("c2", "Other", None, None, ts, ts)
+        .unwrap();
+    store
+        .insert_subagent_chat("s1", "Child", "c1", None, None, ts, ts)
+        .unwrap();
+
+    assert!(store.starred_chat_ids().unwrap().is_empty());
+    assert!(!store.get_chat_starred("c1").unwrap());
+
+    store.set_chat_starred("c1", true).unwrap();
+    assert!(store.get_chat_starred("c1").unwrap());
+    assert_eq!(store.starred_chat_ids().unwrap(), vec!["c1".to_string()]);
+    assert!(
+        !store.get_chat_starred("c2").unwrap(),
+        "starring one conversation leaves the others alone"
+    );
+
+    store.set_chat_starred("s1", true).unwrap();
+    assert_eq!(
+        store.starred_chat_ids().unwrap(),
+        vec!["c1".to_string()],
+        "a sub-agent's own chat is not a sidebar pin"
+    );
+
+    store.set_chat_starred("c1", false).unwrap();
+    assert!(store.starred_chat_ids().unwrap().is_empty());
+
+    // Unknown conversations are a no-op rather than an error.
+    store.set_chat_starred("missing", true).unwrap();
+    assert!(!store.get_chat_starred("missing").unwrap());
+}
+
+/// A store created before the sidebar menu existed gains the two new `chats`
+/// columns on the next open, and its old rows read as listed/unstarred (the
+/// `ALTER TABLE` idiom the other columns already use).
+#[test]
+fn test_legacy_chats_table_gains_the_new_columns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("legacy.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE chats (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                provider TEXT,
+                model TEXT,
+                agent_id TEXT,
+                worker_id TEXT,
+                workspace_routing TEXT,
+                medium_id TEXT,
+                parent_chat_id TEXT,
+                working_dir TEXT,
+                usage_input INTEGER NOT NULL DEFAULT 0,
+                usage_output INTEGER NOT NULL DEFAULT 0,
+                usage_cached INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+            INSERT INTO chats (id, title, created_at, updated_at)
+                VALUES ('old', 'Old conversation', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z');
+            "#,
+        )
+        .unwrap();
+    }
+
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store.get_chat_archived("old").unwrap(),
+        None,
+        "an old row is listed normally"
+    );
+    assert!(
+        !store.get_chat_starred("old").unwrap(),
+        "an old row is not starred"
+    );
+    assert!(store.archived_chat_ids().unwrap().is_empty());
+    assert!(store.starred_chat_ids().unwrap().is_empty());
+
+    // The columns are writable on the migrated table, so both new actions work
+    // on a store that predates them.
+    store
+        .set_chat_archived("old", Some("2024-02-01T00:00:00Z"))
+        .unwrap();
+    store.set_chat_starred("old", true).unwrap();
+    assert_eq!(store.archived_chat_ids().unwrap(), vec!["old".to_string()]);
+    assert_eq!(store.starred_chat_ids().unwrap(), vec!["old".to_string()]);
+}

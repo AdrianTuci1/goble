@@ -56,6 +56,10 @@ pub struct TextArea {
     focused: bool,
     min_height: f32,
     masked: bool,
+    /// The size the field's text is drawn at. The composer's editor draws 14pt;
+    /// the smaller inline editors (the review pane's, the approval card's) keep
+    /// the default body size.
+    font_size: f32,
     /// Where the insertion beam sits, as a character index into the value.
     /// Shared with the host when the host owns the state (the composer does:
     /// the element is rebuilt every frame, so an index kept here would reset to
@@ -130,6 +134,7 @@ impl TextArea {
             focused: false,
             min_height: 80.0,
             masked: false,
+            font_size: TEXT_FONT_SIZE,
             caret: None,
             local_caret: 0,
             multiline: false,
@@ -173,6 +178,14 @@ impl TextArea {
 
     pub fn with_min_height(mut self, height: f32) -> Self {
         self.min_height = height;
+        self
+    }
+
+    /// The size the field's own text is drawn at (default
+    /// [`TEXT_FONT_SIZE`]). The composer's editor asks for 14pt; a compact
+    /// inline editor stays at the default.
+    pub fn with_font_size(mut self, font_size: f32) -> Self {
+        self.font_size = font_size.max(1.0);
         self
     }
 
@@ -380,13 +393,23 @@ impl TextArea {
         // reads as part of the surrounding rich-input bar.
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         if !self.focused {
-            row = row.with_child(Text::new(display).with_theme_color(color, app).finish());
+            row = row.with_child(
+                Text::new(display)
+                    .with_theme_color(color, app)
+                    .with_font_size(self.font_size)
+                    .with_line_height(self.line_height)
+                    .finish(),
+            );
         } else if empty {
             // A placeholder is only a guide: the insertion point leads it as a
             // thin beam painted under the guide's first letter.
-            row = row
-                .with_child(caret::caret_beam(app))
-                .with_child(Text::new(display).with_theme_color(color, app).finish());
+            row = row.with_child(caret::caret_beam(app)).with_child(
+                Text::new(display)
+                    .with_theme_color(color, app)
+                    .with_font_size(self.font_size)
+                    .with_line_height(self.line_height)
+                    .finish(),
+            );
         } else {
             // The text is drawn whole, and the caret is placed on the wrapped
             // row the index falls in, on that row's own advances. Cutting the
@@ -410,8 +433,8 @@ impl TextArea {
             };
             let lines = wrapped_lines(
                 &display,
-                TEXT_FONT_SIZE,
-                TEXT_LINE_HEIGHT,
+                self.font_size,
+                self.line_height,
                 if self.wrapping {
                     self.wrap_width
                 } else {
@@ -452,7 +475,7 @@ impl TextArea {
             let caret_chars = row_chars(&starts, caret_row, &display);
             let advances = char_advances(
                 &caret_chars.iter().collect::<String>(),
-                TEXT_FONT_SIZE,
+                self.font_size,
                 FontWeight::Regular,
                 FontFamily::System,
                 false,
@@ -485,7 +508,7 @@ impl TextArea {
                     }
                     let row_advances = char_advances(
                         &row_text,
-                        TEXT_FONT_SIZE,
+                        self.font_size,
                         FontWeight::Regular,
                         FontFamily::System,
                         false,
@@ -514,6 +537,7 @@ impl TextArea {
             let glyph = block_glyph(
                 shape,
                 caret_chars.get(caret_column).copied(),
+                self.font_size,
                 FontFamily::System,
                 FontWeight::Regular,
                 false,
@@ -535,7 +559,13 @@ impl TextArea {
                     .finish(),
                 );
             }
-            children.push(Text::new(display).with_theme_color(color, app).finish());
+            children.push(
+                Text::new(display)
+                    .with_theme_color(color, app)
+                    .with_font_size(self.font_size)
+                    .with_line_height(self.line_height)
+                    .finish(),
+            );
             let mut stack = Stack::new().with_children(children);
             if shape != CaretShape::Block {
                 stack = stack.with_overlay(
@@ -746,7 +776,7 @@ impl TextArea {
             (to > from).then(|| (from - start)..(to - start))
         });
         let runs = self.line_runs_for(index, line, plain);
-        let advances = line_advances(&runs, TEXT_FONT_SIZE);
+        let advances = line_advances(&runs, self.font_size);
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Start);
         if self.line_numbers > 0 {
             let number = TextSpan::plain(format!(
@@ -755,7 +785,7 @@ impl TextArea {
                 width = self.line_numbers
             ))
             .with_color(app.theme.color(ColorToken::Muted));
-            row = row.with_child(runs_code(self.line_height, vec![number]));
+            row = row.with_child(runs_code(self.font_size, self.line_height, vec![number]));
         }
 
         let mut children: Vec<Box<dyn Element>> = Vec::new();
@@ -781,7 +811,7 @@ impl TextArea {
                 shape,
                 &advances,
                 column,
-                mono_advance(TEXT_FONT_SIZE, FontWeight::Regular)
+                mono_advance(self.font_size, FontWeight::Regular)
                     .ceil()
                     .max(1.0),
             );
@@ -789,7 +819,7 @@ impl TextArea {
             // to — the row paints every run in the mono face, whatever family
             // its span names — so the block redraws it on its own slot.
             let glyph = run_char(&runs, column).and_then(|(ch, weight, italic)| {
-                block_glyph(shape, Some(ch), FontFamily::Mono, weight, italic)
+                block_glyph(shape, Some(ch), self.font_size, FontFamily::Mono, weight, italic)
             });
             let ink = glyph.map(|glyph| caret::caret_ink(app, x, cell, self.line_box(), glyph));
             (
@@ -804,14 +834,14 @@ impl TextArea {
         let line_view = match caret.take() {
             Some((CaretShape::Block, fill, ink)) => {
                 children.push(fill);
-                children.push(runs_code(self.line_height, runs));
+                children.push(runs_code(self.font_size, self.line_height, runs));
                 if let Some(ink) = ink {
                     children.push(ink);
                 }
                 Stack::new().with_children(children)
             }
             other => {
-                children.push(runs_code(self.line_height, runs));
+                children.push(runs_code(self.font_size, self.line_height, runs));
                 match other {
                     Some((_, overlay, _)) => Stack::new()
                         .with_children(children)
@@ -836,7 +866,7 @@ impl TextArea {
     /// One line's height: what every row of a multi-line buffer is drawn at,
     /// the caret's own row included.
     fn line_box(&self) -> f32 {
-        (TEXT_FONT_SIZE * self.line_height).ceil()
+        (self.font_size * self.line_height).ceil()
     }
 
     /// The runs the line `index` of the buffer is drawn from: the run set the
@@ -1021,7 +1051,7 @@ impl TextArea {
             .unwrap_or(chars.len());
         let line: String = chars[start..end].iter().collect();
         let offset = position.x - left - self.gutter_width();
-        start + index_in(&line, offset, FontFamily::Mono).min(end - start)
+        start + index_in(&line, offset, self.font_size, FontFamily::Mono).min(end - start)
     }
 
     /// The width a multi-line row's line-number gutter takes, which is what a
@@ -1032,7 +1062,7 @@ impl TextArea {
         }
         measure_text_family(
             &format!("{:>width$} ", 0, width = self.line_numbers),
-            TEXT_FONT_SIZE,
+            self.font_size,
             self.line_height,
             f32::INFINITY,
             FontWeight::Regular,
@@ -1084,7 +1114,8 @@ impl TextArea {
         if self.value.is_empty() {
             return 0;
         }
-        index_in(&self.display(), offset, FontFamily::System).min(self.value.chars().count())
+        index_in(&self.display(), offset, self.font_size, FontFamily::System)
+            .min(self.value.chars().count())
     }
 
     /// The character index a press on a folded one-line field falls on: the row
@@ -1097,8 +1128,8 @@ impl TextArea {
         }
         let lines = wrapped_lines(
             &display,
-            TEXT_FONT_SIZE,
-            TEXT_LINE_HEIGHT,
+            self.font_size,
+            self.line_height,
             self.wrap_width,
             FontWeight::Regular,
             FontFamily::System,
@@ -1114,7 +1145,7 @@ impl TextArea {
         let starts = row_starts(&lines, &display);
         let start = starts.get(row).copied().unwrap_or(0);
         let row_text: String = row_chars(&starts, row, &display).into_iter().collect();
-        let column = index_in(&row_text, x, FontFamily::System);
+        let column = index_in(&row_text, x, self.font_size, FontFamily::System);
         (start + column).min(self.value.chars().count())
     }
 
@@ -1276,6 +1307,7 @@ fn caret_cell(shape: CaretShape, advances: &[f32], at: usize, fallback: f32) -> 
 fn block_glyph(
     shape: CaretShape,
     ch: Option<char>,
+    font_size: f32,
     family: FontFamily,
     weight: FontWeight,
     italic: bool,
@@ -1287,7 +1319,7 @@ fn block_glyph(
         .map(|ch| caret::CaretGlyph {
             ch,
             family,
-            size: TEXT_FONT_SIZE,
+            size: font_size,
             weight,
             italic,
         })
@@ -1461,7 +1493,7 @@ fn line_bounds(chars: &[char], index: usize) -> (usize, usize) {
 /// The character index in `line` that a pointer `offset` pixels from its start
 /// is nearest to. A press past the end of the line puts the index at the end,
 /// where the next character typed joins on.
-fn index_in(line: &str, offset: f32, family: FontFamily) -> usize {
+fn index_in(line: &str, offset: f32, font_size: f32, family: FontFamily) -> usize {
     if line.is_empty() || offset <= 0.0 {
         return 0;
     }
@@ -1473,7 +1505,7 @@ fn index_in(line: &str, offset: f32, family: FontFamily) -> usize {
         // space has no extra ink, and its boundary still has to advance.
         let end = advance_width(
             &boundary,
-            TEXT_FONT_SIZE,
+            font_size,
             FontWeight::Regular,
             family,
             false,
@@ -1577,9 +1609,9 @@ fn line_advances(runs: &[TextSpan], font_size: f32) -> Vec<f32> {
 /// [`Code`] element the file pane draws its read-only lines with. Every row of
 /// a multi-line buffer is built this way — the gutter, the plain lines and the
 /// caret's own line — so all of them are exactly one line box tall.
-fn runs_code(line_height: f32, runs: Vec<TextSpan>) -> Box<dyn Element> {
+fn runs_code(font_size: f32, line_height: f32, runs: Vec<TextSpan>) -> Box<dyn Element> {
     Code::new("")
-        .with_font_size(TEXT_FONT_SIZE)
+        .with_font_size(font_size)
         .with_line_height(line_height)
         .with_highlighted_lines(vec![runs])
         .finish()

@@ -21,7 +21,7 @@ So the job is a real VT emulator. This document is the **functional map**: every
 
 ## 0. What is already built
 
-The emulator is not written from scratch, and it does not live in a tree under `app/src/terminal/`. The decisions taken while implementing it:
+The emulator is not written from scratch, and it does not live in a tree under `apps/desktop/src/terminal/`. The decisions taken while implementing it:
 
 - **The emulator is the vendored Alacritty crate.** `vendor/alacritty_terminal` holds `alacritty_terminal` 0.26.0 (Apache-2.0) verbatim: grid, cursor, modes, alt screen, reflow, and the `vte` parser. It is a path dependency of `crates/goble-terminal` and is excluded from the workspace. `goble-terminal` always reaches the parser through the crate's own `pub use vte` re-export, so parser and handler cannot drift apart. Provenance, the SHA-256 of the published archive, and the two deliberate deletions are recorded in `THIRD-PARTY-NOTICES.md`; `scripts/fetch-alacritty-terminal.sh` re-downloads the archive and diffs it against `vendor/`.
 - **There is no second parser.** The agent harness speaks typed protocol events rather than escape sequences, and a pane runs a real shell over a PTY, so one VT parser covers every byte that reaches a grid. What the shell-integration channel adds is an *envelope* decoder (`hooks.rs`) and what the keyboard adds is an *encoder* (`keys.rs`); neither parses escape sequences.
@@ -29,7 +29,7 @@ The emulator is not written from scratch, and it does not live in a tree under `
 - **The renderer seam is a snapshot, not a trait with borrows.** §2.3 rule 3 proposed `trait GridView`. What shipped is `Screen::lines` (visible rows), `Screen::content_lines` (history + screen), `Screen::cursor` and `ScreenColor`/`CellAttrs`/`ScreenCell` — owned values the renderer consumes without knowing what a screen is. A trait can still be introduced if a second implementation ever appears; a snapshot cannot leak a screen's lifetime into the renderer.
 - **Block screens keep 50 000 rows of scrollback each** (`ScreenConfig::block`, `BLOCK_HISTORY`). Warp disables per-grid history and copies scrolled rows into a separate flat storage (see §3.7); Alacritty already has that storage, so the same model is one `Config` field. A block draws its whole grid (`Screen::content_lines`), never just its viewport, so output taller than the window is kept and a resize that reflows content into more rows cannot lose it. The cap bounds one runaway command; past it the oldest rows are dropped, which is what the reference does too.
 - **Freezing is not a row cap.** `Screen::freeze` makes the screen refuse further bytes, and `BlockList`/`Block` route later output to the block that owns it, so a finished block cannot grow. Nothing is truncated, because the block was already showing all of its content.
-- **The pane is switched over.** `app/src/emulator.rs` owns one screen plus both byte taps behind a lock the reader thread feeds and the UI thread samples; `app/src/ui/terminal.rs` measures the pane with the font's cell pitch, tells the session the grid size, and paints the rows through `goble_ui::elements::TerminalGrid` — one glyph per cell with per-cell colour, attributes and cursor, not a line buffer. Keys and pointer events go through `goble_terminal`'s encoders, so a program in a pane sees the modes it negotiated.
+- **The pane is switched over.** `apps/desktop/src/emulator.rs` owns one screen plus both byte taps behind a lock the reader thread feeds and the UI thread samples; `app/src/ui/terminal.rs` measures the pane with the font's cell pitch, tells the session the grid size, and paints the rows through `goble_ui::elements::TerminalGrid` — one glyph per cell with per-cell colour, attributes and cursor, not a line buffer. Keys and pointer events go through `goble_terminal`'s encoders, so a program in a pane sees the modes it negotiated.
 - **Status is tracked in [`.agents/TRACKER.md`](../TRACKER.md)**, not here: the phases below describe the emulator's capability set.
 
 ## 1. Build order
@@ -67,7 +67,7 @@ The reference uses exactly this shape and it is the right one (`A/ansi/mod.rs:34
 
 ### 2.2 Where our version lives
 
-The plan was a tree under `app/src/terminal/`. What shipped is a crate, so that the emulator can be compiled and tested without the app and without the GPU:
+The plan was a tree under `apps/desktop/src/terminal/`. What shipped is a crate, so that the emulator can be compiled and tested without the app and without the GPU:
 
 ```
 crates/goble-terminal/
@@ -396,7 +396,7 @@ Registration is a macro list (`ref_tests! { … }`, `mod.rs:47-88`). The referen
 
 **Coverage gaps in the reference**, i.e. where we should do better: no fuzzing or property tests, no differential testing against a live emulator, no terminal benchmarks, and `vttest` only as recorded fixtures (`esctest` absent).
 
-**Our ladder for phases 1–5, before the fixture corpus exists** (goble has no fixture infra today; terminal tests live in `app/src/integration_testing/*.rs` with `common.rs`, driving `render_element` headlessly):
+**Our ladder for phases 1–5, before the fixture corpus exists** (goble has no fixture infra today; terminal tests live in `apps/desktop/src/integration_testing/*.rs` with `common.rs`, driving `render_element` headlessly):
 
 - Phase 1–3: golden-grid unit tests that feed a byte string to the parser and assert cells, plus a recorded real session (`vim`, `htop`, `less`, `codex`) replayed through the emulator with its final grid compared.
 - Phase 4: resize matrices — resize a wrapped grid wider and narrower repeatedly and assert the content round-trips.

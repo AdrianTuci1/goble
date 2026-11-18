@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -14,6 +14,8 @@ import {
   SectionHeader,
   StatusPill,
   connection,
+  demoConversation,
+  demoConversations,
   palette,
   radius,
   relativeTime,
@@ -26,12 +28,18 @@ import {
   type ConnectionSnapshot,
   type ConnectionState,
   type RelayStatus,
+  type RemoteChat,
   type RemoteSubagent,
+  type SessionStatus,
 } from "@goble/common";
 
 import { ChatSidebar } from "../components/chat-sidebar";
 import { ConversationPane } from "../components/conversation-pane";
-import { Sidebar, type ThreadRow } from "../components/sidebar";
+import {
+  Sidebar,
+  type SidebarGroup,
+  type ThreadRow,
+} from "../components/sidebar";
 import { SubagentPane } from "../components/subagent-pane";
 import { TerminalPane } from "../components/terminal-pane";
 import {
@@ -107,10 +115,50 @@ export default function WebShell() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [openSubagent, setOpenSubagent] = useState<RemoteSubagent | null>(null);
   const [composerFocusSignal, setComposerFocusSignal] = useState(0);
+
+  /**
+   * A sample workspace, opt-in only, for design review of the populated
+   * sidebar (`EXPO_PUBLIC_GOBLE_DEMO=1`). It must never stand in for a real
+   * worker: an unpaired shell keeps showing the "No worker connected" empty
+   * state. The demo turns stay read-only because the relay is not live.
+   */
+  const demoWorkspaceEnabled =
+    process.env.EXPO_PUBLIC_GOBLE_DEMO === "1";
+  const demo = remote.phase === "demo" && demoWorkspaceEnabled;
+  const demoConversationsList = useMemo(
+    () => (demo ? demoConversations() : []),
+    [demo],
+  );
+  const demoChats = useMemo(
+    () =>
+      demoConversationsList.map((conversation) => {
+        const detail = demoConversation(conversation.id);
+        return {
+          created_at: conversation.updatedAt,
+          id: conversation.id,
+          messages: detail.messages
+            .filter(
+              (message) =>
+                message.role === "user" || message.role === "assistant",
+            )
+            .map((message) => ({
+              content: message.text,
+              created_at: message.at,
+              id: message.id,
+              role: message.role,
+            })),
+          parent_chat_id: null,
+          title: conversation.title,
+          updated_at: conversation.updatedAt,
+        } satisfies RemoteChat;
+      }),
+    [demoConversationsList],
+  );
+  const sourceChats = demo ? demoChats : chats;
   /** A shell is one worker's child; with none selected there is nothing to open. */
   const canShell = remote.workerId !== null;
   const activeChat =
-    chats.find((thread) => thread.id === activeThreadId) ?? null;
+    sourceChats.find((thread) => thread.id === activeThreadId) ?? null;
   /** A read-only subagent transcript is not a conversation for the composer. */
   const conversationOpen =
     !shellOpen && openSubagent === null && activeChat !== null;
@@ -158,10 +206,58 @@ export default function WebShell() {
     onShowSessions: showSessions,
   });
 
-  const threads: ThreadRow[] = chats.map((chat) => {
-    const thread = threadConversation(chat);
-    return { id: thread.id, title: thread.title, preview: thread.preview };
-  });
+  /**
+   * The sidebar's groups are the conversations' project names — the DSH
+   * "Workspaces" grouping. Worker conversations all carry "Gateway" today
+   * (`threadConversation`), so production renders one group; the demo
+   * workspace carries three real project names.
+   */
+  const groups: SidebarGroup[] = useMemo(() => {
+    const byProject = new Map<string, ThreadRow[]>();
+    if (demo) {
+      for (const conversation of demoConversationsList) {
+        const row: ThreadRow = {
+          createdAt: conversation.updatedAt,
+          id: conversation.id,
+          preview: conversation.preview,
+          status: conversation.status,
+          title: conversation.title,
+          updatedAt: conversation.updatedAt,
+        };
+        const project = conversation.projectName || "General";
+        const rows = byProject.get(project);
+        if (rows === undefined) byProject.set(project, [row]);
+        else rows.push(row);
+      }
+    } else {
+      for (const chat of chats) {
+        const thread = threadConversation(chat);
+        // A stored conversation whose last message is still the user's is
+        // waiting for the worker's turn: DSH draws that as the running ring.
+        // Everything else is idle and carries no leading dot.
+        const last = chat.messages[chat.messages.length - 1];
+        const status: SessionStatus = last?.role === "user" ? "live" : "done";
+        const row: ThreadRow = {
+          createdAt: chat.created_at,
+          id: thread.id,
+          messageCount: chat.messages.length,
+          preview: thread.preview,
+          status,
+          title: thread.title,
+          updatedAt: chat.updated_at,
+        };
+        const project = thread.projectName || "General";
+        const rows = byProject.get(project);
+        if (rows === undefined) byProject.set(project, [row]);
+        else rows.push(row);
+      }
+    }
+    return [...byProject].map(([label, threads]) => ({
+      id: `project:${label}`,
+      label,
+      threads,
+    }));
+  }, [chats, demo, demoConversationsList]);
 
   return (
     <SafeAreaView
@@ -171,9 +267,13 @@ export default function WebShell() {
       <View style={styles.shell}>
         <Sidebar
           activeThreadId={activeThreadId}
-          canShell={canShell}
+          /* The design-review demo workspace renders the create affordances in
+             their connected state; a normal unpaired shell keeps them disabled. */
+          canShell={canShell || demoWorkspaceEnabled}
+          groups={groups}
           label={status.label}
           onNewShell={openShell}
+          onOpenShell={openShell}
           onSelectThread={(id) => {
             setShellOpen(false);
             setOpenSubagent(null);
@@ -183,7 +283,6 @@ export default function WebShell() {
           server={remote.server}
           shellOpen={shellOpen}
           state={status.state}
-          threads={threads}
         />
         <View style={styles.main}>
           <View style={styles.header}>

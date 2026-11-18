@@ -679,13 +679,19 @@ mod tests {
 
         let app = AppContext::default();
         let commands = render_element(&mut element, vec2f(600.0, 40.0), &app);
-        let rect = commands
+        // The row's Stop is one of the composer's flat controls — no outline of
+        // its own — so its glyph is where the row's own box is read from.
+        let glyph = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::StrokeRect { rect, .. } => Some(*rect),
+                RenderCommand::DrawIcon { origin, name, .. } if name == "stop" => Some(*origin),
                 _ => None,
             })
-            .expect("the stop control draws its outline");
+            .expect("the stop control draws its glyph");
+        let rect = crate::geometry::RectF::new(
+            crate::geometry::PointF::new(glyph.x - 6.0, glyph.y - 5.0),
+            crate::geometry::Size2F::new(26.0, 24.0),
+        );
         assert!(
             rect.min_x() > 480.0,
             "the stop sits at the row's far edge: {rect:?}"

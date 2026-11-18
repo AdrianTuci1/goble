@@ -3,18 +3,39 @@ use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use crate::elements::{
-    AppContext, Axis, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Element, EventContext,
-    Expanded, Fill, Flex, Icon, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point,
-    ScrollState, Scrollable, SizeConstraint, Text,
+    AppContext, Axis, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
+    Element, EventContext, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, MenuClose,
+    MenuId, MenuPointer, PaintContext, Point, ScrollState, Scrollable, SizeConstraint, Text,
+    DEFAULT_MENU_ID,
 };
 use crate::event::{DispatchedEvent, BUTTON_PRIMARY};
 use crate::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
-use crate::platform::text_atlas::FontWeight;
-use crate::theme::ColorToken;
+use crate::platform::text_atlas::{advance_width, FontWeight};
+use crate::theme::{ColorToken, FontFamily};
 
-const POPUP_MAX_WIDTH: f32 = 220.0;
+const POPUP_MAX_WIDTH: f32 = 300.0;
 const POPUP_ITEM_HEIGHT: f32 = 32.0;
+/// The height of a row that carries a second line: a short description under
+/// the label, the way the environment menu names what each medium does.
+const POPUP_ITEM_WITH_DESCRIPTION_HEIGHT: f32 = 48.0;
 const POPUP_ITEM_SPACING: f32 = 2.0;
+/// The label size of a menu row, and of the description line under it: the
+/// composer's type scale, one step up from the old 12pt rows.
+const POPUP_ITEM_LABEL_SIZE: f32 = 13.0;
+const POPUP_ITEM_DESCRIPTION_SIZE: f32 = 13.0;
+/// The height a pane separator takes in the panel's flow: the 1px `Border` rule
+/// with four points above and below it (the reference's "Work in a New
+/// Worktree" divider).
+const POPUP_SEPARATOR_HEIGHT: f32 = 9.0;
+/// The panel's own inset around its rows. The rows are rounded boxes inside it
+/// (the reference menu casing), so the panel needs a gutter to hold them.
+const POPUP_PANEL_PADDING: f32 = 6.0;
+/// The rounding of a row's hover/highlight fill. It is smaller than the
+/// panel's own radius so the two curves read as one casing: the row is a
+/// control inside the panel, not a second panel.
+const POPUP_ITEM_RADIUS: f32 = 6.0;
+/// The panel's default corner radius (§ reference menu casing).
+pub const POPUP_PANEL_RADIUS: f32 = 12.0;
 /// How many rows a capped panel draws before its list scrolls.
 ///
 /// Rows are the natural unit: a row is a fixed [`POPUP_ITEM_HEIGHT`] with
@@ -44,6 +65,14 @@ pub struct PopupMenuItem {
     /// The file's line counts, right-aligned on the row. `None` for a plain
     /// menu item.
     pub diff: Option<PopupMenuDiff>,
+    /// A second, muted line under the label saying what the item does — the
+    /// environment menu's "Clones this repo in a cloud environment…". `None`
+    /// leaves the row one line tall.
+    pub description: Option<String>,
+    /// Draw the panel's 1px pane separator above this row. The reference's
+    /// branch menu separates the branches from "Work in a New Worktree" with
+    /// it; `None` keeps the row in the ordinary flow.
+    pub separator_before: bool,
 }
 
 impl PopupMenuItem {
@@ -54,6 +83,8 @@ impl PopupMenuItem {
             selected: false,
             disabled: false,
             diff: None,
+            description: None,
+            separator_before: false,
         }
     }
 
@@ -76,6 +107,27 @@ impl PopupMenuItem {
     pub fn disabled(mut self) -> Self {
         self.disabled = true;
         self
+    }
+
+    /// A muted second line under the label saying what the item does.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Draw the 1px pane separator above this row.
+    pub fn with_separator_before(mut self) -> Self {
+        self.separator_before = true;
+        self
+    }
+
+    /// The row's own height: one line, or two when it carries a description.
+    pub fn height(&self) -> f32 {
+        if self.description.is_some() {
+            POPUP_ITEM_WITH_DESCRIPTION_HEIGHT
+        } else {
+            POPUP_ITEM_HEIGHT
+        }
     }
 }
 
@@ -173,10 +225,21 @@ pub struct PopupMenu {
     /// app's own open state hears about it. Without this the app would not know
     /// the menu had closed and would open it again on the next frame.
     on_close: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// The label this menu registers under in the window's shared open-menu
+    /// state ([`crate::elements::OpenMenus`]). Opening it closes whatever menu
+    /// was open before, and while it is up the pointer over its panel belongs
+    /// to it — nothing painted behind it hovers. The default is
+    /// [`DEFAULT_MENU_ID`]; the app names the menus that matter
+    /// (`"sidebar.view-options"`, `"composer.dir"`…).
+    menu_id: MenuId,
     state: InteractiveState,
     panel: Option<Box<dyn Element>>,
     panel_size: Option<Vector2F>,
     panel_origin: Vector2F,
+    /// A nudge applied to the panel after it is placed: the composer's
+    /// environment menu sits 10pt past its trigger symbol's right edge so the
+    /// casing ends a few points inside the card, the way the reference's does.
+    panel_offset: Vector2F,
     /// How many rows the panel draws before its list scrolls. `None` leaves the
     /// panel at its natural height — every row, the way it has always been — so
     /// a menu that never asked for a cap is drawn exactly as before.
@@ -187,6 +250,15 @@ pub struct PopupMenu {
     /// corners.
     max_width: f32,
     corner_radius: f32,
+    /// A row height override for this menu (the sidebar's view options are 44pt
+    /// tall); `None` keeps the shared casing's 32/48.
+    row_height: Option<f32>,
+    /// The row glyph size (defaults to the shared casing's 14).
+    icon_size: f32,
+    /// The ink of the selected row's label. `None` keeps the shared casing's
+    /// `Accent`; the Workspaces view-options menu asks for the web's accent
+    /// cyan (`Focus`) so its current choice reads as bright as its neighbours.
+    selected_color: Option<ColorToken>,
     tray: Option<Box<dyn Element>>,
     tray_size: Option<Vector2F>,
     tray_origin: Vector2F,
@@ -207,14 +279,19 @@ impl PopupMenu {
             highlight_index: Rc::new(RefCell::new(None)),
             footer_row: None,
             on_close: None,
+            menu_id: DEFAULT_MENU_ID,
             state: InteractiveState::default(),
             panel: None,
             panel_size: None,
             panel_origin: Vector2F::zero(),
+            panel_offset: Vector2F::zero(),
             max_visible_rows: None,
             panel_scroll: PanelScroll::default(),
             max_width: POPUP_MAX_WIDTH,
-            corner_radius: 6.0,
+            corner_radius: POPUP_PANEL_RADIUS,
+            row_height: None,
+            icon_size: 14.0,
+            selected_color: None,
             tray: None,
             tray_size: None,
             tray_origin: Vector2F::zero(),
@@ -225,6 +302,15 @@ impl PopupMenu {
 
     pub fn with_open(mut self, open: Rc<RefCell<bool>>) -> Self {
         self.open = open;
+        self
+    }
+
+    /// Name this menu in the window's shared open-menu state. A named menu is
+    /// the one that can be open: opening it closes any other menu first, and
+    /// the pointer on its panel belongs to it alone (see
+    /// [`crate::elements::OpenMenus`]).
+    pub fn with_menu_id(mut self, id: MenuId) -> Self {
+        self.menu_id = id;
         self
     }
 
@@ -256,6 +342,27 @@ impl PopupMenu {
     /// as round as the panel: a full-bleed row sits on the panel's own edges, so
     /// the two must share the corner curve to keep the row inside the panel's
     /// rounded bounds. Zero squares both.
+    /// Override the row height for this menu (the Workspaces view options use
+    /// the web's 44pt rows and 16pt glyphs).
+    pub fn with_row_height(mut self, height: f32) -> Self {
+        self.row_height = Some(height);
+        self
+    }
+
+    /// Set the row glyphs' size for this menu.
+    pub fn with_icon_size(mut self, size: f32) -> Self {
+        self.icon_size = size;
+        self
+    }
+
+    /// The ink of the selected row's label. The default is the shared casing's
+    /// `Accent` (the composer menus' look, unchanged); a menu whose selected
+    /// label should read as bright as the others passes the app accent here.
+    pub fn with_selected_color(mut self, token: ColorToken) -> Self {
+        self.selected_color = Some(token);
+        self
+    }
+
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
         self
@@ -263,6 +370,14 @@ impl PopupMenu {
 
     pub fn with_position(mut self, position: PopupMenuPosition) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Nudge the panel after it is placed, in window points. Used to align a
+    /// trailing panel with the edge of the card it belongs to rather than with
+    /// the width of its own trigger.
+    pub fn with_panel_offset(mut self, offset: Vector2F) -> Self {
+        self.panel_offset = offset;
         self
     }
 
@@ -327,6 +442,45 @@ impl PopupMenu {
         *self.open.borrow()
     }
 
+    /// The id this menu registers under in the shared open-menu state.
+    pub fn menu_id(&self) -> MenuId {
+        self.menu_id
+    }
+
+    /// How to put this menu away from outside the element: the shared registry
+    /// keeps it while the menu is the one open, so opening another menu closes
+    /// this one, and a dismiss from the root view clears the app's own flag.
+    fn close_handle(&self) -> MenuClose {
+        let open = Rc::clone(&self.open);
+        let on_close = self.on_close.clone();
+        Rc::new(RefCell::new(move || {
+            if !*open.borrow() {
+                return;
+            }
+            *open.borrow_mut() = false;
+            if let Some(cb) = on_close.as_ref() {
+                (cb.borrow_mut())();
+            }
+        }))
+    }
+
+    /// The toggle a press on the trigger runs: opening claims the window's one
+    /// open menu (closing whatever was up), closing puts this one away.
+    fn trigger_toggle(&self, app: &AppContext) -> Rc<RefCell<dyn FnMut()>> {
+        let menus = app.open_menus.clone();
+        let id = self.menu_id;
+        let open = Rc::clone(&self.open);
+        let close = self.close_handle();
+        Rc::new(RefCell::new(move || {
+            if *open.borrow() {
+                *open.borrow_mut() = false;
+                return;
+            }
+            menus.open(id, close.clone());
+            *open.borrow_mut() = true;
+        }))
+    }
+
     fn panel_bounds(&self) -> Option<RectF> {
         let origin = self.origin?;
         let size = self.panel_size?;
@@ -371,6 +525,33 @@ impl PopupMenu {
         ))
     }
 
+    /// The row's own height: one line, or two when it carries a description.
+    fn item_height(&self, index: usize) -> f32 {
+        self.items
+            .get(index)
+            .map(PopupMenuItem::height)
+            .unwrap_or(POPUP_ITEM_HEIGHT)
+    }
+
+    /// The top of item `index`'s row, relative to the panel's content top: the
+    /// rows and the pane separators between them, each on the column's spacing.
+    fn item_top(&self, index: usize) -> f32 {
+        let mut top = 0.0;
+        for (i, item) in self.items.iter().enumerate().take(index + 1) {
+            if i > 0 {
+                top += POPUP_ITEM_SPACING;
+            }
+            if item.separator_before {
+                top += POPUP_SEPARATOR_HEIGHT + POPUP_ITEM_SPACING;
+            }
+            if i == index {
+                break;
+            }
+            top += item.height();
+        }
+        top
+    }
+
     /// The panel's scroll offset: zero for a panel with no cap, which draws
     /// every row from the top.
     fn scroll_offset(&self) -> f32 {
@@ -383,26 +564,29 @@ impl PopupMenu {
 
     /// The bounds of item `index`'s row, in window coordinates. Rows are a
     /// fixed height with a fixed spacing between them, so a row's rect follows
-    /// from the panel's geometry without asking the row element. A row spans
-    /// the panel edge to edge — the panel adds no padding of its own — and a
-    /// capped panel draws its rows shifted by the scroll offset and clipped to
-    /// the window, so a row scrolled out of sight has no bounds: nothing hangs
-    /// from it and the pointer cannot hover it.
+    /// from the panel's geometry without asking the row element. A row is inset
+    /// from the panel by its casing padding, and a capped panel draws its rows
+    /// shifted by the scroll offset and clipped to the window, so a row scrolled
+    /// out of sight has no bounds: nothing hangs from it and the pointer cannot
+    /// hover it.
     fn row_bounds(&self, index: usize, _app: &AppContext) -> Option<RectF> {
         let origin = self.origin?;
         let panel_size = self.panel_size?;
-        let x = origin.x() + self.panel_origin.x;
-        let top = index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING) - self.scroll_offset();
+        let padding = POPUP_PANEL_PADDING;
+        let x = origin.x() + self.panel_origin.x + padding;
+        let width = (panel_size.x - padding * 2.0).max(0.0);
+        let height = self.item_height(index);
+        let top = self.item_top(index) - self.scroll_offset();
         if self.max_visible_rows.is_some() {
-            let window = panel_size.y.max(0.0);
-            if top + POPUP_ITEM_HEIGHT <= 0.0 || top >= window {
+            let window = (panel_size.y - padding * 2.0).max(0.0);
+            if top + height <= 0.0 || top >= window {
                 return None;
             }
         }
-        let y = origin.y() + self.panel_origin.y + top;
+        let y = origin.y() + self.panel_origin.y + padding + top;
         Some(RectF::new(
             PointF::new(x, y),
-            Size2F::new(panel_size.x.max(0.0), POPUP_ITEM_HEIGHT),
+            Size2F::new(width, height),
         ))
     }
 
@@ -432,10 +616,9 @@ impl PopupMenu {
         };
         // Menu-relative, like `panel_origin`: the tray hangs from the hovered
         // row's top edge and sits just past the panel's trailing edge. Rows
-        // start at the panel's top edge: the panel pads none of them.
-        let row_top = self.panel_origin.y
-            + index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING)
-            - self.scroll_offset();
+        // start one casing padding inside the panel's top edge.
+        let row_top =
+            self.panel_origin.y + POPUP_PANEL_PADDING + self.item_top(index) - self.scroll_offset();
         let panel_right = self.panel_origin.x + panel_size.x;
 
         let mut tray = content;
@@ -594,7 +777,20 @@ impl PopupMenu {
         let mut column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(POPUP_ITEM_SPACING);
+        // A row inside a rounded casing is a control of its own: it is as round
+        // as the reference's menu rows, never as round as the panel (whose
+        // curve holds it), and never square (the diff menu's old look is gone).
+        let row_radius = self.corner_radius.min(POPUP_ITEM_RADIUS);
         for (index, item) in self.items.iter().enumerate() {
+            // A pane separator is a full-width 1px rule between two groups of
+            // rows, with four points of air above and below it.
+            if item.separator_before {
+                column = column.with_child(
+                    Container::new(Divider::horizontal().finish())
+                        .with_padding(EdgeInsets::new(0.0, 4.0, 0.0, 4.0))
+                        .finish(),
+                );
+            }
             let label = item.label.clone();
             let icon = item.icon.clone();
             let selected = item.selected;
@@ -602,6 +798,7 @@ impl PopupMenu {
             let is_open = open.clone();
             let cb = on_select.clone();
             let diff = item.diff;
+            let description = item.description.clone();
             let row = PopupMenuItemView::new(
                 index,
                 highlight.clone(),
@@ -610,8 +807,12 @@ impl PopupMenu {
                 selected,
                 disabled,
                 diff,
+                description,
+                self.selected_color.unwrap_or(ColorToken::Accent),
                 self.max_width,
-                self.corner_radius,
+                row_radius,
+                self.row_height,
+                self.icon_size,
                 move || {
                     if !disabled {
                         if let Some(cb) = cb.as_ref() {
@@ -657,6 +858,7 @@ impl PopupMenu {
             .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
             .with_border(app.theme.color(ColorToken::Border).into())
             .with_corner_radius(self.corner_radius)
+            .with_padding(EdgeInsets::uniform(POPUP_PANEL_PADDING))
             .finish()
     }
 
@@ -688,7 +890,7 @@ impl PopupMenu {
         if viewport <= 0.0 {
             return;
         }
-        let top = index as f32 * (POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING);
+        let top = self.item_top(index);
         let bottom = top + POPUP_ITEM_HEIGHT;
         let wanted = if top < offset {
             top
@@ -764,7 +966,7 @@ impl Element for PopupMenu {
                     -(panel_size.y + POPUP_GAP)
                 }
             };
-            self.panel_origin = vec2f(x, y);
+            self.panel_origin = vec2f(x + self.panel_offset.x, y + self.panel_offset.y);
             self.reveal_highlighted_row();
         }
         self.build_tray(constraint, ctx, app);
@@ -774,13 +976,46 @@ impl Element for PopupMenu {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.trigger.paint(origin, ctx, app);
-        if let Some(panel) = self.panel.as_mut() {
-            panel.paint(origin + self.panel_origin, ctx, app);
+        // The menu may have been closed between layout and this paint (another
+        // menu claimed the window, or the app cleared the flag): only the
+        // trigger draws then.
+        if !*self.open.borrow() {
+            return;
         }
-        if let Some(tray) = self.tray.as_mut() {
-            tray.paint(origin + self.tray_origin, ctx, app);
+        if self.panel.is_some() {
+            // The pointer on the panel belongs to the menu: behind it, nothing
+            // hovers while the menu paints over it (see `PaintContext::hovered`).
+            ctx.enter_menu_surface();
+            if let Some(panel) = self.panel.as_mut() {
+                panel.paint(origin + self.panel_origin, ctx, app);
+            }
+            if let Some(tray) = self.tray.as_mut() {
+                tray.paint(origin + self.tray_origin, ctx, app);
+            }
+            self.track_hover(ctx, app);
+            ctx.leave_menu_surface();
         }
-        self.track_hover(ctx, app);
+        // Register the surface the menu owns. The root view reads it next frame
+        // to gate hover behind it, and to decide that a press is inside the
+        // menu rather than an outside dismiss.
+        let mut surfaces = Vec::new();
+        if let Some(panel) = self.panel_bounds() {
+            surfaces.push(panel);
+        }
+        if let Some(tray) = self.tray_bounds() {
+            surfaces.push(tray);
+        }
+        if let Some(corridor) = (*self.hover_index.borrow())
+            .and_then(|index| self.row_bounds(index, app))
+            .and_then(|row| self.tray_corridor(row))
+        {
+            surfaces.push(corridor);
+        }
+        app.open_menus
+            .report(self.menu_id, self.close_handle(), surfaces, MenuPointer::Paint);
+        if let Some(anchor) = self.bounds() {
+            app.open_menus.report_anchor(self.menu_id, anchor);
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -855,7 +1090,7 @@ impl Element for PopupMenu {
             // (which would otherwise let the release re-open it).
             if let Some(position) = event_position(event) {
                 if contains(bounds, position) {
-                    let cb = open_toggle_closure(self.open.clone());
+                    let cb = self.trigger_toggle(app);
                     let mut toggle = move || (cb.borrow_mut())();
                     return handle_mouse_event(&mut self.state, event, bounds, ctx, &mut toggle);
                 }
@@ -881,7 +1116,7 @@ impl Element for PopupMenu {
             return false;
         }
 
-        let cb = open_toggle_closure(self.open.clone());
+        let cb = self.trigger_toggle(app);
         let mut toggle = move || (cb.borrow_mut())();
         handle_mouse_event(&mut self.state, event, bounds, ctx, &mut toggle)
     }
@@ -895,13 +1130,6 @@ fn event_position(event: &DispatchedEvent) -> Option<Vector2F> {
         | DispatchedEvent::MouseMove { position } => Some(*position),
         _ => None,
     }
-}
-
-fn open_toggle_closure(open: Rc<RefCell<bool>>) -> Rc<RefCell<dyn FnMut()>> {
-    Rc::new(RefCell::new(move || {
-        let current = *open.borrow();
-        *open.borrow_mut() = !current;
-    }))
 }
 
 trait PanelInside {
@@ -934,11 +1162,21 @@ struct PopupMenuItemView {
     selected: bool,
     disabled: bool,
     diff: Option<PopupMenuDiff>,
+    /// A muted second line under the label, when the item has one.
+    description: Option<String>,
+    /// The ink of the selected label (the menu's own choice).
+    selected_color: ColorToken,
     max_width: f32,
     corner_radius: f32,
+    /// This menu's row height and glyph size overrides, if any.
+    row_height: Option<f32>,
+    icon_size: f32,
     state: InteractiveState,
     on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
     content: Option<Box<dyn Element>>,
+    /// The width `content` was built at: a description is ellipsized to the
+    /// row's own width, so a resize has to rebuild it.
+    content_width: f32,
     content_origin: Vector2F,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -954,8 +1192,12 @@ impl PopupMenuItemView {
         selected: bool,
         disabled: bool,
         diff: Option<PopupMenuDiff>,
+        description: Option<String>,
+        selected_color: ColorToken,
         max_width: f32,
         corner_radius: f32,
+        row_height: Option<f32>,
+        icon_size: f32,
         on_select: impl FnMut() + 'static,
     ) -> Self {
         Self {
@@ -966,43 +1208,50 @@ impl PopupMenuItemView {
             selected,
             disabled,
             diff,
+            description,
+            selected_color,
             max_width,
             corner_radius,
+            row_height,
+            icon_size,
             state: InteractiveState::default(),
             on_select: Some(Rc::new(RefCell::new(on_select))),
             content: None,
+            content_width: 0.0,
             content_origin: Vector2F::zero(),
             size: None,
             origin: None,
         }
     }
 
-    fn build_content(&mut self, app: &AppContext) {
-        if self.content.is_some() {
+    fn build_content(&mut self, app: &AppContext, width: f32) {
+        if self.content.is_some() && (self.content_width - width).abs() < 0.5 {
             return;
         }
+        self.content_width = width;
         let text_color = if self.disabled {
             ColorToken::Muted
         } else if self.selected {
-            ColorToken::Accent
+            self.selected_color
         } else {
             ColorToken::Text
         };
         let text = Text::new(self.label.clone())
             .with_theme_color(text_color, app)
-            .with_font_size(12.0);
-        let text = if self.diff.is_some() {
-            text.with_max_lines(1)
-        } else {
-            text
-        };
-        let mut content = Flex::row()
+            .with_font_size(POPUP_ITEM_LABEL_SIZE)
+            .with_max_lines(1);
+        // The row's first line: the glyph, the label, and whatever marks the
+        // row's value at its trailing edge (a file's counts, the current
+        // item's check). The trailing mark is right-aligned, so every row's
+        // label starts on the same pen.
+        let mut line = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(8.0);
         if let Some(icon_name) = self.icon.clone() {
-            content = content.with_child(
+            line = line.with_child(
                 Icon::new(icon_name)
-                    .with_size(14.0)
+                    .with_size(self.icon_size)
                     .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             );
@@ -1011,19 +1260,86 @@ impl PopupMenuItemView {
             // A changed file's row keeps the path on the left and its counts
             // on the right, the two ends of the row's full width.
             Some(diff) => {
-                let counts = diff_counts(diff, app);
-                content = content
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                line = line
                     .with_child(Expanded::new(Clipped::new(text.finish()).finish()).finish())
-                    .with_child(counts);
+                    .with_child(diff_counts(diff, app));
             }
             None => {
-                content = content.with_child(text.finish());
+                line = line.with_child(Expanded::new(text.finish()).finish());
             }
+        }
+        // The item in force is marked with the reference's trailing check: the
+        // label keeps its own colour and the check is the value's stamp.
+        if self.selected && !self.disabled && self.diff.is_none() {
+            line = line.with_child(
+                Icon::new("check")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            );
+        }
+        let mut content = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(2.0)
+            .with_child(line.finish());
+        if let Some(description) = self.description.clone() {
+            // One line, cut with an ellipsis at the row's own width: the menu
+            // casing is a fixed panel, so a long description must not fold into
+            // the row above it (the reference menu shows `…`).
+            content = content.with_child(
+                Text::new(ellipsize(
+                    &description,
+                    POPUP_ITEM_DESCRIPTION_SIZE,
+                    FontWeight::Regular,
+                    FontFamily::System,
+                    width,
+                ))
+                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(POPUP_ITEM_DESCRIPTION_SIZE)
+                .with_max_lines(1)
+                .finish(),
+            );
         }
         self.content = Some(content.finish());
     }
+
+    /// The row's own height: one line, or two when it carries a description.
+    fn height(&self) -> f32 {
+        if let Some(height) = self.row_height {
+            return height;
+        }
+        if self.description.is_some() {
+            POPUP_ITEM_WITH_DESCRIPTION_HEIGHT
+        } else {
+            POPUP_ITEM_HEIGHT
+        }
+    }
+}
+
+/// `text` cut to one line that fits `max_width`, with an ellipsis where it was
+/// cut. A description has one row and the panel has a fixed width, so this is
+/// what keeps it from folding into the label above it.
+fn ellipsize(
+    text: &str,
+    font_size: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    max_width: f32,
+) -> String {
+    let ellipsis = advance_width("…", font_size, weight, family, false);
+    let mut out = String::new();
+    let mut width = 0.0;
+    for ch in text.chars() {
+        let mut buffer = [0u8; 4];
+        let advance = advance_width(ch.encode_utf8(&mut buffer), font_size, weight, family, false);
+        if width + advance + ellipsis > max_width {
+            out.push('…');
+            return out;
+        }
+        out.push(ch);
+        width += advance;
+    }
+    out
 }
 
 /// The additions and deletions at a changed file row's trailing edge. An empty
@@ -1068,12 +1384,13 @@ impl Element for PopupMenuItemView {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        self.build_content(app);
-        let size = vec2f(constraint.max.x.min(self.max_width), POPUP_ITEM_HEIGHT);
+        let size = vec2f(constraint.max.x.min(self.max_width), self.height());
+        let content_width = (size.x - 16.0).max(0.0);
+        self.build_content(app, content_width);
         self.size = Some(size);
         let content = self.content.as_mut().unwrap();
         let _ = content.layout(
-            SizeConstraint::loose(vec2f((size.x - 16.0).max(0.0), POPUP_ITEM_HEIGHT)),
+            SizeConstraint::loose(vec2f(content_width, (size.y - 8.0).max(0.0))),
             ctx,
             app,
         );
@@ -1086,11 +1403,18 @@ impl Element for PopupMenuItemView {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
         let hit = rectf(origin.x, origin.y, size.x, size.y);
+        // The row under the keyboard and the row under the pointer read as the
+        // same raised band. It is the selection colour composited half over the
+        // panel's own fill — the reference's selected row is only a few luma
+        // above the casing, not a full selection step — so the band stays a
+        // quiet tint under the label and the trailing check.
         let highlighted = *self.highlight.borrow() == Some(self.index);
-        let bg = if highlighted && !self.disabled {
-            Some(app.theme.color(ColorToken::Selected))
-        } else if ctx.hovered(hit) && !self.disabled {
-            Some(app.theme.color(ColorToken::Hover))
+        let bg = if (highlighted || ctx.hovered(hit)) && !self.disabled {
+            Some(
+                app.theme
+                    .color(ColorToken::SurfaceRaised)
+                    .mix(&app.theme.color(ColorToken::Selected), 0.5),
+            )
         } else {
             None
         };
@@ -1133,8 +1457,45 @@ impl Element for PopupMenuItemView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{Button, Empty, Text};
+    use crate::elements::{Button, Empty, HoverRow, Text};
     use crate::geometry::vec2f;
+    use crate::render::{RenderCommand, Renderer};
+    use crate::test_util::render_element;
+
+    /// One frame of the real loop for a menu: lay out, seed the open-menu gate
+    /// from the registry (as the root view does), paint, reconcile.
+    fn frame(menu: &mut PopupMenu, app: &AppContext, cursor: Option<Vector2F>) {
+        menu.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        if let Some(cursor) = cursor {
+            ctx.cursor_position = cursor;
+            ctx.cursor_inside = true;
+        }
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        app.open_menus.begin_paint();
+        menu.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        app.open_menus.end_paint();
+    }
+
+    fn click_at(menu: &mut PopupMenu, x: f32, y: f32, app: &AppContext) {
+        let mut ctx = EventContext::default();
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: vec2f(x, y),
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: vec2f(x, y),
+                button: 0,
+            },
+        ] {
+            menu.dispatch_event(&event, &mut ctx, app);
+        }
+    }
 
     fn trigger() -> Box<dyn Element> {
         Empty::new().with_size(vec2f(40.0, 32.0)).finish()
@@ -1590,7 +1951,7 @@ mod tests {
         menu.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
 
         let panel = menu.panel_size.expect("the panel is built");
-        let expected = cap_height();
+        let expected = cap_height() + POPUP_PANEL_PADDING * 2.0;
         assert!(
             (panel.y - expected).abs() < 0.01,
             "twenty rows are drawn in an eight-row window: panel {} px, expected {expected}",
@@ -1849,36 +2210,342 @@ mod tests {
         assert_eq!(*highlight.borrow(), None, "a closed menu holds no highlight");
     }
 
-    /// The panel adds no padding, so a row's highlight spans it edge to edge
-    /// left and right — only the label keeps its own inset.
+    /// The panel is a casing: its rows sit one padding inside it, they are
+    /// rounded by their own (smaller) radius, and the selected row carries the
+    /// trailing check. The environment menu's second line is drawn under the
+    /// label.
     #[test]
-    fn a_highlighted_row_spans_the_panel_edge_to_edge() {
-        let highlight: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(Some(1)));
+    fn the_panel_is_a_casing_around_rounded_rows() {
         let items = vec![
-            PopupMenuItem::new("One"),
-            PopupMenuItem::new("Two"),
-            PopupMenuItem::new("Three"),
+            PopupMenuItem::new("This Computer").selected(),
+            PopupMenuItem::new("Remote")
+                .with_icon("cloud")
+                .with_description("Clones this repo in a cloud environment…"),
         ];
-        let mut menu = PopupMenu::new(trigger(), items)
-            .with_open(Rc::new(RefCell::new(true)))
-            .with_highlight_index(Rc::clone(&highlight));
+        let mut menu = PopupMenu::new(trigger(), items).with_open(Rc::new(RefCell::new(true)));
         let app = AppContext::default();
         let at = vec2f(30.0, 40.0);
         lay_out_open(&mut menu, &app, 600.0, at);
 
         let panel = menu.panel_bounds().expect("the panel has bounds");
-        let row = menu.row_bounds(1, &app).expect("the highlighted row");
+        let row = menu.row_bounds(0, &app).expect("the first row");
         assert!(
-            (row.min_x() - panel.min_x()).abs() < 0.01,
-            "the highlight starts at the panel's left edge ({} against {})",
-            row.min_x(),
-            panel.min_x()
+            (row.min_x() - panel.min_x() - POPUP_PANEL_PADDING).abs() < 0.01,
+            "the row is inset by the casing padding ({row:?} in {panel:?})"
         );
         assert!(
-            (row.max_x() - panel.max_x()).abs() < 0.01,
-            "and ends at its right edge ({} against {})",
-            row.max_x(),
-            panel.max_x()
+            (panel.max_x() - row.max_x() - POPUP_PANEL_PADDING).abs() < 0.01,
+            "on both sides ({row:?} in {panel:?})"
         );
+
+        let mut element = menu.finish();
+        let commands = render_element(&mut element, vec2f(600.0, 400.0), &app);
+        // The casing is the 12pt panel and the rows are 6pt controls inside it.
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::StrokeRect { corner_radius, .. }
+                    if (*corner_radius - POPUP_PANEL_RADIUS).abs() < 0.01
+            )),
+            "the panel is drawn at the menu casing radius: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, size, .. } if name == "check" && (*size - 14.0).abs() < 0.01
+            )),
+            "the selected row is stamped with the trailing check: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, font_size, .. }
+                    if text.starts_with("Clones this repo")
+                        && text.ends_with('…')
+                        && (*font_size - POPUP_ITEM_DESCRIPTION_SIZE).abs() < 0.01
+            )),
+            "the description line is one ellipsized line under the label: {commands:?}"
+        );
+    }
+/// The selected label's ink is the menu's own choice: the shared casing keeps
+/// `Accent` (so the composer menus are untouched), while a menu that asks for
+/// another token draws the selected label in it — the Workspaces view options
+/// pass `Focus`, the web's accent cyan, so the current choice is as bright as
+/// its neighbours. The trailing check stays the primary text ink either way.
+#[test]
+fn the_selected_label_ink_follows_the_menus_choice() {
+    let app = AppContext::default();
+    let selected_ink = |selected_color: Option<ColorToken>| {
+        let items = vec![
+            PopupMenuItem::new("Folder").selected(),
+            PopupMenuItem::new("Flat list"),
+        ];
+        let mut menu = PopupMenu::new(trigger(), items).with_open(Rc::new(RefCell::new(true)));
+        if let Some(token) = selected_color {
+            menu = menu.with_selected_color(token);
+        }
+        lay_out_open(&mut menu, &app, 600.0, vec2f(30.0, 40.0));
+        let mut element = menu.finish();
+        let commands = render_element(&mut element, vec2f(600.0, 400.0), &app);
+        let ink = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, color, .. } if text == "Folder" => Some(*color),
+                _ => None,
+            })
+            .expect("the selected label is drawn");
+        let check_ink = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name, color, .. } if name == "check" => Some(*color),
+                _ => None,
+            })
+            .expect("the selected row is stamped with the trailing check");
+        assert_eq!(
+            check_ink,
+            app.theme.color(ColorToken::Text),
+            "the trailing check keeps the primary text ink"
+        );
+        ink
+    };
+
+    assert_eq!(
+        selected_ink(None),
+        app.theme.color(ColorToken::Accent),
+        "the shared casing's selected label keeps its Accent ink"
+    );
+    assert_eq!(
+        selected_ink(Some(ColorToken::Focus)),
+        app.theme.color(ColorToken::Focus),
+        "a menu that asks for Focus draws the selected label in it"
+    );
+    assert_ne!(
+        app.theme.color(ColorToken::Focus),
+        app.theme.color(ColorToken::Accent),
+        "the two tokens are different inks, so the assertion above means something"
+    );
+}
+
+/// A pane separator: a row of the second group (the branch menu's "Work in a
+/// New Worktree") opens under a full-width 1px `Border` rule, and the row
+/// geometry follows the separator so hit-testing and hover stay on the rows.
+#[test]
+fn a_pane_separator_divides_two_groups_of_rows() {
+    let app = AppContext::default();
+    let items = vec![
+        PopupMenuItem::new("main").selected(),
+        PopupMenuItem::new("feature/checkout-flow"),
+        PopupMenuItem::new("Work in a New Worktree")
+            .with_icon("branch")
+            .with_description("Keeps your checkout untouched")
+            .with_separator_before(),
+    ];
+    let open = Rc::new(RefCell::new(true));
+    let mut menu = PopupMenu::new(trigger(), items).with_open(open);
+    let (width, at) = (600.0, vec2f(20.0, 30.0));
+    lay_out_open(&mut menu, &app, width, at);
+
+    let border = app.theme.color(ColorToken::Border);
+    let mut element = menu.finish();
+    let commands = render_element(&mut element, vec2f(width, 400.0), &app);
+    let rules: Vec<crate::geometry::RectF> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == border && (rect.height() - 1.0).abs() < 0.5 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rules.len(), 1, "one separator rule in the panel: {rules:?}");
+    let rule = rules[0];
+    assert!(
+        rule.min_y() > 30.0 + POPUP_PANEL_PADDING + POPUP_ITEM_HEIGHT + POPUP_ITEM_SPACING,
+        "the rule sits between the two groups: {rule:?}"
+    );
+
+    // The third row's bounds are its own: below the rule and taller than the
+    // plain rows because it carries a description.
+    let mut menu = PopupMenu::new(
+        trigger(),
+        vec![
+            PopupMenuItem::new("main").selected(),
+            PopupMenuItem::new("feature/checkout-flow"),
+            PopupMenuItem::new("Work in a New Worktree")
+                .with_description("Keeps your checkout untouched")
+                .with_separator_before(),
+        ],
+    )
+    .with_open(Rc::new(RefCell::new(true)));
+    lay_out_open(&mut menu, &app, width, at);
+    let first = menu.row_bounds(0, &app).expect("the first row");
+    let plain = first.height();
+    let third = menu.row_bounds(2, &app).expect("the described row");
+    assert!(
+        third.min_y() > first.max_y() + plain,
+        "the described row starts under the separator and the row before it: \
+         first {first:?}, third {third:?}"
+    );
+    assert!(
+        third.height() > plain,
+        "the described row is taller than a plain row: {third:?}"
+    );
+}
+
+
+    // ---- the window's shared open-menu state ------------------------------
+
+    #[test]
+    fn opening_a_menu_claims_the_shared_state_and_closes_the_previous_menu() {
+        let app = AppContext::default();
+        let mut first = PopupMenu::new(trigger(), vec![PopupMenuItem::new("A")])
+            .with_menu_id("test.first");
+        let mut second = PopupMenu::new(trigger(), vec![PopupMenuItem::new("B")])
+            .with_menu_id("test.second");
+
+        frame(&mut first, &app, None);
+        frame(&mut second, &app, None);
+        click_at(&mut first, 10.0, 16.0, &app);
+        assert!(first.is_open());
+        assert_eq!(app.open_menus.id(), Some("test.first"));
+
+        click_at(&mut second, 10.0, 16.0, &app);
+        assert!(second.is_open(), "the second menu opened");
+        assert!(!first.is_open(), "opening another menu closed the first");
+        assert_eq!(app.open_menus.id(), Some("test.second"));
+    }
+
+    #[test]
+    fn hovering_the_open_panel_hovers_the_panel_not_the_element_behind_it() {
+        let app = AppContext::default();
+        let mut menu = PopupMenu::new(trigger(), vec![PopupMenuItem::new("Row one")])
+            .with_menu_id("test.hover")
+            .with_position(PopupMenuPosition::Above);
+        // Open through the trigger, then paint the opened panel so the registry
+        // learns the rectangle it owns.
+        frame(&mut menu, &app, None);
+        click_at(&mut menu, 10.0, 16.0, &app);
+        let panel = {
+            menu.layout(
+                SizeConstraint::loose(vec2f(400.0, 400.0)),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            menu.panel_bounds().expect("the panel was laid out")
+        };
+        // A point inside the panel's first row (the panel's own padding is 6).
+        let point = vec2f(panel.min_x() + 8.0, panel.min_y() + 12.0);
+        frame(&mut menu, &app, Some(point));
+        assert_eq!(
+            *menu.hover_index.borrow(),
+            Some(0),
+            "the menu's own row hovers under the pointer"
+        );
+
+        // Next frame: the registry owns the pointer on that surface. A row
+        // painted behind it must not read as hovered.
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_position = point;
+        ctx.cursor_inside = true;
+        ctx.open_menu_surfaces = app.open_menus.surfaces();
+        let hover_cell: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let mut behind = HoverRow::new(Text::new("behind").finish())
+            .with_hover_key(Rc::clone(&hover_cell), "behind");
+        behind.layout(
+            SizeConstraint::loose(vec2f(300.0, 40.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        behind.paint(vec2f(point.x - 20.0, point.y - 10.0), &mut ctx, &app);
+        assert_eq!(
+            *hover_cell.borrow(),
+            None,
+            "the row behind the open menu must not hover while the pointer is on the menu"
+        );
+
+        // Outside the panel, the same row hovers normally: the menu does not
+        // shadow the whole window, only its own surface.
+        let mut outside = PaintContext::new(Renderer::new());
+        outside.cursor_position = vec2f(350.0, 350.0);
+        outside.cursor_inside = true;
+        outside.open_menu_surfaces = app.open_menus.surfaces();
+        behind.paint(vec2f(340.0, 340.0), &mut outside, &app);
+        assert_eq!(
+            *hover_cell.borrow(),
+            Some("behind".to_string()),
+            "hover outside the open menu still works"
+        );
+    }
+
+    #[test]
+    fn a_press_outside_closes_the_menu_and_clears_the_shared_state() {
+        let app = AppContext::default();
+        let mut menu = PopupMenu::new(trigger(), vec![PopupMenuItem::new("Row one")])
+            .with_menu_id("test.dismiss");
+        frame(&mut menu, &app, None);
+        click_at(&mut menu, 10.0, 16.0, &app);
+        frame(&mut menu, &app, None);
+        assert_eq!(app.open_menus.id(), Some("test.dismiss"));
+
+        // A press well outside the trigger and the panel.
+        click_at(&mut menu, 300.0, 300.0, &app);
+        assert!(!menu.is_open(), "an outside press closed the menu");
+        frame(&mut menu, &app, None);
+        assert!(!app.open_menus.is_open(), "the shared state let go of it");
+    }
+
+    #[test]
+    fn escape_closes_the_menu_and_clears_the_shared_state() {
+        let app = AppContext::default();
+        let mut menu = PopupMenu::new(trigger(), vec![PopupMenuItem::new("Row one")])
+            .with_menu_id("test.escape");
+        frame(&mut menu, &app, None);
+        click_at(&mut menu, 10.0, 16.0, &app);
+        frame(&mut menu, &app, None);
+        assert_eq!(app.open_menus.id(), Some("test.escape"));
+
+        let mut ctx = EventContext::default();
+        menu.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(!menu.is_open(), "Escape closed the menu");
+        frame(&mut menu, &app, None);
+        assert!(!app.open_menus.is_open(), "the shared state let go of it");
+    }
+
+    #[test]
+    fn an_open_menu_is_only_closed_by_a_click_inside_that_never_reaches_the_row_behind() {
+        // A press on the panel is the menu's: it must not dismiss the menu, and
+        // the shared state must keep it while a frame paints it.
+        let app = AppContext::default();
+        let picked = Rc::new(RefCell::new(None));
+        let picked_clone = Rc::clone(&picked);
+        let mut menu = PopupMenu::new(trigger(), vec![PopupMenuItem::new("Row one")])
+            .with_menu_id("test.inside")
+            .with_on_select(move |index| *picked_clone.borrow_mut() = Some(index));
+        frame(&mut menu, &app, None);
+        click_at(&mut menu, 10.0, 16.0, &app);
+        let panel = {
+            menu.layout(
+                SizeConstraint::loose(vec2f(400.0, 400.0)),
+                &mut LayoutContext::default(),
+                &app,
+            );
+            menu.panel_bounds().expect("the panel was laid out")
+        };
+        frame(&mut menu, &app, None);
+        assert_eq!(app.open_menus.id(), Some("test.inside"));
+
+        let inside = vec2f(panel.min_x() + 8.0, panel.min_y() + 12.0);
+        click_at(&mut menu, inside.x, inside.y, &app);
+        assert_eq!(*picked.borrow(), Some(0), "the menu ran the row's action");
+        assert!(!menu.is_open(), "choosing a row closes the menu");
     }
 }

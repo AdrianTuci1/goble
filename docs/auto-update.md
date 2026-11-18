@@ -16,7 +16,7 @@ Two ideas carry the design:
 
 ## State machine
 
-`app/src/update.rs` holds the view model; the settings page renders it and the
+`apps/desktop/src/update.rs` holds the view model; the settings page renders it and the
 service drives it off the UI thread.
 
 ```text

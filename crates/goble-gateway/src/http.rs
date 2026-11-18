@@ -14,6 +14,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::assets;
 use crate::auth::verify_pin;
+use crate::remote;
 use crate::state::{GatewayState, WorkerSummary, SESSION_COOKIE};
 use crate::web;
 
@@ -60,7 +61,19 @@ pub(crate) fn router(state: Arc<GatewayState>) -> Router {
         .route("/logout", post(logout))
         .route("/panel", get(panel))
         .route("/api/workers", get(workers_api))
+        .route("/api/v1/workers", get(workers_api))
         .route("/api/v1/session", post(pair))
+        // Remote-execution control plane (see docs/gateway-api.md).
+        .route(
+            "/api/v1/sessions",
+            get(remote::list_sessions).post(remote::create_session),
+        )
+        .route("/api/v1/sessions/{id}", get(remote::get_session))
+        .route("/api/v1/sessions/{id}/cancel", post(remote::cancel_session))
+        .route("/api/v1/sessions/{id}/runs", post(remote::start_run))
+        .route("/api/v1/runs/{id}", get(remote::get_run))
+        .route("/api/v1/runs/{id}/events", get(remote::run_events))
+        .route("/api/v1/runs/{id}/stream", get(remote::run_stream))
         .route("/app", get(app_index))
         .route("/app/", get(app_index))
         .route("/app/{*path}", get(app_asset))
@@ -263,7 +276,7 @@ async fn app_asset(
     assets::serve_file(state.web_root(), &relative).await
 }
 
-fn json_unauthorized() -> Response {
+pub(crate) fn json_unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
         [

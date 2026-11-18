@@ -12,6 +12,25 @@ use winit::application::ApplicationHandler;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+/// A cursor an element asks the window to show. Elements that own a resize
+/// handle request one while the pointer is over it; everything else is the
+/// platform default.
+///
+/// The window applies the request only when it changes (see
+/// [`WindowControl::set_cursor`]), so an element may ask every frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorKind {
+    /// The platform's ordinary arrow/pointing cursor.
+    #[default]
+    Default,
+    /// A horizontal (east-west) resize cursor, for a vertical edge that moves
+    /// left and right.
+    EwResize,
+    /// A vertical (north-south) resize cursor, for a horizontal edge that
+    /// moves up and down.
+    NsResize,
+}
+
 /// The smallest inner width the window may be resized to. Matches warp-new's
 /// `MIN_WINDOW_WIDTH`, so the two apps stop at the same place.
 pub const MIN_WINDOW_WIDTH: f64 = 480.0;
@@ -35,6 +54,15 @@ pub struct WindowControl {
     /// built without one, as in tests), which is what lets a caller fall back
     /// to the app's own flag instead.
     fullscreen: Rc<Cell<Option<bool>>>,
+    /// The cursor the tree last asked the window for, shared between clones so
+    /// the dedupe in [`WindowControl::set_cursor`] sees every request. The
+    /// window itself only hears about changes.
+    cursor: Rc<Cell<CursorKind>>,
+    /// The handler that applies a cursor request to the real window. Installed
+    /// by the platform event loop once the window exists; `None` in a tree
+    /// built without one (tests, preview tools), where requests are recorded
+    /// but not applied.
+    cursor_handler: Rc<RefCell<Option<Box<dyn FnMut(CursorKind)>>>>,
     /// Registered app commands (name -> callback). Rebuilt by the app layer each
     /// frame (the closures are fresh per frame); the native menu bar and the
     /// command palette dispatch into this table by name.
@@ -76,6 +104,36 @@ impl WindowControl {
     /// by the platform event loop once the window exists.
     pub fn install<F: FnMut(bool) + 'static>(&self, handler: F) {
         *self.inner.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// Ask the window to show `kind`. Repeated requests for the cursor it is
+    /// already showing are dropped, so an element may call this every frame
+    /// (which is what makes hover tracking cheap): the window is told only when
+    /// the cursor actually changes.
+    ///
+    /// No-op on the window until the event loop has installed a handler via
+    /// [`WindowControl::install_cursor`]; the request is recorded either way, so
+    /// a tree built before the window exists still reads it back.
+    pub fn set_cursor(&self, kind: CursorKind) {
+        if self.cursor.get() == kind {
+            return;
+        }
+        self.cursor.set(kind);
+        if let Some(handler) = self.cursor_handler.borrow_mut().as_mut() {
+            handler(kind);
+        }
+    }
+
+    /// The cursor the tree last asked for. `CursorKind::Default` until anything
+    /// asks for another one.
+    pub fn cursor(&self) -> CursorKind {
+        self.cursor.get()
+    }
+
+    /// Install the handler that applies cursor requests to a real window.
+    /// Called by the platform event loop once the window exists.
+    pub fn install_cursor<F: FnMut(CursorKind) + 'static>(&self, handler: F) {
+        *self.cursor_handler.borrow_mut() = Some(Box::new(handler));
     }
 
     /// Invoke a registered command by name (e.g. a menu item or the command
@@ -335,6 +393,18 @@ impl ApplicationHandler for App {
         // means the first frame reads a real answer instead of "no window".
         window_control.note_window_fullscreen(window.fullscreen().is_some());
 
+        // Expose the cursor hook the same way: an element that owns a resize
+        // handle asks for a cursor, and the window applies it when it changes
+        // (see `WindowControl::set_cursor`).
+        let cursor_window = Arc::clone(&window);
+        window_control.install_cursor(move |kind| {
+            cursor_window.set_cursor(match kind {
+                CursorKind::Default => winit::window::CursorIcon::Default,
+                CursorKind::EwResize => winit::window::CursorIcon::EwResize,
+                CursorKind::NsResize => winit::window::CursorIcon::NsResize,
+            });
+        });
+
         // macOS: install the native application menu bar (`NSMenu`), following
         // warp-new. The menu dispatches into the app command registry via
         // `WindowControl::run_command`, and adjusts the whole-app zoom.
@@ -449,6 +519,13 @@ impl ApplicationHandler for App {
             }
             winit::event::WindowEvent::CursorLeft { .. } => {
                 self.cursor_inside = false;
+                // A cursor the tree asked for (a resize strip under the
+                // pointer) must not outlive the pointer leaving the window, and
+                // the next frame is not guaranteed to run for a while.
+                self.app_context
+                    .borrow()
+                    .window_control
+                    .set_cursor(CursorKind::Default);
             }
             // A terminal tells the program it hosts whether the user is looking
             // at it (mode 1004), so the focus has to reach the element tree.
@@ -906,5 +983,40 @@ mod tests {
     fn app_context_default_zoom_is_one() {
         let app = crate::elements::AppContext::default();
         assert_eq!(*app.ui_zoom.borrow(), 1.0);
+    }
+
+    /// The cursor request is recorded even with no window, so a tree built
+    /// before one exists (or a test) can read it back.
+    #[test]
+    fn a_cursor_request_is_recorded_with_or_without_a_window() {
+        let wc = WindowControl::default();
+        assert_eq!(wc.cursor(), CursorKind::Default, "the window starts on the arrow");
+        wc.set_cursor(CursorKind::EwResize);
+        assert_eq!(wc.cursor(), CursorKind::EwResize);
+        wc.set_cursor(CursorKind::Default);
+        assert_eq!(wc.cursor(), CursorKind::Default);
+    }
+
+    /// Only a *change* of cursor reaches the window: an element asks every
+    /// frame for its hover state, and the window must not be told again.
+    #[test]
+    fn the_window_is_told_only_when_the_cursor_changes() {
+        let seen: Rc<RefCell<Vec<CursorKind>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen2 = Rc::clone(&seen);
+        let wc = WindowControl::default();
+        wc.install_cursor(move |kind| seen2.borrow_mut().push(kind));
+
+        wc.set_cursor(CursorKind::EwResize);
+        wc.set_cursor(CursorKind::EwResize);
+        wc.set_cursor(CursorKind::EwResize);
+        assert_eq!(*seen.borrow(), vec![CursorKind::EwResize], "one request, one window call");
+
+        wc.set_cursor(CursorKind::Default);
+        wc.set_cursor(CursorKind::Default);
+        assert_eq!(
+            *seen.borrow(),
+            vec![CursorKind::EwResize, CursorKind::Default],
+            "clearing is a change too; clearing again is not"
+        );
     }
 }

@@ -1,7 +1,7 @@
 # Packaging
 
 Build scripts for the shipping artifacts of **Goble**, the native desktop app
-(`app/` → package `goble-app`, binary `goble-app`). Nothing here builds Rust:
+(`apps/desktop/` → package `goble-app`, binary `goble-app`). Nothing here builds Rust:
 every script takes an already-built release binary.
 
 The one command that does everything for the host platform is

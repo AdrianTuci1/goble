@@ -458,12 +458,19 @@ mod tests {
         let out = runner
             .run_argv(
                 "grep",
-                &["-rn".to_string(), "missing".to_string(), file.to_string_lossy().to_string()],
+                &[
+                    "-rn".to_string(),
+                    "missing".to_string(),
+                    file.to_string_lossy().to_string(),
+                ],
             )
             .await
             .expect("a search with no match is not a failure");
 
-        assert!(out.is_empty(), "nothing matched, so nothing is printed: {out:?}");
+        assert!(
+            out.is_empty(),
+            "nothing matched, so nothing is printed: {out:?}"
+        );
         std::fs::remove_file(&file).ok();
     }
 
@@ -474,7 +481,11 @@ mod tests {
         let error = runner
             .run_argv(
                 "grep",
-                &["-rn".to_string(), "x".to_string(), "/no/such/tree".to_string()],
+                &[
+                    "-rn".to_string(),
+                    "x".to_string(),
+                    "/no/such/tree".to_string(),
+                ],
             )
             .await
             .expect_err("a search over a missing path fails")

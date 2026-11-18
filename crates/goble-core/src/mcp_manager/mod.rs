@@ -14,9 +14,15 @@ mod discovery;
 mod lifecycle;
 mod list;
 mod server;
+mod sync;
 
 #[cfg(test)]
 mod tests;
+
+pub use sync::{
+    declaration_for, import_store_mcp_once, mcp_import_done, probe_stdio, Declaration,
+    McpImportOutcome, McpSyncOutcome, MCP_IMPORT_MARKER, MCP_PROBE_TIMEOUT,
+};
 
 use std::collections::HashMap;
 use std::path::PathBuf;

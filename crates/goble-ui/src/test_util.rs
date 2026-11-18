@@ -107,13 +107,19 @@ pub fn is_pill(command: &RenderCommand, commands: &[RenderCommand]) -> bool {
     let is_text_highlight = |rect: &RectF| {
         commands.iter().any(|other| match other {
             RenderCommand::DrawText {
-                origin, font_size, ..
+                origin,
+                font_size,
+                line_height,
+                ..
             } => {
                 origin.x >= rect.min_x()
                     && origin.x <= rect.max_x()
                     && origin.y >= rect.min_y()
                     && origin.y <= rect.max_y()
-                    && rect.height() <= font_size * 1.8
+                    // An inline-code band is the paragraph's line box plus the
+                    // band's own padding: DSH's 14 / 24 line makes that taller
+                    // than a flat `1.8 × size` heuristic allows.
+                    && rect.height() <= font_size * line_height.max(1.0) + 8.0
             }
             _ => false,
         })

@@ -47,7 +47,7 @@ reference mapping, and what is still open.
 
 ## Key gap
 
-The **native shell does not surface any of it yet** — there is no executions/traces/logs page in `app/src/ui`. The legacy React app has them; the native shell does not.
+The **native shell does not surface any of it yet** — there is no executions/traces/logs page in `apps/desktop/src/ui`. The legacy React app has them; the native shell does not.
 
 ## Tasks
 

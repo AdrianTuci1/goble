@@ -182,6 +182,242 @@ fn the_composer_card_is_two_rounded_segments() {
     );
 }
 
+/// The terminal surface's composer is not a floating card: it is the pane's own
+/// bottom band. The outer box runs the full width the host gives it — flush with
+/// the pane's sides, zero inset — is square against the content above it (no top
+/// radius), and carries the panel's radius only on its bottom corners. The inner
+/// input segment stretches with it but keeps its radius and its casing inset, so
+/// the band holds the same rounded field the floating card does.
+#[test]
+fn the_terminal_band_is_the_panes_full_width_bottom_band() {
+    use crate::elements::chat_composer::{
+        COMPOSER_BAND_BOTTOM_INSET, COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_INSET,
+        COMPOSER_INPUT_RADIUS,
+    };
+    use crate::elements::ShortcutHint;
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let surface = app.theme.color(ColorToken::Surface);
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    // The pane card's radius, as the app hands it over from `panes.rs`.
+    const PANEL_RADIUS: f32 = 10.0;
+    // The boxes of one painted colour, optionally narrowed to one radius.
+    let boxes = |commands: &[RenderCommand], color, radius: Option<f32>| {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color: painted,
+                    corner_radius,
+                } if *painted == color
+                    && radius.is_none_or(|r| (*corner_radius - r).abs() < 0.01) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let banded = || {
+        ChatComposer::new()
+            .with_value("hi")
+            .with_path_label("~/Projects/goble")
+            .with_branch_label("main")
+            .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
+            .with_on_send(|_| {})
+            .with_on_cmd_enter(|_| {})
+            .with_bottom_band(PANEL_RADIUS)
+    };
+
+    for width in [800.0_f32, 320.0] {
+        let mut composer = banded();
+        let (size, commands) = paint_composer_in(&app, &mut composer, vec2f(width, 600.0));
+        assert!(
+            (size.y - COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.01,
+            "the band lays out the floating card's height ({}), not {}: {size:?}",
+            COMPOSER_BAR_RESERVED_HEIGHT,
+            size.y
+        );
+
+        // The outer box: the Surface fill with the panel's radius, spanning the
+        // pane's whole width with no gutter and ending at the pane's bottom.
+        let outer = boxes(&commands, surface, Some(PANEL_RADIUS));
+        assert_eq!(
+            outer.len(),
+            1,
+            "the band paints one panel-rounded box: {commands:?}"
+        );
+        assert_eq!(outer[0].min_x(), 0.0, "zero side inset: {:?}", outer[0]);
+        assert!(
+            (outer[0].width() - width).abs() < 0.01,
+            "the band runs the pane's full width: {:?} of {width}",
+            outer[0]
+        );
+        assert!(
+            (outer[0].max_y() - size.y).abs() < 0.01,
+            "the band reaches the pane's bottom: {:?} in {size:?}",
+            outer[0]
+        );
+
+        // No top radius: the rounded box's top-corner notches are squared with a
+        // strip of the same tone, one panel radius tall, across the whole width.
+        let squared = boxes(&commands, surface, Some(0.0));
+        assert!(
+            squared.iter().any(|rect| rect.min_x() == 0.0
+                && (rect.width() - width).abs() < 0.01
+                && rect.min_y() == 0.0
+                && (rect.height() - PANEL_RADIUS).abs() < 0.01),
+            "the band's top edge is square against the content: {squared:?}"
+        );
+
+        // The inner input segment keeps its radius and its casing inset: it
+        // stretched with the outer box, it did not lose its rounded shape.
+        let inner = boxes(&commands, raised, Some(COMPOSER_INPUT_RADIUS));
+        assert_eq!(
+            inner.len(),
+            1,
+            "the band holds the one rounded input segment: {commands:?}"
+        );
+        assert_eq!(
+            inner[0].min_x(),
+            COMPOSER_CARD_INSET,
+            "the segment keeps its {COMPOSER_CARD_INSET}pt casing inset"
+        );
+        assert!(
+            (inner[0].width() - (width - COMPOSER_CARD_INSET * 2.0)).abs() < 0.5,
+            "the segment stretches with the band: {:?} of {width}",
+            inner[0]
+        );
+        assert!(
+            (inner[0].max_y() - (size.y - COMPOSER_BAND_BOTTOM_INSET)).abs() < 0.5,
+            "the folded gutter is the band's bottom casing: {:?} of {size:?}",
+            inner[0]
+        );
+    }
+}
+
+/// The band does not move the card's height and does not touch the agent
+/// surface: a terminal composer (banded) and an agent composer (floating) with
+/// the same controls lay out the same height and width, while the agent card
+/// keeps its gutter and its all-round radius.
+#[test]
+fn the_band_keeps_the_floating_cards_height_and_leaves_the_agent_card_alone() {
+    use crate::elements::chat_composer::{
+        COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_INSET, COMPOSER_CARD_RADIUS,
+        CONTEXT_SEGMENT_HEIGHT,
+    };
+    use crate::elements::{ShortcutHint, SlashMenuItem, COMPOSER_CARD_GUTTER};
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let surface = app.theme.color(ColorToken::Surface);
+    let build = || {
+        ChatComposer::new()
+            .with_value("hi")
+            .with_path_label("~/Projects/goble")
+            .with_branch_label("main")
+            .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
+            .with_on_send(|_| {})
+            .with_on_cmd_enter(|_| {})
+    };
+    let window = vec2f(760.0, 600.0);
+
+    let mut agent = build();
+    let (agent_size, agent_commands) = paint_composer_in(&app, &mut agent, window);
+    assert!(
+        (agent_size.y - COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.01,
+        "the floating agent card is the reserved height: {agent_size:?}"
+    );
+    let agent_card = agent_commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == surface && (*corner_radius - COMPOSER_CARD_RADIUS).abs() < 0.01 => {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the agent card paints its floating shape: {agent_commands:?}"));
+    assert_eq!(
+        agent_card.min_x(),
+        COMPOSER_CARD_GUTTER,
+        "the agent card keeps its surface gutter"
+    );
+    assert!(
+        (agent_card.width() - (agent_size.x - COMPOSER_CARD_GUTTER * 2.0)).abs() < 0.5,
+        "and its gutter on the right: {:?} in {agent_size:?}",
+        agent_card
+    );
+
+    const PANEL_RADIUS: f32 = 10.0;
+    let mut terminal = build().with_bottom_band(PANEL_RADIUS);
+    let (terminal_size, terminal_commands) = paint_composer_in(&app, &mut terminal, window);
+    assert_eq!(
+        terminal_size, agent_size,
+        "the terminal band and the agent card are the same size"
+    );
+    assert!(
+        !terminal_commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::FillRect {
+                corner_radius,
+                color,
+                ..
+            } if *color == surface && (*corner_radius - COMPOSER_CARD_RADIUS).abs() < 0.01
+        )),
+        "the banded composer paints no floating card: {terminal_commands:?}"
+    );
+    // Both draw the same context band: the pills sit at the same height inside
+    // the card, so switching surfaces moves only the bar's outer shape.
+    let agent_folder = icon_origin(&agent_commands, "folder").expect("the agent band draws");
+    let terminal_folder =
+        icon_origin(&terminal_commands, "folder").expect("the terminal band draws");
+    assert!(
+        (agent_folder.y - terminal_folder.y).abs() < 0.01,
+        "the context band is in the same place: {agent_folder:?} against {terminal_folder:?}"
+    );
+
+    // The slash state hides the context band on both surfaces, and both shrink
+    // by the same amount: the surfaces stay equal in every configuration.
+    let slash = |band: bool| {
+        let mut composer = ChatComposer::new()
+            .with_value("/")
+            .with_focused(true)
+            .with_slash_menu(
+                vec![SlashMenuItem::new("new", "Start a fresh conversation")],
+                Rc::new(RefCell::new(0)),
+                Rc::new(RefCell::new(false)),
+            )
+            .with_on_send(|_| {})
+            .with_on_slash_move(|_| {})
+            .with_on_slash_accept(|_| {})
+            .with_on_slash_dismiss(|| {});
+        if band {
+            composer = composer.with_bottom_band(PANEL_RADIUS);
+        }
+        let (size, _) = paint_composer_in(&app, &mut composer, window);
+        size
+    };
+    let agent_slash = slash(false);
+    let terminal_slash = slash(true);
+    assert_eq!(
+        agent_slash, terminal_slash,
+        "the slash state keeps the two surfaces equal"
+    );
+    assert!(
+        (agent_slash.y
+            - (COMPOSER_BAR_RESERVED_HEIGHT - (CONTEXT_SEGMENT_HEIGHT - COMPOSER_CARD_INSET)))
+            .abs()
+            < 1.0,
+        "the slash state is one context band shorter: {agent_slash:?}"
+    );
+}
+
 /// The environment pill's glyph is the host's to name, so the pill can say
 /// where the work runs: T3 Code's cloud (`environment-cloud`) for a worker and
 /// its computer (`environment-computer`) for a local environment.

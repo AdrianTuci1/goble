@@ -127,6 +127,14 @@ pub(crate) fn build_terminal_composer(
         // The bar is the pane's own bottom surface, so it spans the pane: no
         // gutter of its own between the input and the pane's side edges.
         .with_edge_to_edge(true)
+        // The bar is not a floating card: it is the pane's bottom band. The
+        // outer box runs the pane's full width, square against the shell output
+        // above it, and only its bottom corners carry the pane card's own radius
+        // — the same radius `panes.rs` draws the panel with, so the band's bottom
+        // follows the panel's rounded bottom. The inner input keeps its radius
+        // and stretches with the band (the terminal composer, not the agent
+        // one: this builder is the shell's).
+        .with_bottom_band(crate::ui::panes::WINDOW_CORNER_RADIUS)
         // What the bar answers, written where the bar is: under a CLI agent the
         // bar is that agent's prompt line, so Enter is the whole instruction.
         // At a plain shell Cmd/Ctrl+Enter is the one gesture that leaves the

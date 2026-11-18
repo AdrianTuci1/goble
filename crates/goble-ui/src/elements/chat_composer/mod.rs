@@ -5,6 +5,7 @@
 //! keep the module's public paths (`elements::chat_composer::ChatComposer`,
 //! `elements::chat_composer::CommandProposalUi`) unchanged.
 
+mod band;
 mod composer;
 mod hints_row;
 mod diff;
@@ -13,8 +14,8 @@ mod proposal;
 mod tests;
 
 pub use composer::{
-    ChatComposer, AGENT_COMPOSER_PLACEHOLDER, COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_GUTTER,
-    COMPOSER_CARD_INSET,
+    ChatComposer, AGENT_COMPOSER_PLACEHOLDER, COMPOSER_BAND_BOTTOM_INSET,
+    COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_GUTTER, COMPOSER_CARD_INSET,
     COMPOSER_CARD_RADIUS, COMPOSER_EDITOR_MAX_HEIGHT, COMPOSER_EDITOR_MIN_HEIGHT,
     COMPOSER_FOOTER_GAP, COMPOSER_FOOTER_HEIGHT,
     COMPOSER_HINTS_ROW_HEIGHT, COMPOSER_INPUT_MIN_HEIGHT, COMPOSER_INPUT_RADIUS,

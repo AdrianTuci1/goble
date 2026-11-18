@@ -533,10 +533,19 @@ impl Element for WindowBorder {
     }
 }
 
+/// The shared CPU rasterizer, so the pane-card corner tests can read the
+/// rendered pixels: a command list can show the cut and the Border were emitted,
+/// but only a rendered frame shows that no square corner pixel survives.
+/// Test-only: the app itself never rasterizes a frame.
+#[cfg(test)]
+#[path = "../../../../crates/goble-ui/examples/composer_preview/raster.rs"]
+mod raster;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::path::Path;
     use std::rc::Rc;
     use std::sync::Arc;
 
@@ -817,6 +826,351 @@ mod tests {
             markers[0],
             frames[0]
         );
+    }
+
+    /// Every pane card is one rounded shape: a rounded `Bg` fill on all four
+    /// corners at the pane card radius, and a `Border` edge traced on the same
+    /// rounded rect over the content, so the card's own edge rounds with it. One
+    /// pane and two, dark and light. The frame is common to every pane kind
+    /// (`build_leaf` builds it around whatever the leaf holds), so the kind does
+    /// not change the card's shape.
+    #[test]
+    fn every_pane_card_is_rounded_on_all_four_corners() {
+        fn assert_cards_are_rounded(app: &AppContext, two_panes: bool) {
+            let (mut root, state, _dir) = app_root_for(app);
+            if two_panes {
+                install_two_panes(&state, 0.5);
+            }
+            let commands = render_element(&mut root, window(), app);
+            let frames = pane_frames(&state);
+            assert_eq!(
+                frames.len(),
+                if two_panes { 2 } else { 1 },
+                "the frame draws every pane: {frames:?}"
+            );
+            let bg = app.theme.color(ColorToken::Bg);
+            let border = app.theme.color(ColorToken::Border);
+            for card in &frames {
+                let radius = crate::ui::panes::card_radius(vec2f(card.width(), card.height()));
+                assert!(radius > 0.0, "the pane card has a corner radius: {radius}");
+                // The card's fill: one rounded rect at the card's own rect. The
+                // renderer's single `corner_radius` rounds all four corners.
+                let fill = commands.iter().find_map(|command| match command {
+                    RenderCommand::FillRect {
+                        rect,
+                        color,
+                        corner_radius,
+                    } if *rect == *card && *color == bg => Some(*corner_radius),
+                    _ => None,
+                });
+                assert_eq!(
+                    fill,
+                    Some(radius),
+                    "the pane card's fill is rounded on every corner: {card:?}"
+                );
+            }
+            // The card's own Border edge: one rounded rect per card, over the
+            // content and the corner cut, so the visible card edge rounds with
+            // the card.
+            let edges: Vec<f32> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::StrokeRect {
+                        rect,
+                        color,
+                        width,
+                        corner_radius,
+                    } if *color == border
+                        && (*width - 1.0).abs() < 0.01
+                        && frames.contains(rect) =>
+                    {
+                        Some(*corner_radius)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                edges.len(),
+                frames.len(),
+                "one rounded Border edge per pane card, over its content"
+            );
+            for (edge, card) in edges.iter().zip(&frames) {
+                let radius = crate::ui::panes::card_radius(vec2f(card.width(), card.height()));
+                assert_eq!(
+                    *edge, radius,
+                    "the card's Border edge rounds at the card radius: {card:?}"
+                );
+            }
+        }
+
+        // One pane, both themes.
+        assert_cards_are_rounded(&AppContext::default(), false);
+        let mut light = AppContext::default();
+        light.theme = goble_ui::theme::Theme::light();
+        assert_cards_are_rounded(&light, false);
+        // Two panes: each card is its own rounded shape, both themes.
+        assert_cards_are_rounded(&AppContext::default(), true);
+        assert_cards_are_rounded(&light, true);
+    }
+
+    /// The focused pane's accent triangle is clipped to the card's rounded
+    /// top-left corner: the card paints the panel-surface band outside its
+    /// rounded path after the content and after the marker — the cut — and then
+    /// draws the rounded `Border` edge over the cut, so the corner reads as one
+    /// rounded card with the coloured corner inside it. Without that order the
+    /// marker's square corner would sit in the card's corner spandrel, outside
+    /// the radius: the "square bite" the owner reported.
+    #[test]
+    fn the_focus_triangle_is_clipped_to_the_cards_rounded_corner() {
+        let app = AppContext::default();
+        let accent = app.theme.color(ColorToken::Accent);
+        let surface = app.theme.color(ColorToken::Surface);
+        let border = app.theme.color(ColorToken::Border);
+
+        for two_panes in [false, true] {
+            let (mut root, state, _dir) = app_root();
+            if two_panes {
+                install_two_panes(&state, 0.5);
+            }
+            let commands = render_element(&mut root, window(), &app);
+            let frames = pane_frames(&state);
+            assert_eq!(frames.len(), if two_panes { 2 } else { 1 }, "{frames:?}");
+            let card = frames[0];
+            let radius = crate::ui::panes::card_radius(vec2f(card.width(), card.height()));
+            let band = crate::ui::panes::CARD_EDGE_BAND;
+
+            let marker = commands
+                .iter()
+                .position(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::DrawIcon { origin, name, color, .. }
+                            if name == "upper-left-triangle"
+                                && *color == accent
+                                && (origin.x - card.min_x()).abs() < 0.01
+                                && (origin.y - card.min_y()).abs() < 0.01
+                    )
+                })
+                .expect("the focused pane's accent corner marker on its card corner");
+            let cut = commands
+                .iter()
+                .position(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::StrokeRect {
+                            rect,
+                            color,
+                            width,
+                            corner_radius,
+                        } if *color == surface
+                            && (*width - band).abs() < 0.01
+                            && (*corner_radius - (radius + band)).abs() < 0.01
+                            && (rect.min_x() - (card.min_x() - band)).abs() < 0.01
+                            && (rect.min_y() - (card.min_y() - band)).abs() < 0.01
+                            && (rect.width() - (card.width() + band * 2.0)).abs() < 0.01
+                            && (rect.height() - (card.height() + band * 2.0)).abs() < 0.01
+                    )
+                })
+                .expect("the card cuts its content back to the rounded path");
+            let edge = commands
+                .iter()
+                .position(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::StrokeRect {
+                            rect,
+                            color,
+                            width,
+                            corner_radius,
+                        } if *rect == card
+                            && *color == border
+                            && (*width - 1.0).abs() < 0.01
+                            && (*corner_radius - radius).abs() < 0.01
+                    )
+                })
+                .expect("the card's rounded Border edge over the cut");
+            assert!(
+                cut > marker,
+                "the surface cut is painted after the focus marker, so it clips the marker's \
+                 square corner: cut {cut} against marker {marker}"
+            );
+            assert!(
+                edge > cut,
+                "the rounded Border edge is painted over the cut, so the card's corner closes: \
+                 edge {edge} against cut {cut}"
+            );
+            // The cut's inner edge is the card's own rounded path: the stroked
+            // band starts on the expanded rect's edge and reaches in by `band`,
+            // and the radius shrinks by the same amount.
+            assert!(
+                (radius + band - band - radius).abs() < 0.01,
+                "the cut's inner edge is the card's rounded path"
+            );
+        }
+    }
+
+    /// No pane card leaves a square pixel outside its rounded corner: the
+    /// card's four corner spandrels are the panel surface, the pixels just
+    /// inside the path are the card content, and the focused pane's accent
+    /// triangle has no pixel outside the rounded top-left corner. This is the
+    /// rendered-pixel counterpart of the command-order tests — it is read off
+    /// the real `RootView` rasterized at one device pixel per point.
+    #[test]
+    fn no_square_pixels_survive_at_a_pane_cards_corners() {
+        let mut light = AppContext::default();
+        light.theme = goble_ui::theme::Theme::light();
+
+        for app in [&AppContext::default(), &light] {
+            for two_panes in [false, true] {
+                let (pixels, frames) = raster_frame(app, two_panes);
+                assert_eq!(frames.len(), if two_panes { 2 } else { 1 });
+                let surface = app.theme.color(ColorToken::Surface);
+                let bg = app.theme.color(ColorToken::Bg);
+                let accent = app.theme.color(ColorToken::Accent);
+
+                for (index, card) in frames.iter().enumerate() {
+                    let radius = crate::ui::panes::card_radius(vec2f(card.width(), card.height()));
+                    let focused = index == 0;
+                    let corner = |x: f32, y: f32| pixel_at(&pixels, x, y);
+                    let near = |at: [u8; 3], color: goble_ui::ColorU| near_color(at, color);
+
+                    // The four corner spandrels — outside the rounded path,
+                    // inside the card's rectangle — are the panel surface the
+                    // card sits on, whatever the card's content paints there.
+                    for (what, x, y) in [
+                        ("top-left", card.min_x(), card.min_y()),
+                        ("top-right", card.max_x() - 1.0, card.min_y()),
+                        ("bottom-left", card.min_x(), card.max_y() - 1.0),
+                        ("bottom-right", card.max_x() - 1.0, card.max_y() - 1.0),
+                    ] {
+                        let at = corner(x, y);
+                        assert!(
+                            near(at, surface),
+                            "the {what} spandrel of a pane card is the panel surface, \
+                             not a square card pixel: {at:?} against {surface:?}"
+                        );
+                    }
+
+                    // Just inside the rounded path (the corner's arc centre) the
+                    // card content still paints: the card fill is Bg.
+                    for (what, x, y) in [
+                        ("bottom-left", card.min_x() + radius, card.max_y() - radius),
+                        ("bottom-right", card.max_x() - radius, card.max_y() - radius),
+                    ] {
+                        let at = corner(x, y);
+                        assert!(
+                            near(at, bg),
+                            "the {what} corner inside the path is the card's own fill: {at:?}"
+                        );
+                    }
+
+                    // The focus marker is inside the rounded top-left corner: it
+                    // paints there, and no accent pixel lies in the spandrel
+                    // outside the path (the square bite would show here).
+                    let inside = corner(card.min_x() + radius * 0.5, card.min_y() + radius * 0.5);
+                    let outside = accent_pixels_outside_corner(&pixels, *card, radius, accent);
+                    if focused {
+                        assert!(
+                            near(inside, accent),
+                            "the focused pane's accent triangle paints inside the card's \
+                             rounded top-left corner: {inside:?} against {accent:?}"
+                        );
+                        assert_eq!(
+                            outside, 0,
+                            "no accent pixel may sit outside the card's rounded top-left \
+                             corner (the marker is clipped to the radius)"
+                        );
+                    } else {
+                        assert!(
+                            !near(inside, accent),
+                            "an unfocused pane wears no accent corner: {inside:?}"
+                        );
+                        assert_eq!(outside, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The real app frame rasterized to RGBA pixels at one device pixel per
+    /// point, for the corner probes no command list can prove.
+    fn raster_frame(app: &AppContext, two_panes: bool) -> (image::RgbaImage, Vec<RectF>) {
+        let (mut root, state, _dir) = app_root_for(app);
+        if two_panes {
+            install_two_panes(&state, 0.5);
+        }
+        let assets = raster::PreviewAssets::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/goble-ui/assets")
+                .canonicalize()
+                .expect("the bundled icon and font assets"),
+        )
+        .expect("the preview assets load");
+        let dir = tempfile::tempdir().expect("temp frame dir");
+        let out = dir.path().join("pane-corners.png");
+        raster::render_element_to_png(
+            &assets,
+            app,
+            &mut root,
+            window().x,
+            window().y,
+            1.0,
+            None,
+            &out,
+        )
+        .expect("the frame rasterizes");
+        let pixels = image::open(&out)
+            .expect("the rendered frame reads back")
+            .to_rgba8();
+        let frames = pane_frames(&state);
+        (pixels, frames)
+    }
+
+    /// The RGB at the pixel the point falls in.
+    fn pixel_at(pixels: &image::RgbaImage, x: f32, y: f32) -> [u8; 3] {
+        let px = pixels
+            .get_pixel(x.floor().max(0.0) as u32, y.floor().max(0.0) as u32)
+            .0;
+        [px[0], px[1], px[2]]
+    }
+
+    /// Whether the drawn pixel matches the theme colour, within the renderer's
+    /// anti-aliasing and linear-light blend tolerance.
+    fn near_color(pixel: [u8; 3], color: goble_ui::ColorU) -> bool {
+        pixel[0].abs_diff(color.r) <= 6
+            && pixel[1].abs_diff(color.g) <= 6
+            && pixel[2].abs_diff(color.b) <= 6
+    }
+
+    /// The accent pixels of `card`'s top-left corner square that lie outside the
+    /// card's rounded path (the corner's arc centre is the square's far corner).
+    fn accent_pixels_outside_corner(
+        pixels: &image::RgbaImage,
+        card: RectF,
+        radius: f32,
+        accent: goble_ui::ColorU,
+    ) -> usize {
+        let mut outside = 0;
+        let reach = radius.ceil() as u32 + 4;
+        for dy in 0..reach {
+            for dx in 0..reach {
+                let x = card.min_x().floor() as u32 + dx;
+                let y = card.min_y().floor() as u32 + dy;
+                let px = pixels.get_pixel(x, y).0;
+                if !near_color([px[0], px[1], px[2]], accent) {
+                    continue;
+                }
+                // Pixel centre, measured from the rounded corner's arc centre.
+                let cx = card.min_x() + radius;
+                let cy = card.min_y() + radius;
+                let distance =
+                    ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+                if distance > radius {
+                    outside += 1;
+                }
+            }
+        }
+        outside
     }
 
     /// The 1 pt `Border` rules rounded at the pane card's own radius: one per

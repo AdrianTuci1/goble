@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::band::BandCard;
 use super::hints_row::ComposerHintsRow;
 use crate::elements::model_tray::MODEL_MENU_VIEWPORT_INSET;
 use super::proposal::CommandProposalUi;
@@ -70,6 +71,14 @@ pub const COMPOSER_CARD_INSET: f32 = 6.0;
 /// it keeps under itself. Every surface draws the same card, so the shell bar
 /// and the agent input sit the same distance from the pane's edges.
 pub const COMPOSER_CARD_GUTTER: f32 = 12.0;
+/// The terminal band's bottom casing: the card's own 6pt inset plus the 12pt
+/// gutter the floating card kept under itself, folded into the band when the
+/// card stretches to the pane's bottom edge. The folded gutter is what keeps the
+/// band the same height as the floating card (and the inner input exactly where
+/// it was relative to the pane's bottom); the band's top and sides use
+/// [`COMPOSER_CARD_INSET`] alone, since the band itself reaches the pane's
+/// edges.
+pub const COMPOSER_BAND_BOTTOM_INSET: f32 = COMPOSER_CARD_INSET + COMPOSER_CARD_GUTTER;
 /// The context band's resting height: 8 above the controls, the controls' own
 /// [`CONTEXT_PILL_HEIGHT`], and 8 below them before the input segment.
 pub const CONTEXT_SEGMENT_HEIGHT: f32 = 40.0;
@@ -105,7 +114,10 @@ pub const COMPOSER_HINTS_ROW_HEIGHT: f32 = 13.2;
 /// instruction row: the shell pane tells its pty this, so the rows the program
 /// paints are the rows the user can see. It must equal the height the element
 /// lays out for that configuration; the composer test
-/// `the_reserved_bar_height_is_the_cards_own_height` pins the two together.
+/// `the_reserved_bar_height_is_the_cards_own_height` pins the two together. A
+/// card drawn as the pane's bottom band lays out the same height (the floating
+/// gutter becomes [`COMPOSER_BAND_BOTTOM_INSET`]), so a terminal bar and an
+/// agent input stay identical in height.
 pub const COMPOSER_BAR_RESERVED_HEIGHT: f32 = COMPOSER_CARD_GUTTER
     + COMPOSER_CARD_INSET
     + CONTEXT_SEGMENT_HEIGHT
@@ -342,6 +354,11 @@ pub struct ChatComposer {
     /// levels. The band itself is the host's, drawn in the slot over the input;
     /// the control toggles its open flag and the composer routes its keys.
     model_tray: Option<ComposerModelTray>,
+    /// The panel radius the card's bottom band carries, when the host draws the
+    /// card as the pane's own bottom band instead of a floating card (the
+    /// terminal surface). `None` keeps the floating card: the surface gutter on
+    /// every side and the card's own radius on all four corners.
+    band_bottom_radius: Option<f32>,
     /// The card's width from the last layout pass, so a value built before the
     /// layout (the model chip) can cap itself to the row it will sit in. The
     /// element is rebuilt inside `layout`, so the current pass's width is the
@@ -418,6 +435,7 @@ impl ChatComposer {
             model_menu_open: Rc::new(RefCell::new(false)),
             on_select_model_item: None,
             model_tray: None,
+            band_bottom_radius: None,
             layout_width: None,
             model_tray_bounds: ModelTrayBounds::new(),
             model_index: Rc::new(RefCell::new(0)),
@@ -910,6 +928,28 @@ impl ChatComposer {
     /// keeps the same gutter from the surface it is drawn on, so the flag
     /// changes nothing.
     pub fn with_edge_to_edge(self, _edge_to_edge: bool) -> Self {
+        self
+    }
+
+    /// Draw the card as the pane's own bottom band instead of a floating card.
+    ///
+    /// The terminal surface asks for this (owner: the shell bar must not float
+    /// as an inset card). The outer card then runs the full width of the surface
+    /// it is mounted in — flush with the pane's sides and bottom, with no
+    /// surface gutter — its top corners are square against the transcript above
+    /// it, and only its bottom corners carry the panel's own radius,
+    /// `panel_radius` (the pane card's radius). The inner input segment keeps
+    /// its radius and its 6pt casing, so it stretches with the outer box and
+    /// still reads as a rounded field inside the band.
+    ///
+    /// The band lays out the same height as the floating card: the gutter the
+    /// floating card kept under itself becomes the band's bottom casing
+    /// ([`COMPOSER_BAND_BOTTOM_INSET`]), so a terminal bar and an agent input
+    /// stay identical in height (`COMPOSER_BAR_RESERVED_HEIGHT`) and the shell
+    /// pane's pty reservation does not change. A host that leaves this off keeps
+    /// the floating card, which is what every agent surface draws.
+    pub fn with_bottom_band(mut self, panel_radius: f32) -> Self {
+        self.band_bottom_radius = Some(panel_radius.max(0.0));
         self
     }
 
@@ -1973,7 +2013,12 @@ impl ChatComposer {
         }
         column = column.with_child(input_segment);
 
-        let card = self.into_card(column.finish(), app, has_context);
+        let card = match self.band_bottom_radius {
+            Some(panel_radius) => {
+                self.into_band(column.finish(), app, has_context, panel_radius)
+            }
+            None => self.into_card(column.finish(), app, has_context),
+        };
         // The two bands share one slot over the input, and both are the host's
         // to draw (the command list and the model list, in that order): while
         // the draft is a command that list holds the slot, so the model card is
@@ -2040,6 +2085,39 @@ impl ChatComposer {
         )
         .finish()
     }
+
+    /// Wrap the segments in the card's bottom-band shape instead of the floating
+    /// card: the `Surface` fill runs the surface's full width, square on top,
+    /// with the panel's radius ([`ChatComposer::with_bottom_band`]) on its
+    /// bottom corners, and the inner input segment keeps its casing
+    /// ([`COMPOSER_CARD_INSET`]) on the sides and its rounded shape. The band's
+    /// bottom casing is [`COMPOSER_BAND_BOTTOM_INSET`]: the folded gutter keeps
+    /// the card the same height as the floating card, so a terminal bar and an
+    /// agent input stay identical and the shell pane's reserved bar height does
+    /// not move.
+    fn into_band(
+        &self,
+        content: Box<dyn Element>,
+        app: &AppContext,
+        has_context: bool,
+        panel_radius: f32,
+    ) -> Box<dyn Element> {
+        let top = if has_context {
+            0.0
+        } else {
+            COMPOSER_CARD_INSET
+        };
+        BandCard::new(content)
+            .with_background(app.theme.color(ColorToken::Surface))
+            .with_bottom_radius(panel_radius)
+            .with_padding(EdgeInsets::new(
+                COMPOSER_CARD_INSET,
+                top,
+                COMPOSER_CARD_INSET,
+                COMPOSER_BAND_BOTTOM_INSET,
+            ))
+            .finish()
+    }
 }
 
 impl Default for ChatComposer {
@@ -2057,9 +2135,16 @@ impl Element for ChatComposer {
     ) -> Vector2F {
         // The card's width is known before the tree is built, so the controls
         // that must cap themselves to the row (the model chip's 360pt value) and
-        // the card that clamps to this surface both see this pass's width.
+        // the card that clamps to this surface both see this pass's width. A
+        // floating card sits in the surface gutter; the bottom band runs the
+        // whole surface, so it claims the constraint's full width.
         let card_width = if constraint.max.x.is_finite() {
-            (constraint.max.x - COMPOSER_CARD_GUTTER * 2.0).max(0.0)
+            let gutter = if self.band_bottom_radius.is_some() {
+                0.0
+            } else {
+                COMPOSER_CARD_GUTTER
+            };
+            (constraint.max.x - gutter * 2.0).max(0.0)
         } else {
             f32::INFINITY
         };
@@ -2081,7 +2166,11 @@ impl Element for ChatComposer {
         // card is anchored to the chip and clamps into this surface, so it needs
         // the rect of the frame it is about to be drawn in.
         if let Some(size) = self.size {
-            let gutter = COMPOSER_CARD_GUTTER;
+            let gutter = if self.band_bottom_radius.is_some() {
+                0.0
+            } else {
+                COMPOSER_CARD_GUTTER
+            };
             self.model_tray_bounds.set_rect(rectf(
                 origin.x + gutter,
                 origin.y,

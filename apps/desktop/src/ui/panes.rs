@@ -2,8 +2,10 @@
 //!
 //! Recursively renders a [`Space`]'s [`Pane`] tree: leaves host content (the
 //! agent chat or a PTY terminal), splits are resizable [`SplitNode`]s with a
-//! draggable divider. The active pane is outlined; clicking anywhere in a pane
-//! (its header or body) focuses it, and its header has a close button.
+//! draggable divider. Every pane is a rounded card (see [`PaneCard`]); the
+//! focused one is marked by the accent triangle inside its rounded top-left
+//! corner. Clicking anywhere in a pane (its header or body) focuses it, and its
+//! header has a close button.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,7 +15,7 @@ use goble_ui::elements::{
     file_icon_name, AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, HoverButton, Icon,
     LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Spacer, SplitNode,
-    Stack, Text, TopbarButton,
+    Text, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -104,11 +106,9 @@ pub fn build_active_space(
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_child(Expanded::new(chat).finish());
             // The fallback is a pane card like any other leaf: the panel itself
-            // is the darker background (see [`pane_surface`]).
-            Container::new(column.finish())
-                .with_background(Fill::Solid(pane_surface(app)))
-                .with_border(app.theme.color(ColorToken::Border).into())
-                .finish()
+            // is the darker background and the card is rounded like every other
+            // pane (see [`PaneCard`]).
+            PaneCard::new(column.finish(), app, false).finish()
         }
     };
     // The drop ghost is drawn with the pane area but after its panes, so it
@@ -751,6 +751,172 @@ pub(crate) const PANE_INSET: f32 = 4.0;
 /// slot.
 pub(crate) const PANE_AREA_INSET: f32 = 4.0;
 
+/// How far outside its rounded edge a pane card paints the panel surface: the
+/// band that erases whatever the card's content paints past that edge (the
+/// chat's full-width `Bg` column, the terminal grid, the header band) and, at the
+/// focused pane's top-left corner, the square corner of the accent triangle.
+///
+/// A card's content fills its rectangle squarely, and each corner of a rounded
+/// rectangle is a square spandrel outside the rounded path; without the band the
+/// content's own colour would carry those spandrels and the card would read
+/// square. The band is painted in `Surface` — the material the card sits on, so
+/// it is invisible in the gutter and under the full-bleed header band — while it
+/// cuts every corner to the card's radius.
+///
+/// Its width must reach the deepest point of a corner spandrel (the corner
+/// itself lies `radius * (√2 - 1)` outside the arc: 2.5 pt at the card's 6 pt
+/// radius) and must stay within [`PANE_INSET`], so it never paints over a
+/// neighbouring card or the chrome. It is exactly `PANE_INSET`.
+pub(crate) const CARD_EDGE_BAND: f32 = PANE_INSET;
+
+/// The radius every pane card is rounded at: the card's fill, its `Border` edge
+/// and the clip of the focus triangle all use it. It is the pane frame's own
+/// radius ([`WINDOW_CORNER_RADIUS`]), so a tiled card and a window agree on the
+/// rounding, and it is what [`CARD_EDGE_BAND`] is sized against.
+pub(crate) fn card_radius(size: Vector2F) -> f32 {
+    WINDOW_CORNER_RADIUS
+        .min(size.x * 0.5)
+        .min(size.y * 0.5)
+        .max(0.0)
+}
+
+/// The card one pane is drawn as: its content on the card's `Bg` fill, rounded on
+/// all four corners, with the focused pane's accent corner triangle inside the
+/// same rounded top-left corner and the card's own `Border` edge tracing the
+/// rounded silhouette.
+///
+/// A pane's content paints its own full-width surfaces (the chat's `Bg` column,
+/// the terminal's grid, the full-bleed `Surface` header band), so the card draws
+/// itself around them in three layers: the rounded fill under the content, the
+/// panel-surface band that cuts the content — and the accent triangle, which is
+/// therefore drawn before the band — back to the rounded path, and the rounded
+/// `Border` edge last, over the cut. That leaves the card reading as one closed,
+/// rounded panel with the coloured corner inside the same radius.
+///
+/// The band is `Surface`, the material the card sits on, so the cut is only
+/// visible where the content would have carried a different colour: the corners.
+struct PaneCard {
+    content: Box<dyn Element>,
+    /// The card's own fill: the darker panel material (`Bg`), for every kind.
+    fill: goble_ui::ColorU,
+    /// The card's 1 pt edge, drawn over the cut.
+    border: goble_ui::ColorU,
+    /// The panel surface the card sits on, painted over the content that spills
+    /// past the card's rounded path.
+    backdrop: goble_ui::ColorU,
+    /// The focus triangle's colour, when this card is the focused pane.
+    focus_marker: Option<goble_ui::ColorU>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl PaneCard {
+    fn new(content: Box<dyn Element>, app: &AppContext, focused: bool) -> Self {
+        Self {
+            content,
+            fill: pane_surface(app),
+            border: app.theme.color(ColorToken::Border),
+            backdrop: app.theme.color(ColorToken::Surface),
+            focus_marker: focused.then(|| app.theme.color(ColorToken::Accent)),
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for PaneCard {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.content.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(size) = self.size else { return };
+        let card = rectf(origin.x, origin.y, size.x, size.y);
+        let radius = card_radius(size);
+
+        // The card's own fill, under the content, so a pane whose surface does
+        // not reach every edge still reads as a card.
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.fill_rounded_rect(card, self.fill, radius);
+        }
+
+        self.content.paint(origin, ctx, app);
+
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            // The focused pane's corner cue, inside the card's top-left corner.
+            // It is drawn before the cut, so its square corner is rounded with
+            // the card's own corner (see `paint_card_corner_cut`).
+            if let Some(accent) = self.focus_marker {
+                renderer.draw_icon(origin, "upper-left-triangle", FOCUS_MARKER_SIZE, accent);
+            }
+            paint_card_corner_cut(renderer, card, radius, self.backdrop);
+            renderer.stroke_rect(card, self.border, 1.0, radius);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.content.wants_animation()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.content.dispatch_event(event, ctx, app)
+    }
+}
+
+/// Cut everything the pane's content and focus marker paint past the card's
+/// rounded path back to the panel surface, so the card's four corners read as
+/// the rounded shape its fill and `Border` describe.
+///
+/// `Renderer::stroke_rect` fills the band *inside* the rectangle it is given,
+/// from that rectangle's edge inward by `width`. Stroking a rectangle grown by
+/// [`CARD_EDGE_BAND`] with the card's radius grown by the same amount therefore
+/// paints exactly the band outside the card's rounded path, with the expanded
+/// rectangle's inner edge — the band's own inner edge, after the renderer's
+/// anti-aliasing — landing on the card's path. The band is `Surface`, so it is
+/// invisible everywhere the content already painted the panel surface (the
+/// full-bleed header band over the top edge, the gutters on the sides and
+/// bottom) and only shows where it had to cut something: the four corners.
+fn paint_card_corner_cut(
+    renderer: &mut goble_ui::render::Renderer,
+    card: RectF,
+    radius: f32,
+    backdrop: goble_ui::ColorU,
+) {
+    let band = CARD_EDGE_BAND;
+    renderer.stroke_rect(
+        rectf(
+            card.min_x() - band,
+            card.min_y() - band,
+            card.width() + band * 2.0,
+            card.height() + band * 2.0,
+        ),
+        backdrop,
+        band,
+        radius + band,
+    );
+}
+
 /// The background a pane's card paints: the darker `Bg`, for every pane kind.
 ///
 /// The card is the PANEL itself, and only the panel uses the darker material.
@@ -1215,32 +1381,13 @@ fn build_leaf_with_lift(
     lift: bool,
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
-    let surface = pane_surface(app);
     let column = build_leaf_column(app, state, actions, id, kind, lift);
     // The card's own edge is the ordinary `Border`: the focused pane is marked
-    // by its accent corner triangle below, not by an outline around the tab. The fill is
-    // the panel's own darker surface (see [`pane_surface`]): every pane card —
-    // an agent pane's included — is `Bg` on the panel area's `Surface`.
-    let pane = Container::new(column)
-        .with_background(Fill::Solid(surface))
-        .with_border(app.theme.color(ColorToken::Border).into())
-        .with_corner_radius(WINDOW_CORNER_RADIUS)
-        .finish();
-    let framed: Box<dyn Element> = if active {
-        // The focused pane's mark: the accent triangle sits in the pane's own
-        // top-left corner, which is where the pane the keyboard is in is read
-        // from. The pane's bar starts past it (see `chat::build_agent_header`).
-        let marker = Icon::new("upper-left-triangle")
-            .with_size(FOCUS_MARKER_SIZE)
-            .with_theme_color(ColorToken::Accent, app)
-            .finish();
-        Stack::new()
-            .with_children(vec![pane])
-            .with_overlay(marker, vec2f(0.0, 0.0))
-            .finish()
-    } else {
-        pane
-    };
+    // by its accent corner triangle, inside the card's rounded top-left corner
+    // (see [`PaneCard`]). The fill is the panel's own darker surface (see
+    // [`pane_surface`]): every pane card — an agent pane's included — is `Bg` on
+    // the panel area's `Surface`.
+    let framed = PaneCard::new(column, app, active).finish();
     // A lifted pane paints nothing where it stood. The tiled tree has already
     // left it out (see `build_pane`); a maximized pane or a region layout keeps
     // its slot, so cancelling the drag puts it back exactly there.
@@ -1406,6 +1553,44 @@ mod tests {
     #[test]
     fn the_panel_surface_is_inset_from_the_chrome() {
         assert_eq!(PANE_AREA_INSET, 4.0);
+    }
+
+    /// The card's rounded corners use the pane frame's radius, and a card too
+    /// small to keep it clamps it to half of its shorter side (the renderer's
+    /// own clamp) instead of breaking the shape.
+    #[test]
+    fn a_pane_card_rounds_at_the_pane_radius() {
+        assert_eq!(card_radius(vec2f(400.0, 800.0)), WINDOW_CORNER_RADIUS);
+        // Too small for the full radius: half the shorter side.
+        assert_eq!(card_radius(vec2f(4.0, 10.0)), 2.0);
+        assert_eq!(card_radius(vec2f(0.0, 0.0)), 0.0);
+    }
+
+    /// The band that cuts the card's content back to the rounded path has to
+    /// reach the deepest point of a corner spandrel — the corner itself, which
+    /// lies `radius * (√2 - 1)` outside the arc — with the renderer's ~0.7 pt
+    /// anti-aliasing on top, and it must stay inside the pane gutter so it never
+    /// paints over a neighbouring card or the chrome. `PANE_INSET` satisfies
+    /// both for the pane radius.
+    #[test]
+    fn the_card_edge_band_reaches_every_corner_but_stays_in_the_gutter() {
+        let radius = card_radius(vec2f(400.0, 800.0));
+        let deepest_spandrel = radius * (2f32.sqrt() - 1.0);
+        let anti_aliasing = 0.7;
+        assert!(
+            deepest_spandrel + anti_aliasing < CARD_EDGE_BAND,
+            "the cut reaches the corner: {} + {anti_aliasing} against {CARD_EDGE_BAND}",
+            deepest_spandrel
+        );
+        assert!(
+            CARD_EDGE_BAND <= PANE_INSET,
+            "the cut stays in the pane gutter: {CARD_EDGE_BAND} against {PANE_INSET}"
+        );
+        // The cut's inner edge is the card path: the stroked rect grows by the
+        // band and the radius grows with it, so subtracting the band gives the
+        // card's own radius back.
+        let cut_radius = radius + CARD_EDGE_BAND;
+        assert!((cut_radius - CARD_EDGE_BAND - radius).abs() < 1e-6);
     }
 
     /// The panel itself is the darker material: EVERY pane card — chat, worker,

@@ -30,6 +30,15 @@
 //!   the fixed instruction row under the footer.
 //! - `agent-placeholder` — the agent input: "Ask anything..." with the same
 //!   fixed-height instruction row.
+//! - `terminal-band` — a pane of the app with the terminal composer drawn as the
+//!   pane's bottom band: full pane width and flush at the sides and bottom,
+//!   square against the output above it, only the bottom corners on the panel's
+//!   radius, and the inner input segment keeping its own radius. Writes the wide
+//!   pass, `<stem>-narrow.png`, the agent composer in the same pane
+//!   (`<stem>-agent.png`) and a magnified bottom-right corner
+//!   (`<stem>-corner.png`).
+//! - `agent-band` — the same pane with the agent composer's floating card, the
+//!   shape every agent surface draws.
 //! - `lane` — a 1600x900 window (default) with the real [`ContentLane`] around a
 //!   representative transcript + the composer; `--width 800` renders the
 //!   narrow-window pass-through. `--dragging` paints the dragged edge rule and
@@ -54,12 +63,14 @@ use goble_ui::elements::chat_composer::{
     AGENT_COMPOSER_PLACEHOLDER, TERMINAL_COMPOSER_PLACEHOLDER,
 };
 use goble_ui::elements::{
-    AppContext, ChatComposer, ComposerModelTray, ContentLane, CrossAxisAlignment, EdgeInsets,
-    Element, Expanded, Fill, Flex, LaneEdge, MainAxisSize, ModelTrayHarness, ModelTrayModel,
-    ModelTrayState, Padding, PopupMenuItem, ShortcutHint, SlashMenu, SlashMenuItem, Text,
+    AppContext, ChatComposer, ComposerModelTray, Container, ContentLane, CrossAxisAlignment,
+    Divider, EdgeInsets, Element, Expanded, Fill, Flex, LaneEdge, LayoutContext, MainAxisSize,
+    ModelTrayHarness, ModelTrayModel, ModelTrayState, Padding, PaintContext, Point, PopupMenuItem,
+    ShortcutHint, SizeConstraint, SlashMenu, SlashMenuItem, Stack, Text,
 };
-use goble_ui::geometry::vec2f;
+use goble_ui::geometry::{vec2f, Vector2F};
 use goble_ui::theme::{ColorToken, Theme};
+use goble_ui::ColorU;
 
 mod raster;
 
@@ -102,6 +113,8 @@ fn main() -> anyhow::Result<()> {
             render_placeholder(&options, &assets, PlaceholderSurface::Terminal)?
         }
         "agent-placeholder" => render_placeholder(&options, &assets, PlaceholderSurface::Agent)?,
+        "terminal-band" => render_band(&options, &assets, true)?,
+        "agent-band" => render_band(&options, &assets, false)?,
         "lane" => render_lane(&options, &assets)?,
         "all" => {
             // `all` writes one file per scene into the `--out` directory (the
@@ -158,6 +171,11 @@ fn main() -> anyhow::Result<()> {
                 &assets,
                 PlaceholderSurface::Agent,
             )?;
+            render_band(
+                &options.sub_scene("terminal-band", dir.join("terminal-band.png")),
+                &assets,
+                true,
+            )?;
             for (name, width) in [("lane-wide.png", 1600.0), ("lane-narrow.png", 800.0)] {
                 let lane = options.sub_scene("lane", dir.join(name));
                 render_lane(
@@ -173,7 +191,7 @@ fn main() -> anyhow::Result<()> {
         other => anyhow::bail!(
             "unknown scene {other:?}; expected composer, menus, env-menu, branch-menu, \
              model-menu, model-pane, slash-menu, terminal-placeholder, agent-placeholder, \
-             lane or all"
+             terminal-band, agent-band, lane or all"
         ),
     }
     Ok(())
@@ -363,7 +381,8 @@ fn print_usage() {
         "composer_preview — rasterize goble-ui scenes to PNG\n\
          \n\
          --scene composer|menus|env-menu|branch-menu|model-menu|model-pane|model-effort|slash-menu|\n\
-         --scene terminal-placeholder|agent-placeholder|lane|all  (default: composer)\n\
+         --scene terminal-placeholder|agent-placeholder|terminal-band|agent-band|lane|all\n\
+         (default: composer)\n\
          --out PATH        output PNG path (default: /tmp/goble-work/out/<scene>.png)\n\
          --scale N         device pixel ratio to rasterize at (default: 2 for composer/menus, 1 for lane)\n\
          --width N         logical scene width (default: 876 for composer/menus, 1600 for lane)\n\
@@ -979,6 +998,258 @@ fn render_placeholder(
             .finish()
         },
     )
+}
+
+// ---------------------------------------------------------------------------
+// Terminal band vs agent card
+// ---------------------------------------------------------------------------
+
+/// The pane card's corner radius in the app (`panes.rs::WINDOW_CORNER_RADIUS`),
+/// which is also the radius the app hands the terminal composer as its band's
+/// bottom radius. The preview's pane stands in for the app's panel, so the scene
+/// draws both with the same number.
+const BAND_PANE_RADIUS: f32 = 6.0;
+/// The panel surface's frame around the pane card: the app's panel area (the
+/// 4px content inset plus the gutters around a tab slot) reads as this
+/// `Surface` frame around the darker pane.
+const BAND_PANE_PAD: f32 = 16.0;
+/// The scene's default pane: wide enough to show the band at the shell's usual
+/// width, tall enough to hold output above it.
+const BAND_SCENE_WIDTH: f32 = 760.0;
+const BAND_SCENE_HEIGHT: f32 = 420.0;
+/// The narrow pane the terminal scene also renders, so the full-width rule is
+/// verified at a width where the composer's controls fold.
+const BAND_SCENE_NARROW: f32 = 380.0;
+
+/// One pane of the app, framed on the panel surface: shell output above and the
+/// rich input pinned to the bottom of the pane card.
+///
+/// With `band`, the input is the terminal composer drawn as the pane's bottom
+/// band — full pane width, flush with the pane's sides and bottom, square
+/// against the divider above it, rounded only at the bottom where the panel is
+/// rounded, with the inner input segment keeping its own radius and casing.
+/// Without it, the same pane draws the agent composer: the floating card every
+/// agent surface keeps.
+fn band_pane(app: &AppContext, flags: &MenuFlags, band: bool) -> Box<dyn Element> {
+    let mono = |text: &str| -> Box<dyn Element> {
+        Text::new(text)
+            .with_font_size(12.0)
+            .with_line_height(1.4)
+            .with_font_family(goble_ui::theme::FontFamily::Mono)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish()
+    };
+    let output = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(2.0)
+        .with_child(mono(
+            "$ cargo test -p goble-ui --lib elements::chat_composer",
+        ))
+        .with_child(mono("test result: ok. 52 passed; 0 failed; 0 ignored"))
+        .with_child(mono("$ git status --short"))
+        .with_child(mono("?? functii.py"))
+        .finish();
+    let output = Padding::new(output, EdgeInsets::new(16.0, 12.0, 16.0, 12.0)).finish();
+    let composer: Box<dyn Element> = if band {
+        ChatComposer::new()
+            .with_value("")
+            .with_caret(flags.caret.clone())
+            .with_placeholder(TERMINAL_COMPOSER_PLACEHOLDER)
+            .with_context_above_editor(true)
+            .with_path_label("brindlepad-web")
+            .with_branch_label("main")
+            .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
+            .with_on_send(|_| {})
+            .with_on_cmd_enter(|_| {})
+            .with_bottom_band(BAND_PANE_RADIUS)
+            .finish()
+    } else {
+        composer_element(flags, false)
+    };
+    let column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(output).finish())
+        .with_child(Divider::horizontal().finish())
+        .with_child(composer)
+        .finish();
+    let pane = Container::new(column)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .with_corner_radius(BAND_PANE_RADIUS)
+        .finish();
+    // The pane card's edge is traced over its content, the way the app's
+    // `PaneCard` paints its rounded `Border` last: the terminal band runs to the
+    // card's own edge, so the rounded bottom corners are the panel's, not the
+    // band's own square cut.
+    let pane = Stack::new()
+        .with_children(vec![pane])
+        .with_overlay(
+            RoundedEdge::new(app.theme.color(ColorToken::Border), BAND_PANE_RADIUS).finish(),
+            Vector2F::zero(),
+        )
+        .finish();
+    Container::new(Padding::new(pane, EdgeInsets::uniform(BAND_PANE_PAD)).finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .finish()
+}
+
+/// A 1pt rounded edge painted over its scene: the pane card's border in the
+/// app is traced after the content (panes.rs `PaneCard`), so the composer band
+/// that reaches the card's bottom edge still shows the rounded panel edge over
+/// it. The preview's pane has no content that spills past the card, so an edge
+/// overlay is enough to mirror that.
+struct RoundedEdge {
+    color: ColorU,
+    radius: f32,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl RoundedEdge {
+    fn new(color: ColorU, radius: f32) -> Self {
+        Self {
+            color,
+            radius,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for RoundedEdge {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        let size = constraint.max;
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(size) = self.size else { return };
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.stroke_rect(
+                goble_ui::geometry::rectf(origin.x, origin.y, size.x, size.y),
+                self.color,
+                1.0,
+                self.radius,
+            );
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
+
+/// Render the terminal band (or the agent composer, for comparison) in a pane.
+///
+/// The terminal scene also writes its narrow pass, the agent composer in the
+/// same pane, and a magnified bottom-right corner: the band's bottom arc has to
+/// sit on the panel's own radius while the inner segment stays a rounded box
+/// inside it.
+fn render_band(options: &Options, assets: &PreviewAssets, band: bool) -> anyhow::Result<()> {
+    let mut app = AppContext::default();
+    app.theme = options.theme()?;
+    let flags = MenuFlags::new();
+    let width = options.width.unwrap_or(BAND_SCENE_WIDTH);
+    let height = options.height.unwrap_or(BAND_SCENE_HEIGHT);
+    let scale = options.scale(2.0);
+    let mut root = band_pane(&app, &flags, band);
+    raster::render_to_png(
+        assets,
+        &app,
+        &mut root,
+        vec2f(width, height),
+        scale,
+        None,
+        &options.out,
+    )?;
+    if options.scene == "terminal-band" {
+        let mut narrow = band_pane(&app, &flags, true);
+        raster::render_to_png(
+            assets,
+            &app,
+            &mut narrow,
+            vec2f(BAND_SCENE_NARROW, height),
+            scale,
+            None,
+            &with_out_suffix(&options.out, "narrow"),
+        )?;
+        let mut agent = band_pane(&app, &flags, false);
+        raster::render_to_png(
+            assets,
+            &app,
+            &mut agent,
+            vec2f(width, height),
+            scale,
+            None,
+            &with_out_suffix(&options.out, "agent"),
+        )?;
+        // The bottom-corner zoom: render the wide pane at 4x and crop the
+        // bottom-right corner, inside the pane plus a strip of the panel frame.
+        let full = std::env::temp_dir().join("goble-terminal-band-zoom.png");
+        let mut zoom = band_pane(&app, &flags, true);
+        raster::render_to_png(
+            assets,
+            &app,
+            &mut zoom,
+            vec2f(width, height),
+            4.0,
+            None,
+            &full,
+        )?;
+        let x = width - BAND_PANE_PAD - 160.0;
+        let y = height - BAND_PANE_PAD - 100.0;
+        crop_png(
+            &full,
+            &with_out_suffix(&options.out, "corner"),
+            x,
+            y,
+            176.0,
+            116.0,
+            4.0,
+        )?;
+        let _ = std::fs::remove_file(&full);
+    }
+    Ok(())
+}
+
+/// Crop a `w` x `h` logical region of a PNG rasterized at `scale` device pixels
+/// per point, so the corner scene is a true magnification of the same render.
+fn crop_png(
+    src: &Path,
+    dst: &Path,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    scale: f32,
+) -> anyhow::Result<()> {
+    let image = image::open(src)?.to_rgba8();
+    let px = (x * scale).round().max(0.0) as u32;
+    let py = (y * scale).round().max(0.0) as u32;
+    let pw = (w * scale).round().max(1.0) as u32;
+    let ph = (h * scale).round().max(1.0) as u32;
+    let cropped = image::imageops::crop_imm(&image, px, py, pw, ph).to_image();
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    cropped.save(dst)?;
+    println!(
+        "wrote {} ({pw}x{ph} px, bottom-corner zoom of {} at {scale}x)",
+        dst.display(),
+        src.display()
+    );
+    Ok(())
 }
 
 /// A full-height pane column: a representative transcript and the real

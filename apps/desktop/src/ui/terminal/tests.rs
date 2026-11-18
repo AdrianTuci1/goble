@@ -665,6 +665,125 @@ fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
     );
 }
 
+/// The shell pane's rich input is the pane's bottom band, not a floating card:
+/// its outer box runs the pane's full width (zero side inset), ends at the pane's
+/// bottom edge, is square on top and carries the pane card's own radius on its
+/// bottom corners, while the inner input segment keeps its own rounding. The
+/// agent composer in the same window keeps its floating card — a gutter on every
+/// side — so the two surfaces differ exactly where the owner asked them to.
+#[test]
+fn the_shells_composer_is_the_panes_bottom_band() {
+    use goble_ui::elements::chat_composer::{
+        COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_GUTTER, COMPOSER_CARD_INSET,
+        COMPOSER_CARD_RADIUS, COMPOSER_INPUT_RADIUS,
+    };
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let surface = app.theme.color(ColorToken::Surface);
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    let pane_bg = app.theme.color(ColorToken::Bg);
+    let radius = crate::ui::panes::WINDOW_CORNER_RADIUS;
+    let fills = |commands: &[RenderCommand],
+                 color: ColorU,
+                 corner_radius: f32,
+                 min_height: f32| {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color: painted,
+                    corner_radius: painted_radius,
+                } if *painted == color
+                    && (painted_radius - corner_radius).abs() < 0.01
+                    && rect.height() >= min_height =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // The shell pane: the band is the Surface fill with the pane's radius that
+    // spans the whole pane card width. The pane card itself is the Bg fill with
+    // the same radius.
+    let (mut shell, _state, _dir) = shell_root();
+    let shell_commands = render_element(&mut shell, vec2f(1024.0, 768.0), &app);
+    let pane = fills(&shell_commands, pane_bg, radius, 300.0)
+        .into_iter()
+        .max_by(|a, b| a.width().total_cmp(&b.width()))
+        .expect("the shell pane card paints");
+    let band = fills(&shell_commands, surface, radius, 100.0)
+        .into_iter()
+        .find(|rect| (rect.height() - COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.5)
+        .unwrap_or_else(|| {
+            panic!("the shell's bottom band paints at the composer height {COMPOSER_BAR_RESERVED_HEIGHT}: {shell_commands:?}")
+        });
+    assert!(
+        (band.min_x() - pane.min_x()).abs() < 0.5
+            && (band.width() - pane.width()).abs() < 0.5,
+        "the band runs the pane's full width from edge to edge: {band:?} in {pane:?}"
+    );
+    assert!(
+        (band.max_y() - pane.max_y()).abs() < 0.5,
+        "the band ends at the pane's bottom edge, no floating margin: {band:?} in {pane:?}"
+    );
+    assert!(
+        (band.height() - COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.5,
+        "the band keeps the terminal/agent composer height: {:?}",
+        band
+    );
+    // The top edge is square: a square strip of the band's own tone squares the
+    // rounded box's top corners, one pane radius tall.
+    assert!(
+        fills(&shell_commands, surface, 0.0, radius - 0.5).iter().any(|rect| {
+            (rect.min_x() - band.min_x()).abs() < 0.5
+                && (rect.width() - band.width()).abs() < 0.5
+                && (rect.min_y() - band.min_y()).abs() < 0.5
+                && (rect.height() - radius).abs() < 0.5
+        }),
+        "the band's top edge is square against the output: {shell_commands:?}"
+    );
+    // The inner input segment keeps its radius and its casing inset: it
+    // stretched with the band, it did not become a square box.
+    let input = fills(&shell_commands, raised, COMPOSER_INPUT_RADIUS, 60.0)
+        .into_iter()
+        .next()
+        .expect("the shell's input segment paints");
+    assert!(
+        (input.min_x() - band.min_x() - COMPOSER_CARD_INSET).abs() < 0.5
+            && (input.width() - (band.width() - COMPOSER_CARD_INSET * 2.0)).abs() < 0.5,
+        "the input segment keeps its {COMPOSER_CARD_INSET}pt casing inside the band: {input:?} in {band:?}"
+    );
+
+    // The agent composer is unchanged: the floating card is still a rounded
+    // `Surface` box, inset by the surface gutter, and it never paints the band's
+    // full-width shape.
+    let (mut chat, _chat_dir) = chat_root();
+    let chat_commands = render_element(&mut chat, vec2f(1024.0, 768.0), &app);
+    assert!(
+        !fills(&chat_commands, surface, radius, 100.0)
+            .iter()
+            .any(|rect| (rect.height() - COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.5),
+        "the agent surface draws no bottom band"
+    );
+    let card = fills(&chat_commands, surface, COMPOSER_CARD_RADIUS, 100.0)
+        .into_iter()
+        .next()
+        .expect("the agent composer card paints");
+    assert!(
+        card.min_x() - pane.min_x() >= COMPOSER_CARD_GUTTER - 0.5
+            && pane.max_x() - card.max_x() >= COMPOSER_CARD_GUTTER - 0.5,
+        "the agent card keeps its surface gutter on both sides: {card:?} in {pane:?}"
+    );
+    assert!(
+        (card.height() - (COMPOSER_BAR_RESERVED_HEIGHT - COMPOSER_CARD_GUTTER)).abs() < 0.5,
+        "the agent card is the same composer less the floating gutter: {card:?}"
+    );
+}
+
 /// A TUI agent — codex, claude, pi, grok, hermes — paints its own input on the
 /// alternate screen. The pane's rich input steps aside for it, so the program
 /// owns the whole pane and the keys; when it exits, the shell's bar returns.

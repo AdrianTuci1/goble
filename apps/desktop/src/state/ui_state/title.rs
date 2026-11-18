@@ -425,16 +425,21 @@ fn capitalize_first(text: &str) -> String {
 
 /// The subject a prompt alone names, or `None` when it names nothing.
 ///
-/// A CLI harness keeps its transcript in its own store, so the exchange a
-/// native conversation is named from is not there to read; the prompt the user
-/// sent into the harness is the one part of it goble sees. Everything else is
-/// [`agent_subject`]'s own rule — the same words dropped and the same length —
-/// applied to that prompt as the opening of a conversation nobody has named.
+/// A conversation is named the moment its first prompt is sent, before the
+/// agent has answered in it: the prompt is the only content there is, and it is
+/// what the user asked for. A CLI harness keeps its transcript in its own store,
+/// so the exchange a native conversation is later named from is not there to
+/// read; the prompt the user sent into the harness is the one part of it goble
+/// sees. Both cases are [`prompt_subject_of`]'s rule — the same words dropped
+/// and the same length a reply-derived subject would use — applied to the
+/// prompt as the opening of a conversation nobody has named.
+///
+/// This is deliberately not routed through [`agent_subject`]: that function
+/// names a conversation from a *finished* exchange, and a prompt with no reply
+/// yet is not one (its exchanges are pairs of a prompt and an answer), so it
+/// would answer `None` for the very first prompt.
 pub fn prompt_subject(prompt: &str) -> Option<String> {
-    agent_subject(
-        NEW_CONVERSATION_TITLE,
-        &[("user", prompt), ("assistant", "")],
-    )
+    prompt_subject_of(prompt)
 }
 
 #[cfg(test)]
@@ -632,6 +637,37 @@ mod tests {
         );
         assert_eq!(prompt_subject("Thanks!"), None);
         assert_eq!(prompt_subject("   "), None);
+        // A greeting opens the onboarding, the same subject the reply-derived
+        // path gives it.
+        assert_eq!(prompt_subject("Hello").as_deref(), Some(GREETING_SUBJECT));
+        // The prompt rule is the one the reply falls back to, so the title a
+        // prompt writes is one the settled exchange keeps: the reply's own
+        // acknowledgement names nothing, and the prompt's subject stands.
+        assert_eq!(
+            prompt_subject("fix the sidebar"),
+            prompt_subject_of("fix the sidebar")
+        );
+        assert_eq!(
+            derive("fix the sidebar", "Sure."),
+            prompt_subject("fix the sidebar")
+        );
+    }
+
+    /// A prompt names a conversation before it has a reply: the first prompt is
+    /// the subject the conversation starts under, not the placeholder, and it is
+    /// the same subject the reply's fallback would give it once the turn settles.
+    #[test]
+    fn a_prompt_names_the_conversation_the_agent_has_not_answered_yet() {
+        assert_eq!(
+            prompt_subject("Arata un text colorat in chat").as_deref(),
+            Some("Arata un text colorat in chat"),
+            "the first prompt names the conversation with no reply in it"
+        );
+        assert_eq!(
+            prompt_subject(NEW_CONVERSATION_TITLE).as_deref(),
+            Some(NEW_CONVERSATION_TITLE),
+            "a prompt that only says the placeholder names that, and the write is a no-op"
+        );
     }
 
     #[test]

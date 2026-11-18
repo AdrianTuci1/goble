@@ -2323,6 +2323,104 @@ mod sidebar_surface_tests {
         );
     }
 
+    /// A conversation that has just started is titled in every surface at once:
+    /// the sidebar row, the topbar tab label and the pane's own bar read the
+    /// subject derived from the first prompt. The write takes the store path
+    /// (`set_chat_title` → `chats:updated`) and the next frame drains it, so the
+    /// title appears without a restart — the same path a real send takes.
+    #[test]
+    fn a_new_conversation_is_titled_in_the_sidebar_tab_and_pane_bar() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let app = AppContext::default();
+        let bus = goble_desktop_service::CollectingEventBus::new();
+        let view = RootView::new(&app, &desktop, Some(bus.clone()));
+        let state = view.state_rc();
+        let title = "Arata un text colorat in chat";
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.crons_open = false;
+            // The tab a "New conversation" click opens: one pane on a
+            // conversation created under the placeholder.
+            let pane_id = s.active_pane_id;
+            let chat = s
+                .pane_conversation_id(pane_id)
+                .expect("the tab opens on a conversation");
+            assert_eq!(
+                desktop
+                    .list_chats()
+                    .into_iter()
+                    .find(|c| c.id == chat)
+                    .map(|c| c.title),
+                Some(crate::state::NEW_CONVERSATION_TITLE.to_string()),
+                "the conversation opens under the placeholder"
+            );
+            // The first prompt names it as the turn starts, before any reply
+            // exists (the send path calls exactly this).
+            assert!(s.name_conversation_from_prompt(&chat, title, &desktop));
+            // The agent's reply settles the turn. It only acknowledges, so the
+            // conversation keeps the subject the prompt gave it.
+            desktop
+                .add_chat_message(&chat, "user", title)
+                .expect("the user's prompt");
+            desktop
+                .add_chat_message(&chat, "assistant", "Sure.")
+                .expect("the agent's reply");
+        }
+        // The title write and the reply both emit `chats:updated` on the real
+        // bus; here the frame is handed the same notification.
+        {
+            use goble_desktop_service::EventBus;
+            bus.emit("chats:updated", serde_json::json!({}));
+        }
+
+        // One frame: `drain_events` folds the `chats:updated` the title write
+        // emitted into the list the sidebar and topbar are drawn from.
+        let mut root: Box<dyn Element> = Box::new(view);
+        let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+        let drawn: Vec<(String, Vector2F)> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } => Some((text.clone(), *origin)),
+                _ => None,
+            })
+            .collect();
+        let topbar = crate::ui::shell::TOPBAR_HEIGHT;
+        assert!(
+            drawn.iter().any(|(text, origin)| text == title
+                && origin.x < crate::ui::SIDEBAR_WIDTH
+                && origin.y > topbar),
+            "the sidebar row reads the subject: {drawn:?}"
+        );
+        assert!(
+            drawn
+                .iter()
+                .any(|(text, origin)| text == title && origin.y < topbar),
+            "the topbar tab reads the subject: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|(text, origin)| text == title
+                && origin.x >= crate::ui::SIDEBAR_WIDTH
+                && origin.y > topbar
+                && origin.y < topbar * 2.0),
+            "the pane's own bar reads the subject: {drawn:?}"
+        );
+        // The placeholder is what these surfaces read before the title: none of
+        // them is still drawing it.
+        assert!(
+            !drawn
+                .iter()
+                .any(|(text, _)| text == crate::state::NEW_AGENT_TAB_LABEL),
+            "the placeholder is gone from the tab and the pane bar: {drawn:?}"
+        );
+    }
+
     /// The list is empty for one of two reasons and they read differently: no
     /// conversation has been answered yet, or the ones that have belong to
     /// another environment. An unanswered conversation is the first, not the

@@ -1,5 +1,5 @@
 use super::session::is_unnamed_harness_title;
-use super::title::agent_subject;
+use super::title::{agent_subject, prompt_subject};
 use super::*;
 
 impl UiState {
@@ -873,6 +873,71 @@ impl UiState {
         }
     }
 
+    /// Name a conversation from the first prompt the user sends into it.
+    ///
+    /// A conversation is created under [`NEW_CONVERSATION_TITLE`], and the
+    /// first thing the user says in it is what it is about. Naming it from that
+    /// prompt as the turn starts — rather than only from the agent's reply once
+    /// the turn settles — is what gives a conversation a subject while it is
+    /// still new: the sidebar row, the tab label and the pane's own bar read a
+    /// real name instead of the placeholder for the whole first turn.
+    ///
+    /// Only the placeholder is replaced. That is the "the agent's to fill in"
+    /// rule [`agent_subject`] enforces after a turn, applied earlier: a subject
+    /// the user typed (in the create row, or through the sidebar's rename row)
+    /// is theirs and stands. A conversation a prompt has already named keeps
+    /// that name too — later prompts do not retitle it, and the reply refines it
+    /// when the turn settles ([`Self::refresh_conversations`]).
+    ///
+    /// The write reaches the store, the in-memory list the sidebar is built
+    /// from, and the frontends through the `chats:updated` it emits, so the card,
+    /// the tab and the pane bar update without a restart. The local row and tab
+    /// label are also updated at once, so this frame already names the
+    /// conversation. Returns whether a title was written.
+    pub fn name_conversation_from_prompt(
+        &mut self,
+        conversation_id: &str,
+        prompt: &str,
+        desktop: &DesktopState,
+    ) -> bool {
+        if conversation_id.is_empty() {
+            return false;
+        }
+        let Some(subject) = prompt_subject(prompt) else {
+            // A prompt with nothing to name in it — `thanks!`, an empty line —
+            // leaves the conversation unnamed until the reply can name it.
+            return false;
+        };
+        let Some(chat) = desktop
+            .list_chats()
+            .into_iter()
+            .find(|chat| chat.id == conversation_id)
+        else {
+            return false;
+        };
+        // Only the placeholder is the agent's to replace: anything else was
+        // typed by the user or written by an earlier naming pass.
+        if chat.title != NEW_CONVERSATION_TITLE || chat.title == subject {
+            return false;
+        }
+        if let Err(e) = desktop.set_chat_title(conversation_id, &subject) {
+            log::warn!("set_chat_title for {conversation_id} failed: {e}");
+            return false;
+        }
+        // The card the frame draws reads `conversations`, so the row reads the
+        // new name now rather than at the refresh the write emits; the tab and
+        // the pane bar follow the card.
+        if let Some(entry) = self
+            .conversations
+            .iter_mut()
+            .find(|entry| entry.id == conversation_id)
+        {
+            entry.name = subject;
+        }
+        self.refresh_space_labels();
+        true
+    }
+
     /// Rebuild the sidebar's conversation list from the service.
     ///
     /// A conversation the agent has answered in is also named here: the subject
@@ -1257,6 +1322,143 @@ mod tests {
             state.conversations[0].last_response, "the reply, half",
             "the settled refresh reads the finished transcript"
         );
+    }
+
+    /// The whole path a new conversation's title takes: it opens under the
+    /// placeholder, its first prompt names it at once (before the agent has
+    /// answered), the write is durable and the sidebar entry, the tab label and
+    /// the pane's own bar all read the subject. A reply refines the name when
+    /// the turn settles, and a subject the user typed is never taken back.
+    #[test]
+    fn a_new_conversation_is_named_from_its_first_prompt() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("thread store"),
+        );
+
+        // A tab the sidebar's "New conversation" row opens: one pane on a
+        // conversation created under the placeholder.
+        let mut state = UiState::mock();
+        let pane_id = state.active_pane_id;
+        state.bind_pane_new_conversation_titled(pane_id, NEW_CONVERSATION_TITLE, Some(&desktop));
+        let chat = state
+            .pane_conversation_id(pane_id)
+            .expect("the tab's conversation");
+        state.refresh_space_labels();
+        assert_eq!(
+            state.spaces[state.active_space].name, NEW_AGENT_TAB_LABEL,
+            "a conversation nobody has named opens on the placeholder tab label"
+        );
+        assert_eq!(state.pane_subject(pane_id), NEW_AGENT_TAB_LABEL);
+
+        // The first prompt the user sends names it at once — there is no
+        // assistant reply in the store yet.
+        assert!(
+            state.name_conversation_from_prompt(&chat, "Arata un text colorat in chat", &desktop),
+            "the first prompt names the conversation"
+        );
+        assert_eq!(
+            desktop.list_chats()[0].title,
+            "Arata un text colorat in chat",
+            "the subject is written to the store"
+        );
+
+        // The `chats:updated` the write emits is what rebuilds the list: the
+        // entry, the tab label and the pane bar all read the subject.
+        state.refresh_conversations(&desktop);
+        state.refresh_space_labels();
+        let entry = state
+            .conversations
+            .iter()
+            .find(|entry| entry.id == chat)
+            .expect("the conversation's card");
+        assert_eq!(entry.name, "Arata un text colorat in chat");
+        assert_eq!(
+            state.spaces[state.active_space].name, "Arata un text colorat in chat",
+            "the topbar tab reads the conversation subject"
+        );
+        assert_eq!(
+            state.pane_subject(pane_id),
+            "Arata un text colorat in chat",
+            "the pane header reads the conversation subject"
+        );
+
+        // A later prompt does not take the first prompt's subject: only the
+        // reply refines it. When the turn settles the reply's own subject
+        // replaces the prompt's, because an earlier prompt-written title is the
+        // agent's own.
+        assert!(
+            !state.name_conversation_from_prompt(&chat, "Now make it green", &desktop),
+            "a conversation a prompt already named keeps its name"
+        );
+        desktop
+            .add_chat_message(&chat, "user", "Arata un text colorat in chat")
+            .expect("the prompt the turn ran");
+        desktop
+            .add_chat_message(&chat, "assistant", "Textul colorat apare acum in chat.")
+            .expect("the agent's reply");
+        state.refresh_conversations(&desktop);
+        assert_eq!(
+            state.conversations[0].name, "Textul colorat apare acum in chat",
+            "the reply refines the prompt's name after the turn"
+        );
+
+        // A subject the user typed is never taken back, by a prompt or by the
+        // conversation's own words.
+        desktop
+            .set_chat_title(&chat, "Planul de lansare")
+            .expect("the user's rename");
+        desktop
+            .add_chat_message(&chat, "user", "Hello")
+            .expect("a later prompt");
+        desktop
+            .add_chat_message(&chat, "assistant", "Hi! How can I help?")
+            .expect("a later reply");
+        assert!(
+            !state.name_conversation_from_prompt(&chat, "Something else entirely", &desktop),
+            "a prompt does not rename a conversation the user named"
+        );
+        state.refresh_conversations(&desktop);
+        assert_eq!(
+            desktop.list_chats()[0].title,
+            "Planul de lansare",
+            "the conversation's own words do not take a user's name back"
+        );
+
+        // A conversation created under a subject the user typed is left alone
+        // from the start — the create row's draft is the user's name.
+        let named = desktop
+            .create_chat("Ship the topbar", None, None)
+            .expect("a conversation the user named");
+        assert!(!state.name_conversation_from_prompt(&named, "fix the sidebar", &desktop));
+        assert_eq!(
+            desktop
+                .list_chats()
+                .into_iter()
+                .find(|chat| chat.id == named)
+                .map(|chat| chat.title),
+            Some("Ship the topbar".to_string())
+        );
+    }
+
+    /// A prompt with nothing to name in it leaves the conversation on the
+    /// placeholder until the reply names it; the write is a no-op, not an empty
+    /// title.
+    #[test]
+    fn a_pleasantry_does_not_name_a_new_conversation() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("thread store"),
+        );
+        let chat = desktop
+            .create_chat(NEW_CONVERSATION_TITLE, None, None)
+            .expect("a conversation nobody has named");
+        let mut state = UiState::mock();
+        assert!(!state.name_conversation_from_prompt(&chat, "Thanks!", &desktop));
+        assert!(!state.name_conversation_from_prompt(&chat, "   ", &desktop));
+        assert_eq!(desktop.list_chats()[0].title, NEW_CONVERSATION_TITLE);
     }
 
     /// A harness conversation the user named is not looked up in the harness's

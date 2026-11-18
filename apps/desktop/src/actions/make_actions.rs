@@ -193,6 +193,10 @@ fn flush_queued_prompt(
     ) {
         log::warn!("run_chat_turn (queued) failed: {e}");
     } else {
+        // A prompt submitted from the queue names the conversation the same way
+        // a typed one does: only a conversation still under the placeholder is
+        // named, so a queued second prompt leaves the first one's subject alone.
+        state.name_conversation_from_prompt(&chat_id, &prompt, desktop);
         state.begin_turn(pane_id);
         state.agent_busy = true;
     }

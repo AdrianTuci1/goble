@@ -168,6 +168,12 @@ pub(crate) fn send_agent_prompt_with_attachments(
                 &format!("(nu am putut porni modelul: {e})"),
             );
         } else {
+            // The turn is running over a conversation that may still be under
+            // the placeholder: the prompt is what the user asked for, so it
+            // names the conversation now — the reply refines the name when the
+            // turn settles. A conversation the user named, or one a prompt
+            // already named, keeps that name.
+            state.name_conversation_from_prompt(&chat_id, text, desktop);
             state.begin_turn(pane_id);
             ran_turn = true;
         }

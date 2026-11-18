@@ -6,7 +6,7 @@ use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatRole, ToolDisplayMode};
 use crate::elements::TerminalFilter;
 use crate::elements::{terminal_block, AppContext, TerminalData, TerminalStatus};
-use crate::geometry::{vec2f, Vector2F};
+use crate::geometry::vec2f;
 use crate::render::RenderCommand;
 use crate::test_util::render_element;
 use crate::platform::text_atlas::FontWeight;
@@ -1060,9 +1060,8 @@ fn clicking_a_tool_call_header_cycles_its_fold() {
         "the opened run draws its member row, path included"
     );
 
-    // The member row is on screen now, and its header cycles the call. The
-    // header's own run shifts right once the open row draws its rail, so each
-    // click reads the run's position from the frame it lands on.
+    // The member row is on screen now, and its header cycles the call. Each
+    // click reads the row's position from the frame it lands on.
     let click_member = |bubble: &mut ChatMessageBubble| {
         let commands = paint_bubble(bubble, &app);
         let header = run_origin(&commands, "Read src/lib.rs");
@@ -1220,11 +1219,11 @@ fn web_search_call_shows_the_query_and_its_sources() {
     );
 }
 
-/// A tool block is bracketed down both sides, in the free margin beside the
-/// text, while the pointer is on it or the group is open. The strokes take no
-/// layout space, so the words keep the prose column's alignment.
+/// A tool block draws no rail or bracket in the margin beside it, whether it
+/// rests folded, sits under the pointer or opens: its words keep the prose
+/// column's alignment on their own.
 #[test]
-fn a_tool_block_is_bracketed_without_moving_its_words() {
+fn a_tool_block_draws_no_rail_and_keeps_its_words_in_place() {
     let app = AppContext::default();
     let read = || {
         call(
@@ -1300,63 +1299,20 @@ fn a_tool_block_is_bracketed_without_moving_its_words() {
             "{label}: the words start past the leading box, got {row_start} against {expected}"
         );
 
-        let brackets: Vec<_> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::Muted)
-                        && rect.size.width <= 2.5
-                        && rect.size.height > 0.0 =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .collect();
-        let bracketed = label != "folded and resting";
-        assert_eq!(
-            brackets.len(),
-            if bracketed { 2 } else { 0 },
-            "{label}: both sides are bracketed, got {brackets:?}"
+        let strokes = rail_strokes(&commands, &app);
+        assert!(
+            strokes.is_empty(),
+            "{label}: no vertical rail is drawn beside the block, got {strokes:?}"
         );
-        if bracketed {
-            let (left, right) = (brackets[0], brackets[1]);
-            assert!(
-                left.min_x() < row_start && right.max_x() > row_start,
-                "{label}: the strokes sit outside the words: {brackets:?} against {row_start}"
-            );
-            assert_eq!(
-                left.min_y(),
-                right.min_y(),
-                "{label}: both strokes start on the block's first line"
-            );
-            assert!(
-                right.max_x() - left.min_x() > 300.0,
-                "{label}: the pair frames the block's width, not just its words: {brackets:?}"
-            );
-        }
     }
 }
 
-/// A call that stands on its own is framed while its body is open; a collapsed
-/// one is framed only under the pointer, so the rail follows the selection.
+/// A call that stands on its own draws no rail in any state: an open body and
+/// a pointer over a collapsed row change the row's own ink and mark — and, when
+/// open, the body card under it — never a frame around the block.
 #[test]
-fn a_standalone_row_is_bracketed_while_open_or_under_the_pointer() {
+fn a_standalone_row_draws_no_rail_while_open_or_under_the_pointer() {
     let app = AppContext::default();
-    let brackets = |commands: &[RenderCommand]| {
-        commands
-            .iter()
-            .filter(|command| {
-                matches!(
-                    command,
-                    RenderCommand::FillRect { rect, color, .. }
-                        if *color == app.theme.color(ColorToken::Muted)
-                            && rect.size.width <= 2.5
-                            && rect.size.height > 0.0
-                )
-            })
-            .count()
-    };
     let paint = |bubble: &mut ChatMessageBubble, pointer: bool, prefix: &str| {
         if pointer {
             return paint_with_pointer_over(bubble, &app, prefix);
@@ -1391,10 +1347,10 @@ fn a_standalone_row_is_bracketed_while_open_or_under_the_pointer() {
     for (label, pointer) in [("away", false), ("under the pointer", true)] {
         let mut open = bubble(read.clone(), ToolDisplayMode::Expanded);
         let commands = paint(&mut open, pointer, "❯");
-        assert_eq!(
-            brackets(&commands),
-            2,
-            "an opened row keeps its rail with the pointer {label}"
+        let strokes = rail_strokes(&commands, &app);
+        assert!(
+            strokes.is_empty(),
+            "an opened row draws no rail with the pointer {label}, got {strokes:?}"
         );
     }
 
@@ -1405,16 +1361,13 @@ fn a_standalone_row_is_bracketed_while_open_or_under_the_pointer() {
         ToolCallStatus::Finished,
         Some("done"),
     );
-    for (label, pointer, expected) in [
-        ("away", false, 0),
-        ("under the pointer", true, 2),
-    ] {
+    for (label, pointer) in [("away", false), ("under the pointer", true)] {
         let mut collapsed = bubble(spawn.clone(), ToolDisplayMode::Collapsed);
         let commands = paint(&mut collapsed, pointer, "◆");
-        assert_eq!(
-            brackets(&commands),
-            expected,
-            "a collapsed stand-alone row is framed only under the pointer ({label})"
+        let strokes = rail_strokes(&commands, &app);
+        assert!(
+            strokes.is_empty(),
+            "a collapsed stand-alone row draws no rail ({label}), got {strokes:?}"
         );
     }
 }
@@ -1449,96 +1402,6 @@ fn an_open_row_keeps_the_arrow_in_place_of_the_diamond() {
             "an opened row reads white ({mode:?})"
         );
     }
-}
-
-/// The rail is decided while the block paints: a hover cell still naming the
-/// row from an earlier frame cannot keep the strokes on screen once the pointer
-/// has left.
-#[test]
-fn a_closed_rows_rail_leaves_with_the_pointer() {
-    let app = AppContext::default();
-    let spawn = call(
-        "run_agent",
-        r#"{"description":"map the call sites"}"#,
-        ToolCallStatus::Finished,
-        Some("done"),
-    );
-    let key = tool_fold_key(&spawn, 0);
-
-    let mut probe = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
-        .with_tool_calls(vec![spawn.clone()])
-        .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(
-            key.clone(),
-            ToolDisplayMode::Collapsed,
-        )]))))
-        .with_tool_hover(Rc::new(RefCell::new(None)));
-    probe.layout(
-        SizeConstraint::loose(vec2f(400.0, 400.0)),
-        &mut LayoutContext::default(),
-        &app,
-    );
-    let mut ctx = PaintContext::new(Renderer::new());
-    probe.paint(vec2f(0.0, 0.0), &mut ctx, &app);
-    let origin = ctx
-        .renderer
-        .take()
-        .and_then(|renderer| {
-            renderer.commands().iter().find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text.starts_with('◆') => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-        })
-        .expect("the collapsed row draws its diamond");
-
-    let strokes = |cursor: Vector2F| {
-        let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
-            .with_tool_calls(vec![spawn.clone()])
-            .with_tool_fold(Rc::new(RefCell::new(HashMap::from([(
-                key.clone(),
-                ToolDisplayMode::Collapsed,
-            )]))))
-            .with_tool_hover(Rc::new(RefCell::new(Some(key.clone()))));
-        bubble.layout(
-            SizeConstraint::loose(vec2f(400.0, 400.0)),
-            &mut LayoutContext::default(),
-            &app,
-        );
-        let mut ctx = PaintContext::new(Renderer::new());
-        ctx.cursor_inside = true;
-        ctx.cursor_position = cursor;
-        bubble.paint(vec2f(0.0, 0.0), &mut ctx, &app);
-        ctx.renderer
-            .take()
-            .map(|renderer| {
-                renderer
-                    .commands()
-                    .iter()
-                    .filter(|command| {
-                        matches!(
-                            command,
-                            RenderCommand::FillRect { rect, color, .. }
-                                if *color == app.theme.color(ColorToken::Muted)
-                                    && rect.size.width <= 2.5
-                                    && rect.size.height > 0.0
-                        )
-                    })
-                    .count()
-            })
-            .unwrap_or_default()
-    };
-
-    assert_eq!(
-        strokes(vec2f(origin.x + 4.0, origin.y + 4.0)),
-        2,
-        "the row is framed while the pointer is on it"
-    );
-    assert_eq!(
-        strokes(vec2f(origin.x + 4.0, origin.y + 220.0)),
-        0,
-        "the rail cannot outlive the pointer"
-    );
 }
 
 /// A call under the pointer swaps its diamond for the arrow and reads white,
@@ -2046,15 +1909,11 @@ fn an_asked_question_draws_as_an_ask_user_row() {
     );
 }
 
-/// A member the user opened inside an opened run is bracketed on its own: the
-/// run's pair of strokes ends above it, and the member's own pair frames its
-/// A member the user opened inside an opened run is bracketed on its own: the
-/// run's pair of strokes ends above it, and the member's own pair frames its
-/// header and its body. Both pairs sit in the same gutter, so the rail reads as
-/// one line that steps aside for the block it holds instead of running through
-/// it.
+/// A member the user opened inside an open run is a block of its own: the run's
+/// header and its folded members stand above it, and its own header and body
+/// under them. Neither the run nor the member draws a rail around its rows.
 #[test]
-fn an_opened_member_inside_an_open_run_is_framed_on_its_own() {
+fn an_opened_member_inside_an_open_run_draws_no_rail() {
     let app = AppContext::default();
     let mut calls = vec![
         call(
@@ -2079,49 +1938,41 @@ fn an_opened_member_inside_an_open_run_is_framed_on_its_own() {
     ]);
     let (commands, _) = paint_tool_calls_with_fold_map(calls, fold);
 
-    let strokes = bracket_strokes(&commands, &app);
-    assert_eq!(
-        strokes.len(),
-        4,
-        "the run keeps a pair of its own and the opened member gets one, got {strokes:?}"
+    let strokes = rail_strokes(&commands, &app);
+    assert!(
+        strokes.is_empty(),
+        "neither the run nor the opened member draws a rail, got {strokes:?}"
     );
-    let (run_pair, member_pair) = (&strokes[..2], &strokes[2..]);
-    assert_eq!(
-        run_pair[0].min_y(),
-        run_pair[1].min_y(),
-        "the run's pair starts together: {strokes:?}"
-    );
-    assert_eq!(
-        member_pair[0].min_y(),
-        member_pair[1].min_y(),
-        "the member's pair starts together: {strokes:?}"
+
+    // The run's header, the folded member beside it, the opened member's row and
+    // the body it opened read top to bottom, in that order.
+    let header = run_origin(&commands, "Read 1 file");
+    let folded_row = run_origin(&commands, "Read src/a.rs");
+    let member_row = run_origin(&commands, "Read src/b.rs");
+    // The opened member's body is the one card under the rows.
+    let member_body = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                corner_radius,
+                ..
+            } if *corner_radius > 0.0 && rect.size.height > 8.0 => Some(*rect),
+            _ => None,
+        })
+        .expect("the opened member's body is drawn as a card");
+    assert!(
+        header.y < folded_row.y,
+        "the run's header stands above its members, got {header:?} against {folded_row:?}"
     );
     assert!(
-        run_pair[0].max_y() < member_pair[0].min_y(),
-        "the run's strokes stop above the member's own block, got {strokes:?}"
-    );
-    // The member's pair starts on its own row and carries on under it, into the
-    // body the row opened: that is the block the rail is drawn around now.
-    let member_row = run_origin(&commands, "src/b.rs");
-    assert!(
-        run_pair[0].max_y() <= member_row.y,
-        "the run's pair ends at or above the member's row, got {strokes:?} against {member_row:?}"
+        folded_row.y < member_row.y,
+        "the folded member stands above the opened one, got {folded_row:?} against {member_row:?}"
     );
     assert!(
-        member_pair[0].min_y() <= member_row.y,
-        "the member's pair starts on its own row, got {strokes:?} against {member_row:?}"
+        member_row.y < member_body.min_y(),
+        "the opened member's body sits under its row, got {member_row:?} against {member_body:?}"
     );
-    assert!(
-        member_pair[0].max_y() > member_row.y + 1.0,
-        "the member's pair runs on past its header into its body, got {strokes:?} against {member_row:?}"
-    );
-    for pair in strokes.chunks(2) {
-        assert!(
-            (pair[0].min_x() - strokes[0].min_x()).abs() < 0.5
-                && (pair[1].max_x() - strokes[1].max_x()).abs() < 0.5,
-            "every stroke sits in the same gutter, got {strokes:?}"
-        );
-    }
 }
 
 /// A double click inside an opened section closes it again. The two clicks the
@@ -2147,14 +1998,24 @@ fn a_double_click_on_an_opened_section_collapses_it() {
         .with_tool_hover(Rc::new(RefCell::new(None)));
 
     let commands = paint_bubble(&mut bubble, &app);
-    // A point in the section's body: the rows there carry no gesture of their
-    // own, so the block the rail frames is what answers the double click.
-    let section = bracket_strokes(&commands, &app)
-        .into_iter()
-        .next()
-        .expect("the opened section keeps its rail");
-    let body = vec2f(section.min_x() + 10.0, section.max_y() - 4.0);
-    double_click_at(&mut bubble, &app, body);
+    // A point in the block's body card: the rows there carry no gesture of
+    // their own, so the block is what answers the double click.
+    let body = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                corner_radius,
+                ..
+            } if *corner_radius > 0.0 && rect.size.height > 8.0 => Some(*rect),
+            _ => None,
+        })
+        .expect("the opened body is drawn as a card");
+    double_click_at(
+        &mut bubble,
+        &app,
+        vec2f(body.min_x() + 10.0, body.max_y() - 4.0),
+    );
     assert_eq!(
         fold.borrow().get(&key),
         Some(&ToolDisplayMode::Collapsed),
@@ -2237,7 +2098,7 @@ fn a_double_click_on_a_closed_row_leaves_it_closed() {
 }
 
 /// A double click inside an opened member closes that member and leaves the run
-/// around it open: the innermost block the rail frames answers first.
+/// around it open: the innermost block answers first.
 #[test]
 fn a_double_click_inside_an_opened_member_closes_that_member() {
     let app = AppContext::default();
@@ -2270,16 +2131,29 @@ fn a_double_click_inside_an_opened_member_closes_that_member() {
         .with_tool_hover(Rc::new(RefCell::new(None)));
 
     let commands = paint_bubble(&mut bubble, &app);
-    // The member's own pair is the second block the rail draws; a point near
-    // its bottom is in the member's body.
-    let strokes = bracket_strokes(&commands, &app);
-    assert_eq!(
-        strokes.len(),
-        4,
-        "the run and the opened member are each framed, got {strokes:?}"
+    let strokes = rail_strokes(&commands, &app);
+    assert!(
+        strokes.is_empty(),
+        "the run and the opened member draw no rail, got {strokes:?}"
     );
-    let member = strokes[2];
-    double_click_at(&mut bubble, &app, vec2f(member.min_x() + 10.0, member.max_y() - 4.0));
+    // A point in the opened member's own body card: the block closest to it
+    // answers.
+    let body = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                corner_radius,
+                ..
+            } if *corner_radius > 0.0 && rect.size.height > 8.0 => Some(*rect),
+            _ => None,
+        })
+        .expect("the opened member's body is drawn as a card");
+    double_click_at(
+        &mut bubble,
+        &app,
+        vec2f(body.min_x() + 10.0, body.max_y() - 4.0),
+    );
     assert_eq!(
         fold.borrow().get(&member_key),
         Some(&ToolDisplayMode::Collapsed),

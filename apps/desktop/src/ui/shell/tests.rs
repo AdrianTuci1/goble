@@ -1595,11 +1595,10 @@ fn the_pane_surface_under_the_selected_tab_has_no_seam() {
         "the fill ends where the merge line is: {body:?}"
     );
 
-    // The panel surface's `Surface` begins right below the merge line: the
-    // panel area is inset from the body's own top edge
-    // (`PANE_AREA_INSET`), and the selected tab's fill crosses the band and
-    // lands one point into the panel surface, so the two surfaces meet with no
-    // gap — the pane card keeps its own inset frame below that band.
+    // The panel surface's `Surface` begins on the body's own top edge: the
+    // pane area paints the `PANE_AREA_INSET` frame itself, so there is no dark
+    // strip between the band and the panes. The selected tab's fill crosses the
+    // band and lands inside that surface, so the two surfaces meet with no gap.
     let surface = app.theme.color(ColorToken::Surface);
     let pane = commands
         .iter()
@@ -1618,13 +1617,18 @@ fn the_pane_surface_under_the_selected_tab_has_no_seam() {
         .expect("the pane's surface is painted");
     assert_eq!(
         pane.min_y(),
-        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND + crate::ui::panes::PANE_AREA_INSET,
-        "the body starts one band below the bar, then the panel inset: {pane:?}"
+        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND,
+        "the panel surface starts on the body origin, its inset frame painted: {pane:?}"
+    );
+    assert_eq!(
+        pane.min_x(),
+        crate::ui::SIDEBAR_WIDTH,
+        "and on the sidebar's edge, its inset frame painted: {pane:?}"
     );
     assert_eq!(
         body.max_y(),
-        pane.min_y() + 1.0,
-        "the selected fill crosses the panel inset and reaches the panel surface: \
+        pane.min_y() + crate::ui::panes::PANE_AREA_INSET + 1.0,
+        "the selected fill crosses the panel inset and reaches into the panel surface: \
          {body:?} against {pane:?}"
     );
 }
@@ -2267,8 +2271,8 @@ fn floating_panes_draw_their_own_window_chrome() {
 /// around its whole slot — the card plus the full-bleed chrome band it bleeds
 /// over the top — with the pane card's corner radius, and without gaining a
 /// second titlebar (its own pane header stays the one bar). It casts no soft
-/// shadow: the gutter around it is the window's own `Bg`, so the tab gutter
-/// reads as the sidebar's grey.
+/// shadow: the gutter around it is the panel surface — the sidebar's `Surface`
+/// — so the tab gutter reads as the sidebar's grey.
 #[test]
 fn bsp_panes_cast_the_window_frame() {
     let app = AppContext::default();
@@ -2307,8 +2311,9 @@ fn bsp_panes_cast_the_window_frame() {
         1,
         "the pane's tab wears one accent outline: {outlines:?}"
     );
-    // The pane area is the slot: the panel surface is inset from the sidebar,
-    // the window edges and the bar block, so the slot starts and ends
+    // The pane area is the slot: the tab slot is inset from the sidebar, the
+    // window edges and the bar block (the panel surface behind it paints the
+    // whole body, inset frame included), so the slot starts and ends
     // `PANE_AREA_INSET` inside them.
     let inset = crate::ui::panes::PANE_AREA_INSET;
     let slot = rectf(
@@ -2328,7 +2333,7 @@ fn bsp_panes_cast_the_window_frame() {
         !commands
             .iter()
             .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == shadow)),
-        "a tiled tab casts no shadow: its gutter is the window's own Bg: {commands:?}"
+        "a tiled tab casts no shadow: its gutter is the panel surface: {commands:?}"
     );
 }
 

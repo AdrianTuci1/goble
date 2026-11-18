@@ -9,8 +9,8 @@
 mod bubble;
 mod quote_rail;
 mod read_excerpt;
+mod tool_block_gesture;
 mod tool_body;
-mod tool_bracket;
 mod tool_call;
 #[cfg(test)]
 mod tests;

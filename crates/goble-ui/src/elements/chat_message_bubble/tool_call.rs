@@ -13,8 +13,8 @@ use crate::elements::{
 use crate::geometry::vec2f;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use goble_core::harness::{subagent_subject, tool_row, ToolCallStatus, ToolKind};
+use super::tool_block_gesture::ToolBlockGesture;
 use super::tool_body::build_tool_call_body;
-use super::tool_bracket::ToolBracket;
 
 /// The mark every tool row draws before its words, whatever its family or
 /// state: grok-build's filled diamond.
@@ -527,7 +527,7 @@ pub(crate) fn tool_fold_targets(
 /// band behind it. A closed chain reads quiet; the pointer or an open chain
 /// turns it white and swaps the diamond for the arrow. The failed suffix stays
 /// in the error colour. A click opens or folds the whole chain. The run is
-/// delimited by the rail around it, not by punctuation inside its words.
+/// delimited by its aggregated header, not by punctuation inside its words.
 fn verb_group_header(
     label: &str,
     failed: usize,
@@ -540,8 +540,8 @@ fn verb_group_header(
     let open = verb_group_open(fold, key);
     let hovered = hover.borrow().as_deref() == Some(key);
     // The header carries the arrow whenever the block reads as selected: open,
-    // under the pointer, or with one of its member rows under it — the same
-    // states the bracket frames.
+    // under the pointer, or with one of its member rows under it — the states
+    // an open call or a run under the pointer reads in.
     let active = open || hovered || member_hovered;
     let base = app.theme.color(if active {
         ColorToken::Text
@@ -676,11 +676,10 @@ fn single_call_column(
 /// survives the per-frame rebuild, and clicking the header advances it.
 ///
 /// Consecutive folded calls stack into one chain, exactly as grok-build folds
-/// them: `◈ Ran 3 commands, Read 2 files, Edited 1 file +12/-3`. The chain is
-/// delimited by a rail in the gutter rather than by punctuation in its label.
-/// A spawn and a question end the chain and keep their own rows. Opening the
-/// chain shows its members, and a member the user opened stays visible without
-/// splitting it.
+/// them: `◈ Ran 3 commands, Read 2 files, Edited 1 file +12/-3`. The chain opens
+/// with its aggregated header, and no rail is drawn beside its rows. A spawn and
+/// a question end the chain and keep their own rows. Opening the chain shows its
+/// members, and a member the user opened stays visible without splitting it.
 pub(super) fn build_tool_call_rows(
     tool_calls: &[ToolCall],
     fold: &Rc<RefCell<HashMap<String, ToolDisplayMode>>>,
@@ -730,10 +729,10 @@ pub(super) fn build_tool_call_rows(
                 on_action,
                 app,
             );
-            // A call with its body open reads as selected, so it keeps the rail
-            // the group's members get; a collapsed one is framed by hover only.
-            // A double click anywhere in the section it frames closes it again.
-            let element = ToolBracket::new(element, !collapsed, hover.clone(), vec![key.clone()])
+            // A double click anywhere in the block closes it again. The block
+            // draws no frame: an open body is its own selected read, a
+            // collapsed one changes only under the pointer.
+            let element = ToolBlockGesture::new(element)
                 .with_on_double_click(collapse_on_double_click(fold, key))
                 .finish();
             column = push(column, element, collapsed);
@@ -777,13 +776,12 @@ pub(super) fn build_tool_call_rows(
                 .any(|key| hovered == Some(key.as_str()))
         };
         let (label, _running, failed) = verb_group_label(&tool_calls[start..end], start, fold);
-        // The run's rail is drawn per segment rather than around the whole run:
-        // a member the user opened is a block of its own, so the run's strokes
-        // stop where that block begins instead of continuing through its body.
-        // `segment` gathers the piece being drawn — the header and the folded
-        // members beside it — and is flushed into `brackets` whenever an opened
-        // member interrupts it.
-        let mut brackets: Vec<Box<dyn Element>> = Vec::new();
+        // The run's gesture is attached per segment rather than around the whole
+        // run: a member the user opened is a block of its own, so a double click
+        // inside it closes the member rather than the run. `segment` gathers the
+        // piece being drawn — the header and the folded members beside it — and
+        // is flushed into `blocks` whenever an opened member interrupts it.
+        let mut blocks: Vec<Box<dyn Element>> = Vec::new();
         let mut segment = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0)
@@ -799,7 +797,6 @@ pub(super) fn build_tool_call_rows(
         // The header is what the first segment always holds, so it is never
         // empty; a segment started after an opened member is, until a folded
         // member lands in it.
-        let mut segment_keys = vec![group_key.clone()];
         let mut segment_empty = false;
         // Folded, a run shows only its header — except for a member the user
         // already opened, which grok-build keeps on screen and transparent.
@@ -828,50 +825,44 @@ pub(super) fn build_tool_call_rows(
             );
             if collapsed {
                 segment = segment.with_child(element);
-                segment_keys.push(member_key);
                 segment_empty = false;
                 continue;
             }
-            // An opened member is bracketed on its own: the run's strokes end
-            // above it, its pair frames its header and its body alone, and the
-            // next piece of the run starts a segment of its own.
+            // An opened member is its own block: the run's gesture covers only
+            // the header and the folded members beside it, the member's own
+            // gesture covers its header and its body, and the next piece of the
+            // run starts a segment of its own.
             if !segment_empty {
-                brackets.push(
-                    ToolBracket::new(
-                        segment.finish(),
-                        open,
-                        hover.clone(),
-                        std::mem::take(&mut segment_keys),
-                    )
-                    .with_on_double_click(collapse_on_double_click(fold, group_key.clone()))
-                    .finish(),
+                blocks.push(
+                    ToolBlockGesture::new(segment.finish())
+                        .with_on_double_click(collapse_on_double_click(fold, group_key.clone()))
+                        .finish(),
                 );
             }
             segment = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(2.0);
             segment_empty = true;
-            brackets.push(
-                ToolBracket::new(element, true, hover.clone(), vec![member_key.clone()])
+            blocks.push(
+                ToolBlockGesture::new(element)
                     .with_on_double_click(collapse_on_double_click(fold, member_key))
                     .finish(),
             );
         }
         if !segment_empty {
-            brackets.push(
-                ToolBracket::new(segment.finish(), open, hover.clone(), segment_keys)
+            blocks.push(
+                ToolBlockGesture::new(segment.finish())
                     .with_on_double_click(collapse_on_double_click(fold, group_key.clone()))
                     .finish(),
             );
         }
-        // The block is bracketed in the free margin beside the text — both
-        // strokes, no inset — while the group is open or the pointer is on any
-        // of its rows. The label carries no punctuation of its own.
+        // The run carries one gesture over its rows and draws no frame: the
+        // label carries no punctuation of its own.
         let mut group = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(2.0);
-        for bracket in brackets {
-            group = group.with_child(bracket);
+        for block in blocks {
+            group = group.with_child(block);
         }
         column = push(column, group.finish(), !open);
         index = end.max(start + 1);

@@ -965,9 +965,11 @@ fn double_click_at(
     bubble.dispatch_event(&double, &mut event_ctx, app);
 }
 
-/// The strokes a tool block's rail is drawn with, in paint order: one pair per
-/// bracketed block, the left stroke before the right one.
-fn bracket_strokes(
+/// The thin vertical strokes a tool block's rail would be drawn with: the left
+/// and right rule in the gutter beside the rows. The transcript draws none of
+/// them — a tool block is bare rows — so every test that reads this expects an
+/// empty list.
+fn rail_strokes(
     commands: &[RenderCommand],
     app: &AppContext,
 ) -> Vec<crate::geometry::RectF> {

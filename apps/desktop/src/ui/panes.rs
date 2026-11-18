@@ -51,7 +51,7 @@ pub(crate) const TAB_OUTLINE_OUTER_INSET: f32 = 3.0;
 /// How far a tab's outline sits inside its slot on a side it shares with a
 /// neighbouring tab. Each side insets by this much, so the two outlines at a
 /// split are exactly `2 × TAB_OUTLINE_SHARED_INSET` = 3 pt apart, with the
-/// window's `Bg` — the same grey the sidebar sits on — between them.
+/// sidebar's `Surface` — the panel surface the tabs sit on — between them.
 pub(crate) const TAB_OUTLINE_SHARED_INSET: f32 = 1.5;
 
 thread_local! {
@@ -608,9 +608,10 @@ fn build_pane(
             let leaf = build_leaf(app, state, actions, *id, kind.clone());
             // The frame sits a few pixels inside its split slot, so the
             // accent outline (drawn on the slot, see [`SlotFrame`]) has the
-            // window's dark `Bg` gutter between it and the card all the way
-            // round — and neighbouring tabs keep their 3 pt gutter. The card
-            // casts no shadow: the gutter has to read as the window's Bg.
+            // panel surface's `Surface` gutter between it and the card all the
+            // way round — and neighbouring tabs keep their 3 pt gutter. The
+            // card casts no shadow: the gutter has to read as the panel
+            // surface, not as a darkened shadow.
             Some(Box::new(SlotFrame::new(
                 Padding::new(leaf, EdgeInsets::uniform(PANE_INSET)).finish(),
                 state.active_pane_id == *id,
@@ -966,22 +967,25 @@ impl RegionChild {
 /// keeps the outline visible at split boundaries and against the window edge.
 pub(crate) const PANE_INSET: f32 = 4.0;
 
-/// The inset of the whole pane area — the surface where panes and panels are
-/// rendered — from the window's chrome on every side: the bar block above, the
-/// window's right and bottom edges, and the sidebar on the left. The window's
-/// own `Bg` frames the panel surface on all four sides; the per-tab slots tile
-/// the area inside this inset, so every tab's outline keeps its own
+/// The inset of the whole pane area's tab slots — the surface where panes and
+/// panels are rendered — from the window's chrome on every side: the bar block
+/// above, the window's right and bottom edges, and the sidebar on the left.
+/// The surface itself paints the panel area's whole rectangle, this inset frame
+/// included (see `build_ui` in the app's `build` module), so no dark strip is
+/// left between the chrome and the panes. The per-tab slots tile the area
+/// inside this inset, so every tab's outline keeps its own
 /// [`tab_outline_rect`] geometry relative to its slot.
 pub(crate) const PANE_AREA_INSET: f32 = 4.0;
 
 /// The background a pane's card paints: the darker `Bg`, for every pane kind.
 ///
 /// The card is the PANEL itself, and only the panel uses the darker material.
-/// The surface it sits on — the pane area inside [`PANE_AREA_INSET`], the
-/// gutters between and around the tab slots — is the sidebar's `Surface`
-/// (see `build_ui` in the app's `build` module), so the backdrop matches the
-/// sidebar while each pane reads as a darker card on it. An agent pane's card
-/// also matches its own content column, which paints the same `Bg`.
+/// The surface it sits on — the whole pane area, the [`PANE_AREA_INSET`] frame
+/// included, and the gutters between and around the tab slots — is the
+/// sidebar's `Surface` (see `build_ui` in the app's `build` module), so the
+/// backdrop matches the sidebar while each pane reads as a darker card on it.
+/// An agent pane's card also matches its own content column, which paints the
+/// same `Bg`.
 ///
 /// The returned value is a theme token's colour, never a hardcoded one, so the
 /// dark and light themes both follow their own palette.
@@ -1139,7 +1143,7 @@ impl Element for RegionLayer {
                 // read as separate surfaces the way OS windows do. It is drawn
                 // before the child, so the window covers all but its edges. A
                 // tiled tab never casts one: the gutter between tabs has to
-                // read as the window's own `Bg`, not as a shadow.
+                // read as the panel surface, not as a shadow.
                 paint_window_shadow(
                     ctx,
                     rectf(child_origin.x, child_origin.y, px.width(), px.height()),
@@ -1645,7 +1649,9 @@ mod tests {
         assert_eq!(frame, rectf(12.0, 22.0, 2.0, 1.0));
     }
 
-    /// The panel surface is inset 4 px from the chrome on every side.
+    /// The tab slots (the area the pane cards tile) are inset 4 px from the
+    /// chrome on every side; the panel surface behind them paints that whole
+    /// inset frame too (see `build_ui` in the app's `build` module).
     #[test]
     fn the_panel_surface_is_inset_from_the_chrome() {
         assert_eq!(PANE_AREA_INSET, 4.0);

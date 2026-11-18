@@ -82,27 +82,31 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         let main = shell::build_main(context);
         if state.current_tab == AppTab::Chat {
             // The panel surface — the whole area the panes and panels are
-            // rendered on — is inset [`panes::PANE_AREA_INSET`] from the
-            // window's chrome on every side: the bar block above, the window's
-            // right and bottom edges, and the sidebar on the left. The window's
-            // `Bg` frames the panel area (the inset itself), and the surface
-            // inside it is the sidebar's own `Surface`: the backdrop and the
-            // gutters between the tab slots match the sidebar, while the panels
-            // on it are the darker cards (see `panes::pane_surface`). The
-            // per-tab slots tile the area inside the inset, so every tab's
-            // outline keeps its own geometry relative to its slot.
-            let panels = Container::new(main)
+            // rendered on — is the sidebar's own `Surface`, painted over the
+            // pane area's WHOLE rectangle: the [`panes::PANE_AREA_INSET`] frame
+            // itself (the 4 px between the chrome and the tab slots), the
+            // gutters between and around the tab slots, and every edge. The
+            // chrome above (the bar block) keeps the window's `Bg`; inside the
+            // panel area only the pane cards are the darker material (see
+            // `panes::pane_surface`). The inset must therefore be the GROUND of
+            // the pane area painted `Surface`, not a margin left for the
+            // window's `Bg` to show through: the padding is inside the surface
+            // container, so no dark strip is left anywhere around the panes.
+            // The per-tab slots tile the padded area, so every tab's outline
+            // keeps its own geometry relative to its slot.
+            let panels = Padding::new(main, EdgeInsets::uniform(panes::PANE_AREA_INSET)).finish();
+            Container::new(panels)
                 .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                .finish();
-            Padding::new(panels, EdgeInsets::uniform(panes::PANE_AREA_INSET)).finish()
+                .finish()
         } else {
             // Every other page is not a panel surface: it takes the whole main
             // area, the way it always has.
             main
         }
     };
-    // The pane area takes the main column, inset from the chrome by
-    // `panes::PANE_AREA_INSET` (see above). The content lane is PER PANE: each
+    // The pane area takes the main column; its slots are inset from the chrome
+    // by `panes::PANE_AREA_INSET`, and the surface paints that inset frame too
+    // (see above). The content lane is PER PANE: each
     // chat pane's content column is centred inside the pane's own width by the
     // `ContentLane` the view mounts (`ChatView::with_content_lane`), with its
     // per-pane width preference, while the pane's own header spans the full
@@ -150,8 +154,10 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // begins exactly on the band's bottom edge. The selected workspace tab's
     // fill runs through the band and into that sheet, so a rule here would be
     // the very seam that merge is meant to erase. The body therefore starts at
-    // `TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND`, and the pane area begins there too
-    // (its `PANE_INSET` gutter sits below that edge, not inside the band).
+    // `TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND`, and the panel surface starts there
+    // too — its `PANE_AREA_INSET` frame is part of the painted `Surface`, so no
+    // dark strip is left under the band. The tab slots' `PANE_INSET` gutter
+    // sits below that edge, not inside the band.
     // First-run: a compact getting-started hint on the chat workspace, shown
     // after the workspace choice is made, until dismissed.
     if state.current_tab == AppTab::Chat && state.show_onboarding_tip {
@@ -556,13 +562,20 @@ mod tests {
     /// The whole app over a real store, with the first-run overlays out of the
     /// way — the tree [`build_ui`] is asked for every frame.
     fn app_root() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
+        app_root_for(&AppContext::default())
+    }
+
+    /// The same tree mounted over `app`'s theme, so a light-theme frame can be
+    /// rendered (the root rebuilds with the `AppContext` each frame).
+    fn app_root_for(
+        app: &AppContext,
+    ) -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = Arc::new(DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
             ThreadStore::new(dir.path()).expect("thread store"),
         ));
-        let app = AppContext::default();
-        let view = RootView::new(&app, &desktop, None);
+        let view = RootView::new(app, &desktop, None);
         let state = view.state_rc();
         {
             let mut s = state.borrow_mut();
@@ -723,7 +736,7 @@ mod tests {
     /// accent; the others are the ordinary `Border`. The inset is 3 pt on the
     /// tab area's outer sides and 1.5 pt on a shared split side, so a solo tab
     /// is inset 3 pt all round and neighbouring tab borders stay exactly 3 pt
-    /// apart with the window's `Bg` between them.
+    /// apart with the panel surface (the sidebar's `Surface`) between them.
     #[test]
     fn every_tab_wears_its_own_outline_not_the_window() {
         let app = AppContext::default();
@@ -759,7 +772,7 @@ mod tests {
 
         // Two panes: one outline per tab; the focused (left) tab is accent, the
         // other the ordinary `Border`; the shared split side is inset 1.5 pt
-        // each, so the two borders are exactly 3 pt apart over the window's Bg.
+        // each, so the two borders are exactly 3 pt apart over the panel surface.
         let (mut root, state, _dir) = app_root();
         install_two_panes(&state, 0.5);
         let commands = render_element(&mut root, window(), &app);
@@ -1667,13 +1680,15 @@ mod tests {
         root.paint(vec2f(0.0, 0.0), &mut ctx, app);
     }
 
-    /// The surface the panes are rendered on is inset 4 px from the window's
-    /// chrome on every side, and the pane cards keep their own `PANE_INSET`
-    /// gutter inside it: the panel surface never touches the bar block, the
-    /// sidebar or the window edges. The per-tab outline keeps its geometry
-    /// relative to its slot (`every_tab_wears_its_own_outline_not_the_window`).
+    /// The tab slots (the pane area the tabs tile) are inset 4 px from the
+    /// window's chrome on every side, and the pane cards keep their own
+    /// `PANE_INSET` gutter inside them. The SURFACE behind them, though, paints
+    /// the body's whole rectangle: the `PANE_AREA_INSET` frame is part of the
+    /// panel surface, so no dark strip is left around the panes. The per-tab
+    /// outline keeps its geometry relative to its slot
+    /// (`every_tab_wears_its_own_outline_not_the_window`).
     #[test]
-    fn the_panel_surface_is_inset_four_px_from_the_chrome() {
+    fn the_tab_slots_are_inset_four_px_and_the_surface_fills_the_body() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
         let window = window();
@@ -1704,7 +1719,7 @@ mod tests {
         assert_eq!(
             band.min_y(),
             sheet_top + crate::ui::panes::PANE_AREA_INSET,
-            "the panel surface starts 4 px below the bar block: {band:?}"
+            "the first tab slot starts 4 px below the bar block: {band:?}"
         );
         assert_eq!(
             band.min_x(),
@@ -1717,14 +1732,14 @@ mod tests {
             "and 4 px inside the window's right edge: {band:?}"
         );
 
-        // The pane card keeps its own gutter inside the panel surface, and the
-        // window's bottom edge keeps the same 4 px inset below it.
+        // The pane card keeps its own gutter inside the tab slot, and the tab
+        // slot keeps the 4 px inset from the window's bottom edge.
         let frames = pane_frames(&state);
         assert_eq!(frames.len(), 1, "one pane: {frames:?}");
         assert_eq!(
             frames[0].min_x(),
             band.min_x() + crate::ui::panes::PANE_INSET,
-            "the card sits PANE_INSET inside the panel surface: {:?}",
+            "the card sits PANE_INSET inside its tab slot: {:?}",
             frames[0]
         );
         assert_eq!(
@@ -1735,8 +1750,9 @@ mod tests {
         );
 
         // The owner's layering: the surface the panels are rendered on is the
-        // SIDEBAR's `Surface` (the panel area's backdrop and the gutters between
-        // tab slots), and the panel card itself is the darker `Bg`.
+        // SIDEBAR's `Surface` — the pane area's whole backdrop, its inset frame
+        // included, and the gutters between and around the tab slots — and the
+        // panel card itself is the darker `Bg`.
         let sidebar = commands
             .iter()
             .find_map(|command| match command {
@@ -1765,15 +1781,20 @@ mod tests {
                 _ => None,
             })
             .expect("the panel area paints its surface");
+        // The surface paints the body's WHOLE rectangle, the `PANE_AREA_INSET`
+        // frame included: the tab slots are the 4 px inset area inside it, but
+        // the surface behind them is not inset at all — no dark strip is left
+        // between the chrome and the panes.
         assert_eq!(
             panel_surface,
             rectf(
-                band.min_x(),
-                band.min_y(),
-                band.max_x() - band.min_x(),
-                (window.y - crate::ui::panes::PANE_AREA_INSET) - band.min_y()
+                crate::ui::SIDEBAR_WIDTH,
+                sheet_top,
+                window.x - crate::ui::SIDEBAR_WIDTH,
+                window.y - sheet_top
             ),
-            "the panel surface fills the 4 px-inset pane area exactly: {panel_surface:?}"
+            "the panel surface fills the body from the chrome to the window edges: \
+             {panel_surface:?}"
         );
         assert_eq!(
             sidebar.min_y(),
@@ -1803,6 +1824,198 @@ mod tests {
             "the panel card is the darker background: {:?}",
             frames[0]
         );
+    }
+
+    /// The owner's corrected panel surface ("the panel surface still isn't the
+    /// sidebar's grey; a 3 px space remained"): EVERY pixel of the panel area
+    /// that is not a pane card is the sidebar's `Surface` — the
+    /// `PANE_AREA_INSET` frame itself, the gutters, all four edges — and only
+    /// the pane cards are the darker `Bg`.
+    ///
+    /// The test scans pixels the way the frame leaves them (the last fill
+    /// covering the point): the panel area's top/bottom/left/right edges (the
+    /// rows and columns of the 4 px inset frame), and the gutter between two
+    /// neighbouring tab slots, in both themes.
+    #[test]
+    fn the_whole_panel_surface_is_the_sidebar_grey_with_no_dark_strip() {
+        fn assert_theme(app: &AppContext, two_panes: bool) {
+            // Two panes need a window wide enough that the responsive layout
+            // keeps the sidebar shown beside them, so the sidebar reference
+            // pixel is the sidebar's own.
+            let window = if two_panes {
+                vec2f(1600.0, 900.0)
+            } else {
+                window()
+            };
+            let sheet_top = shell::TOPBAR_HEIGHT + shell::TOPBAR_BOTTOM_BAND;
+            let (mut root, state, _dir) = app_root_for(app);
+            if two_panes {
+                install_two_panes(&state, 0.5);
+            }
+            let commands = render_element(&mut root, window, app);
+            let surface = app.theme.color(ColorToken::Surface);
+            let bg = app.theme.color(ColorToken::Bg);
+            assert_ne!(surface, bg, "the surface and the card are distinct materials");
+
+            // The sidebar's own pixel is the reference the panel surface has to
+            // match: both are the theme's `Surface`.
+            let mid_y = (sheet_top + window.y) / 2.0;
+            let sidebar_pixel = vec2f(crate::ui::SIDEBAR_WIDTH / 2.0, mid_y);
+
+            assert_eq!(
+                topmost_fill(&commands, sidebar_pixel),
+                Some(surface),
+                "the sidebar paints the Surface grey: {sidebar_pixel:?}"
+            );
+
+            // The panel area is the body's own rectangle: from the sidebar to
+            // the window's right and bottom edges.
+            let left = crate::ui::SIDEBAR_WIDTH;
+            let top = sheet_top;
+            let right = window.x;
+            let bottom = window.y;
+            let mut scanned = 0usize;
+            let mut check = |point: Vector2F, what: &str| {
+                let pixel = topmost_fill(&commands, point);
+                assert_eq!(
+                    pixel,
+                    Some(surface),
+                    "the panel surface's {what} is the sidebar's Surface, got {pixel:?} \
+                     at {point:?} (window {window:?})"
+                );
+                scanned += 1;
+            };
+            // Every edge of the panel area, over the whole 4 px inset frame:
+            // three pixel-rows/columns inside each edge. Before the fix these
+            // were the window's `Bg` (4 px at the top/left, the 3 px strip the
+            // owner saw at the right/bottom).
+            let mut x = left;
+            while x <= right {
+                for offset in [1.5, 2.5, 3.5] {
+                    check(vec2f(x, top + offset), "top edge");
+                    check(vec2f(x, bottom - offset), "bottom edge");
+                }
+                x += 1.0;
+            }
+            // The side scans start 1 px below the band's bottom edge and stop
+            // 1 px above the window's bottom edge: the body's top row and the
+            // window's rule are chrome boundaries, not panel-surface pixels.
+            let mut y = top + 1.0;
+            while y <= bottom - 1.0 {
+                for offset in [1.5, 2.5, 3.5] {
+                    check(vec2f(left + offset, y), "left edge");
+                    check(vec2f(right - offset, y), "right edge");
+                }
+                y += 1.0;
+            }
+            assert!(scanned > 4_000, "the edges were scanned: {scanned} pixels");
+
+            // Only the pane cards are the darker `Bg`: every card paints its
+            // own rect in `Bg` …
+            let frames = pane_frames(&state);
+            assert!(!frames.is_empty(), "the frame draws its panes");
+            for frame in &frames {
+                let card_fill = commands.iter().find_map(|command| match command {
+                    RenderCommand::FillRect { rect, color, .. } if *rect == *frame => Some(*color),
+                    _ => None,
+                });
+                assert_eq!(
+                    card_fill,
+                    Some(bg),
+                    "the pane card {frame:?} is the darker Bg, got {card_fill:?}"
+                );
+            }
+            // … and no `Bg` fill is painted over the panel surface outside a
+            // card: there is no stray dark strip anywhere in the pane area.
+            let surface_index = commands
+                .iter()
+                .position(|command| match command {
+                    RenderCommand::FillRect { rect, color, .. } =>
+                        *color == surface
+                            && rect.min_x() == left
+                            && rect.max_x() == right
+                            && rect.min_y() == top
+                            && rect.max_y() == bottom,
+                    _ => false,
+                })
+                .expect("the panel surface paints the body's whole rectangle");
+            let stray: Vec<RectF> = commands
+                .iter()
+                .skip(surface_index + 1)
+                .filter_map(|command| match command {
+                    RenderCommand::FillRect { rect, color, .. } if *color == bg => {
+                        let inside_card = frames.iter().any(|frame| {
+                            rect.min_x() >= frame.min_x() - 0.5
+                                && rect.max_x() <= frame.max_x() + 0.5
+                                && rect.min_y() >= frame.min_y() - 0.5
+                                && rect.max_y() <= frame.max_y() + 0.5
+                        });
+                        // The chrome above the pane area (the tab fillets) is
+                        // not a panel-surface pixel.
+                        let above_surface = rect.max_y() <= top + 0.5;
+                        (!inside_card && !above_surface).then_some(*rect)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                stray.is_empty(),
+                "no Bg strip is painted over the panel surface outside the pane cards: {stray:?}"
+            );
+
+            // The gutter between two neighbouring tab slots: the shared split
+            // insets each tab outline by 1.5 pt, so the two outlines are exactly
+            // 3 pt apart — and those 3 px are the panel surface, not a dark
+            // seam.
+            if frames.len() == 2 {
+                let inset = crate::ui::panes::PANE_INSET;
+                let slots: Vec<RectF> = frames
+                    .iter()
+                    .map(|card| {
+                        rectf(
+                            card.min_x() - inset,
+                            card.min_y() - inset,
+                            card.width() + 2.0 * inset,
+                            card.height() + 2.0 * inset,
+                        )
+                    })
+                    .collect();
+                let area = rectf(
+                    slots[0].min_x(),
+                    slots[0].min_y(),
+                    slots[1].max_x() - slots[0].min_x(),
+                    slots[0].max_y() - slots[0].min_y(),
+                );
+                let left_outline = crate::ui::panes::tab_outline_rect(slots[0], area);
+                let right_outline = crate::ui::panes::tab_outline_rect(slots[1], area);
+                let gap = right_outline.min_x() - left_outline.max_x();
+                assert!(
+                    (gap - 3.0).abs() < 0.01,
+                    "neighbouring tab outlines stay 3 pt apart: {gap}"
+                );
+                let gutter_x = left_outline.max_x() + gap * 0.5;
+                let mut gutter_y = top + 6.0;
+                while gutter_y <= bottom - 6.0 {
+                    assert_eq!(
+                        topmost_fill(&commands, vec2f(gutter_x, gutter_y)),
+                        Some(surface),
+                        "the 3 pt gutter between the tab slots is the panel surface, \
+                         not a dark seam, at y {gutter_y}"
+                    );
+                    gutter_y += 7.0;
+                }
+            }
+        }
+
+        // Dark: the window `Bg` is #0e0e0e, the sidebar/surface #161616.
+        assert_theme(&AppContext::default(), false);
+        assert_theme(&AppContext::default(), true);
+        // Light: surface and card are their own palette's materials; no
+        // hardcoded colours.
+        let mut light = AppContext::default();
+        light.theme = goble_ui::theme::Theme::light();
+        assert_theme(&light, false);
+        assert_theme(&light, true);
     }
 
     /// No divider line is drawn at the split boundary or at the sidebar edge —
@@ -1890,7 +2103,10 @@ mod tests {
     }
 
     /// The sidebar's `Surface` fill — it starts at the window's left edge and
-    /// runs the body's height — when the sidebar is drawn in this frame.
+    /// runs the body's height — when the sidebar is drawn in this frame. The
+    /// panel surface (the body's own fill) also starts at x=0 when the sidebar
+    /// is collapsed, so the sidebar is the `Surface` fill that stops at the
+    /// sidebar's width instead of reaching the window's right edge.
     fn sidebar_surface(
         commands: &[RenderCommand],
         app: &AppContext,
@@ -1899,7 +2115,10 @@ mod tests {
         let surface = app.theme.color(ColorToken::Surface);
         commands.iter().find_map(|command| match command {
             RenderCommand::FillRect { rect, color, .. }
-                if *color == surface && rect.min_x() == 0.0 && rect.height() > size.y / 2.0 =>
+                if *color == surface
+                    && rect.min_x() == 0.0
+                    && rect.height() > size.y / 2.0
+                    && rect.max_x() < size.x - 1.0 =>
             {
                 Some(*rect)
             }

@@ -7,16 +7,20 @@
 //! PNGs through the shared preview rasterizer. It is a visual verification tool,
 //! not a product surface. It measures:
 //!
-//! - the LAYERING: the panel surface the panes are rendered on — the 4 px-inset
-//!   pane area and the gutters between/around the tab slots — is the SIDEBAR's
-//!   `Surface`; only the panel itself (each pane/tab card) is the darker `Bg`.
-//!   An agent card also matches its own content column (both `Bg`), so outside
-//!   the text column reads like inside it, while the backdrop matches the
-//!   sidebar;
-//! - the PANEL SURFACE INSET: the area the panes are rendered on sits 4 px
-//!   inside the window/chrome on all four sides (top: below the bar block;
-//!   right/bottom: the window edges; left: the sidebar), and each tab outline
-//!   keeps its own inset relative to its slot;
+//! - the LAYERING: the panel surface the panes are rendered on — the WHOLE pane
+//!   area, the 4 px `PANE_AREA_INSET` frame itself included, and the gutters
+//!   between/around the tab slots — is the SIDEBAR's `Surface`; only the panel
+//!   itself (each pane/tab card) is the darker `Bg`. An agent card also matches
+//!   its own content column (both `Bg`), so outside the text column reads like
+//!   inside it, while the backdrop matches the sidebar. The measured pixels:
+//!   the area's top/bottom/left/right edges, the gutter between two
+//!   neighbouring tab slots, and the sidebar reference are all the same grey —
+//!   no dark strip (not even the owner's leftover 3 px) on any edge;
+//! - the TAB-SLOT INSET: the tab slots are inset 4 px inside the window/chrome
+//!   on all four sides (top: below the bar block; right/bottom: the window
+//!   edges; left: the sidebar), and each tab outline keeps its own inset
+//!   relative to its slot. The SURFACE, unlike the slots, paints that whole
+//!   frame: its fill starts on the body origin, not 4 px inside it;
 //! - the RESIZE affordance: no thin divider rule is drawn at a split boundary
 //!   or at the sidebar edge — idle or while dragging — and the only affordance
 //!   is the resize cursor over the invisible grab band;
@@ -26,12 +30,12 @@
 //!   the owner's 360 pt minimum.
 //!
 //! Scenes: 1 pane (1600x900, lane dragged to 700), 2 panes (2600x900, ratio
-//! 0.6), 1 narrow pane (1024x768, lane inactive), 2 panes with the split and
-//! the sidebar edge both grabbed (2600x900) — the dragging frames must draw no
-//! rule either — and the same two-pane layout at the responsive widths
-//! 1600/1100/900/760: the sidebar auto-collapses at its measured breakpoint and
-//! the agent panel leaves the view below 768, mirroring DeepSeek Harness's
-//! breakpoint behaviour.
+//! 0.6), 3 panes (2600x900, thirds), 1 narrow pane (1024x768, lane inactive), 2
+//! panes with the split and the sidebar edge both grabbed (2600x900) — the
+//! dragging frames must draw no rule either — and the same two-pane layout at
+//! the responsive widths 1600/1100/900/760: the sidebar auto-collapses at its
+//! measured breakpoint and the agent panel leaves the view below 768, mirroring
+//! DeepSeek Harness's breakpoint behaviour.
 //!
 //! Usage: cargo run -p goble-app --example pane_chrome_preview
 //! Output: /tmp/goble-work/out/pane-chrome-<scene>.png, with the measured
@@ -68,6 +72,7 @@ const SCALE: f32 = 1.0;
 enum Scene {
     OnePane,
     TwoPanes,
+    ThreePanes,
     Narrow,
     ResizeChrome,
     /// The same two-pane layout at the responsive widths: 1600 (all shown),
@@ -84,10 +89,11 @@ enum Scene {
 }
 
 impl Scene {
-    fn all() -> [Self; 10] {
+    fn all() -> [Self; 11] {
         [
             Self::OnePane,
             Self::TwoPanes,
+            Self::ThreePanes,
             Self::Narrow,
             Self::ResizeChrome,
             Self::Responsive1600,
@@ -102,7 +108,7 @@ impl Scene {
     fn size(self) -> Vector2F {
         match self {
             Self::OnePane => vec2f(1600.0, 900.0),
-            Self::TwoPanes | Self::ResizeChrome => vec2f(2600.0, 900.0),
+            Self::TwoPanes | Self::ThreePanes | Self::ResizeChrome => vec2f(2600.0, 900.0),
             Self::Narrow => vec2f(1024.0, 768.0),
             Self::Responsive1600 => vec2f(1600.0, 900.0),
             Self::Responsive1100 => vec2f(1100.0, 900.0),
@@ -116,6 +122,7 @@ impl Scene {
         match self {
             Self::OnePane => "pane-chrome-1pane.png",
             Self::TwoPanes => "pane-chrome-2pane.png",
+            Self::ThreePanes => "pane-chrome-3pane.png",
             Self::Narrow => "pane-chrome-narrow.png",
             Self::ResizeChrome => "pane-chrome-resize-chrome.png",
             Self::Responsive1600 => "responsive-1600.png",
@@ -134,6 +141,9 @@ impl Scene {
             }
             Self::TwoPanes => {
                 "2 panes, 2600x900 ratio 0.6: darker panels on the sidebar-coloured panel surface"
+            }
+            Self::ThreePanes => {
+                "3 panes, 2600x900 thirds: the surface stays sidebar grey around all three"
             }
             Self::Narrow => {
                 "1 narrow pane, 1024x768: lane inactive, darker panel on the sidebar-coloured backdrop"
@@ -187,6 +197,30 @@ fn install_two_panes(state: &mut UiState, ratio: f32) {
     }
 }
 
+fn install_three_panes(state: &mut UiState) {
+    state.spaces = vec![Space::new(
+        "Chrome preview",
+        Pane::Split {
+            id: 9,
+            dir: SplitDir::Horizontal,
+            ratio: 1.0 / 3.0,
+            first: chat_leaf(7),
+            second: Box::new(Pane::Split {
+                id: 10,
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                first: chat_leaf(8),
+                second: chat_leaf(11),
+            }),
+        },
+    )];
+    state.active_space = 0;
+    state.active_pane_id = 7;
+    for id in [7u64, 8, 11] {
+        state.pane_sessions.insert(id, chat_session());
+    }
+}
+
 fn work_call(id: &str, command: &str) -> ToolCall {
     ToolCall {
         id: id.to_string(),
@@ -235,6 +269,7 @@ fn build_scene(
         match scene {
             Scene::OnePane | Scene::Narrow => {}
             Scene::TwoPanes => install_two_panes(&mut s, 0.6),
+            Scene::ThreePanes => install_three_panes(&mut s),
             Scene::ResizeChrome => {
                 install_two_panes(&mut s, 0.6);
                 // Both resizable boundaries are grabbed: the frames must draw
@@ -408,6 +443,7 @@ fn main() -> anyhow::Result<()> {
         let commands = paint_frame(&app, &mut root, size);
         println!("\n== {:?} — {}", scene, scene.label());
         print_geometry(&state, &commands, &app, size);
+        print_panel_surface_pixels(&state, &commands, &app, size);
         print_cursor_probes(&app, &mut root, &state, size);
 
         let out = Path::new(OUT_DIR).join(scene.file());
@@ -439,7 +475,13 @@ fn print_geometry(
     let responsive = s.responsive;
     let sidebar_drawn = commands.iter().find_map(|command| match command {
         RenderCommand::FillRect { rect, color, .. }
-            if *color == surface && rect.min_x() == 0.0 && rect.height() > window.y / 2.0 =>
+            if *color == surface
+                && rect.min_x() == 0.0
+                && rect.height() > window.y / 2.0
+                // The collapsed-sidebar frame paints the panel surface from
+                // x=0 to the window's right edge too; the sidebar is the fill
+                // that stops at the sidebar's own width.
+                && rect.max_x() < window.x - 1.0 =>
         {
             Some(*rect)
         }
@@ -547,25 +589,38 @@ fn print_geometry(
                 _ => None,
             });
         if let Some((backdrop_rect, backdrop_color)) = backdrop {
+            // The sidebar fill stops at the sidebar's width; the collapsed-
+            // sidebar frame's panel fill reaches the window's right edge, so it
+            // is not mistaken for the sidebar.
             let sidebar = commands.iter().find_map(|command| match command {
                 RenderCommand::FillRect { rect, color, .. }
                     if *color == surface
                         && rect.min_x() == 0.0
-                        && rect.height() > window.y / 2.0 =>
+                        && rect.height() > window.y / 2.0
+                        && rect.max_x() < window.x - 1.0 =>
                 {
                     Some(*color)
                 }
                 _ => None,
             });
+            // The surface paints the body's whole rectangle — the 4 px
+            // `PANE_AREA_INSET` frame itself included. Its fill must reach the
+            // body origin (below the bar block, right of the sidebar) and the
+            // window's right/bottom edges: no dark strip on any side.
+            let frame_painted = (backdrop_rect.min_x() - body_left).abs() < 0.01
+                && (backdrop_rect.min_y() - body_top).abs() < 0.01
+                && (backdrop_rect.max_x() - window.x).abs() < 0.01
+                && (backdrop_rect.max_y() - window.y).abs() < 0.01;
             println!(
-                "     panel surface backdrop: {} (x {:.1}..{:.1} y {:.1}..{:.1}) | sidebar: {:?} -> same? {}",
+                "     panel surface backdrop: {} (x {:.1}..{:.1} y {:.1}..{:.1}) | sidebar: {} -> same? {} | inset frame painted? {}",
                 color_hex(backdrop_color),
                 backdrop_rect.min_x(),
                 backdrop_rect.max_x(),
                 backdrop_rect.min_y(),
                 backdrop_rect.max_y(),
-                sidebar.map(color_hex),
-                sidebar == Some(backdrop_color)
+                sidebar.map(color_hex).unwrap_or_else(|| "collapsed".to_string()),
+                sidebar.is_none() || sidebar == Some(backdrop_color),
+                frame_painted,
             );
         }
 
@@ -683,12 +738,14 @@ fn print_geometry(
         }
     }
 
-    // The panel surface is the whole tab area: the bounding rectangle of the
-    // tabs' slots. It is inset from the body/chrome on all four sides.
+    // The TAB-SLOT area: the bounding rectangle of the tabs' slots. The slots
+    // are inset from the body/chrome on all four sides; the panel surface behind
+    // them is not — it paints the body's whole rectangle, the inset frame
+    // included (see the edge pixel probes).
     if let (Some(first), Some(area)) = (slots.first(), tab_area(&slots)) {
         let _ = first;
         println!(
-            "\n   panel surface area: x {:.1}..{:.1} y {:.1}..{:.1} | inset from body L {:.1} T {:.1} R {:.1} B {:.1} -> 4/4/4/4? {}",
+            "\n   tab-slot area: x {:.1}..{:.1} y {:.1}..{:.1} | slots inset from body L {:.1} T {:.1} R {:.1} B {:.1} -> 4/4/4/4? {}",
             area.min_x(),
             area.max_x(),
             area.min_y(),
@@ -772,6 +829,161 @@ fn print_geometry(
                 RenderCommand::FillRect { color, .. } if *color == bg
             ))
             .count()
+    );
+}
+
+/// The panel surface's pixels, measured the way the frame leaves them: the last
+/// fill covering the point. It prints the sidebar's own pixel (the reference),
+/// the four edges of the pane area across the whole 4 px `PANE_AREA_INSET` frame,
+/// the 3 px gutter between two neighbouring tab slots' outlines, and the pane
+/// cards' pixels — so a leftover dark strip on any edge shows up as a different
+/// `#rrggbb` and a false "all sidebar grey?".
+fn print_panel_surface_pixels(
+    state: &Rc<RefCell<UiState>>,
+    commands: &[RenderCommand],
+    app: &AppContext,
+    window: Vector2F,
+) {
+    let s = state.borrow();
+    let surface = app.theme.color(ColorToken::Surface);
+    let bg = app.theme.color(ColorToken::Bg);
+    let body_top = TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND;
+    let body_left = if s.responsive.sidebar_shown(s.sidebar_visible) {
+        s.sidebar_width
+    } else {
+        0.0
+    };
+    let mid_x = (body_left + window.x) / 2.0;
+    let mid_y = (body_top + window.y) / 2.0;
+    let pixel = |point: Vector2F| {
+        topmost_fill(commands, point)
+            .map(color_hex)
+            .unwrap_or_else(|| "none".to_string())
+    };
+
+    // While a sheet is open its scrim covers the frame (the agent panel scenes),
+    // so the pane-area pixels are not the panel surface's own: say so instead of
+    // measuring the scrim.
+    if s.right_sidebar_open || s.crons_open {
+        println!(
+            "\n   panel surface pixels: not measured — a secondary sheet's scrim covers the frame"
+        );
+        return;
+    }
+
+    // The sidebar is the reference grey the panel surface must match. A
+    // collapsed sidebar (the responsive scenes) paints no sidebar, so the
+    // reference is the theme's own `Surface` colour.
+    let sidebar_shown = s.responsive.sidebar_shown(s.sidebar_visible);
+    let sidebar_probe = topmost_fill(commands, vec2f(s.sidebar_width / 2.0, mid_y));
+    let (sidebar_label, mut all_surface) = if sidebar_shown {
+        (
+            pixel(vec2f(s.sidebar_width / 2.0, mid_y)),
+            sidebar_probe == Some(surface),
+        )
+    } else {
+        (
+            "collapsed (theme Surface reference)".to_string(),
+            true,
+        )
+    };
+
+    // The four edges of the pane area, right across the inset frame: 1.5 px
+    // inside each side, in the middle of the area.
+    let mut edges = Vec::new();
+    for (label, point) in [
+        ("top", vec2f(mid_x, body_top + 1.5)),
+        ("bottom", vec2f(mid_x, window.y - 1.5)),
+        ("left", vec2f(body_left + 1.5, mid_y)),
+        ("right", vec2f(window.x - 1.5, mid_y)),
+    ] {
+        let color = topmost_fill(commands, point);
+        all_surface &= color == Some(surface);
+        edges.push(format!("{label} {}", pixel(point)));
+    }
+    println!(
+        "\n   panel surface pixels: sidebar {sidebar_label} | {} | frame + edges all sidebar grey? {}",
+        edges.join(" | "),
+        all_surface
+    );
+
+    // The gutter between two neighbouring tab slots: each tab outline is inset
+    // 1.5 pt from the shared side, so the outlines are 3 pt apart and those
+    // pixels are the panel surface. Sample the three pixel columns across that
+    // 3 pt gap, at three heights of the split.
+    let panes = pane_bounds(state);
+    let mut gutter_surface = true;
+    if let (Some(first), Some(second)) = (panes.first(), panes.get(1)) {
+        let boundary = (first.1.max_x() + second.1.min_x()) / 2.0;
+        let mut samples = Vec::new();
+        for y in [
+            (first.1.min_y() + second.1.max_y()) / 2.0,
+            (first.1.min_y() + TOPBAR_HEIGHT + 20.0),
+            second.1.max_y() - 20.0,
+        ] {
+            for dx in [-1.0, 0.0, 1.0] {
+                let point = vec2f(boundary + dx, y);
+                gutter_surface &= topmost_fill(commands, point) == Some(surface);
+                samples.push(pixel(point));
+            }
+        }
+        println!(
+            "   tab gutter pixels (the 3 pt outline gap between two slots): {} -> panel surface? {}",
+            samples.join(" "),
+            gutter_surface
+        );
+    } else {
+        println!("   tab gutter pixels: single pane, no neighbouring tab slot");
+    }
+
+    // The cards, and only the cards, are the darker `Bg`: the fill at each
+    // card's own rectangle. Also count the `Bg` fills drawn over the panel
+    // surface that are not inside a card — a stray dark strip anywhere in the
+    // pane area — which must be zero.
+    let mut cards = Vec::new();
+    let mut only_cards_bg = true;
+    for (id, frame) in &panes {
+        let card_fill = commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if rect == frame => Some(*color),
+            _ => None,
+        });
+        only_cards_bg &= card_fill == Some(bg);
+        cards.push(format!("pane {id} {}", color_hex(card_fill.unwrap_or(surface))));
+    }
+    let surface_index = commands.iter().position(|command| match command {
+        RenderCommand::FillRect { rect, color, .. } => *color == surface && rect.width() > window.x / 2.0,
+        _ => false,
+    });
+    let stray: Vec<RectF> = surface_index
+        .map(|index| {
+            commands
+                .iter()
+                .skip(index + 1)
+                .filter_map(|command| match command {
+                    RenderCommand::FillRect { rect, color, .. } if *color == bg => {
+                        let inside_card = panes.iter().any(|(_, frame)| {
+                            rect.min_x() >= frame.min_x() - 0.5
+                                && rect.max_x() <= frame.max_x() + 0.5
+                                && rect.min_y() >= frame.min_y() - 0.5
+                                && rect.max_y() <= frame.max_y() + 0.5
+                        });
+                        // The chrome above the pane area (the tab fillets) is
+                        // not a panel-surface pixel.
+                        let above_surface = rect.max_y() <= body_top + 0.5;
+                        (!inside_card && !above_surface).then_some(*rect)
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    println!(
+        "   pane card pixels: {} | cards (only) are Bg? {} | surface {} vs card {} | Bg fills over the surface outside cards: {} (must be 0)",
+        cards.join(" | "),
+        only_cards_bg && stray.is_empty(),
+        color_hex(surface),
+        color_hex(bg),
+        stray.len(),
     );
 }
 

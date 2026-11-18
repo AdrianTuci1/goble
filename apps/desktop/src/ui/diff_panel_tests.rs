@@ -439,10 +439,11 @@ fn a_hairline_separates_the_topbar_from_the_review_controls() {
         .collect();
 
     // The pane opens under the app's own topbar and the band beneath it, so its
-    // header ends a bar and a band plus the pane inset down the window, where
-    // the controls bar begins.
+    // header ends a bar and a band plus the panel and pane insets down the
+    // window, where the controls bar begins.
     let seam = crate::ui::shell::TOPBAR_HEIGHT * 2.0
         + crate::ui::shell::TOPBAR_BOTTOM_BAND
+        + crate::ui::panes::PANE_AREA_INSET
         + crate::ui::panes::PANE_INSET;
     let toolbar = toolbar_y(&commands);
     let rule = rules
@@ -454,8 +455,16 @@ fn a_hairline_separates_the_topbar_from_the_review_controls() {
         "the seam is one point high: {rule:?}"
     );
     assert!(
-        (rule.min_x() - (crate::ui::SIDEBAR_WIDTH + crate::ui::panes::PANE_INSET)).abs() < 1.0
-            && (rule.max_x() - (window().x - crate::ui::panes::PANE_INSET)).abs() < 1.0,
+        (rule.min_x()
+            - (crate::ui::SIDEBAR_WIDTH
+                + crate::ui::panes::PANE_AREA_INSET
+                + crate::ui::panes::PANE_INSET))
+            .abs()
+            < 1.0
+            && (rule.max_x()
+                - (window().x - crate::ui::panes::PANE_AREA_INSET - crate::ui::panes::PANE_INSET))
+                .abs()
+                < 1.0,
         "the seam runs the pane's full width: {rule:?}"
     );
     assert!(

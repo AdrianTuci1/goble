@@ -54,6 +54,36 @@ pub mod fallback {
         None
     }
 
+    /// Reveal `path` in the platform's file manager (DSH's "Show in Finder",
+    /// the workspace row's second menu action). macOS implements it with
+    /// `NSWorkspace` in [`super::mac`]; the other targets open the containing
+    /// folder in their own file manager, and an unknown target honestly answers
+    /// `false` rather than pretending something opened.
+    pub fn reveal_in_file_manager(path: &str) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let folder = std::path::Path::new(path)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(path));
+            return std::process::Command::new("xdg-open")
+                .arg(folder)
+                .spawn()
+                .is_ok();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return std::process::Command::new("explorer")
+                .arg(format!("/select,{path}"))
+                .spawn()
+                .is_ok();
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            let _ = path;
+            false
+        }
+    }
+
     pub fn default_font_family() -> &'static str {
         "system-ui"
     }

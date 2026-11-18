@@ -36,8 +36,8 @@ use crate::ui::settings::fields;
 use crate::ui::settings::model::ControlModel;
 use crate::ui::settings::pages;
 use crate::ui::settings::state::{
-    ConnectorForm, HostForm, ModelForm, ModelFormField, ModelFormToggle, SettingsAction,
-    SettingsActions, SettingsForm, SettingsUiState, StatusKind,
+    ConnectorForm, HarnessForm, HarnessFormField, HostForm, ModelForm, ModelFormField,
+    ModelFormToggle, SettingsAction, SettingsActions, SettingsForm, SettingsUiState, StatusKind,
 };
 use crate::ui::SettingsCategory;
 
@@ -71,7 +71,13 @@ fn handle(
             state.settings.region = crate::ui::settings::SettingsRegion::Rail;
             state.settings.row_index = 0;
             state.settings.focused_field = None;
+            state.settings.theme_select_open = false;
             state.settings.scroll.borrow_mut().reset();
+            // The Providers page's accounts and per-CLI folds read live PATH
+            // detection, so opening it re-scans.
+            if page == SettingsCategory::Providers {
+                load_harnesses(state, desktop);
+            }
         }
         SettingsAction::FocusRail => {
             state.settings.region = crate::ui::settings::SettingsRegion::Rail;
@@ -125,6 +131,8 @@ fn handle(
             if state.settings.focused_field.is_some() {
                 let id = state.settings.focused_field.clone().unwrap_or_default();
                 handle(state, desktop, media, SettingsAction::ClearField { id });
+            } else if state.settings.region == crate::ui::settings::SettingsRegion::Sheet {
+                close_sheet(state);
             } else if state.settings.region == crate::ui::settings::SettingsRegion::Page {
                 state.settings.region = crate::ui::settings::SettingsRegion::Rail;
             }
@@ -134,6 +142,93 @@ fn handle(
                 state.settings.folds.insert(id);
             }
         }
+        SettingsAction::RefreshHarnesses => load_harnesses(state, desktop),
+        SettingsAction::SetColorTarget(index) => {
+            state.settings.color_target = index.min(4);
+        }
+        SettingsAction::ToggleThemeSelect(open) => {
+            state.settings.theme_select_open = open;
+        }
+        SettingsAction::SetColor { target, hex } => {
+            let Some(desktop) = desktop else {
+                no_service(state);
+                return;
+            };
+            let target = crate::ui::color_picker::COLOR_TARGET_ORDER
+                .get(target)
+                .copied()
+                .unwrap_or(crate::ui::color_picker::ColorTarget::Accent);
+            let key = color_key(target);
+            let path = format!("theme.{key}");
+            if fields::theme_text(&state.settings, key).as_deref() == Some(hex.as_str()) {
+                return;
+            }
+            write_ops(
+                state,
+                desktop,
+                ConfigFile::Config,
+                vec![fields::text_op(&path, &hex)],
+            );
+            state.settings.clear_draft(&path);
+        }
+        SettingsAction::EditHarness(id) => {
+            let status = state
+                .settings
+                .harnesses
+                .iter()
+                .find(|harness| harness.id == id)
+                .cloned();
+            let from_config = state
+                .settings
+                .config
+                .as_ref()
+                .and_then(|view| view.sections.harnesses.iter().find(|h| h.id == id))
+                .cloned();
+            let (name, command, args, enabled) = match (status, from_config) {
+                (_status, Some(config)) => (
+                    config.name.clone(),
+                    config.command.clone().unwrap_or_default(),
+                    config.args.join(" "),
+                    config.enabled,
+                ),
+                (Some(status), None) => (
+                    status.name.clone(),
+                    String::new(),
+                    status.args.join(" "),
+                    status.enabled,
+                ),
+                (None, None) => (id.clone(), String::new(), String::new(), true),
+            };
+            state.settings.form = Some(SettingsForm::Harness(Box::new(HarnessForm {
+                editing: Some(id),
+                name,
+                command,
+                args,
+                enabled,
+            })));
+            clear_form_drafts(state, "harness-form.");
+            open_sheet(state);
+        }
+        SettingsAction::HarnessFormText { field, value } => {
+            let id = match field {
+                HarnessFormField::Command => "harness-form.command",
+                HarnessFormField::Args => "harness-form.args",
+            }
+            .to_string();
+            state.settings.set_draft(&id, value.clone());
+            if let Some(SettingsForm::Harness(form)) = state.settings.form.as_mut() {
+                match field {
+                    HarnessFormField::Command => form.command = value,
+                    HarnessFormField::Args => form.args = value,
+                }
+            }
+        }
+        SettingsAction::HarnessFormEnabled(enabled) => {
+            if let Some(SettingsForm::Harness(form)) = state.settings.form.as_mut() {
+                form.enabled = enabled;
+            }
+        }
+        SettingsAction::SaveHarnessForm => save_harness_form(state, desktop),
         SettingsAction::SetDraft { id, value } => {
             state.settings.set_draft(&id, value.clone());
             // A form's draft lives in the drafts map too, so the form's own
@@ -167,6 +262,9 @@ fn handle(
                 ConfigFile::Config,
                 vec![fields::bool_op(&path, value)],
             );
+            if path.starts_with("harness.") {
+                load_harnesses(state, Some(desktop));
+            }
         }
         SettingsAction::SetSelect { path, index } => set_select(state, desktop, &path, index),
         SettingsAction::SetSlider { path, value } => {
@@ -227,6 +325,7 @@ fn handle(
                 return;
             };
             state.refresh_settings(desktop);
+            load_harnesses(state, Some(desktop));
             state
                 .settings
                 .set_status(StatusKind::Success, "Reloaded from the files.");
@@ -262,6 +361,7 @@ fn handle(
         SettingsAction::NewModel => {
             state.settings.form = Some(SettingsForm::Model(Box::new(ModelForm::add())));
             clear_form_drafts(state, "model-form.");
+            open_sheet(state);
         }
         SettingsAction::EditModel(slug) => {
             if let Some(model) = state
@@ -273,6 +373,7 @@ fn handle(
             {
                 state.settings.form = Some(SettingsForm::Model(Box::new(ModelForm::edit(&model))));
                 clear_form_drafts(state, "model-form.");
+                open_sheet(state);
             }
         }
         SettingsAction::DeleteModel(slug) => {
@@ -381,10 +482,7 @@ fn handle(
         }
         SettingsAction::TestModelDraft => test_model_draft(state, desktop),
         SettingsAction::SaveModelForm => save_model_form(state, desktop),
-        SettingsAction::CancelForm => {
-            clear_all_form_drafts(state);
-            state.settings.form = None;
-        }
+        SettingsAction::CancelForm => close_sheet(state),
         // ---- connectors ------------------------------------------------
         SettingsAction::NewConnector => {
             state.settings.form = Some(SettingsForm::Connector(Box::new(ConnectorForm {
@@ -397,6 +495,7 @@ fn handle(
                 enabled: true,
             })));
             clear_form_drafts(state, "connector-form.");
+            open_sheet(state);
         }
         SettingsAction::EditConnector(name) => {
             if let Some(server) = state
@@ -416,6 +515,7 @@ fn handle(
                     enabled: server.enabled,
                 })));
                 clear_form_drafts(state, "connector-form.");
+                open_sheet(state);
             }
         }
         SettingsAction::DeleteConnector(name) => {
@@ -488,6 +588,7 @@ fn handle(
         SettingsAction::NewHost => {
             state.settings.form = Some(SettingsForm::Host(Box::new(HostForm::default())));
             clear_form_drafts(state, "host-form.");
+            open_sheet(state);
         }
         SettingsAction::EditHost(name) => {
             if let Some(host) = state
@@ -506,6 +607,7 @@ fn handle(
                     identity: host.identity.clone().unwrap_or_default(),
                 })));
                 clear_form_drafts(state, "host-form.");
+                open_sheet(state);
             }
         }
         SettingsAction::DeleteHost(name) => {
@@ -841,7 +943,78 @@ fn page_model(state: &UiState) -> crate::ui::settings::pages::PageModel {
 }
 
 fn focused_row(state: &UiState) -> Option<crate::ui::settings::RowModel> {
-    page_model(state).row_at(state.settings.row_index).cloned()
+    match state.settings.region {
+        crate::ui::settings::SettingsRegion::Sheet => sheet_focused_row(state),
+        _ => page_model(state).row_at(state.settings.row_index).cloned(),
+    }
+}
+
+/// The open side sheet's form, as a section (title, fields, Save/Cancel).
+fn sheet_model(state: &UiState) -> Option<crate::ui::settings::SectionModel> {
+    pages::form_section(&state.settings)
+}
+
+fn sheet_focused_row(state: &UiState) -> Option<crate::ui::settings::RowModel> {
+    let section = sheet_model(state)?;
+    section
+        .rows
+        .iter()
+        .filter(|row| !row.disabled && row.control.is_interactive())
+        .nth(state.settings.sheet_row)
+        .cloned()
+}
+
+fn sheet_row_count(state: &UiState) -> usize {
+    sheet_model(state)
+        .map(|section| {
+            section
+                .rows
+                .iter()
+                .filter(|row| !row.disabled && row.control.is_interactive())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Open a form in the side sheet: the sheet owns the keyboard.
+fn open_sheet(state: &mut UiState) {
+    state.settings.region = crate::ui::settings::SettingsRegion::Sheet;
+    state.settings.sheet_row = 0;
+    state.settings.focused_field = None;
+    state.settings.theme_select_open = false;
+    state.settings.sheet_scroll.borrow_mut().reset();
+}
+
+/// Close the side sheet and give the page its keyboard back.
+fn close_sheet(state: &mut UiState) {
+    clear_all_form_drafts(state);
+    state.settings.form = None;
+    state.settings.focused_field = None;
+    state.settings.sheet_row = 0;
+    if state.settings.region == crate::ui::settings::SettingsRegion::Sheet {
+        state.settings.region = crate::ui::settings::SettingsRegion::Page;
+    }
+    state.settings.sheet_scroll.borrow_mut().reset();
+}
+
+/// Re-scan the catalog's harnesses on PATH and store the detection result.
+fn load_harnesses(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
+    let Some(desktop) = desktop else {
+        return;
+    };
+    state.settings.harnesses = desktop.list_harnesses();
+}
+
+/// The `[theme]` channel a colour target writes.
+fn color_key(target: crate::ui::color_picker::ColorTarget) -> &'static str {
+    use crate::ui::color_picker::ColorTarget as T;
+    match target {
+        T::Primary => "primary",
+        T::Secondary => "secondary",
+        T::Accent => "accent",
+        T::Background => "bg",
+        T::Surface => "surface",
+    }
 }
 
 fn step_focus(state: &mut UiState, delta: i32) {
@@ -866,6 +1039,15 @@ fn step_focus(state: &mut UiState, delta: i32) {
             }
             state.settings.row_index =
                 (state.settings.row_index as i32 + delta).clamp(0, count as i32 - 1) as usize;
+            state.settings.focused_field = None;
+        }
+        crate::ui::settings::SettingsRegion::Sheet => {
+            let count = sheet_row_count(state);
+            if count == 0 {
+                return;
+            }
+            state.settings.sheet_row =
+                (state.settings.sheet_row as i32 + delta).clamp(0, count as i32 - 1) as usize;
             state.settings.focused_field = None;
         }
     }
@@ -897,6 +1079,21 @@ fn activate(
             // A text row puts the caret in its field on the first Enter; a
             // second one commits (the key handler routes Enter to CommitField
             // while the caret is in).
+            if let ControlModel::Text { id, .. } = row.control.clone() {
+                if state.settings.focused_field.as_deref() != Some(id.as_str()) {
+                    state.settings.focused_field = Some(id.clone());
+                    state.settings.set_draft(&id, control_value_text(&row));
+                    return;
+                }
+            }
+            if let Some(action) = row.primary_action() {
+                handle(state, desktop, media, action);
+            }
+        }
+        crate::ui::settings::SettingsRegion::Sheet => {
+            let Some(row) = focused_row(state) else {
+                return;
+            };
             if let ControlModel::Text { id, .. } = row.control.clone() {
                 if state.settings.focused_field.as_deref() != Some(id.as_str()) {
                     state.settings.focused_field = Some(id.clone());
@@ -955,6 +1152,7 @@ fn is_form_field(id: &str) -> bool {
     id.starts_with("model-form.")
         || id.starts_with("connector-form.")
         || id.starts_with("host-form.")
+        || id.starts_with("harness-form.")
 }
 
 fn set_select(state: &mut UiState, desktop: Option<&Arc<DesktopState>>, path: &str, index: usize) {
@@ -992,8 +1190,15 @@ fn set_select(state: &mut UiState, desktop: Option<&Arc<DesktopState>>, path: &s
             return;
         }
         "theme.preset" => {
-            let op = fields::palette_select_op("theme.preset", index);
-            write_ops(state, desktop, ConfigFile::Config, vec![op]);
+            // Picking a palette is the whole base, so the five channel
+            // overrides are dropped with it: the page then shows the palette as
+            // the preset defines it, exactly like the old theme picker.
+            let mut ops = vec![fields::palette_select_op("theme.preset", index)];
+            for key in ["accent", "primary", "secondary", "bg", "surface"] {
+                ops.push(fields::reset_op(&format!("theme.{key}")));
+            }
+            state.settings.theme_select_open = false;
+            write_ops(state, desktop, ConfigFile::Config, ops);
             return;
         }
         "app.approval_mode" => {
@@ -1229,6 +1434,12 @@ fn form_toggle(state: &mut SettingsUiState, path: &str, value: bool) -> Option<b
                 return Some(true);
             }
         }
+        "harness-form.enabled" => {
+            if let Some(SettingsForm::Harness(form)) = state.form.as_mut() {
+                form.enabled = value;
+                return Some(true);
+            }
+        }
         _ => {}
     }
     None
@@ -1320,8 +1531,7 @@ fn save_model_form(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
     match desktop.upsert_config_model(&slug, &draft, expected.as_ref()) {
         Ok(view) => {
             state.adopt_settings_view(view);
-            state.settings.form = None;
-            clear_all_form_drafts(state);
+            close_sheet(state);
             state.settings.set_status(
                 StatusKind::Success,
                 format!("Saved [model.{slug}] to config.toml."),
@@ -1375,8 +1585,7 @@ fn save_connector_form(state: &mut UiState, desktop: Option<&Arc<DesktopState>>)
     match desktop.upsert_mcp_config(&name, &draft, expected.as_ref()) {
         Ok(view) => {
             state.adopt_settings_view(view);
-            state.settings.form = None;
-            clear_all_form_drafts(state);
+            close_sheet(state);
             state.settings.set_status(
                 StatusKind::Success,
                 format!("Saved [mcp_servers.{name}] and synced the registry."),
@@ -1407,8 +1616,7 @@ fn save_host_form(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
     match desktop.upsert_host(form.editing.as_deref(), &draft, expected.as_ref()) {
         Ok(view) => {
             state.adopt_settings_view(view);
-            state.settings.form = None;
-            clear_all_form_drafts(state);
+            close_sheet(state);
             state
                 .settings
                 .set_status(StatusKind::Success, format!("Saved host {}.", draft.name));
@@ -1416,6 +1624,54 @@ fn save_host_form(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
         }
         Err(error) => write_error(state, desktop, error),
     }
+}
+
+fn save_harness_form(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
+    let Some(desktop) = desktop else {
+        no_service(state);
+        return;
+    };
+    let Some(SettingsForm::Harness(form)) = state.settings.form.clone() else {
+        return;
+    };
+    let Some(id) = form.editing.clone().filter(|id| !id.trim().is_empty()) else {
+        state
+            .settings
+            .set_status(StatusKind::Error, "A harness override needs a catalog id.");
+        return;
+    };
+    let field = |id: &str, fallback: &str| state.settings.draft(id, fallback).trim().to_string();
+    let command = non_empty(&field("harness-form.command", &form.command));
+    let args: Vec<String> = field("harness-form.args", &form.args)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let draft = HarnessDraft {
+        enabled: Some(form.enabled),
+        command,
+        // An empty argument list clears the override array rather than leaving
+        // the catalog's arguments in place: the form shows what will launch.
+        args: Some(args),
+        env: None,
+    };
+    let expected = state.settings.config_revision();
+    match desktop.upsert_harness(&id, &draft, expected.as_ref()) {
+        Ok(view) => {
+            state.adopt_settings_view(view);
+            close_sheet(state);
+            start_harness_scan(state, desktop);
+            state
+                .settings
+                .set_status(StatusKind::Success, format!("Saved [harness.{id}] to config.toml."));
+        }
+        Err(error) => write_error(state, desktop, error),
+    }
+}
+
+/// After a harness write, re-read the detection so the row's status is the
+/// service's answer, not a stale one.
+fn start_harness_scan(state: &mut UiState, desktop: &Arc<DesktopState>) {
+    state.settings.harnesses = desktop.list_harnesses();
 }
 
 fn non_empty(value: &str) -> Option<String> {

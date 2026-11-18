@@ -23,7 +23,7 @@ use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint, Text,
 };
 use crate::event::DispatchedEvent;
-use crate::geometry::{rectf, vec2f, RectF, Vector2F};
+use crate::geometry::{vec2f, Vector2F};
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::ColorToken;
 
@@ -108,6 +108,8 @@ pub struct SettingsRow {
     /// field that needs the whole width, a table of models.
     body: Option<Box<dyn Element>>,
     reset: Option<Box<dyn Element>>,
+    /// A leading colour swatch (the Appearance page's channel rows).
+    swatch: Option<ColorU>,
     focused: bool,
     disabled: bool,
     /// Pad the row like T3's `pt-3 pb-1` form row (a row with a child editor).
@@ -128,6 +130,7 @@ impl SettingsRow {
             control: None,
             body: None,
             reset: None,
+            swatch: None,
             focused: false,
             disabled: false,
             tight_bottom: false,
@@ -145,6 +148,13 @@ impl SettingsRow {
 
     /// The reset affordance in the label line, shown by the caller only when
     /// the value is not the default (`is_default` in the schema).
+    /// A 14px rounded colour chip before the label, for a row that names a
+    /// theme channel or a palette.
+    pub fn with_swatch(mut self, color: ColorU) -> Self {
+        self.swatch = Some(color);
+        self
+    }
+
     pub fn with_reset(mut self, reset: Box<dyn Element>) -> Self {
         self.reset = Some(reset);
         self
@@ -196,12 +206,30 @@ impl SettingsRow {
             // neutral pair the rest of the surface uses.
             mix(app, ColorToken::Muted, ColorToken::Text, 0.15)
         };
-        let mut label_line: Vec<Box<dyn Element>> = vec![text_color(
+        let mut label_line: Vec<Box<dyn Element>> = Vec::new();
+        if let Some(color) = self.swatch {
+            let swatch = crate::elements::Container::new(
+                crate::elements::Empty::new()
+                    .with_size(vec2f(14.0, 14.0))
+                    .finish(),
+            )
+            .with_background(crate::elements::Fill::Solid(color))
+            .with_border(crate::elements::Border::all(1.0).with_border_color(mix(
+                app,
+                ColorToken::Border,
+                ColorToken::Text,
+                0.2,
+            )))
+            .with_corner_radius(4.0)
+            .finish();
+            label_line.push(swatch);
+        }
+        label_line.push(text_color(
             self.label.clone(),
             SETTINGS_ROW_LABEL_SIZE,
             label_color,
             FontWeight::Medium,
-        )];
+        ));
         if let Some(reset) = self.reset.take() {
             label_line.push(reset);
         }

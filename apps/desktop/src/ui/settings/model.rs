@@ -12,6 +12,7 @@
 //! field, or presses the first button of a button group).
 
 use goble_core::config::ConfigFile;
+use goble_ui::color::ColorU;
 
 use super::state::{SettingsAction, StatusKind};
 
@@ -111,6 +112,16 @@ pub enum ControlModel {
     },
     /// A value the page reports but does not edit.
     ReadOnly { text: String },
+    /// The Appearance page's HSV colour wheel for one theme channel. The app's
+    /// renderer draws `ui::color_picker::ColorWheel` and reports changes through
+    /// `SettingsAction::SetColor`.
+    ColorWheel {
+        /// Index into `color_picker::COLOR_TARGET_ORDER`.
+        channel: usize,
+        label: String,
+        /// The file's `[theme] <channel>` override, if it has one.
+        stored: Option<String>,
+    },
     /// The row's actions, in draw order. `Enter` runs the first one.
     Buttons(Vec<ActionModel>),
     /// A row with no control at all (a status or explanation row).
@@ -124,6 +135,7 @@ impl ControlModel {
             | ControlModel::Select { disabled, .. }
             | ControlModel::Text { disabled, .. } => !disabled,
             ControlModel::Slider { .. } => true,
+            ControlModel::ColorWheel { .. } => true,
             ControlModel::ReadOnly { .. } | ControlModel::None => false,
             ControlModel::Buttons(actions) => actions.iter().any(|action| !action.disabled),
         }
@@ -143,6 +155,8 @@ pub struct RowModel {
     pub disabled: bool,
     /// The reset action, when the value is not the schema default.
     pub reset: Option<SettingsAction>,
+    /// A leading colour chip (a theme channel or a palette row).
+    pub swatch: Option<ColorU>,
     /// A full-width child block under the row (a form, a nested list). It is
     /// not itself focusable; the form's rows are.
     pub children: Vec<RowModel>,
@@ -158,6 +172,7 @@ impl RowModel {
             control: ControlModel::None,
             disabled: false,
             reset: None,
+            swatch: None,
             children: Vec::new(),
         }
     }
@@ -253,6 +268,19 @@ impl RowModel {
         self
     }
 
+    /// Set the row's control directly, for a control the builder methods do not
+    /// cover (the colour wheel).
+    pub fn with_control(mut self, control: ControlModel) -> Self {
+        self.control = control;
+        self
+    }
+
+    /// A leading colour chip before the label.
+    pub fn with_swatch(mut self, color: ColorU) -> Self {
+        self.swatch = Some(color);
+        self
+    }
+
     pub fn with_reset(mut self, action: SettingsAction) -> Self {
         self.reset = Some(action);
         self
@@ -320,7 +348,7 @@ impl RowModel {
                 }
             }
             ControlModel::Text { id, .. } => Some(SettingsAction::CommitField { id: id.clone() }),
-            ControlModel::Slider { .. } => None,
+            ControlModel::Slider { .. } | ControlModel::ColorWheel { .. } => None,
             ControlModel::Buttons(actions) => actions
                 .iter()
                 .find(|action| !action.disabled)
@@ -371,6 +399,16 @@ impl RowModel {
     }
 }
 
+/// A section that folds: its heading is the trigger and its rows are drawn
+/// only while it is open. The open state lives in the settings state (a fold id
+/// in `SettingsUiState::folds`), so it survives a pane rebuild.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FoldSection {
+    pub open: bool,
+    /// The action the heading dispatches (`ToggleFold(<id>)`).
+    pub action: SettingsAction,
+}
+
 /// A titled group of rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SectionModel {
@@ -379,9 +417,11 @@ pub struct SectionModel {
     pub description: String,
     pub header_action: Option<ActionModel>,
     pub rows: Vec<RowModel>,
-    /// Draw the group as rows against the page instead of a card (the theme
-    /// library's plain section).
+    /// Draw the group as rows against the page instead of a card (a plain
+    /// section).
     pub plain: bool,
+    /// A collapsible heading (the Providers page's per-CLI groups).
+    pub fold: Option<FoldSection>,
 }
 
 impl SectionModel {
@@ -393,6 +433,7 @@ impl SectionModel {
             header_action: None,
             rows: Vec::new(),
             plain: false,
+            fold: None,
         }
     }
 
@@ -421,6 +462,18 @@ impl SectionModel {
         self
     }
 
+    /// Draw the section as a fold whose heading dispatches `action` and whose
+    /// rows appear only while `open`.
+    pub fn with_fold(mut self, open: bool, action: SettingsAction) -> Self {
+        self.fold = Some(FoldSection { open, action });
+        self
+    }
+
+    /// Whether the section's rows are drawn (always for a non-fold section).
+    pub fn is_open(&self) -> bool {
+        self.fold.as_ref().map(|fold| fold.open).unwrap_or(true)
+    }
+
     /// Every row in this section, in draw order, children flattened after their
     /// parent (a child block is part of the same reading order).
     fn all_rows(&self) -> Vec<&RowModel> {
@@ -444,10 +497,12 @@ impl PageModel {
         Self { sections }
     }
 
-    /// The interactive rows, in draw order — the page's focus order.
+    /// The interactive rows, in draw order — the page's focus order. A folded
+    /// section contributes nothing while closed, matching what is drawn.
     pub fn interactive_rows(&self) -> Vec<&RowModel> {
         self.sections
             .iter()
+            .filter(|section| section.is_open())
             .flat_map(SectionModel::all_rows)
             .filter(|row| !row.disabled && row.control.is_interactive())
             .collect()

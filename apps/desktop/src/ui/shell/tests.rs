@@ -1595,32 +1595,36 @@ fn the_pane_surface_under_the_selected_tab_has_no_seam() {
         "the fill ends where the merge line is: {body:?}"
     );
 
-    // The content sheet's `Surface` begins right below the merge line: the
-    // selected tab's fill crosses the band and lands one point into the sheet,
-    // so the two surfaces meet with no gap — and the pane card keeps its own
-    // inset frame below.
+    // The panel surface's `Surface` begins right below the merge line: the
+    // panel area is inset from the body's own top edge
+    // (`PANE_AREA_INSET`), and the selected tab's fill crosses the band and
+    // lands one point into the panel surface, so the two surfaces meet with no
+    // gap — the pane card keeps its own inset frame below that band.
     let surface = app.theme.color(ColorToken::Surface);
     let pane = commands
         .iter()
         .filter_map(|command| match command {
             RenderCommand::FillRect { rect, color, .. }
-                if *color == surface && rect.min_y() > TOPBAR_HEIGHT && rect.height() > 300.0 =>
+                if *color == surface
+                    && rect.min_y() > TOPBAR_HEIGHT
+                    && rect.height() > 20.0
+                    && rect.width() > window().x / 2.0 =>
             {
                 Some(*rect)
             }
             _ => None,
         })
-        .max_by(|a, b| a.width().total_cmp(&b.width()))
+        .min_by(|a, b| a.min_y().total_cmp(&b.min_y()))
         .expect("the pane's surface is painted");
     assert_eq!(
         pane.min_y(),
-        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND + crate::ui::panes::PANE_INSET,
-        "the body starts one band below the bar, then the pane inset: {pane:?}"
+        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND + crate::ui::panes::PANE_AREA_INSET,
+        "the body starts one band below the bar, then the panel inset: {pane:?}"
     );
     assert_eq!(
         body.max_y(),
         pane.min_y() + 1.0,
-        "the selected fill crosses the pane gutter and reaches the card's own surface: \
+        "the selected fill crosses the panel inset and reaches the panel surface: \
          {body:?} against {pane:?}"
     );
 }
@@ -2303,12 +2307,15 @@ fn bsp_panes_cast_the_window_frame() {
         1,
         "the pane's tab wears one accent outline: {outlines:?}"
     );
-    // The pane area is the slot: sidebar to window edge, body origin to bottom.
+    // The pane area is the slot: the panel surface is inset from the sidebar,
+    // the window edges and the bar block, so the slot starts and ends
+    // `PANE_AREA_INSET` inside them.
+    let inset = crate::ui::panes::PANE_AREA_INSET;
     let slot = rectf(
-        crate::ui::SIDEBAR_WIDTH,
-        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND,
-        window().x - crate::ui::SIDEBAR_WIDTH,
-        window().y - (TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND),
+        crate::ui::SIDEBAR_WIDTH + inset,
+        TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND + inset,
+        window().x - crate::ui::SIDEBAR_WIDTH - 2.0 * inset,
+        window().y - (TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND) - 2.0 * inset,
     );
     assert_eq!(
         outlines[0],

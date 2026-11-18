@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::*;
 use crate::elements::AppContext;
 use crate::elements::Element;
 use crate::elements::LayoutContext;
@@ -11,7 +12,6 @@ use crate::event::ModifiersState;
 use crate::geometry::vec2f;
 use crate::theme::ColorToken;
 use goble_core::harness::CommandDecision;
-use super::*;
 
 #[test]
 fn composer_layouts_non_zero() {
@@ -156,16 +156,20 @@ fn the_composer_card_is_two_rounded_segments() {
         commands
             .iter()
             .find_map(|c| match c {
-                RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => {
-                    Some(origin.y)
-                }
+                RenderCommand::DrawText {
+                    origin,
+                    text: drawn,
+                    ..
+                } if drawn == text => Some(origin.y),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("{text:?} is drawn: {commands:?}"))
     };
     let editor = text_y("hi");
     let model = text_y("gpt-4o");
-    let plus = icon_origin(&commands, "plus").expect("the attach control draws").y;
+    let plus = icon_origin(&commands, "plus")
+        .expect("the attach control draws")
+        .y;
     assert!(editor < model, "the model control is under the editor");
     assert!(editor < plus, "the attach control is under the editor");
     assert!(
@@ -299,7 +303,9 @@ fn the_environment_control_is_icon_only_at_the_bands_right_end() {
     // Icon-only: the host's label is the tooltip, not a text run beside the
     // glyph.
     assert!(
-        !drawn_texts(&commands).iter().any(|t| t == "Remote (worker)"),
+        !drawn_texts(&commands)
+            .iter()
+            .any(|t| t == "Remote (worker)"),
         "the environment control draws no label at rest: {:?}",
         drawn_texts(&commands)
     );
@@ -346,15 +352,13 @@ fn the_environment_control_is_icon_only_at_the_bands_right_end() {
         PopupMenuItem::new("This Computer").selected(),
         PopupMenuItem::new("Remote")
             .with_icon("environment-cloud")
-            .with_description("Clones this repo in a cloud environment, then hands it to the agent"),
+            .with_description(
+                "Clones this repo in a cloud environment, then hands it to the agent",
+            ),
     ];
     let mut env_menu = ChatComposer::new()
         .with_harness_label("This Computer")
-        .with_harness_menu(
-            described,
-            Rc::new(RefCell::new(true)),
-            |_| {},
-        );
+        .with_harness_menu(described, Rc::new(RefCell::new(true)), |_| {});
     let (_, commands) = paint_composer_in(&app, &mut env_menu, vec2f(900.0, 600.0));
     let description = commands
         .iter()
@@ -582,9 +586,7 @@ fn a_rich_input_control_is_borderless_and_fills_on_hover() {
                 rect,
                 color,
                 corner_radius,
-            } if *color == hover
-                && (*corner_radius - COMPOSER_CONTROL_RADIUS).abs() < 0.01 =>
-            {
+            } if *color == hover && (*corner_radius - COMPOSER_CONTROL_RADIUS).abs() < 0.01 => {
                 Some((*rect, *corner_radius))
             }
             _ => None,
@@ -650,12 +652,18 @@ fn the_menu_backed_controls_draw_a_trailing_chevron() {
         })
         .collect();
     assert_eq!(
-        icons.iter().filter(|name| name.as_str() == "chevron-down").count(),
+        icons
+            .iter()
+            .filter(|name| name.as_str() == "chevron-down")
+            .count(),
         3,
         "the directory, the branch and the closed model chip point down: {icons:?}"
     );
     assert_eq!(
-        icons.iter().filter(|name| name.as_str() == "chevron-up").count(),
+        icons
+            .iter()
+            .filter(|name| name.as_str() == "chevron-up")
+            .count(),
         0,
         "a closed model chip points down, DSH's trigger before its card opens: {icons:?}"
     );
@@ -676,12 +684,18 @@ fn the_menu_backed_controls_draw_a_trailing_chevron() {
         })
         .collect();
     assert_eq!(
-        opened_icons.iter().filter(|name| name.as_str() == "chevron-up").count(),
+        opened_icons
+            .iter()
+            .filter(|name| name.as_str() == "chevron-up")
+            .count(),
         1,
         "the open model chip points up: {opened_icons:?}"
     );
     for expected in ["folder", "branch", "agentmode", "plus"] {
-        assert!(icons.iter().any(|n| n == expected), "missing icon {expected}");
+        assert!(
+            icons.iter().any(|n| n == expected),
+            "missing icon {expected}"
+        );
     }
     assert!(
         !icons.iter().any(|name| name == "sparkle"),
@@ -719,7 +733,11 @@ fn the_session_chip_names_the_bound_host_and_a_local_session_draws_none() {
     };
     let text_y = |commands: &[RenderCommand], text: &str| -> Option<f32> {
         commands.iter().find_map(|c| match c {
-            RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => Some(origin.y),
+            RenderCommand::DrawText {
+                origin,
+                text: drawn,
+                ..
+            } if drawn == text => Some(origin.y),
             _ => None,
         })
     };
@@ -809,7 +827,11 @@ fn text_origin(
 ) -> Option<crate::geometry::Vector2F> {
     use crate::render::RenderCommand;
     commands.iter().find_map(|c| match c {
-        RenderCommand::DrawText { origin, text: drawn, .. } if drawn == text => Some(*origin),
+        RenderCommand::DrawText {
+            origin,
+            text: drawn,
+            ..
+        } if drawn == text => Some(*origin),
         _ => None,
     })
 }
@@ -817,7 +839,11 @@ fn text_origin(
 /// A release at `position`: a control in this tree takes its click on the
 /// release, and the point is inside the control when it was read from the
 /// control's own glyph.
-fn click_point(composer: &mut ChatComposer, app: &AppContext, position: crate::geometry::Vector2F) -> bool {
+fn click_point(
+    composer: &mut ChatComposer,
+    app: &AppContext,
+    position: crate::geometry::Vector2F,
+) -> bool {
     composer.dispatch_event(
         &DispatchedEvent::MouseUp {
             position,
@@ -836,8 +862,8 @@ fn click_text(
     commands: &[crate::render::RenderCommand],
     text: &str,
 ) -> bool {
-    let origin = text_origin(commands, text)
-        .unwrap_or_else(|| panic!("{text:?} is drawn: {commands:?}"));
+    let origin =
+        text_origin(commands, text).unwrap_or_else(|| panic!("{text:?} is drawn: {commands:?}"));
     click_point(composer, app, vec2f(origin.x + 2.0, origin.y + 4.0))
 }
 
@@ -867,7 +893,16 @@ fn paint_host_frame(
     models: &HostModels,
     window: crate::geometry::Vector2F,
 ) -> Vec<crate::render::RenderCommand> {
-    host_frame(app, composer, slash, slash_index, slash_dismissed, models, window).1
+    host_frame(
+        app,
+        composer,
+        slash,
+        slash_index,
+        slash_dismissed,
+        models,
+        window,
+    )
+    .1
 }
 
 /// The same frame, with the band element itself, so a test can press a row of
@@ -880,10 +915,7 @@ fn host_frame(
     slash_dismissed: Rc<RefCell<bool>>,
     models: &HostModels,
     window: crate::geometry::Vector2F,
-) -> (
-    Option<Box<dyn Element>>,
-    Vec<crate::render::RenderCommand>,
-) {
+) -> (Option<Box<dyn Element>>, Vec<crate::render::RenderCommand>) {
     composer.layout(
         SizeConstraint::loose(window),
         &mut LayoutContext::default(),
@@ -900,11 +932,12 @@ fn host_frame(
             // itself on a row and reports the row to the app's handler.
             let accept = models.on_select.clone();
             let open = models.open.clone();
-            let mut menu = crate::elements::ModelMenu::new(models.items.clone(), models.index.clone())
-                .with_on_accept(move |index| {
-                    *open.borrow_mut() = false;
-                    (accept.borrow_mut())(index);
-                });
+            let mut menu =
+                crate::elements::ModelMenu::new(models.items.clone(), models.index.clone())
+                    .with_on_accept(move |index| {
+                        *open.borrow_mut() = false;
+                        (accept.borrow_mut())(index);
+                    });
             let index = models.index.clone();
             let len = models.items.len();
             menu = menu.with_on_move(move |row| {
@@ -1067,9 +1100,9 @@ fn a_custom_harness_footer_draws_its_mark_in_place_of_model_and_approval() {
         "the native footer keeps its approval control: {commands:?}"
     );
     assert!(
-        !commands
-            .iter()
-            .any(|c| matches!(c, RenderCommand::DrawIcon { name, .. } if name.starts_with("harness-"))),
+        !commands.iter().any(
+            |c| matches!(c, RenderCommand::DrawIcon { name, .. } if name.starts_with("harness-"))
+        ),
         "the native footer draws no harness mark: {commands:?}"
     );
 }
@@ -1097,11 +1130,9 @@ fn the_model_control_opens_the_models_the_host_draws() {
         .with_focused(true)
         .with_caret(caret.clone())
         .with_model_label("gpt-4o")
-        .with_model_menu(
-            two_models(),
-            open.clone(),
-            move |row| log.borrow_mut().push(row),
-        )
+        .with_model_menu(two_models(), open.clone(), move |row| {
+            log.borrow_mut().push(row)
+        })
         .with_model_menu_index(index.clone());
 
     // Closed, the control is its label and the list is not drawn.
@@ -1159,10 +1190,7 @@ fn the_model_control_opens_the_models_the_host_draws() {
         .expect("the band is a panel of its own");
     assert!(
         (panel.min_x() - crate::elements::COMPOSER_CARD_GUTTER).abs() < 0.5
-            && (panel.width()
-                - (size.x - crate::elements::COMPOSER_CARD_GUTTER * 2.0))
-                .abs()
-                < 0.5,
+            && (panel.width() - (size.x - crate::elements::COMPOSER_CARD_GUTTER * 2.0)).abs() < 0.5,
         "the DSH card lines up with the input card under it: {panel:?} in {size:?}"
     );
     let editor = commands
@@ -1209,7 +1237,10 @@ fn the_model_control_opens_the_models_the_host_draws() {
     // The band holds the keys that take a row from it; the editor keeps every
     // other key and its own caret.
     assert_eq!(*index.borrow(), 0, "the band opens on the model in force");
-    assert!(press(&mut composer, &app, "ArrowDown"), "Down belongs to the band");
+    assert!(
+        press(&mut composer, &app, "ArrowDown"),
+        "Down belongs to the band"
+    );
     assert_eq!(*index.borrow(), 1, "Down moves the selection");
     assert!(press(&mut composer, &app, "ArrowUp"));
     assert_eq!(*index.borrow(), 0, "Up moves it back");
@@ -1229,8 +1260,15 @@ fn the_model_control_opens_the_models_the_host_draws() {
 
     // Tab takes the row the selection is on, and the list follows it away.
     assert_eq!(*index.borrow(), 0);
-    assert!(press(&mut composer, &app, "Tab"), "Tab takes the selected row");
-    assert_eq!(*chosen.borrow(), vec![0], "the host is told which row was taken");
+    assert!(
+        press(&mut composer, &app, "Tab"),
+        "Tab takes the selected row"
+    );
+    assert_eq!(
+        *chosen.borrow(),
+        vec![0],
+        "the host is told which row was taken"
+    );
     assert!(!*open.borrow(), "and the list is put away");
 
     // Escape does the same, from the list the control has open.
@@ -1286,7 +1324,11 @@ fn the_model_control_opens_the_models_the_host_draws() {
         ),
         "the row takes the press"
     );
-    assert_eq!(*taking.borrow(), vec![1], "the row that was pressed is the one taken");
+    assert_eq!(
+        *taking.borrow(),
+        vec![1],
+        "the row that was pressed is the one taken"
+    );
     assert!(!*open.borrow(), "and the band closes on it");
 }
 
@@ -1346,7 +1388,10 @@ fn typing_a_command_takes_the_slot_from_the_model_band() {
         &models,
         vec2f(600.0, 500.0),
     );
-    assert!(model_band_drawn(&frame), "the model band is drawn: {frame:?}");
+    assert!(
+        model_band_drawn(&frame),
+        "the model band is drawn: {frame:?}"
+    );
     assert!(
         !command_band_drawn(&frame),
         "and no command row is drawn with it: {frame:?}"
@@ -1379,7 +1424,10 @@ fn typing_a_command_takes_the_slot_from_the_model_band() {
         &models,
         vec2f(600.0, 500.0),
     );
-    assert!(command_band_drawn(&frame), "the command list is drawn: {frame:?}");
+    assert!(
+        command_band_drawn(&frame),
+        "the command list is drawn: {frame:?}"
+    );
     assert!(!*open.borrow(), "the model band is put away");
     assert!(
         !model_band_drawn(&frame),
@@ -1387,9 +1435,16 @@ fn typing_a_command_takes_the_slot_from_the_model_band() {
     );
 
     // The band that is up is the one that owns the keys.
-    assert!(press(&mut composer, &app, "ArrowDown"), "Down belongs to a band");
+    assert!(
+        press(&mut composer, &app, "ArrowDown"),
+        "Down belongs to a band"
+    );
     assert_eq!(*slash_index.borrow(), 1, "it moves the command list's row");
-    assert_eq!(*model_index.borrow(), 0, "and leaves the model list's row alone");
+    assert_eq!(
+        *model_index.borrow(),
+        0,
+        "and leaves the model list's row alone"
+    );
 
     // The cloud chord is the host's and runs before both bands: it still
     // claims the key the command list would otherwise take.
@@ -1461,8 +1516,14 @@ fn opening_the_model_band_puts_the_command_list_away() {
         &models,
         vec2f(600.0, 500.0),
     );
-    assert!(command_band_drawn(&frame), "the command list is drawn: {frame:?}");
-    assert!(!model_band_drawn(&frame), "and the model band is not drawn: {frame:?}");
+    assert!(
+        command_band_drawn(&frame),
+        "the command list is drawn: {frame:?}"
+    );
+    assert!(
+        !model_band_drawn(&frame),
+        "and the model band is not drawn: {frame:?}"
+    );
 
     // Opening the models puts that list away: one band, and it is this one.
     assert!(
@@ -1483,15 +1544,25 @@ fn opening_the_model_band_puts_the_command_list_away() {
         &models,
         vec2f(600.0, 500.0),
     );
-    assert!(model_band_drawn(&frame), "the model band is drawn: {frame:?}");
+    assert!(
+        model_band_drawn(&frame),
+        "the model band is drawn: {frame:?}"
+    );
     assert!(
         !command_band_drawn(&frame),
         "and the command list is not drawn with it: {frame:?}"
     );
 
-    assert!(press(&mut composer, &app, "ArrowDown"), "Down belongs to a band");
+    assert!(
+        press(&mut composer, &app, "ArrowDown"),
+        "Down belongs to a band"
+    );
     assert_eq!(*model_index.borrow(), 1, "it moves the model list's row");
-    assert_eq!(*slash_index.borrow(), 0, "and leaves the command list's row alone");
+    assert_eq!(
+        *slash_index.borrow(),
+        0,
+        "and leaves the command list's row alone"
+    );
 
     // The editor keeps the keys the band does not take, and its caret, whatever
     // band is up.
@@ -1506,7 +1577,11 @@ fn opening_the_model_band_puts_the_command_list_away() {
         ),
         "a letter is the editor's"
     );
-    assert_eq!(composer.value(), "/xhe", "the letter lands where the caret was");
+    assert_eq!(
+        composer.value(),
+        "/xhe",
+        "the letter lands where the caret was"
+    );
     assert_eq!(*caret.borrow(), 2, "and the caret follows it");
 
     // The draft is still a command, so the next frame hands the slot back to
@@ -1520,12 +1595,25 @@ fn opening_the_model_band_puts_the_command_list_away() {
         &models,
         vec2f(600.0, 500.0),
     );
-    assert!(command_band_drawn(&frame), "the command list is drawn again: {frame:?}");
+    assert!(
+        command_band_drawn(&frame),
+        "the command list is drawn again: {frame:?}"
+    );
     assert!(!*open.borrow(), "the model band is put away");
-    assert!(!model_band_drawn(&frame), "and not drawn under it: {frame:?}");
-    assert!(press(&mut composer, &app, "ArrowDown"), "Down belongs to a band");
+    assert!(
+        !model_band_drawn(&frame),
+        "and not drawn under it: {frame:?}"
+    );
+    assert!(
+        press(&mut composer, &app, "ArrowDown"),
+        "Down belongs to a band"
+    );
     assert_eq!(*slash_index.borrow(), 1, "it moves the command list's row");
-    assert_eq!(*model_index.borrow(), 1, "and leaves the model list's row alone");
+    assert_eq!(
+        *model_index.borrow(),
+        1,
+        "and leaves the model list's row alone"
+    );
 }
 
 #[test]
@@ -1567,7 +1655,10 @@ fn composer_context_menu_opens_and_paints_panel() {
         .iter()
         .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
         .count();
-    assert!(strokes >= 1, "opened context menu should paint its panel border");
+    assert!(
+        strokes >= 1,
+        "opened context menu should paint its panel border"
+    );
 }
 
 fn drawn_texts(commands: &[crate::render::RenderCommand]) -> Vec<String> {
@@ -1742,7 +1833,9 @@ fn the_rich_input_stays_put_while_a_proposal_is_pending() {
         );
     }
     assert!(
-        !texts.iter().any(|t| t == "OK if I run this command and read the output?"),
+        !texts
+            .iter()
+            .any(|t| t == "OK if I run this command and read the output?"),
         "the approval is not drawn in the input"
     );
 }
@@ -1934,9 +2027,9 @@ fn the_approval_mode_menu_lists_words_without_icons() {
         "the mode rows draw no icons: {commands:?}"
     );
     assert!(
-        commands
-            .iter()
-            .any(|command| matches!(command, RenderCommand::DrawIcon { name, .. } if name == "check")),
+        commands.iter().any(
+            |command| matches!(command, RenderCommand::DrawIcon { name, .. } if name == "check")
+        ),
         "the mode in force is stamped with the check: {commands:?}"
     );
 }
@@ -2041,7 +2134,11 @@ fn a_press_anywhere_in_the_rich_input_focuses_the_editor() {
         &app,
     );
     assert!(!handled, "a press outside the bar is left to the pane");
-    assert_eq!(*focused.borrow(), vec![true], "and it does not re-report focus");
+    assert_eq!(
+        *focused.borrow(),
+        vec![true],
+        "and it does not re-report focus"
+    );
 }
 
 /// Narrowed, the footer's controls move onto a second line instead of being
@@ -2118,7 +2215,9 @@ fn the_instructions_close_the_input_in_a_fixed_row() {
     let app = AppContext::default();
     let line_of = |commands: &[RenderCommand], text: &str| -> Option<f32> {
         commands.iter().find_map(|command| match command {
-            RenderCommand::DrawText { text: run, origin, .. } if run == text => Some(origin.y),
+            RenderCommand::DrawText {
+                text: run, origin, ..
+            } if run == text => Some(origin.y),
             _ => None,
         })
     };
@@ -2133,11 +2232,7 @@ fn the_instructions_close_the_input_in_a_fixed_row() {
     };
     // The shell bar: its directory pill over the editor, its one instruction
     // under it, and no model or stop control in between.
-    let empty = paint_composer_in(
-        &app,
-        &mut shell(Vec::new()),
-        vec2f(600.0, 500.0),
-    );
+    let empty = paint_composer_in(&app, &mut shell(Vec::new()), vec2f(600.0, 500.0));
     let with_hints = paint_composer_in(
         &app,
         &mut shell(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]),
@@ -2276,7 +2371,9 @@ fn the_placeholder_names_the_surface() {
     let (_, commands) = paint_composer_in(&app, &mut terminal, vec2f(600.0, 500.0));
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|text| text == TERMINAL_COMPOSER_PLACEHOLDER),
+        texts
+            .iter()
+            .any(|text| text == TERMINAL_COMPOSER_PLACEHOLDER),
         "the terminal rich input asks for a command: {texts:?}"
     );
     assert!(
@@ -2291,7 +2388,9 @@ fn the_placeholder_names_the_surface() {
     let (_, commands) = paint_composer_in(&app, &mut typed, vec2f(600.0, 500.0));
     let texts = drawn_texts(&commands);
     assert!(
-        !texts.iter().any(|text| text == TERMINAL_COMPOSER_PLACEHOLDER),
+        !texts
+            .iter()
+            .any(|text| text == TERMINAL_COMPOSER_PLACEHOLDER),
         "the placeholder steps aside once the draft has text: {texts:?}"
     );
     assert!(
@@ -2356,7 +2455,10 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
         .iter()
         .filter_map(|command| match command {
             RenderCommand::DrawText {
-                origin, text, color, ..
+                origin,
+                text,
+                color,
+                ..
             } => Some((text.as_str(), *origin, *color)),
             _ => None,
         })
@@ -2379,9 +2481,7 @@ fn the_editor_caret_covers_the_letter_after_it_without_moving_the_text() {
         .iter()
         .enumerate()
         .find_map(|(index, command)| match command {
-            RenderCommand::FillRect { rect, color, .. } if *color == focus => {
-                Some((index, *rect))
-            }
+            RenderCommand::FillRect { rect, color, .. } if *color == focus => Some((index, *rect)),
             _ => None,
         })
         .expect("the focused editor paints its block");
@@ -2588,7 +2688,10 @@ fn the_rich_input_draws_no_send_control() {
                 let mut error = app.theme.color(ColorToken::Error);
                 error.a = 230;
                 error
-            } => Some((*rect, *corner_radius)),
+            } =>
+            {
+                Some((*rect, *corner_radius))
+            }
             _ => None,
         })
         .expect("the stop circle fills with the error colour at 90%");
@@ -2675,7 +2778,10 @@ fn the_cloud_chord_submits_to_the_cloud_and_plain_enter_still_sends() {
         );
         assert!(handled, "the cloud chord belongs to the composer");
         assert_eq!(*cloud.borrow(), vec!["ship it".to_string()]);
-        assert!(local.borrow().is_empty(), "the cloud chord is not a local send");
+        assert!(
+            local.borrow().is_empty(),
+            "the cloud chord is not a local send"
+        );
         assert_eq!(composer.value(), "", "the submitted draft is spent");
     }
 
@@ -2751,9 +2857,7 @@ fn the_directory_tray_is_capped_and_clips_the_rows_it_cannot_show() {
     let labels: Vec<String> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { text, .. } if text.starts_with("dir-") => {
-                Some(text.clone())
-            }
+            RenderCommand::DrawText { text, .. } if text.starts_with("dir-") => Some(text.clone()),
             _ => None,
         })
         .collect();
@@ -2885,7 +2989,11 @@ fn the_reserved_bar_height_is_the_cards_own_height() {
         .with_dir_menu(items.clone(), Rc::new(RefCell::new(false)), |_| {})
         .with_branch_label("main")
         .with_branch_menu(items, Rc::new(RefCell::new(false)), |_| {})
-        .with_slash_menu(vec![], Rc::new(RefCell::new(0)), Rc::new(RefCell::new(false)))
+        .with_slash_menu(
+            vec![],
+            Rc::new(RefCell::new(0)),
+            Rc::new(RefCell::new(false)),
+        )
         .with_on_slash_move(|_| {})
         .with_on_slash_accept(|_| {})
         .with_on_slash_dismiss(|| {});
@@ -2917,15 +3025,15 @@ fn a_background_composer_keeps_the_bands_keys_for_the_focused_one() {
         .with_hints(vec![ShortcutHint::new(&["/"], "commands")])
         .with_on_send(|_| {})
         .with_on_send_to_cloud(|_| {})
-        .with_slash_menu(vec![], Rc::new(RefCell::new(0)), Rc::new(RefCell::new(false)))
+        .with_slash_menu(
+            vec![],
+            Rc::new(RefCell::new(0)),
+            Rc::new(RefCell::new(false)),
+        )
         .with_on_slash_move(|_| {})
         .with_on_slash_accept(|_| {})
         .with_on_slash_dismiss(|| {})
-        .with_model_menu(
-            vec![],
-            Rc::new(RefCell::new(true)),
-            |_| {},
-        )
+        .with_model_menu(vec![], Rc::new(RefCell::new(true)), |_| {})
         .with_model_menu_index(Rc::new(RefCell::new(0)));
     composer.layout(
         SizeConstraint::loose(vec2f(600.0, 400.0)),
@@ -2964,7 +3072,11 @@ fn a_background_composer_keeps_the_bands_keys_for_the_focused_one() {
     let mut focused = ChatComposer::new()
         .with_value("/")
         .with_focused(true)
-        .with_slash_menu(vec![], Rc::new(RefCell::new(0)), Rc::new(RefCell::new(false)))
+        .with_slash_menu(
+            vec![],
+            Rc::new(RefCell::new(0)),
+            Rc::new(RefCell::new(false)),
+        )
         .with_on_slash_move(|_| {})
         .with_on_slash_accept(|_| {})
         .with_on_slash_dismiss(|| {});
@@ -3055,7 +3167,11 @@ fn the_model_card_reports_the_model_and_level_the_host_wires() {
         composer.dispatch_event(&key("ArrowDown"), &mut ctx, &app),
         "the model pane takes the arrow key"
     );
-    assert_eq!(tray_state.borrow().row, 1, "the highlight moved one row down");
+    assert_eq!(
+        tray_state.borrow().row,
+        1,
+        "the highlight moved one row down"
+    );
     assert!(
         composer.dispatch_event(&key("Enter"), &mut ctx, &app),
         "the model pane takes Enter"
@@ -3097,7 +3213,13 @@ fn the_model_card_reports_the_model_and_level_the_host_wires() {
         &app,
     );
     assert!(composer.dispatch_event(&key("ArrowDown"), &mut ctx, &app));
-    assert_eq!(tray_state.borrow().cell, 1, "the root highlight is on Effort");
+    assert_eq!(
+        tray_state.borrow().cell,
+        0,
+        "the first arrow lands on Model"
+    );
+    assert!(composer.dispatch_event(&key("ArrowDown"), &mut ctx, &app));
+    assert_eq!(tray_state.borrow().cell, 1, "the next arrow is on Effort");
     assert!(composer.dispatch_event(&key("Enter"), &mut ctx, &app));
     assert_eq!(tray_state.borrow().pane(), ModelTrayPane::Effort);
     assert!(composer.dispatch_event(&key("Enter"), &mut ctx, &app));
@@ -3109,6 +3231,153 @@ fn the_model_card_reports_the_model_and_level_the_host_wires() {
     assert!(!*open.borrow(), "and the pick closes the card");
 }
 
+/// The chip is DSH's model seat (`ModelSelect.module.css` `.trigger`): the
+/// catalogue's display name rather than the host's id, the effort beside it in
+/// the dimmer caption tone, no colour change when the card opens, and a chevron
+/// that flips with the open flag.
+#[test]
+fn the_model_chip_names_the_catalogue_model_and_captions_the_effort() {
+    use crate::elements::{ComposerModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState};
+    use crate::render::RenderCommand;
+
+    let app = AppContext::default();
+    let tray = ComposerModelTray::new(
+        vec![
+            ModelTrayHarness::new("deepseek", "DeepSeek").with_models(vec![ModelTrayModel::new(
+                "deepseek-flash",
+                "DeepSeek Flash",
+            )
+            .with_thinking(vec!["off".to_string(), "high".to_string()])]),
+        ],
+        Rc::new(RefCell::new(ModelTrayState::default())),
+        Rc::new(RefCell::new(false)),
+    )
+    .with_current("deepseek-flash", "high");
+    let mut composer = ChatComposer::new()
+        .with_model_label("deepseek-flash")
+        .with_model_tray(tray);
+    let commands = paint_composer(&app, &mut composer);
+    let color_of = |want: &str| {
+        commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text, color, .. } if text == want => Some(*color),
+            _ => None,
+        })
+    };
+    let name = color_of("DeepSeek Flash").expect("the seat names the catalogue model");
+    assert_eq!(
+        name,
+        app.theme.color(ColorToken::Muted),
+        "the model name is the label tone"
+    );
+    let effort = color_of("High").expect("the seat captions the effort");
+    assert!(
+        effort.r < name.r && effort.g < name.g && effort.b < name.b,
+        "the effort reads dimmer than the model name: {effort:?} against {name:?}"
+    );
+    assert!(
+        !drawn_texts(&commands)
+            .iter()
+            .any(|text| text == "deepseek-flash"),
+        "the raw host id is not the seat's label: {:?}",
+        drawn_texts(&commands)
+    );
+
+    // The card's open flag only flips the chevron: DSH keeps the label tone.
+    let mut opened = ChatComposer::new()
+        .with_model_label("deepseek-flash")
+        .with_model_tray(
+            ComposerModelTray::new(
+                vec![
+                    ModelTrayHarness::new("deepseek", "DeepSeek").with_models(vec![
+                        ModelTrayModel::new("deepseek-flash", "DeepSeek Flash")
+                            .with_thinking(vec!["high".to_string()]),
+                    ]),
+                ],
+                Rc::new(RefCell::new(ModelTrayState::default())),
+                Rc::new(RefCell::new(true)),
+            )
+            .with_current("deepseek-flash", "high"),
+        );
+    let commands = paint_composer(&app, &mut opened);
+    let reopened = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { text, color, .. } if text == "DeepSeek Flash" => Some(*color),
+            _ => None,
+        })
+        .expect("the open chip still names the model");
+    assert_eq!(
+        reopened,
+        app.theme.color(ColorToken::Muted),
+        "opening the card does not recolour the name"
+    );
+}
+
+/// The chip's value is one line inside DSH's 360pt cap: a model name that would
+/// over-run it is ellipsized (the old builder let the run wrap out of the 28pt
+/// control), and the effort gives its space up before the name loses a pixel
+/// (`.triggerEffort { flex-shrink: 1000 }`).
+#[test]
+fn a_long_model_chip_value_ellipsizes_inside_dshs_cap() {
+    use crate::elements::{ComposerModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState};
+
+    let long = "DeepSeek-V4.1-Flash-Experimental-Preview-Candidate-2026-11";
+    let chip = |name: &str, effort: &str| {
+        ChatComposer::new()
+            .with_model_label("stale-id")
+            .with_model_tray(
+                ComposerModelTray::new(
+                    vec![ModelTrayHarness::new("deepseek", "DeepSeek")
+                        .with_models(vec![ModelTrayModel::new("long", name)
+                            .with_thinking(vec![effort.to_string()])])],
+                    Rc::new(RefCell::new(ModelTrayState::default())),
+                    Rc::new(RefCell::new(false)),
+                )
+                .with_current("long", effort),
+            )
+    };
+
+    // The name alone overflows the cap: it ellipsizes, and the effort drops out
+    // of the chip instead of wrapping under the name.
+    let app = AppContext::default();
+    let mut composer = chip(long, "high");
+    let commands = paint_composer_in(&app, &mut composer, vec2f(900.0, 600.0)).1;
+    let texts = drawn_texts(&commands);
+    let fitted = texts
+        .iter()
+        .find(|text| text.starts_with("DeepSeek-V4.1") && text.ends_with('…'))
+        .unwrap_or_else(|| panic!("the chip ellipsizes the long name: {texts:?}"));
+    assert!(fitted.chars().count() < long.chars().count());
+    assert!(
+        !texts.iter().any(|text| text == long),
+        "the full name cannot fit the chip"
+    );
+    assert!(
+        !texts.iter().any(|text| text == "High"),
+        "the effort gives its space up before the name: {texts:?}"
+    );
+
+    // A name that fits keeps every pixel; the effort is the box that shrinks.
+    let mut composer = chip(
+        "DeepSeek-V4.1-Flash-Extended-Preview",
+        "extraordinarily-high-reasoning",
+    );
+    let commands = paint_composer_in(&app, &mut composer, vec2f(900.0, 600.0)).1;
+    let texts = drawn_texts(&commands);
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == "DeepSeek-V4.1-Flash-Extended-Preview"),
+        "the model name keeps its whole run: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.starts_with("Extraordin") && text.ends_with('…')),
+        "the effort absorbs the deficit and ellipsizes: {texts:?}"
+    );
+}
+
 /// The context band — the session chip, the working directory, the branch and
 /// the environment control — is the card's second section. While the draft's
 /// command band is open it steps out of the way, so the surface is the slash
@@ -3117,7 +3386,7 @@ fn the_model_card_reports_the_model_and_level_the_host_wires() {
 /// the band's height (less the top inset it no longer needs), not by the input's.
 #[test]
 fn the_context_band_hides_while_a_slash_command_is_typed() {
-    use crate::elements::{COMPOSER_CARD_INSET, CONTEXT_SEGMENT_HEIGHT, SlashMenuItem};
+    use crate::elements::{SlashMenuItem, COMPOSER_CARD_INSET, CONTEXT_SEGMENT_HEIGHT};
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
@@ -3183,11 +3452,7 @@ fn the_context_band_hides_while_a_slash_command_is_typed() {
         "a plain draft keeps the context band: {plain_frame:?}"
     );
     assert!(
-        (plain_size.y
-            - slash_size.y
-            - (CONTEXT_SEGMENT_HEIGHT - COMPOSER_CARD_INSET))
-            .abs()
-            < 1.0,
+        (plain_size.y - slash_size.y - (CONTEXT_SEGMENT_HEIGHT - COMPOSER_CARD_INSET)).abs() < 1.0,
         "hiding the band shrinks the card by exactly the band's section: \\
          {} against {}",
         plain_size.y,
@@ -3229,9 +3494,11 @@ fn opening_the_model_card_puts_the_slash_band_away() {
     let tray_open = Rc::new(RefCell::new(false));
     let tray = ComposerModelTray::new(
         vec![
-            ModelTrayHarness::new("goble", "Goble").with_models(vec![
-                ModelTrayModel::new("m1", "Model One").with_thinking(vec!["off".to_string()]),
-            ]),
+            ModelTrayHarness::new("goble", "Goble").with_models(vec![ModelTrayModel::new(
+                "m1",
+                "Model One",
+            )
+            .with_thinking(vec!["off".to_string()])]),
         ],
         Rc::new(RefCell::new(ModelTrayState::default())),
         tray_open.clone(),
@@ -3279,17 +3546,20 @@ fn opening_the_model_card_puts_the_slash_band_away() {
 /// full-width band over the input.
 #[test]
 fn the_model_chip_opens_the_dsh_card_above_it() {
-    use crate::elements::{ComposerModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState};
+    use crate::elements::{
+        ComposerModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState, COMPOSER_CARD_RADIUS,
+    };
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
     let open = Rc::new(RefCell::new(true));
     let tray = ComposerModelTray::new(
         vec![
-            ModelTrayHarness::new("deepseek", "DeepSeek").with_models(vec![
-                ModelTrayModel::new("deepseek-flash", "DeepSeek Flash")
-                    .with_thinking(vec!["off".to_string(), "on".to_string()]),
-            ]),
+            ModelTrayHarness::new("deepseek", "DeepSeek").with_models(vec![ModelTrayModel::new(
+                "deepseek-flash",
+                "DeepSeek Flash",
+            )
+            .with_thinking(vec!["off".to_string(), "on".to_string()])]),
         ],
         Rc::new(RefCell::new(ModelTrayState::default())),
         open.clone(),
@@ -3322,7 +3592,7 @@ fn the_model_chip_opens_the_dsh_card_above_it() {
                 color,
                 corner_radius,
             } if *color == app.theme.color(ColorToken::SurfaceRaised)
-                && (*corner_radius - 8.0).abs() < 0.01
+                && (*corner_radius - 12.0).abs() < 0.01
                 && rect.min_y() < 0.0 =>
             {
                 Some(*rect)
@@ -3337,6 +3607,33 @@ fn the_model_chip_opens_the_dsh_card_above_it() {
     assert!(
         card.width() < size.x,
         "the card is a menu, not a band over the whole input: {card:?} in {size:?}"
+    );
+    // The chip sits near the composer card's leading edge, so the 240pt card
+    // cannot open leftwards from it: DSH's clamped body portal slides it right
+    // to the layout viewport's edge, which is the composer card's 12pt gutter
+    // here. It must never paint off the card (the cropping the owner saw).
+    let composer_card = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::Surface)
+                && (*corner_radius - COMPOSER_CARD_RADIUS).abs() < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the composer paints its own card");
+    assert!(
+        card.min_x() >= composer_card.min_x() - 0.5,
+        "the model card clamps inside the composer card: {card:?} against {composer_card:?}"
+    );
+    assert!(
+        card.max_x() <= composer_card.max_x() + 0.5,
+        "the model card clamps inside the composer card: {card:?} against {composer_card:?}"
     );
 
     // DSH's drill chevrons on the cells, and the chip's chevron flipped up.

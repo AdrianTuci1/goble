@@ -1,38 +1,43 @@
-//! Headless raster previews of the pane chrome: the full-width topbar band and
-//! the work dock band, with their inner content bounded to the pane's content
-//! lane.
+//! Headless raster previews and measurements of the pane surface, the panel
+//! inset and the resize affordances.
 //!
 //! The live native window cannot be captured in this environment, so this
 //! example builds the real app tree (the same `RootView` the window draws) with
-//! a pane that has work in flight (so the dock renders) and rasterizes it to
-//! PNGs through the shared preview rasterizer. It is a visual verification tool
-//! for the pane-chrome fix, not a product surface:
+//! panes that have work in flight (so the dock renders) and rasterizes it to
+//! PNGs through the shared preview rasterizer. It is a visual verification tool,
+//! not a product surface. It measures:
 //!
-//! - the pane's topbar band is square and flush with the pane's slot (it covers
-//!   the pane frame's inset gutter), while the pane card below keeps its rounded
-//!   inset frame;
-//! - the work dock's band spans the pane as a square band, and its announcement
-//!   cards are bounded to the content lane the transcript is centred in;
-//! - a narrow pane (no active lane) keeps the same bands with full-width inner
-//!   content.
+//! - the AGENT SURFACE: the pane card's whole background, the text/content
+//!   column and the gutters outside it are the same darker `Bg` token, so
+//!   outside == inside (dark and light are the theme's own tokens);
+//! - the PANEL SURFACE INSET: the area the panes are rendered on sits 4 px
+//!   inside the window/chrome on all four sides (top: below the bar block;
+//!   right/bottom: the window edges; left: the sidebar), and each tab outline
+//!   keeps its own inset relative to its slot;
+//! - the RESIZE affordance: no thin divider rule is drawn at a split boundary
+//!   or at the sidebar edge — idle or while dragging — and the only affordance
+//!   is the resize cursor over the invisible grab band.
 //!
-//! Scenes: 1 pane (1600), 2 panes (2600, ratio 0.6), 1 narrow pane (1024).
+//! Scenes: 1 pane (1600x900, lane dragged to 700), 2 panes (2600x900, ratio
+//! 0.6), 1 narrow pane (1024x768, lane inactive), and 2 panes with the split and
+//! the sidebar edge both grabbed (2600x900) — the dragging frames must draw no
+//! rule either.
 //!
 //! Usage: cargo run -p goble-app --example pane_chrome_preview
-//! Output: /tmp/goble-work/out/pane-chrome-<scene>.png, with the per-pane
-//! geometry (pane rect, header band rect, dock band rect, card rects, resolved
-//! lane column) printed to stdout.
+//! Output: /tmp/goble-work/out/pane-chrome-<scene>.png, with the measured
+//! geometry, colours, panel insets and cursor probes printed to stdout.
 
 #[path = "../../../crates/goble-ui/examples/composer_preview/raster.rs"]
 mod raster;
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use goble_app::root_view::RootView;
 use goble_app::state::{PaneSession, UiState};
+use goble_app::ui::shell::{TOPBAR_BOTTOM_BAND, TOPBAR_HEIGHT};
 use goble_app::ui::{Pane, PaneKind, Space, SplitDir};
 use goble_core::harness::ToolCallStatus;
 use goble_core::store::Store;
@@ -40,8 +45,10 @@ use goble_desktop_service::{DesktopState, ThreadStore};
 use goble_ui::elements::{
     lane_column, AppContext, Element, LayoutContext, PaintContext, SizeConstraint,
 };
-use goble_ui::geometry::{RectF, Vector2F};
+use goble_ui::geometry::{rectf, RectF, Vector2F};
+use goble_ui::platform::CursorKind;
 use goble_ui::render::{RenderCommand, Renderer};
+use goble_ui::theme::ColorToken;
 use goble_ui::{vec2f, ChatFragment, ChatMessage, ChatRole, ToolCall};
 
 const OUT_DIR: &str = "/tmp/goble-work/out";
@@ -52,17 +59,23 @@ enum Scene {
     OnePane,
     TwoPanes,
     Narrow,
+    ResizeChrome,
 }
 
 impl Scene {
-    fn all() -> [Self; 3] {
-        [Self::OnePane, Self::TwoPanes, Self::Narrow]
+    fn all() -> [Self; 4] {
+        [
+            Self::OnePane,
+            Self::TwoPanes,
+            Self::Narrow,
+            Self::ResizeChrome,
+        ]
     }
 
     fn size(self) -> Vector2F {
         match self {
             Self::OnePane => vec2f(1600.0, 900.0),
-            Self::TwoPanes => vec2f(2600.0, 900.0),
+            Self::TwoPanes | Self::ResizeChrome => vec2f(2600.0, 900.0),
             Self::Narrow => vec2f(1024.0, 768.0),
         }
     }
@@ -72,14 +85,24 @@ impl Scene {
             Self::OnePane => "pane-chrome-1pane.png",
             Self::TwoPanes => "pane-chrome-2pane.png",
             Self::Narrow => "pane-chrome-narrow.png",
+            Self::ResizeChrome => "pane-chrome-resize-chrome.png",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::OnePane => "1 pane, 1600x900: full-width square chrome bands, lane-bounded content",
-            Self::TwoPanes => "2 panes, 2600x900 ratio 0.6: each pane's chrome spans its own slot",
-            Self::Narrow => "1 narrow pane, 1024x768: lane inactive, chrome bands still full width",
+            Self::OnePane => {
+                "1 pane, 1600x900: uniform darker agent surface, lane dragged to 700"
+            }
+            Self::TwoPanes => {
+                "2 panes, 2600x900 ratio 0.6: each pane's chrome spans its own slot, no divider"
+            }
+            Self::Narrow => {
+                "1 narrow pane, 1024x768: lane inactive, uniform agent surface, panel inset"
+            }
+            Self::ResizeChrome => {
+                "2 panes with the split grabbed and the sidebar edge grabbed: cursor-only resize"
+            }
         }
     }
 }
@@ -154,25 +177,32 @@ fn build_scene(
         s.chat_messages = vec![
             ChatMessage::new(
                 ChatRole::User,
-                vec![ChatFragment::text("Where does the pane chrome end?")],
+                vec![ChatFragment::text("Where does the pane surface end?")],
             ),
             ChatMessage::new(
                 ChatRole::Assistant,
                 vec![ChatFragment::text(
-                    "The chrome bands span the whole pane; the text inside them stops at the conversation column.",
+                    "The whole agent pane is one darker surface; the text column is only a width.",
                 )],
             ),
         ];
         match scene {
             Scene::OnePane | Scene::Narrow => {}
             Scene::TwoPanes => install_two_panes(&mut s, 0.6),
+            Scene::ResizeChrome => {
+                install_two_panes(&mut s, 0.6);
+                // Both resizable boundaries are grabbed: the frames must draw
+                // no rule at either one.
+                s.dragging_pane_id = Some(9);
+                s.sidebar_dragging = true;
+            }
         }
         // A pane snapshot is what makes the pane draw its own chat view (and
         // with it the work dock); every scene gives its panes one.
         let pane_id = s.active_pane_id;
         if scene == Scene::OnePane {
             // The owner's scene: agent mode with the width dragged narrower —
-            // the header stays full width while the darker column narrows.
+            // the whole surface stays the same darker background.
             s.content_lane_prefs.insert(pane_id, 700.0);
         }
         s.pane_sessions.entry(pane_id).or_insert_with(chat_session);
@@ -198,10 +228,41 @@ fn paint_frame(app: &AppContext, root: &mut Box<dyn Element>, size: Vector2F) ->
         .unwrap_or_default()
 }
 
-/// The square `Surface` bands the chrome paints: the header band (bar plus the
-/// pane frame's inset) and the dock band below it.
+/// Run one more paint of the already-built frame with the pointer at `pointer`,
+/// so the cursor requests the tree makes are observable, and return the cursor
+/// the platform was asked for.
+fn probe_cursor(
+    app: &AppContext,
+    root: &mut Box<dyn Element>,
+    pointer: Vector2F,
+) -> CursorKind {
+    let mut ctx = PaintContext::new(Renderer::new());
+    ctx.cursor_inside = true;
+    ctx.cursor_position = pointer;
+    root.paint(vec2f(0.0, 0.0), &mut ctx, app);
+    app.window_control.cursor()
+}
+
+/// The colour of the last fill covering `point`, i.e. what the frame leaves
+/// visible there.
+fn topmost_fill(commands: &[RenderCommand], point: Vector2F) -> Option<goble_ui::ColorU> {
+    commands.iter().rev().find_map(|command| match command {
+        RenderCommand::FillRect { rect, color, .. }
+            if point.x >= rect.min_x()
+                && point.x <= rect.max_x()
+                && point.y >= rect.min_y()
+                && point.y <= rect.max_y() =>
+        {
+            Some(*color)
+        }
+        _ => None,
+    })
+}
+
+/// The square `Surface` chrome bands the chrome paints: the header band (bar
+/// plus the pane frame's inset) and the dock band below it.
 fn chrome_bands(commands: &[RenderCommand], app: &AppContext) -> Vec<RectF> {
-    let surface = app.theme.color(goble_ui::theme::ColorToken::Surface);
+    let surface = app.theme.color(ColorToken::Surface);
     commands
         .iter()
         .filter_map(|command| match command {
@@ -209,12 +270,53 @@ fn chrome_bands(commands: &[RenderCommand], app: &AppContext) -> Vec<RectF> {
                 rect,
                 color,
                 corner_radius,
-            } if *color == surface && *corner_radius == 0.0 && rect.width() > rect.height() * 4.0 => {
+            } if *color == surface
+                && *corner_radius == 0.0
+                // The body's bands only: the topbar's own surface runs above
+                // the body origin.
+                && rect.min_y() >= TOPBAR_HEIGHT
+                && rect.width() > rect.height() * 4.0 =>
+            {
                 Some(*rect)
             }
             _ => None,
         })
         .collect()
+}
+
+/// Every thin one-axis rule the frame paints: a fill no thicker than 1.5 px and
+/// at least 40 px long. These are exactly the divider lines a resize boundary
+/// must not draw; the pane card frames are strokes, not fills, and are counted
+/// separately.
+fn thin_rules(commands: &[RenderCommand]) -> Vec<RectF> {
+    commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, .. }
+                if rect.min_y() >= TOPBAR_HEIGHT
+                    && ((rect.width() <= 1.5 && rect.height() >= 40.0)
+                        || (rect.height() <= 1.5 && rect.width() >= 40.0)) =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The bounding rectangle of the tab slots: the tab area the tabs tile.
+fn tab_area(slots: &[RectF]) -> Option<RectF> {
+    let mut rects = slots.iter().copied();
+    let first = rects.next()?;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) =
+        (first.min_x(), first.min_y(), first.max_x(), first.max_y());
+    for rect in rects {
+        min_x = min_x.min(rect.min_x());
+        min_y = min_y.min(rect.min_y());
+        max_x = max_x.max(rect.max_x());
+        max_y = max_y.max(rect.max_y());
+    }
+    Some(rectf(min_x, min_y, max_x - min_x, max_y - min_y))
 }
 
 fn pane_bounds(state: &Rc<RefCell<UiState>>) -> Vec<(u64, RectF)> {
@@ -226,122 +328,8 @@ fn pane_bounds(state: &Rc<RefCell<UiState>>) -> Vec<(u64, RectF)> {
 }
 
 /// A `#rrggbb` form of a theme colour, for the printed geometry.
-fn card_color_hex(color: goble_ui::ColorU) -> String {
+fn color_hex(color: goble_ui::ColorU) -> String {
     format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
-}
-
-/// Relative luminance, enough to state that the lane column is darker.
-fn luminance(color: goble_ui::ColorU) -> f32 {
-    0.2126 * color.r as f32 + 0.7152 * color.g as f32 + 0.0722 * color.b as f32
-}
-
-fn print_geometry(state: &Rc<RefCell<UiState>>, commands: &[RenderCommand], app: &AppContext) {
-    let s = state.borrow();
-    for (id, pane) in pane_bounds(state) {
-        let pref = s.content_lane_prefs.get(&id).copied();
-        let (gutter, lane) = lane_column(pane.width(), pref);
-        println!(
-            "\n   pane {id}: x {:.1}..{:.1} y {:.1}..{:.1} (w {:.1}); lane x {:.1}..{:.1} (w {:.1}, gutter {:.1})",
-            pane.min_x(),
-            pane.max_x(),
-            pane.min_y(),
-            pane.max_y(),
-            pane.width(),
-            pane.min_x() + gutter,
-            pane.min_x() + gutter + lane,
-            lane,
-            gutter,
-        );
-        // The bands drawn over this pane's x range and starting under the topbar.
-        let over: Vec<RectF> = chrome_bands(commands, app)
-            .into_iter()
-            .filter(|band| band.min_x() <= pane.min_x() + 12.0 && band.max_x() >= pane.max_x() - 12.0)
-            .collect();
-        for band in over {
-            println!(
-                "     band: x {:.1}..{:.1} (w {:.1}) y {:.1}..{:.1} (h {:.1}) r=0",
-                band.min_x(),
-                band.max_x(),
-                band.width(),
-                band.min_y(),
-                band.max_y(),
-                band.height()
-            );
-        }
-        // The lane column's fill vs the pane card's surface: the column must
-        // be the darker token, and the header controls must stay on the pane's
-        // edges (not on the column's).
-        let surface = app.theme.color(goble_ui::theme::ColorToken::Surface);
-        let card = commands.iter().find_map(|command| match command {
-            RenderCommand::FillRect { rect, color, .. }
-                if *color == surface
-                    && (rect.width() - pane.width()).abs() < 0.5
-                    && rect.height() > 300.0 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        });
-        let column = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if rect.width() < pane.width() - 1.0
-                        && rect.height() > 300.0
-                        && rect.min_x() >= pane.min_x()
-                        && rect.max_x() <= pane.max_x() =>
-                {
-                    Some((*rect, *color))
-                }
-                _ => None,
-            })
-            .max_by(|a, b| (a.0.width() * a.0.height()).total_cmp(&(b.0.width() * b.0.height())));
-        if let (Some(card), Some((column_rect, column_color))) = (card, column) {
-            println!(
-                "     pane surface {:?} (x {:.1}..{:.1}) | lane column {:?} (x {:.1}..{:.1}, w {:.1}) -> darker? {}",
-                card_color_hex(surface),
-                card.min_x(),
-                card.max_x(),
-                card_color_hex(column_color),
-                column_rect.min_x(),
-                column_rect.max_x(),
-                column_rect.width(),
-                luminance(column_color) < luminance(surface)
-            );
-        }
-        // Header row extents: the esc hint sits on the pane's leading edge, the
-        // close X on its trailing edge, even with a narrower lane.
-        let close = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, size, .. } if name == "x-close" => {
-                    Some((origin.x + size / 2.0, origin.y + size / 2.0))
-                }
-                _ => None,
-            })
-            .max_by(|a, b| a.0.total_cmp(&b.0));
-        let esc = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
-                _ => None,
-            })
-            .min_by(|a, b| a.x.total_cmp(&b.x));
-        if let (Some(close), Some(esc)) = (close, esc) {
-            println!(
-                "     topbar row: esc hint x {:.1} (pane left {:.1}) | close X x {:.1} (pane right {:.1}) -> full width? {}",
-                esc.x,
-                pane.min_x(),
-                close.0,
-                pane.max_x(),
-                esc.x < pane.min_x() + 60.0 && close.0 > pane.max_x() - 40.0
-            );
-        }
-    }
-}
-
-fn scene_png(scene: Scene) -> PathBuf {
-    Path::new(OUT_DIR).join(scene.file())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -360,10 +348,314 @@ fn main() -> anyhow::Result<()> {
         let _ = paint_frame(&app, &mut root, size);
         let commands = paint_frame(&app, &mut root, size);
         println!("\n== {:?} — {}", scene, scene.label());
-        print_geometry(&state, &commands, &app);
-        let out = scene_png(scene);
+        print_geometry(&state, &commands, &app, size);
+        print_cursor_probes(&app, &mut root, &state, size);
+
+        let out = Path::new(OUT_DIR).join(scene.file());
         raster::render_element_to_png(&assets, &app, &mut root, size.x, size.y, SCALE, None, &out)?;
         println!("   -> {}", out.display());
     }
     Ok(())
+}
+
+fn print_geometry(
+    state: &Rc<RefCell<UiState>>,
+    commands: &[RenderCommand],
+    app: &AppContext,
+    window: Vector2F,
+) {
+    let s = state.borrow();
+    let bg = app.theme.color(ColorToken::Bg);
+    let surface = app.theme.color(ColorToken::Surface);
+    let body_top = TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND;
+    let body_left = if s.sidebar_visible {
+        s.sidebar_width
+    } else {
+        0.0
+    };
+    let bands = chrome_bands(commands, app);
+    let mut slots: Vec<RectF> = Vec::new();
+    for (id, pane) in pane_bounds(state) {
+        let pref = s.content_lane_prefs.get(&id).copied();
+        let (gutter, lane) = lane_column(pane.width(), pref);
+        println!(
+            "\n   pane {id}: card x {:.1}..{:.1} y {:.1}..{:.1} ({}x{})",
+            pane.min_x(),
+            pane.max_x(),
+            pane.min_y(),
+            pane.max_y(),
+            pane.width(),
+            pane.height(),
+        );
+        println!(
+            "     lane: x {:.1}..{:.1} (w {:.1}, gutter {:.1})",
+            pane.min_x() + gutter,
+            pane.min_x() + gutter + lane,
+            lane,
+            gutter,
+        );
+
+        // The whole card's fill, whatever token it is.
+        let card_color = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if (rect.width() - pane.width()).abs() < 0.5
+                        && (rect.height() - pane.height()).abs() < 0.5
+                        && (rect.min_x() - pane.min_x()).abs() < 0.5 =>
+                {
+                    Some(*color)
+                }
+                _ => None,
+            })
+            .unwrap_or(bg);
+        // What is actually visible in the gutter beside the text column and
+        // inside it, at the pane's mid height.
+        let mid_y = pane.min_y() + pane.height() / 2.0;
+        let outside_x = if gutter > 8.0 {
+            pane.min_x() + gutter / 2.0
+        } else {
+            pane.min_x() + 2.0
+        };
+        let inside_x = pane.min_x() + gutter + lane / 2.0;
+        let outside = topmost_fill(commands, vec2f(outside_x, mid_y));
+        let inside = topmost_fill(commands, vec2f(inside_x, mid_y));
+        let uniform = outside == inside && outside == Some(card_color);
+        println!(
+            "     agent surface: card {} | outside text column {:?} | inside text column {:?} -> uniform? {}",
+            color_hex(card_color),
+            outside.map(color_hex),
+            inside.map(color_hex),
+            uniform
+        );
+
+        // The pane's own chrome bands: the header band at the top of its slot
+        // and (when work is in flight) the dock band under it.
+        let over: Vec<RectF> = bands
+            .iter()
+            .copied()
+            .filter(|band| {
+                band.min_x() <= pane.min_x() + 12.0 && band.max_x() >= pane.max_x() - 12.0
+            })
+            .collect();
+        for band in &over {
+            println!(
+                "     band: x {:.1}..{:.1} (w {:.1}) y {:.1}..{:.1} (h {:.1}) r=0",
+                band.min_x(),
+                band.max_x(),
+                band.width(),
+                band.min_y(),
+                band.max_y(),
+                band.height(),
+            );
+        }
+        let header = over
+            .iter()
+            .min_by(|a, b| a.min_y().total_cmp(&b.min_y()))
+            .copied();
+        if let Some(header) = header {
+            // The tab's slot is the header band's full-bleed rectangle: the
+            // card grown by the pane frame's gutter on every side.
+            let card_gutter = pane.min_x() - header.min_x();
+            let slot = rectf(
+                header.min_x(),
+                header.min_y(),
+                header.width(),
+                (pane.max_y() + card_gutter) - header.min_y(),
+            );
+            slots.push(slot);
+            println!(
+                "     tab slot: x {:.1}..{:.1} y {:.1}..{:.1} | card gutter inside it: {:.1}",
+                slot.min_x(),
+                slot.max_x(),
+                slot.min_y(),
+                slot.max_y(),
+                card_gutter,
+            );
+
+            // The tab outline keeps its 3 pt inset relative to its slot.
+            let outline = commands.iter().find_map(|command| match command {
+            RenderCommand::StrokeRect {
+                rect,
+                color,
+                width,
+                corner_radius,
+            } if (*width - 1.0).abs() < 0.01
+                && (*corner_radius - 6.0).abs() < 0.01
+                && (*color == app.theme.color(ColorToken::Accent)
+                    || *color == app.theme.color(ColorToken::Border))
+                && rect.min_x() <= header.min_x() + 3.5
+                && rect.max_x() >= header.max_x() - 3.5 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        });
+            if let Some(outline) = outline {
+                println!(
+                    "     tab outline: x {:.1}..{:.1} y {:.1}..{:.1} | slot inset L {:.1} T {:.1} R {:.1} B {:.1}",
+                    outline.min_x(),
+                    outline.max_x(),
+                    outline.min_y(),
+                    outline.max_y(),
+                    outline.min_x() - header.min_x(),
+                    outline.min_y() - header.min_y(),
+                    header.max_x() - outline.max_x(),
+                    slot.max_y() - outline.max_y(),
+                );
+            }
+        }
+
+        // Header row extents: the controls stay on the pane's edges even with
+        // an adjustable lane.
+        let close = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { origin, name, size, .. } if name == "x-close" => {
+                    Some((origin.x + size / 2.0, origin.y + size / 2.0))
+                }
+                _ => None,
+            })
+            .filter(|(x, y)| *y >= pane.min_y() && *y <= pane.min_y() + TOPBAR_HEIGHT)
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        let esc = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
+                _ => None,
+            })
+            .filter(|origin| {
+                origin.y >= pane.min_y() - 4.0
+                    && origin.y <= pane.min_y() + TOPBAR_HEIGHT
+                    && origin.x >= pane.min_x() - 4.0
+                    && origin.x <= pane.max_x() + 4.0
+            })
+            .min_by(|a, b| a.x.total_cmp(&b.x));
+        if let (Some(close), Some(esc)) = (close, esc) {
+            println!(
+                "     topbar row: esc hint x {:.1} (pane left {:.1}) | close X x {:.1} (pane right {:.1}) -> full width? {}",
+                esc.x,
+                pane.min_x(),
+                close.0,
+                pane.max_x(),
+                esc.x < pane.min_x() + 60.0 && close.0 > pane.max_x() - 40.0
+            );
+        }
+    }
+
+    // The panel surface is the whole tab area: the bounding rectangle of the
+    // tabs' slots. It is inset from the body/chrome on all four sides.
+    if let (Some(first), Some(area)) = (slots.first(), tab_area(&slots)) {
+        let _ = first;
+        println!(
+            "\n   panel surface area: x {:.1}..{:.1} y {:.1}..{:.1} | inset from body L {:.1} T {:.1} R {:.1} B {:.1} -> 4/4/4/4? {}",
+            area.min_x(),
+            area.max_x(),
+            area.min_y(),
+            area.max_y(),
+            area.min_x() - body_left,
+            area.min_y() - body_top,
+            window.x - area.max_x(),
+            window.y - area.max_y(),
+            (area.min_x() - body_left - 4.0).abs() < 0.01
+                && (area.min_y() - body_top - 4.0).abs() < 0.01
+                && (window.x - area.max_x() - 4.0).abs() < 0.01
+                && (window.y - area.max_y() - 4.0).abs() < 0.01,
+        );
+    }
+
+    // No drawn rules at the resizable boundaries — neither idle nor while a
+    // drag is in flight (the ResizeChrome scene grabs both).
+    let rules = thin_rules(commands);
+    println!(
+        "\n   thin divider rules in the frame: {} (split/sidebar must be 0){}",
+        rules.len(),
+        if rules.is_empty() {
+            String::new()
+        } else {
+            format!(" -> {rules:?}")
+        }
+    );
+    let frames = commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                RenderCommand::StrokeRect { width, .. } if (*width - 1.0).abs() < 0.01
+            )
+        })
+        .count();
+    println!(
+        "   pane card / outline strokes (frames, not resize rules): {frames}"
+    );
+    let surfaces = commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                RenderCommand::FillRect { color, .. } if *color == surface
+            )
+        })
+        .count();
+    println!(
+        "   Surface fills: {surfaces} | Bg fills: {} (the card is Bg for agent panes)",
+        commands
+            .iter()
+            .filter(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. } if *color == bg
+            ))
+            .count()
+    );
+}
+
+/// The resize affordance is cursor-only at the boundaries: probe the split edge,
+/// the sidebar edge and a point over the pane content, and print the cursor the
+/// platform was asked for.
+fn print_cursor_probes(
+    app: &AppContext,
+    root: &mut Box<dyn Element>,
+    state: &Rc<RefCell<UiState>>,
+    window: Vector2F,
+) {
+    let (sidebar_width, dragging) = {
+        let s = state.borrow();
+        (
+            s.sidebar_width,
+            s.dragging_pane_id.is_some() || s.sidebar_dragging,
+        )
+    };
+    let body_top = TOPBAR_HEIGHT + TOPBAR_BOTTOM_BAND;
+    let mid_y = (body_top + window.y) / 2.0;
+
+    // The sidebar's edge, in the middle of its invisible grab band.
+    let sidebar_edge = vec2f(sidebar_width, mid_y);
+    println!(
+        "   cursor at the sidebar edge {:.1}: {:?} (want EwResize)",
+        sidebar_width,
+        probe_cursor(app, root, sidebar_edge)
+    );
+
+    // The split boundary: the panes are side by side, so it is a vertical edge
+    // half-way between the neighbouring cards.
+    let panes = pane_bounds(state);
+    if let (Some(first), Some(second)) = (panes.first(), panes.get(1)) {
+        let boundary = (first.1.max_x() + second.1.min_x()) / 2.0;
+        println!(
+            "   cursor at the split boundary {:.1}: {:?} (want EwResize)",
+            boundary,
+            probe_cursor(app, root, vec2f(boundary, mid_y))
+        );
+        // Off the grab band, over the first pane's content: the arrow, unless a
+        // drag is in flight (then the captured pointer keeps the resize arrow).
+        let over_content = vec2f(
+            first.1.min_x() + first.1.width() / 2.0,
+            first.1.min_y() + first.1.height() / 2.0,
+        );
+        println!(
+            "   cursor over the pane content (off the band): {:?} (want {})",
+            probe_cursor(app, root, over_content),
+            if dragging { "EwResize" } else { "Default" }
+        );
+    }
 }

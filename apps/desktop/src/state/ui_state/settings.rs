@@ -134,6 +134,15 @@ impl UiState {
     pub fn refresh_settings(&mut self, desktop: &DesktopState) {
         self.refresh_settings_theme(desktop);
         self.refresh_settings_files(desktop);
+        // The Providers page's Accounts and Agent CLIs sections read the
+        // catalog's PATH detection (a stat/resolve pass, no --version probe) so
+        // a page opened from a restored layout is already populated. Only on
+        // the first load: a page write (and the colour wheel drags through
+        // them) must not re-scan 39 harness commands every event; the Refresh
+        // action and the harness writes re-scan explicitly.
+        if self.settings.harnesses.is_empty() {
+            self.settings.harnesses = desktop.list_harnesses();
+        }
         self.settings_workers = desktop
             .list_workers()
             .into_iter()

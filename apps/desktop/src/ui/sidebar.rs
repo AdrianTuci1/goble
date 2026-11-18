@@ -14,8 +14,9 @@ use std::rc::Rc;
 use goble_ui::elements::conversation_list_item::{
     sidebar_relative_time, SidebarActionRow, SidebarGroupRow, SidebarIconButton,
     SidebarList, SidebarMenuItem, SidebarSessionRow, SIDEBAR_GROUP_GAP, SIDEBAR_HEADER_BUTTON, SIDEBAR_HEADER_HEIGHT,
-    SIDEBAR_HEADER_ICON, SIDEBAR_HEADER_PADDING_START, SIDEBAR_ICON_NEW_CHAT,
-    SIDEBAR_ICON_PIN_FILL, SIDEBAR_ICON_PROJECT_ADD, SIDEBAR_ICON_SLIDERS,
+    SIDEBAR_HEADER_ICON, SIDEBAR_HEADER_PADDING_START, SIDEBAR_ICON_FOLDER_OPEN,
+    SIDEBAR_ICON_NEW_CHAT, SIDEBAR_ICON_PIN_FILL, SIDEBAR_ICON_PROJECT_ADD,
+    SIDEBAR_ICON_SLIDERS,
     SIDEBAR_LIST_BOTTOM_PAD, SIDEBAR_SECTION_TITLE, SIDEBAR_SECTION_TOP_INSET, SIDEBAR_TITLE_LINE,
     SIDEBAR_TITLE_SIZE,
 };
@@ -461,8 +462,8 @@ fn session_row(
     let on_select = actions.on_select_conversation.clone();
     // The hover strip's quick actions (DSH's `rowActions`): Pin and Archive,
     // wired to the same durable actions the tray's rows use. The pin is the
-    // store's `chats.starred` (Goble's pin), so this and the Star row are one
-    // action; an archived row's archive control is its restore.
+    // store's `chats.starred` (Goble's pin), so this and the Pin session row
+    // are one action; an archived row's archive control is its restore.
     let quick_pin = actions.on_toggle_star.clone();
     let quick_pin_id = entry.id.clone();
     let quick_archive = if entry.archived {
@@ -519,7 +520,7 @@ fn session_row(
         .with_on_quick_pin(move || (quick_pin.borrow_mut())(quick_pin_id.clone()))
         .with_on_quick_archive(move || (quick_archive.borrow_mut())(quick_archive_id.clone()))
         // Archived rows keep the row's geometry but read as history; the app
-        // blocks opening them and their menu has no Star/Archive rows.
+        // blocks opening them and their menu has no Pin/Archive rows.
         .with_archived(entry.archived)
         // The tray is tall now: a row near the window's bottom flips it above.
         .with_viewport_height(state.window_size.y)
@@ -528,12 +529,14 @@ fn session_row(
         .finish()
 }
 
-/// The six-row DSH session menu for one conversation, in order:
+/// The DSH session menu for one conversation, in the order the shipped
+/// `ui-workspace` registers its rows:
 ///
-/// Star/Unstar — Rename conversation — Fork conversation — Copy conversation ID
-/// — Archive/Unarchive conversation — Delete conversation (Goble's own row,
-/// last). An archived row shows Rename, Fork, Copy and Unarchive only: no pin,
-/// no Archive (DSH resolves the same menu for an archived session).
+/// Pin session/Unpin session (100) — Rename (200) — Fork session (300) —
+/// separator — Copy Session ID (450) — separator — Archive session/Unarchive
+/// session (600) — separator — Delete conversation (Goble's own row, last).
+/// An archived row shows Rename, Fork, Copy and Unarchive only: no pin, no
+/// Archive (DSH resolves the same menu for an archived session).
 fn session_menu_items(
     state: &UiSnapshot,
     actions: &UiActions,
@@ -545,7 +548,7 @@ fn session_menu_items(
         let id = entry.id.clone();
         let on_star = actions.on_toggle_star.clone();
         items.push(SidebarMenuItem::new(
-            if starred { "Unstar" } else { "Star" },
+            if starred { "Unpin session" } else { "Pin session" },
             if starred {
                 SIDEBAR_ICON_PIN_FILL
             } else {
@@ -557,21 +560,21 @@ fn session_menu_items(
     let id = entry.id.clone();
     let rename = actions.on_session_rename_start.clone();
     items.push(SidebarMenuItem::new(
-        "Rename conversation",
+        "Rename",
         "edit",
         move || (rename.borrow_mut())(id.clone()),
     ));
     let id = entry.id.clone();
     let fork = actions.on_fork_conversation_by_id.clone();
     items.push(SidebarMenuItem::new(
-        "Fork conversation",
+        "Fork session",
         "branch",
         move || (fork.borrow_mut())(id.clone()),
     ));
     let id = entry.id.clone();
     let copy = actions.on_copy_conversation_id.clone();
     items.push(
-        SidebarMenuItem::new("Copy conversation ID", "copy", move || {
+        SidebarMenuItem::new("Copy Session ID", "copy", move || {
             (copy.borrow_mut())(id.clone())
         })
         .with_separator_before(true),
@@ -580,7 +583,7 @@ fn session_menu_items(
         let id = entry.id.clone();
         let unarchive = actions.on_unarchive_conversation.clone();
         items.push(
-            SidebarMenuItem::new("Unarchive conversation", "unarchive", move || {
+            SidebarMenuItem::new("Unarchive session", "unarchive", move || {
                 (unarchive.borrow_mut())(id.clone())
             })
             .with_separator_before(true),
@@ -589,7 +592,7 @@ fn session_menu_items(
         let id = entry.id.clone();
         let archive = actions.on_archive_conversation.clone();
         items.push(
-            SidebarMenuItem::new("Archive conversation", "archive", move || {
+            SidebarMenuItem::new("Archive session", "archive", move || {
                 (archive.borrow_mut())(id.clone())
             })
             .with_separator_before(true),
@@ -620,8 +623,11 @@ struct WorkspaceSection {
     stored: bool,
 }
 
-/// The DSH workspace menu for one row, in DSH's order: Rename workspace, then —
-/// for a stored Workspace — Delete workspace (danger, behind a separator).
+/// The DSH workspace menu for one row, in DSH's registered order: Rename
+/// (`ui-workspace` order 100), Show in Finder (`ui-open-in-app` order 200),
+/// then — for a stored Workspace — Delete workspace (order 300, danger, behind
+/// a separator). The labels are DSH's own: "Rename", "Show in Finder", "Delete
+/// workspace".
 fn workspace_menu_items(
     actions: &UiActions,
     workspace: &WorkspaceSection,
@@ -629,9 +635,18 @@ fn workspace_menu_items(
     let rename = actions.on_sidebar_workspace_rename_start.clone();
     let path = workspace.path.clone();
     let title = workspace.title.clone();
-    let mut items = vec![SidebarMenuItem::new("Rename workspace", "edit", move || {
+    let mut items = vec![SidebarMenuItem::new("Rename", "edit", move || {
         (rename.borrow_mut())(path.clone(), title.clone())
     })];
+    if !workspace.path.trim().is_empty() {
+        let reveal = actions.on_sidebar_workspace_show_in_finder.clone();
+        let path = workspace.path.clone();
+        items.push(SidebarMenuItem::new(
+            show_in_file_manager_label(),
+            SIDEBAR_ICON_FOLDER_OPEN,
+            move || (reveal.borrow_mut())(path.clone()),
+        ));
+    }
     if workspace.stored {
         let delete = actions.on_sidebar_workspace_delete.clone();
         let path = workspace.path.clone();
@@ -644,6 +659,17 @@ fn workspace_menu_items(
         );
     }
     items
+}
+
+/// The reveal row's label: DSH localizes the same action per platform
+/// (`menu.finder` "Show in Finder" on macOS, `menu.reveal` "Show in folder"
+/// elsewhere), so the row reads the platform's own file manager.
+fn show_in_file_manager_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Show in Finder"
+    } else {
+        "Show in folder"
+    }
 }
 
 /// A group row plus its expanded rows, as one block.
@@ -2708,11 +2734,18 @@ mod workspace_row_tests {
             "the controls sit on the row: {dots:?}"
         );
 
-        // The dots open the workspace tray.
+        // The dots open the workspace tray: DSH's complete workspace menu, in
+        // its registered order — Rename, Show in Finder, then Delete workspace
+        // (danger, behind a separator).
         click(&mut root, &app, dots + vec2f(8.0, 8.0));
         let commands = render(&mut root, &app);
-        let rename = sidebar_text(&commands, "Rename workspace");
+        let rename = sidebar_text(&commands, "Rename");
+        let reveal = sidebar_text(&commands, "Show in Finder");
         sidebar_text(&commands, "Delete workspace");
+        assert!(
+            rename.y < reveal.y,
+            "DSH's order is Rename, then Show in Finder: {rename:?} / {reveal:?}"
+        );
 
         // Rename opens the workspace dialog on the real path.
         click(&mut root, &app, rename + vec2f(6.0, 6.0));
@@ -2724,6 +2757,28 @@ mod workspace_row_tests {
         assert_eq!(rename_state.path, "/tmp/goble-work/gamma");
         assert_eq!(rename_state.draft, "gamma");
         state.borrow_mut().cancel_workspace_rename();
+
+        // Show in Finder runs the real platform reveal. Reopen the tray first:
+        // running the Rename row closed it. On this test thread the platform
+        // honestly refuses to drive AppKit from a worker, so the failure notice
+        // is what proves the real handler (not a fake success) ran: the row's
+        // path is handed to the platform helper.
+        *state.borrow().sidebar_hover_row.borrow_mut() =
+            Some(format!("group:{}", folder_section("gamma")));
+        let commands = render(&mut root, &app);
+        let dots = sidebar_icon(&commands, "dots-horizontal");
+        click(&mut root, &app, dots + vec2f(8.0, 8.0));
+        let commands = render(&mut root, &app);
+        let reveal = sidebar_text(&commands, "Show in Finder");
+        click(&mut root, &app, reveal + vec2f(6.0, 6.0));
+        assert!(
+            matches!(
+                state.borrow().toast.as_ref().map(|notice| &notice.kind),
+                Some(crate::state::ToastKind::RevealFailed)
+            ),
+            "the reveal row ran the real platform helper and reported its failure: {:?}",
+            state.borrow().toast
+        );
     }
 
     /// The Workspaces header's "+" adds a workspace: the picked directory is

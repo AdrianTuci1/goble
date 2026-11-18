@@ -164,6 +164,22 @@ impl UiState {
         self.persist_workspaces(desktop);
     }
 
+    /// Reveal a Workspace's directory in the platform's file manager — DSH's
+    /// "Show in Finder" workspace menu row. The platform call is the real one
+    /// (`NSWorkspace` on macOS, the desktop's file manager elsewhere); when it
+    /// cannot reveal the folder the transient notice says so instead of
+    /// pretending the folder opened.
+    pub fn reveal_workspace_in_file_manager(&mut self, path: &str) {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if goble_ui::platform::current::reveal_in_file_manager(trimmed) {
+            return;
+        }
+        self.show_toast(super::ToastKind::RevealFailed);
+    }
+
     /// Open the "Rename workspace" dialog for the group section `folder`. A
     /// folder that only exists through its conversations has no stored entry
     /// yet; the commit adopts one, which is what makes its rename durable.
@@ -364,6 +380,31 @@ mod tests {
         state.workspace_rename_draft("Gamma".to_string());
         state.commit_workspace_rename(None);
         assert_eq!(state.workspace_for_folder("gamma").unwrap().title, "Gamma");
+    }
+
+    /// "Show in Finder" is the real platform reveal, not a fake: on this test
+    /// thread AppKit refuses to run, and the action reports that failure with
+    /// the warning notice instead of pretending the folder opened. The
+    /// workspace list is untouched (revealing is a read-only action).
+    #[test]
+    fn showing_a_workspace_in_finder_reports_the_platform_outcome() {
+        let mut state = state();
+        state.add_workspace("/tmp/alpha", None).expect("added");
+        state.reveal_workspace_in_file_manager("/tmp/alpha");
+        assert!(
+            matches!(
+                state.toast.as_ref().map(|notice| &notice.kind),
+                Some(crate::state::ToastKind::RevealFailed)
+            ),
+            "the worker thread's refused AppKit call is reported: {:?}",
+            state.toast
+        );
+        assert_eq!(state.sidebar_workspaces.len(), 1, "revealing changes no row");
+
+        // A row with no directory has nothing to reveal, so it raises nothing.
+        state.dismiss_toast();
+        state.reveal_workspace_in_file_manager("   ");
+        assert!(state.toast.is_none());
     }
 
     /// One workspace tray at a time: opening one closes the others (and the

@@ -54,8 +54,8 @@ use goble_ui::elements::{
     AppContext, ConstrainedBox, CrossAxisAlignment, Divider, Element, Expanded, Flex, KeyHandler,
     MainAxisAlignment, MainAxisSize, Scrollable, ShortcutHint, ShortcutHints, Text,
 };
+use goble_ui::color::ColorU;
 use goble_ui::event::ModifiersState;
-use goble_ui::geometry::vec2f;
 use goble_ui::theme::ColorToken;
 
 use crate::ui::color_picker::ColorTarget;
@@ -63,8 +63,10 @@ use crate::ui::{SettingsCategory, UiActions, UiSnapshot};
 
 use self::state::SettingsUiState as State;
 
-/// The settings header band's height (T3's `h-12`).
-pub const HEADER_HEIGHT: f32 = 48.0;
+/// The settings header band's height: the compact DSH/T3 `h-9` (36pt), down
+/// from the 48pt bar the owner asked to shorten. The 28pt buttons fit inside it
+/// with no vertical padding.
+pub const HEADER_HEIGHT: f32 = 36.0;
 /// The footer strip's height.
 pub const FOOTER_HEIGHT: f32 = 34.0;
 
@@ -74,14 +76,22 @@ pub fn build_settings_pane(
     app: &AppContext,
     snapshot: &UiSnapshot,
     actions: &UiActions,
-    _pane_id: u64,
+    pane_id: u64,
     page: SettingsCategory,
 ) -> Box<dyn Element> {
     let settings = &snapshot.settings;
+    // The header's X (and Escape at the rail) close the settings leaf through
+    // the app's own close rule: name the pane, then close it.
+    let on_activate = actions.on_pane_activate.clone();
+    let on_close = actions.on_close_pane.clone();
     let actions = &actions.settings;
+    let close: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+        (on_activate.borrow_mut())(pane_id);
+        (on_close.borrow_mut())();
+    }));
     let model = pages::page_model(page, settings);
     let nav = render::render_nav(app, settings, actions);
-    let header = render::render_header(app, settings, actions, page);
+    let header = render::render_header(app, settings, actions, page, Rc::clone(&close));
     let body = render::render_page(app, &model, settings, actions);
     let footer = render_footer(app, settings);
     let scroll = Scrollable::new(body, goble_ui::elements::Axis::Vertical)
@@ -98,7 +108,7 @@ pub fn build_settings_pane(
         .with_child(Expanded::new(scroll).finish())
         .with_child(footer)
         .finish();
-    let content = Flex::row()
+    let mut content = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         // Stretch so the page column gets the pane's bounded height: a Flex
         // row hands its children an unbounded cross axis otherwise, and the
@@ -107,6 +117,26 @@ pub fn build_settings_pane(
         .with_child(nav)
         .with_child(Expanded::new(page_column).finish())
         .finish();
+    // The add/edit form, if one is open, is a side sheet docked to the pane's
+    // trailing edge. The page behind it is dimmed and a press on it dismisses
+    // the sheet (a focus trap, like an open menu's).
+    if let Some(sheet_section) = pages::form_section(settings) {
+        let sheet = render::render_side_sheet(app, &sheet_section, settings, actions);
+        let dismiss_dispatch = actions.dispatch.clone();
+        let dismiss: Rc<RefCell<dyn FnMut()>> =
+            Rc::new(RefCell::new(move || {
+                (dismiss_dispatch.borrow_mut())(SettingsAction::CancelForm);
+            }));
+        let bg = app.theme.color(ColorToken::Bg);
+        let tint = ColorU::new(bg.r, bg.g, bg.b, 150);
+        let trapped: Box<dyn Element> = Box::new(render::DismissLayer::new(content, tint, dismiss));
+        content = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(Expanded::new(trapped).finish())
+            .with_child(sheet)
+            .finish();
+    }
     let surface = goble_ui::elements::Container::new(content)
         .with_background(goble_ui::elements::Fill::Solid(
             app.theme.color(ColorToken::Bg),
@@ -116,9 +146,10 @@ pub fn build_settings_pane(
     // app's (`⌘W`, pane navigation), so it is never consumed here.
     let dispatch = actions.dispatch.clone();
     let key_state = settings.clone();
+    let key_close = Rc::clone(&close);
     KeyHandler::new(surface, move |key, modifiers| {
         let state = key_state.clone();
-        dispatch_setting_key(&dispatch, &state, key, modifiers)
+        settings_key_with_close(&dispatch, Some(&key_close), &state, key, modifiers)
     })
     .finish()
 }
@@ -130,8 +161,65 @@ pub fn settings_key(
     key: &str,
     modifiers: ModifiersState,
 ) -> bool {
+    settings_key_with_close(dispatch, None, state, key, modifiers)
+}
+
+/// [`settings_key`] plus the pane's close affordance: Escape from the rail
+/// closes the settings pane (the keyboard equivalent of the header's X), while
+/// it keeps stepping a sheet/field or the rail out first.
+pub fn settings_key_with_close(
+    dispatch: &Rc<RefCell<dyn FnMut(SettingsAction)>>,
+    close: Option<&Rc<RefCell<dyn FnMut()>>>,
+    state: &State,
+    key: &str,
+    modifiers: ModifiersState,
+) -> bool {
     if modifiers.command || modifiers.ctrl || modifiers.alt {
         return false;
+    }
+    // A side sheet owns the keyboard while it is open: only its own rows step
+    // and activate, Escape closes it, and the rail search stays out of reach.
+    if state.region == SettingsRegion::Sheet {
+        if let Some(field) = state.focused_field.clone() {
+            match key {
+                "Escape" => {
+                    dispatch_action(dispatch, SettingsAction::ClearField { id: field });
+                    return true;
+                }
+                "Enter" => {
+                    dispatch_action(dispatch, SettingsAction::CommitField { id: field });
+                    return true;
+                }
+                "ArrowUp" | "ArrowDown" => {
+                    dispatch_action(dispatch, SettingsAction::ClearField { id: field });
+                    dispatch_action(
+                        dispatch,
+                        SettingsAction::Step(if key == "ArrowUp" { -1 } else { 1 }),
+                    );
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+        return match key {
+            "ArrowUp" => {
+                dispatch_action(dispatch, SettingsAction::Step(-1));
+                true
+            }
+            "ArrowDown" => {
+                dispatch_action(dispatch, SettingsAction::Step(1));
+                true
+            }
+            "Enter" | "Space" | "Tab" => {
+                dispatch_action(dispatch, SettingsAction::Activate);
+                true
+            }
+            "Escape" => {
+                dispatch_action(dispatch, SettingsAction::Back);
+                true
+            }
+            _ => false,
+        };
     }
     // A caret in a field owns printable keys and Backspace; only Escape and
     // Enter are the page's while the field holds the caret, and the field gets
@@ -205,6 +293,14 @@ pub fn settings_key(
             true
         }
         "Escape" => {
+            // From the rail, Escape leaves settings; from a page it steps back
+            // to the rail first (the footer names both).
+            if state.region == SettingsRegion::Rail {
+                if let Some(close) = close {
+                    (close.borrow_mut())();
+                    return true;
+                }
+            }
             dispatch_action(dispatch, SettingsAction::Back);
             true
         }
@@ -216,14 +312,7 @@ pub fn settings_key(
     }
 }
 
-fn dispatch_setting_key(
-    dispatch: &Rc<RefCell<dyn FnMut(SettingsAction)>>,
-    state: &State,
-    key: &str,
-    modifiers: ModifiersState,
-) -> bool {
-    settings_key(dispatch, state, key, modifiers)
-}
+
 
 fn dispatch_action(dispatch: &Rc<RefCell<dyn FnMut(SettingsAction)>>, action: SettingsAction) {
     (dispatch.borrow_mut())(action);
@@ -231,7 +320,11 @@ fn dispatch_action(dispatch: &Rc<RefCell<dyn FnMut(SettingsAction)>>, action: Se
 
 fn render_footer(app: &AppContext, settings: &State) -> Box<dyn Element> {
     let mut hints = Vec::new();
-    if settings.region == SettingsRegion::Rail {
+    if settings.region == SettingsRegion::Sheet {
+        hints.push(ShortcutHint::new(&["↑", "↓"], "fields"));
+        hints.push(ShortcutHint::new(&["Enter"], "activate"));
+        hints.push(ShortcutHint::new(&["Esc"], "close form"));
+    } else if settings.region == SettingsRegion::Rail {
         hints.push(ShortcutHint::new(&["↑", "↓"], "pages"));
         hints.push(ShortcutHint::new(&["Enter"], "open"));
         hints.push(ShortcutHint::new(&["/"], "search"));

@@ -348,9 +348,11 @@ fn the_keyboard_model_navigates_the_rail_and_the_page() {
     // Enter on a toggle row flips it through the file. The page's first
     // interactive row is the friendly-name field, whose Enter puts the caret
     // in rather than writing; find the first toggle row and focus that.
+    // The keyboard is on the Appearance page by now (the rail's Step moved it
+    // there); the toggle index must come from the page the keys will activate on.
     let toggle_index = {
         let state = fixture.state.borrow();
-        let model = pages::page_model(SettingsCategory::General, &state.settings);
+        let model = pages::page_model(state.settings.page, &state.settings);
         model
             .interactive_rows()
             .iter()
@@ -594,4 +596,460 @@ fn the_model_form_probes_before_saving() {
     // Nothing was written yet.
     assert_eq!(fixture.text(), SEEDED_CONFIG);
     let _: &SettingsUiState = &state.settings;
+}
+
+// ---------------------------------------------------------------------------
+// Owner follow-up: compact header + X, provider accounts, collapsible CLIs,
+// the colour picker/preset list and the side-sheet forms.
+// ---------------------------------------------------------------------------
+
+/// The settings header is the compact 36pt band and its trailing X closes the
+/// settings leaf through the app's own close rule. The keyboard equivalent is
+/// Escape from the rail (the X is also the pane's close affordance, so it is
+/// focusable by the pane's own keys).
+#[test]
+fn the_settings_header_is_compact_and_its_x_closes_the_pane() {
+    use goble_ui::elements::{Element, Text};
+    use goble_ui::event::DispatchedEvent;
+    use goble_ui::geometry::vec2f;
+
+    let app = AppContext::default();
+    let settings = SettingsUiState::default();
+    let actions = crate::ui::settings::state::SettingsActions::new(|_| {});
+    let closed = std::rc::Rc::new(std::cell::RefCell::new(false));
+    let flag = std::rc::Rc::clone(&closed);
+    let close: std::rc::Rc<std::cell::RefCell<dyn FnMut()>> =
+        std::rc::Rc::new(std::cell::RefCell::new(move || *flag.borrow_mut() = true));
+    let mut header = render::render_header(
+        &app,
+        &settings,
+        &actions,
+        SettingsCategory::Providers,
+        close,
+    );
+    let commands = render_element(&mut header, vec2f(900.0, 160.0), &app);
+    let height = header.size().expect("header laid out").y;
+    assert!(
+        height <= crate::ui::settings::HEADER_HEIGHT + 1.5,
+        "the header is the compact {}pt band, got {height}",
+        crate::ui::settings::HEADER_HEIGHT
+    );
+    assert!(crate::ui::settings::HEADER_HEIGHT <= 40.0);
+    let texts: Vec<String> = commands
+        .iter()
+        .filter_map(|command| match command {
+            goble_ui::render::RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.iter().any(|text| text == "Providers"), "{texts:?}");
+    assert!(texts.iter().any(|text| text == "Reload"), "{texts:?}");
+    assert!(texts.iter().any(|text| text == "Open file"), "{texts:?}");
+    // The X is drawn at the trailing end and a press on it runs the close.
+    let x = commands.iter().find_map(|command| match command {
+        goble_ui::render::RenderCommand::DrawIcon { origin, name, size, .. }
+            if name == "x" || name == "x-close" =>
+        {
+            Some((*origin, *size))
+        }
+        _ => None,
+    });
+    let (origin, size) = x.expect("the header draws the X icon");
+    assert!(origin.x > 800.0, "the X sits at the trailing edge: {origin:?}");
+    let mut ctx = goble_ui::elements::EventContext::default();
+    let at = vec2f(origin.x + size / 2.0, origin.y + size / 2.0);
+    let handled = header.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: at,
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    );
+    let released = header.dispatch_event(
+        &DispatchedEvent::MouseUp {
+            position: at,
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    );
+    assert!(handled, "the X claims the press");
+    assert!(released, "the X claims the release");
+    assert!(*closed.borrow(), "the X closes the settings pane");
+    let _ = Text::new("");
+}
+
+/// The colour-theme choice is a real list: the trigger opens the presets, each
+/// option is a row, and picking one writes `[theme] preset` (dropping the old
+/// channel overrides, as the old theme picker did) and closes the list.
+#[test]
+fn the_theme_preset_is_an_opened_list_that_writes_the_palette() {
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    fixture.dispatch(SettingsAction::SetColor {
+        target: 2,
+        hex: "#ff8800".to_string(),
+    });
+    assert!(fixture.text().contains("accent = \"#ff8800\""));
+    fixture.dispatch(SettingsAction::ToggleThemeSelect(true));
+    {
+        let state = fixture.state.borrow();
+        assert!(state.settings.theme_select_open);
+    }
+    let model = fixture.model(SettingsCategory::Appearance);
+    let options: Vec<String> = model
+        .interactive_rows()
+        .into_iter()
+        .filter(|row| row.id.starts_with("theme.preset.option."))
+        .map(|row| row.label.clone())
+        .collect();
+    assert!(!options.is_empty(), "the opened list offers the presets");
+    // Tokyo Night is option 3: Default, Goble Night, Goble Day, Tokyo Night.
+    fixture.dispatch(SettingsAction::SetSelect {
+        path: "theme.preset".to_string(),
+        index: 3,
+    });
+    let text = fixture.text();
+    assert!(text.contains("preset = \"tokyonight\""), "{text}");
+    assert!(
+        !text.contains("accent = \"#ff8800\""),
+        "picking a palette drops the channel override: {text}"
+    );
+    assert!(!fixture.state.borrow().settings.theme_select_open);
+}
+
+/// The Appearance page carries a real colour wheel for the selected channel;
+/// a pick writes that channel's `[theme]` override and the row keeps a swatch.
+#[test]
+fn the_colour_picker_wheel_edits_the_selected_channel() {
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    let model = fixture.model(SettingsCategory::Appearance);
+    let wheel = model
+        .interactive_rows()
+        .into_iter()
+        .find(|row| row.id == "theme.color-wheel")
+        .expect("the colour wheel row");
+    assert!(matches!(
+        wheel.control,
+        ControlModel::ColorWheel { channel: 0, .. }
+    ));
+    fixture.dispatch(SettingsAction::SetColorTarget(2));
+    let model = fixture.model(SettingsCategory::Appearance);
+    let wheel = model
+        .interactive_rows()
+        .into_iter()
+        .find(|row| row.id == "theme.color-wheel")
+        .expect("the colour wheel row");
+    assert!(matches!(
+        wheel.control,
+        ControlModel::ColorWheel { channel: 2, .. }
+    ));
+    fixture.dispatch(SettingsAction::SetColor {
+        target: 2,
+        hex: "#12ab34".to_string(),
+    });
+    assert!(fixture.text().contains("accent = \"#12ab34\""));
+    let model = fixture.model(SettingsCategory::Appearance);
+    let accent = model
+        .interactive_rows()
+        .into_iter()
+        .find(|row| row.id == "theme.accent")
+        .expect("the accent hex row");
+    assert!(accent.swatch.is_some(), "the channel row shows its swatch");
+}
+
+/// The Accounts section reads the real provider account (key state, base URL,
+/// default pick) and the service's local CLI detection, with the real actions
+/// attached; the subscription sign-ins stay disabled and honest.
+#[test]
+fn provider_accounts_render_real_accounts_and_local_cli_detection() {
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    let model = fixture.model(SettingsCategory::Providers);
+    let accounts = model
+        .sections
+        .iter()
+        .find(|section| section.id == "accounts")
+        .expect("the Accounts section");
+    let account = accounts
+        .rows
+        .iter()
+        .find(|row| row.id == "account.model.seeded")
+        .expect("the seeded provider is an account");
+    assert!(
+        account.hint.contains("seeded-model"),
+        "the account names the real model id: {}",
+        account.hint
+    );
+    assert!(
+        account
+            .status
+            .as_ref()
+            .is_some_and(|(text, kind)| text.contains("API key stored")
+                && *kind == StatusKind::Success),
+        "the account's status is the file's key state: {:?}",
+        account.status
+    );
+    let actions: Vec<SettingsAction> = match &account.control {
+        ControlModel::Buttons(actions) => actions.iter().map(|a| a.action.clone()).collect(),
+        other => panic!("the account has real buttons, got {other:?}"),
+    };
+    assert!(actions.contains(&SettingsAction::TestModel("seeded".to_string())));
+    assert!(actions.contains(&SettingsAction::EditModel("seeded".to_string())));
+    // Local harness detection: one account row per catalog harness, drawn from
+    // the service's PATH scan.
+    let harness_rows = accounts
+        .rows
+        .iter()
+        .filter(|row| row.id.starts_with("account.harness."))
+        .count();
+    assert!(
+        harness_rows > 0,
+        "Accounts lists the locally detected agent CLIs"
+    );
+    // The unavailable sign-ins are still listed, disabled, never faked.
+    assert!(accounts
+        .rows
+        .iter()
+        .any(|row| row.id == "oauth-codex" && row.disabled));
+    assert!(accounts
+        .rows
+        .iter()
+        .any(|row| row.id == "oauth-codex"
+            && row.status.as_ref().is_some_and(|(text, _)| text
+                .contains("no OAuth sign-in"))));
+}
+
+/// The agent-CLI list folds per CLI: the heading carries the detection summary,
+/// the body is hidden while closed (and out of the focus order), and the open
+/// state persists in `SettingsUiState::folds` across page builds.
+#[test]
+fn the_agent_cli_groups_collapse_and_expand_in_ui_state() {
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    let model = fixture.model(SettingsCategory::Providers);
+    let fold_id = model
+        .sections
+        .iter()
+        .find(|section| section.fold.is_some())
+        .map(|section| section.id.clone())
+        .expect("the Providers page folds the agent CLIs");
+    let closed = model
+        .sections
+        .iter()
+        .find(|section| section.id == fold_id)
+        .expect("the fold");
+    assert!(!closed.is_open());
+    assert!(closed.rows.is_empty(), "a closed fold draws no rows");
+    assert!(!closed.description.is_empty(), "the heading carries the summary");
+    let before = model.interactive_rows().len();
+    fixture.dispatch(SettingsAction::ToggleFold(fold_id.clone()));
+    assert!(fixture.state.borrow().settings.folds.contains(&fold_id));
+    let model = fixture.model(SettingsCategory::Providers);
+    let open = model
+        .sections
+        .iter()
+        .find(|section| section.id == fold_id)
+        .expect("the fold");
+    assert!(open.is_open());
+    assert!(!open.rows.is_empty());
+    assert!(
+        open.rows.iter().any(|row| row.label == "Launch command"),
+        "the open CLI shows its launch command"
+    );
+    assert!(
+        model.interactive_rows().len() > before,
+        "the open fold's rows join the focus order"
+    );
+    // The rendered page now draws the open body; closing it takes the body out.
+    let drawn = fixture.drawn_text(SettingsCategory::Providers);
+    assert!(drawn.iter().any(|text| text == "Launch command"));
+    fixture.dispatch(SettingsAction::ToggleFold(fold_id.clone()));
+    assert!(!fixture.state.borrow().settings.folds.contains(&fold_id));
+}
+
+/// Add/Edit host is a side sheet: the form leaves the page's own flow, the
+/// sheet owns the keyboard, Cancel/Escape closes it, and Save writes
+/// hosts.toml through the real service.
+#[test]
+fn the_add_host_form_is_a_docked_side_sheet_and_saves() {
+    use crate::ui::settings::state::HostFormField;
+    use goble_core::config::ConfigFile;
+
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    fixture.dispatch(SettingsAction::NewHost);
+    {
+        let state = fixture.state.borrow();
+        assert_eq!(state.settings.region, SettingsRegion::Sheet);
+        assert!(matches!(state.settings.form, Some(SettingsForm::Host(_))));
+    }
+    let sheet = pages::form_section(&fixture.state.borrow().settings)
+        .expect("the side sheet has a form");
+    assert_eq!(sheet.title, "Add host");
+    assert!(fixture
+        .model(SettingsCategory::Hosts)
+        .sections
+        .iter()
+        .all(|section| section.id != "host-form"));
+
+    fixture.dispatch(SettingsAction::HostFormText {
+        field: HostFormField::Name,
+        value: "staging-2".to_string(),
+    });
+    fixture.dispatch(SettingsAction::HostFormText {
+        field: HostFormField::Host,
+        value: "staging2.example.com".to_string(),
+    });
+    fixture.dispatch(SettingsAction::HostFormText {
+        field: HostFormField::User,
+        value: "deploy".to_string(),
+    });
+    fixture.dispatch(SettingsAction::SaveHostForm);
+    {
+        let state = fixture.state.borrow();
+        assert!(state.settings.form.is_none(), "Save closes the sheet");
+        assert_eq!(state.settings.region, SettingsRegion::Page);
+    }
+    let hosts_path = fixture
+        .desktop
+        .settings_path(ConfigFile::Hosts)
+        .expect("hosts path");
+    let hosts = std::fs::read_to_string(hosts_path).expect("read hosts.toml");
+    assert!(hosts.contains("staging-2"), "{hosts}");
+    assert!(hosts.contains("staging2.example.com"), "{hosts}");
+}
+
+/// Escape inside the open sheet closes it (the settings key map routes it
+/// through `Back`), the same dismissal the outside press runs.
+#[test]
+fn escape_closes_the_side_sheet() {
+    use goble_ui::event::ModifiersState;
+
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    fixture.dispatch(SettingsAction::NewHost);
+    let actions = crate::actions::settings_actions::make_settings_actions(
+        std::rc::Rc::clone(&fixture.state),
+        Some(Arc::clone(&fixture.desktop)),
+        std::rc::Rc::new(std::cell::RefCell::new(crate::media::MediaState::mock())),
+    );
+    let settings = fixture.state.borrow().settings.clone();
+    let handled = crate::ui::settings::settings_key_with_close(
+        &actions.dispatch,
+        None,
+        &settings,
+        "Escape",
+        ModifiersState::default(),
+    );
+    assert!(handled, "Escape is the settings surface's key");
+    let state = fixture.state.borrow();
+    assert!(state.settings.form.is_none(), "Escape closes the sheet");
+    assert_eq!(state.settings.region, SettingsRegion::Page);
+}
+
+/// Escape from the rail closes the settings pane — the keyboard equivalent of
+/// the header's X (a page steps back to the rail first).
+#[test]
+fn escape_from_the_rail_closes_the_settings_pane() {
+    use goble_ui::event::ModifiersState;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    let actions = crate::actions::settings_actions::make_settings_actions(
+        std::rc::Rc::clone(&fixture.state),
+        Some(Arc::clone(&fixture.desktop)),
+        Rc::new(std::cell::RefCell::new(crate::media::MediaState::mock())),
+    );
+    let mut settings = fixture.state.borrow().settings.clone();
+    settings.region = SettingsRegion::Rail;
+    let closed = Rc::new(Cell::new(false));
+    let flag = Rc::clone(&closed);
+    let close: Rc<std::cell::RefCell<dyn FnMut()>> =
+        Rc::new(std::cell::RefCell::new(move || flag.set(true)));
+    let handled = crate::ui::settings::settings_key_with_close(
+        &actions.dispatch,
+        Some(&close),
+        &settings,
+        "Escape",
+        ModifiersState::default(),
+    );
+    assert!(handled, "the settings surface consumes Escape");
+    assert!(closed.get(), "Escape from the rail closes the settings pane");
+}
+
+/// A press on the sheet's dimmed page dismisses the sheet (the focus trap),
+/// and the sheet's own X dispatches CancelForm.
+#[test]
+fn the_sheet_dims_the_page_and_its_x_cancels_the_form() {
+    use goble_ui::event::DispatchedEvent;
+    use goble_ui::geometry::vec2f;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let app = AppContext::default();
+    // The dim layer consumes a press anywhere and runs the dismiss action.
+    let dismissed = Rc::new(Cell::new(false));
+    let flag = Rc::clone(&dismissed);
+    let on_dismiss: Rc<std::cell::RefCell<dyn FnMut()>> =
+        Rc::new(std::cell::RefCell::new(move || flag.set(true)));
+    let tint = goble_ui::color::ColorU::new(0, 0, 0, 150);
+    let mut layer: Box<dyn Element> = Box::new(render::DismissLayer::new(
+        goble_ui::elements::Empty::new()
+            .with_size(vec2f(200.0, 100.0))
+            .finish(),
+        tint,
+        on_dismiss,
+    ));
+    let _ = render_element(&mut layer, vec2f(200.0, 100.0), &app);
+    let mut ctx = goble_ui::elements::EventContext::default();
+    assert!(layer.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: vec2f(20.0, 20.0),
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    ));
+    assert!(dismissed.get(), "a press on the dimmed page dismisses the sheet");
+
+    // The sheet's header X dispatches the form's Cancel.
+    let cancelled = Rc::new(Cell::new(false));
+    let flag = Rc::clone(&cancelled);
+    let actions = crate::ui::settings::state::SettingsActions::new(move |action| {
+        if action == SettingsAction::CancelForm {
+            flag.set(true);
+        }
+    });
+    let settings = SettingsUiState::default();
+    let section = crate::ui::settings::SectionModel::new("host-form", "Add host")
+        .with_description("Saved as one [hosts.<name>] entry in hosts.toml.")
+        .with_row(crate::ui::settings::RowModel::new("host-form.name", "Name", ""));
+    let mut sheet = render::render_side_sheet(&app, &section, &settings, &actions);
+    let commands = render_element(&mut sheet, vec2f(380.0, 600.0), &app);
+    let x = commands.iter().find_map(|command| match command {
+        goble_ui::render::RenderCommand::DrawIcon { origin, name, size, .. }
+            if name == "x" || name == "x-close" =>
+        {
+            Some((*origin, *size))
+        }
+        _ => None,
+    });
+    let (origin, size) = x.expect("the sheet header draws its X");
+    let at = vec2f(origin.x + size / 2.0, origin.y + size / 2.0);
+    let mut ctx = goble_ui::elements::EventContext::default();
+    sheet.dispatch_event(
+        &DispatchedEvent::MouseDown {
+            position: at,
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    );
+    sheet.dispatch_event(
+        &DispatchedEvent::MouseUp {
+            position: at,
+            button: 0,
+        },
+        &mut ctx,
+        &app,
+    );
+    assert!(cancelled.get(), "the sheet's X dispatches CancelForm");
 }

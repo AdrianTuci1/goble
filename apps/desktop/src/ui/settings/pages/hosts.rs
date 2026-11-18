@@ -8,16 +8,13 @@
 use goble_core::config::{ConfigFile, HostView};
 
 use super::super::model::{ActionModel, PageModel, RowModel, SectionModel};
-use super::super::state::{HostForm, SettingsAction, SettingsForm, SettingsUiState, StatusKind};
+use super::super::state::{HostForm, SettingsAction, SettingsUiState, StatusKind};
 use super::{add_action, problem_section, unavailable_row};
 
 pub fn page(state: &SettingsUiState) -> PageModel {
     let mut sections = Vec::new();
     if let Some(problems) = problem_section(state, ConfigFile::Hosts) {
         sections.push(problems);
-    }
-    if let Some(SettingsForm::Host(form)) = state.form.as_ref() {
-        sections.push(host_form_section(state, form));
     }
     let hosts = state.saved_hosts().to_vec();
     let mut rows: Vec<RowModel> = Vec::new();
@@ -127,7 +124,7 @@ fn host_row(state: &SettingsUiState, host: &HostView) -> RowModel {
     row
 }
 
-fn host_form_section(state: &SettingsUiState, form: &HostForm) -> SectionModel {
+pub(super) fn host_form_section(state: &SettingsUiState, form: &HostForm) -> SectionModel {
     let title = match &form.editing {
         Some(name) => format!("Edit host · {name}"),
         None => "Add host".to_string(),

@@ -7,15 +7,19 @@ use goble_ui::elements::{
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
-use goble_ui::theme::ColorToken;
+use goble_ui::platform::window::CursorKind;
 
 /// Splits horizontal space: fixed-width sidebar + main area filling the rest.
 /// The engine's `Flex` cannot yet distribute remaining space, so this custom
 /// element does the split at layout time.
 ///
-/// A draggable divider sits on the sidebar's right edge so the user can resize
-/// it. The width lives in app state (it must survive the per-frame rebuild),
-/// and the drag flags/callbacks are passed in from the snapshot.
+/// An invisible draggable band sits on the sidebar's right edge so the user can
+/// resize it. The width lives in app state (it must survive the per-frame
+/// rebuild), and the drag flags/callbacks are passed in from the snapshot.
+///
+/// The edge paints no divider: like the agent content lane's handles, the band
+/// shows only the resize cursor over it. The sidebar's own surface and the pane
+/// area's inset separation do the separating.
 const RESIZE_HANDLE_HALF: f32 = 4.0;
 
 type DragHandler = Option<Rc<RefCell<dyn FnMut(f32)>>>;
@@ -69,7 +73,7 @@ impl SidebarLayout {
         self
     }
 
-    /// Bounds of the resizable divider, in absolute window coordinates.
+    /// Bounds of the resizable band, in absolute window coordinates.
     fn handle_bounds(&self) -> Option<RectF> {
         let origin = self.origin?;
         let size = self.size?;
@@ -79,6 +83,20 @@ impl SidebarLayout {
             RESIZE_HANDLE_HALF * 2.0,
             size.y,
         ))
+    }
+
+    /// Ask the platform for the cursor this frame should show: the east-west
+    /// resize arrow over the sidebar's edge, and for the whole of a captured
+    /// drag. A layout the pointer is outside the band leaves whatever another
+    /// surface asked for alone.
+    fn request_cursor(&self, ctx: &PaintContext, app: &AppContext) {
+        let over_handle = ctx.cursor_inside
+            && self
+                .handle_bounds()
+                .is_some_and(|bounds| contains(bounds, ctx.cursor_position));
+        if self.dragging || over_handle {
+            app.window_control.set_cursor(CursorKind::EwResize);
+        }
     }
 }
 
@@ -113,21 +131,12 @@ impl Element for SidebarLayout {
         self.main.paint(origin + vec2f(self.width, 0.0), ctx, app);
         self.sidebar.paint(origin, ctx, app);
 
-        // Resizable divider along the sidebar's right edge; highlights while
-        // dragging so the user can see where the grab point is.
-        let height = self.size.map(|s| s.y).unwrap_or(0.0);
-        let color = if self.dragging {
-            app.theme.color(ColorToken::Accent)
-        } else {
-            app.theme.color(ColorToken::Border)
-        };
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.fill_rounded_rect(
-                rectf(origin.x + self.width - 0.5, origin.y, 1.0, height),
-                color,
-                0.0,
-            );
-        }
+        // No rule is drawn on the sidebar's edge: the resize cursor over the
+        // invisible grab band is the edge's whole affordance (the same
+        // cursor-only treatment as the agent content lane's handles). It is
+        // requested after both children paint, so the sidebar's own content
+        // and the panes' lanes keep their cursor requests except over the band.
+        self.request_cursor(ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {

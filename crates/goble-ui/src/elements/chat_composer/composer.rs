@@ -3,17 +3,20 @@ use std::rc::Rc;
 
 use super::hints_row::ComposerHintsRow;
 use super::proposal::CommandProposalUi;
+use crate::color::ColorU;
+use crate::elements::conversation_list_item::truncate_with_ellipsis;
+use crate::elements::text::measure_text;
 use crate::elements::{
-    harness_bar_mark, AppContext, ApprovalMode, Border, Clipped, ComposerButton,
-    ComposerModelTray, ConstrainedBox, Container, ContextPill, CrossAxisAlignment, DiffSummary,
-    EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, ModelTrayKey,
+    harness_bar_mark, AppContext, ApprovalMode, Border, Clipped, ComposerButton, ComposerModelTray,
+    ConstrainedBox, Container, ContextPill, CrossAxisAlignment, DiffSummary, EdgeInsets, Element,
+    Empty, Expanded, Fill, Flex, Icon, LayoutContext, MainAxisSize, ModelTrayBounds, ModelTrayKey,
     Padding, PaintContext, PanelScroll, PillTraySide, Point, PopupMenu, PopupMenuItem,
-    PopupMenuPosition, ShortcutHint, SizeConstraint, SlashMenuItem, Spacer, Text,
-    TextArea, Tooltip, TooltipPosition, Wrap, COMPOSER_CONTROL_RADIUS, CONTEXT_PILL_HEIGHT,
+    PopupMenuPosition, ShortcutHint, SizeConstraint, SlashMenuItem, Spacer, Text, TextArea,
+    Tooltip, TooltipPosition, Wrap, COMPOSER_CONTROL_RADIUS, CONTEXT_PILL_HEIGHT,
     CONTEXT_PILL_LABEL_SIZE, MENU_MAX_VISIBLE_ROWS,
 };
 use crate::event::{DispatchedEvent, ModifiersState};
-use crate::geometry::{vec2f, PointF, Vector2F};
+use crate::geometry::{rectf, vec2f, PointF, Vector2F};
 use crate::theme::{ColorToken, SpacingToken};
 use crate::vim::{Clipboard, VimMode, VimState};
 use goble_core::harness::CommandDecision;
@@ -119,6 +122,78 @@ const ENVIRONMENT_MENU_WIDTH: f32 = 308.0;
 /// branch tray is a long casing too, and a branch name is a deeper path than a
 /// model or a medium label.
 const BRANCH_MENU_WIDTH: f32 = 292.0;
+
+/// DSH's trigger cap (`.trigger { max-width: 360px }`): the chip never grows
+/// past it. A longer model name ellipsizes, and the effort gives its space up
+/// first (`flex-shrink: 1000` in `ModelSelect.module.css`).
+const MODEL_CHIP_MAX_WIDTH: f32 = 360.0;
+/// The chip's fixed chrome inside that cap: the 8pt leading inset, the 4pt gap
+/// before the chevron, the 12pt chevron and the 4pt trailing inset.
+const MODEL_CHIP_CHROME: f32 = 8.0 + 4.0 + 12.0 + 4.0;
+/// The gap a shown effort takes between the name and itself.
+const MODEL_CHIP_EFFORT_GAP: f32 = 4.0;
+/// Below this the effort has no readable word left, so it drops out of the chip
+/// entirely — the way DSH's 1000× shrink factor ellipsizes it away before the
+/// model name loses a pixel.
+const MODEL_CHIP_EFFORT_MIN: f32 = 12.0;
+/// What the chip's own row leaves outside it: the card inset (6 a side) and the
+/// input segment's 16/8 padding. A chip longer than that would paint out of the
+/// card, so the cap shrinks with a narrow pane instead of only stopping at
+/// DSH's 360pt design cap.
+const MODEL_CHIP_FOOTER_INSET: f32 = 6.0 * 2.0 + 16.0 + 8.0;
+
+/// DSH's `label-caption` tone: one step below `Muted` (`label-secondary`). The
+/// theme carries two text tiers, so the caption is the muted tone pulled toward
+/// the page background, so the effort and the chevron on the chip read dimmer
+/// than the model name beside them (`ModelSelect.module.css` `.triggerEffort`,
+/// `.chevron`).
+fn caption_color(app: &AppContext) -> ColorU {
+    app.theme
+        .color(ColorToken::Muted)
+        .mix(&app.theme.color(ColorToken::Bg), 0.35)
+}
+
+/// Fit the chip's value into DSH's 360pt cap: the effort shrinks first and drops
+/// out before the model name loses a pixel, then the name ellipsizes. The chip
+/// is one 28pt line, so the fit happens in the builder rather than letting a
+/// long run wrap over the footer.
+fn fit_model_chip(
+    name: String,
+    effort: Option<String>,
+    max_width: f32,
+) -> (String, Option<String>) {
+    let max = max_width.max(MODEL_CHIP_FOOTER_INSET + 24.0);
+    let name_width = measure_text(&name, CONTROL_TEXT_SIZE, 1.2, f32::INFINITY).x;
+    if let Some(effort) = effort {
+        let effort_width = measure_text(&effort, CONTROL_TEXT_SIZE, 1.2, f32::INFINITY).x;
+        let total = MODEL_CHIP_CHROME + MODEL_CHIP_EFFORT_GAP + name_width + effort_width;
+        if total <= max {
+            return (name, Some(effort));
+        }
+        let effort_max = (max - MODEL_CHIP_CHROME - MODEL_CHIP_EFFORT_GAP - name_width).max(0.0);
+        if effort_max >= MODEL_CHIP_EFFORT_MIN {
+            return (
+                name,
+                Some(truncate_with_ellipsis(
+                    &effort,
+                    CONTROL_TEXT_SIZE,
+                    1.2,
+                    effort_max,
+                )),
+            );
+        }
+        // The effort cannot carry a readable word any more: it goes first, and
+        // the name gets the whole cap.
+        return (fit_model_chip_name(&name, max), None);
+    }
+    (fit_model_chip_name(&name, max), None)
+}
+
+/// Ellipsize the model name into whatever the chip's cap leaves for it.
+fn fit_model_chip_name(name: &str, max_width: f32) -> String {
+    let name_max = (max_width - MODEL_CHIP_CHROME).max(0.0);
+    truncate_with_ellipsis(name, CONTROL_TEXT_SIZE, 1.2, name_max)
+}
 
 pub struct ChatComposer {
     pub(super) value: Rc<RefCell<String>>,
@@ -266,6 +341,16 @@ pub struct ChatComposer {
     /// levels. The band itself is the host's, drawn in the slot over the input;
     /// the control toggles its open flag and the composer routes its keys.
     model_tray: Option<ComposerModelTray>,
+    /// The card's width from the last layout pass, so a value built before the
+    /// layout (the model chip) can cap itself to the row it will sit in. The
+    /// element is rebuilt inside `layout`, so the current pass's width is the
+    /// one the chip is built with.
+    layout_width: Option<f32>,
+    /// The bounds the model card is placed inside: the composer card's width
+    /// (published in layout) and its painted rect (published in paint). The
+    /// card is anchored above the chip and clamps into this surface the way
+    /// DSH's portaled menu clamps to the layout viewport.
+    model_tray_bounds: ModelTrayBounds,
     /// The row the model band has chosen, host-owned like the open flag: the
     /// composer is rebuilt every frame, so an index kept inside it would reset
     /// on every one of them. Shared with the model menu when the host wires
@@ -332,6 +417,8 @@ impl ChatComposer {
             model_menu_open: Rc::new(RefCell::new(false)),
             on_select_model_item: None,
             model_tray: None,
+            layout_width: None,
+            model_tray_bounds: ModelTrayBounds::new(),
             model_index: Rc::new(RefCell::new(0)),
             vim: None,
             clipboard: None,
@@ -577,7 +664,8 @@ impl ChatComposer {
         // Only the composer whose pane is active holds the keyboard: a band
         // left open in a background pane must not take the keys of the pane the
         // user is typing in.
-        if !self.focused || !*self.model_menu_open.borrow()
+        if !self.focused
+            || !*self.model_menu_open.borrow()
             || self.on_select_model_item.is_none()
             || self.slash_band_open()
         {
@@ -1302,23 +1390,28 @@ impl ChatComposer {
     /// [`MODEL_NOT_CONFIGURED`] rather than a model name, so the control never
     /// claims a turn would run on something nobody chose.
     fn model_control(&self, app: &AppContext, label: String) -> Box<dyn Element> {
-        let text = if label.trim().is_empty() {
-            MODEL_NOT_CONFIGURED.to_string()
-        } else {
-            label
+        // DSH's seat names the model with the catalogue's own `model.name`
+        // (`ModelSelect.tsx` `currentChoice.model.name`), not the id the app
+        // stores; a host label is the fallback when the catalogue no longer
+        // holds the model, and an empty one still says nothing is configured.
+        let catalogue_label = self.model_tray.as_ref().and_then(|tray| {
+            tray.harnesses
+                .iter()
+                .flat_map(|group| group.models.iter())
+                .find(|model| model.id == tray.model)
+                .map(|model| model.name.clone())
+                .filter(|name| !name.trim().is_empty())
+        });
+        let text = match catalogue_label {
+            Some(name) => name,
+            None if label.trim().is_empty() => MODEL_NOT_CONFIGURED.to_string(),
+            None => label,
         };
-        // The card is open, so the chip's value reads in the text colour: the
-        // name being picked is the one the card above is about.
         let open = *self.model_menu_open.borrow()
             || self
                 .model_tray
                 .as_ref()
                 .is_some_and(|tray| *tray.open.borrow());
-        let label_color = if open {
-            ColorToken::Text
-        } else {
-            ColorToken::Muted
-        };
         // The effort the chip shows: the level in force, or the provider default
         // when the model offers levels but none is set — DSH's caption after the
         // model name.
@@ -1334,19 +1427,34 @@ impl ChatComposer {
                 has_levels.then(|| "Default".to_string())
             }
         });
+        // DSH caps the seat at 360pt, and the row itself caps it further on a
+        // narrow pane: a chip wider than the footer would paint out of the card.
+        let chip_cap = self
+            .layout_width
+            .map(|width| {
+                (width - MODEL_CHIP_FOOTER_INSET)
+                    .min(MODEL_CHIP_MAX_WIDTH)
+                    .max(MODEL_CHIP_CHROME + MODEL_CHIP_EFFORT_MIN)
+            })
+            .unwrap_or(MODEL_CHIP_MAX_WIDTH);
+        let (text, effort) = fit_model_chip(text, effort, chip_cap);
+        // DSH's chip: the model name in the label tone, the effort in the caption
+        // tone, a 4pt gap and a 12pt chevron that flips up while the card is
+        // open. Its label tone does not change with the card (`ModelSelect.module
+        // .css` keeps `label-secondary`), so the chip states only the seat.
         let mut content = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(4.0)
             .with_child(
                 Text::new(text)
-                    .with_theme_color(label_color, app)
+                    .with_theme_color(ColorToken::Muted, app)
                     .with_font_size(CONTROL_TEXT_SIZE)
                     .finish(),
             );
         if let Some(effort) = effort {
             content = content.with_child(
                 Text::new(effort)
-                    .with_theme_color(ColorToken::Muted, app)
+                    .with_color(caption_color(app))
                     .with_font_size(CONTROL_TEXT_SIZE)
                     .finish(),
             );
@@ -1354,7 +1462,7 @@ impl ChatComposer {
         content = content.with_child(
             Icon::new(if open { "chevron-up" } else { "chevron-down" })
                 .with_size(12.0)
-                .with_theme_color(ColorToken::Muted, app)
+                .with_color(caption_color(app))
                 .finish(),
         );
         // DSH's chip padding is asymmetric — 8pt before the label, 4pt after the
@@ -1428,9 +1536,14 @@ impl ChatComposer {
             .with_position(TooltipPosition::Above)
             .finish();
         // The DSH menu is a card anchored to this chip, not a sibling band: the
-        // chip is wrapped in the menu element, which draws the card above it.
+        // chip is wrapped in the menu element, which draws the card above it and
+        // clamps it inside this composer's card.
         match self.model_tray.as_ref() {
-            Some(tray) => Box::new(tray.popup(trigger)),
+            Some(tray) => Box::new(
+                tray.clone()
+                    .with_bounds(self.model_tray_bounds.clone())
+                    .popup(trigger),
+            ),
             None => trigger,
         }
     }
@@ -1484,7 +1597,8 @@ impl ChatComposer {
         let DispatchedEvent::KeyDown { key, modifiers } = event else {
             return false;
         };
-        if key != "Tab" || !modifiers.shift || modifiers.command || modifiers.ctrl || modifiers.alt {
+        if key != "Tab" || !modifiers.shift || modifiers.command || modifiers.ctrl || modifiers.alt
+        {
             return false;
         }
         (cb.borrow_mut())(mode.next());
@@ -1850,9 +1964,8 @@ impl ChatComposer {
             // The card's own inset is 6; the band's controls sit 10 further in,
             // which is the reference's 16 horizontal padding. 12 above them and
             // 6 below close the band at [`CONTEXT_SEGMENT_HEIGHT`].
-            column = column.with_child(
-                Padding::new(context, EdgeInsets::new(10.0, 8.0, 10.0, 8.0)).finish(),
-            );
+            column = column
+                .with_child(Padding::new(context, EdgeInsets::new(10.0, 8.0, 10.0, 8.0)).finish());
         }
         column = column.with_child(input_segment);
 
@@ -1897,7 +2010,11 @@ impl ChatComposer {
         app: &AppContext,
         has_context: bool,
     ) -> Box<dyn Element> {
-        let top = if has_context { 0.0 } else { COMPOSER_CARD_INSET };
+        let top = if has_context {
+            0.0
+        } else {
+            COMPOSER_CARD_INSET
+        };
         let card = Container::new(content)
             .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
             .with_corner_radius(COMPOSER_CARD_RADIUS)
@@ -1919,7 +2036,6 @@ impl ChatComposer {
         )
         .finish()
     }
-
 }
 
 impl Default for ChatComposer {
@@ -1935,7 +2051,17 @@ impl Element for ChatComposer {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
+        // The card's width is known before the tree is built, so the controls
+        // that must cap themselves to the row (the model chip's 360pt value) and
+        // the card that clamps to this surface both see this pass's width.
+        let card_width = if constraint.max.x.is_finite() {
+            (constraint.max.x - COMPOSER_CARD_GUTTER * 2.0).max(0.0)
+        } else {
+            f32::INFINITY
+        };
+        self.layout_width = Some(card_width);
         self.rebuild(app);
+        self.model_tray_bounds.set_width(card_width);
         let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size
@@ -1943,6 +2069,18 @@ impl Element for ChatComposer {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        // Publish the card's painted rect before the children paint: the model
+        // card is anchored to the chip and clamps into this surface, so it needs
+        // the rect of the frame it is about to be drawn in.
+        if let Some(size) = self.size {
+            let gutter = COMPOSER_CARD_GUTTER;
+            self.model_tray_bounds.set_rect(rectf(
+                origin.x + gutter,
+                origin.y,
+                (size.x - gutter * 2.0).max(0.0),
+                size.y,
+            ));
+        }
         self.root.as_mut().unwrap().paint(origin, ctx, app);
         // The card draws no focus ring: the owner asked for no blue border or
         // margin around the rich input, so the caret is the only focus signal.

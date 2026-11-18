@@ -10,6 +10,9 @@
 //! laid-out width, so the rule spans the card exactly and the card's first and
 //! last rows get no rule.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::elements::{
     AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint, Text,
 };
@@ -19,9 +22,25 @@ use crate::platform::text_atlas::FontWeight;
 use crate::theme::ColorToken;
 
 use super::{
-    group_border, group_fill, row_rule, SETTINGS_GROUP_RADIUS, SETTINGS_ROW_H_PADDING,
-    SETTINGS_SECTION_HEADER_GAP, SETTINGS_SECTION_HEADER_HEIGHT, SETTINGS_SECTION_HEADER_SIZE,
+    group_border, group_fill, row_rule, SETTINGS_FOLD_HEADER_HEIGHT, SETTINGS_GROUP_RADIUS,
+    SETTINGS_ROW_H_PADDING, SETTINGS_SECTION_HEADER_GAP, SETTINGS_SECTION_HEADER_HEIGHT,
+    SETTINGS_SECTION_HEADER_SIZE,
 };
+
+type ToggleCallback = Rc<RefCell<dyn FnMut()>>;
+
+/// A section heading that folds its rows away: DSH/T3's `FoldedSettingsSection`.
+///
+/// The whole heading line is the trigger — a chevron, the title and a muted
+/// summary, on the same hover band the fold element uses — and the group card is
+/// drawn only while the section is open. A folded section keeps its heading in
+/// the page's flow, so a list of per-item groups reads as a list of headers until
+/// one is opened.
+#[derive(Clone)]
+pub struct FoldHeader {
+    pub open: bool,
+    pub on_toggle: Option<ToggleCallback>,
+}
 
 /// A heading and the group card under it.
 pub struct SettingsSection {
@@ -34,6 +53,12 @@ pub struct SettingsSection {
     /// holds a theme library draws its own surface, so it asks for a bare
     /// heading instead (T3's `variant="plain"`).
     plain: bool,
+    /// The fold's open state and toggle callback; `None` is an ordinary,
+    /// always-open section.
+    fold: Option<FoldHeader>,
+    /// The DSH fold header's compact type (14/500) instead of the page
+    /// section's 16/600.
+    compact: bool,
     built: Option<Box<dyn Element>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -48,6 +73,8 @@ impl SettingsSection {
             rows: Vec::new(),
             footer: None,
             plain: false,
+            fold: None,
+            compact: false,
             built: None,
             size: None,
             origin: None,
@@ -95,14 +122,76 @@ impl SettingsSection {
         self.plain
     }
 
-    fn build(&mut self, app: &AppContext) {
-        let title = Text::new(self.title.clone())
-            .with_font_size(SETTINGS_SECTION_HEADER_SIZE)
-            .with_line_height(1.3)
-            .with_weight(FontWeight::SemiBold)
-            .with_color(app.theme.color(ColorToken::Text))
-            .finish();
-        let mut line: Vec<Box<dyn Element>> = vec![title];
+    /// Draw the section as a fold: the heading becomes the trigger and the rows
+    /// are drawn only while `open`. The section's description moves into the
+    /// heading line as the fold's muted summary.
+    pub fn with_fold(mut self, open: bool) -> Self {
+        self.fold = Some(FoldHeader {
+            open,
+            on_toggle: None,
+        });
+        self
+    }
+
+    pub fn with_on_fold_toggle<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        if let Some(fold) = self.fold.as_mut() {
+            fold.on_toggle = Some(Rc::new(RefCell::new(callback)));
+        }
+        self
+    }
+
+    /// The fold header's compact type: 14/500 rather than the page's 16/600.
+    pub fn compact_header(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    /// Whether the fold is open (always `true` for an ordinary section).
+    fn is_open(&self) -> bool {
+        self.fold.as_ref().map(|fold| fold.open).unwrap_or(true)
+    }
+
+    /// The heading line: optional fold chevron, the title, a fold's summary and
+    /// the section's right-aligned header action.
+    fn heading(&mut self, app: &AppContext) -> Box<dyn Element> {
+        let fold_open = self.fold.as_ref().map(|fold| fold.open);
+        let (size, weight) = if self.compact || fold_open.is_some() {
+            (14.0, FontWeight::Medium)
+        } else {
+            (SETTINGS_SECTION_HEADER_SIZE, FontWeight::SemiBold)
+        };
+        let mut line: Vec<Box<dyn Element>> = Vec::new();
+        if let Some(open) = fold_open {
+            line.push(
+                crate::elements::Icon::new(if open {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                })
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+            );
+        }
+        line.push(
+            Text::new(self.title.clone())
+                .with_font_size(size)
+                .with_line_height(1.3)
+                .with_weight(weight)
+                .with_color(app.theme.color(ColorToken::Text))
+                .finish(),
+        );
+        // A fold's description is its summary in the heading line; an ordinary
+        // section's description sits under the heading.
+        if fold_open.is_some() && !self.description.is_empty() {
+            line.push(
+                Text::new(self.description.clone())
+                    .with_font_size(12.0)
+                    .with_line_height(1.4)
+                    .with_color(app.theme.color(ColorToken::Muted))
+                    .finish(),
+            );
+        }
         if let Some(action) = self.header_action.take() {
             line.push(crate::elements::Spacer::new().finish());
             line.push(action);
@@ -112,20 +201,47 @@ impl SettingsSection {
             .with_spacing(8.0)
             .with_children(line)
             .finish();
-        let line = crate::elements::ConstrainedBox::new(line)
-            .with_min_height(SETTINGS_SECTION_HEADER_HEIGHT)
-            .finish();
+        let min_height = if fold_open.is_some() {
+            SETTINGS_FOLD_HEADER_HEIGHT
+        } else {
+            SETTINGS_SECTION_HEADER_HEIGHT
+        };
+        crate::elements::ConstrainedBox::new(line)
+            .with_min_height(min_height)
+            .finish()
+    }
+
+    fn build(&mut self, app: &AppContext) {
+        let fold_open = self.is_open();
+        let heading = self.heading(app);
+
         // The heading is inset like the rows inside the card below it: T3's
         // `px-3 sm:px-4`.
-        let mut children: Vec<Box<dyn Element>> = vec![crate::elements::Container::new(line)
+        let heading = crate::elements::Container::new(heading)
             .with_padding(crate::elements::EdgeInsets::new(
                 0.0,
                 SETTINGS_ROW_H_PADDING,
                 0.0,
                 SETTINGS_ROW_H_PADDING,
             ))
-            .finish()];
-        if !self.description.is_empty() {
+            .finish();
+        let heading: Box<dyn Element> = if let Some(fold) = self.fold.as_ref() {
+            // The whole heading is the fold's trigger, on T3's hover band.
+            let on_toggle = fold.on_toggle.clone();
+            crate::elements::HoverRow::new(heading)
+                .with_padding(crate::elements::EdgeInsets::new(0.0, 0.0, 0.0, 0.0))
+                .with_corner_radius(8.0)
+                .with_on_click(move || {
+                    if let Some(callback) = on_toggle.as_ref() {
+                        (callback.borrow_mut())();
+                    }
+                })
+                .finish()
+        } else {
+            heading
+        };
+        let mut children: Vec<Box<dyn Element>> = vec![heading];
+        if self.fold.is_none() && !self.description.is_empty() {
             let description = Text::new(self.description.clone())
                 .with_font_size(12.0)
                 .with_line_height(1.5)
@@ -142,7 +258,7 @@ impl SettingsSection {
                     .finish(),
             );
         }
-        if !self.rows.is_empty() || self.footer.is_some() {
+        if fold_open && (!self.rows.is_empty() || self.footer.is_some()) {
             let mut cells: Vec<Box<dyn Element>> = Vec::new();
             let mut rows = std::mem::take(&mut self.rows);
             let row_count = rows.len();
@@ -179,6 +295,8 @@ impl SettingsSection {
         }
         let gap = if self.plain {
             8.0
+        } else if self.fold.is_some() {
+            6.0
         } else {
             SETTINGS_SECTION_HEADER_GAP
         };

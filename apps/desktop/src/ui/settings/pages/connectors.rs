@@ -8,18 +8,13 @@
 use goble_core::config::{ConfigFile, McpView};
 
 use super::super::model::{ActionModel, PageModel, RowModel, SectionModel};
-use super::super::state::{
-    ConnectorForm, SettingsAction, SettingsForm, SettingsUiState, StatusKind,
-};
+use super::super::state::{ConnectorForm, SettingsAction, SettingsUiState, StatusKind};
 use super::{add_action, problem_section};
 
 pub fn page(state: &SettingsUiState) -> PageModel {
     let mut sections = Vec::new();
     if let Some(problems) = problem_section(state, ConfigFile::Config) {
         sections.push(problems);
-    }
-    if let Some(SettingsForm::Connector(form)) = state.form.as_ref() {
-        sections.push(connector_form_section(state, form));
     }
     let servers: Vec<McpView> = state
         .config
@@ -118,7 +113,7 @@ fn connector_row(state: &SettingsUiState, server: &McpView) -> RowModel {
     row
 }
 
-fn connector_form_section(state: &SettingsUiState, form: &ConnectorForm) -> SectionModel {
+pub(super) fn connector_form_section(state: &SettingsUiState, form: &ConnectorForm) -> SectionModel {
     let title = match &form.editing {
         Some(name) => format!("Edit connector · {name}"),
         None => "Add connector".to_string(),

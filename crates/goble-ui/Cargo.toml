@@ -69,6 +69,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSEvent", "NSScreen", "NSWindow", "NSRunningApplication", "objc2-core-foundation",
     # The attach control's open panel (`NSOpenPanel`, an `NSSavePanel`/`NSPanel`).
     "NSOpenPanel", "NSSavePanel", "NSPanel",
+    # The workspace menu's "Show in Finder": `NSWorkspace` reveals the row's
+    # directory in the Finder.
+    "NSWorkspace",
     # The dock icon placeholder: `NSImage` from embedded PNG bytes, which also
     # pulls in the `NSData`/`NSBundle` features the menu's name lookup needs.
     "NSImage",

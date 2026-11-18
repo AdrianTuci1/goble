@@ -24,13 +24,15 @@ use goble_ui::elements::ScrollState;
 
 use crate::ui::SettingsCategory;
 
-/// Which of the two regions holds the keyboard. The settings tab models the
-/// rail and the page as two focus regions; the rail is where it starts.
+/// Which of the settings surface's regions holds the keyboard: the rail, the
+/// page, or the add/edit side sheet opened over the page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SettingsRegion {
     #[default]
     Rail,
     Page,
+    /// A side sheet (Add/Edit model, connector, host, harness) owns the keys.
+    Sheet,
 }
 
 /// The colours a status sentence can take (the row-level counterpart lives in
@@ -141,12 +143,25 @@ pub struct HostForm {
     pub identity: String,
 }
 
+/// The Add/Edit agent-CLI override form (`[harness.<id>]`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HarnessForm {
+    /// The catalog id being edited; always `Some` (a harness exists in the
+    /// catalog before its override does).
+    pub editing: Option<String>,
+    pub name: String,
+    pub command: String,
+    pub args: String,
+    pub enabled: bool,
+}
+
 /// Which form is open, if any.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingsForm {
     Model(Box<ModelForm>),
     Connector(Box<ConnectorForm>),
     Host(Box<HostForm>),
+    Harness(Box<HarnessForm>),
 }
 
 /// What the Secret page's vault section shows.
@@ -178,6 +193,8 @@ pub struct SettingsUiState {
     pub nav_index: usize,
     /// The focused page row (interactive rows only, in draw order).
     pub row_index: usize,
+    /// The focused row of the open side sheet (interactive rows only).
+    pub sheet_row: usize,
     /// The field that holds the caret, by field id (`app.friendly_name`), when
     /// one does.
     pub focused_field: Option<String>,
@@ -195,8 +212,21 @@ pub struct SettingsUiState {
     pub busy: bool,
     /// Open folds, by fold id.
     pub folds: BTreeSet<String>,
-    /// The open form, if any.
+    /// The open form, if any. A form is drawn as a side sheet docked to the
+    /// pane's trailing edge, never as an inline page section.
     pub form: Option<SettingsForm>,
+    /// Local agent-CLI detection, refreshed from the service's catalog scan
+    /// (`PATH` resolution, no `--version` probe). The Providers page's Accounts
+    /// and Agent CLIs sections render this.
+    pub harnesses: Vec<goble_core::harness::HarnessStatus>,
+    /// The theme channel the Appearance page's colour wheel edits (index into
+    /// `color_picker::COLOR_TARGET_ORDER`).
+    pub color_target: usize,
+    /// The colour wheel's in-progress drag. It lives here, not in the element,
+    /// because the settings tree is rebuilt every frame.
+    pub color_drag: Rc<RefCell<Option<crate::ui::color_picker::ColorPickerDrag>>>,
+    /// Whether the Appearance page's theme-preset list is open.
+    pub theme_select_open: bool,
     /// The environment page's drafts: the new-group name and the open group.
     pub env_new_group: String,
     pub env_open_group: Option<String>,
@@ -218,6 +248,8 @@ pub struct SettingsUiState {
     pub paths: SettingsPaths,
     /// The page's scroll offset.
     pub scroll: Rc<RefCell<ScrollState>>,
+    /// The open side sheet's scroll offset (its form can outgrow the pane).
+    pub sheet_scroll: Rc<RefCell<ScrollState>>,
     /// Whether the last load failed; the page then draws the error rather than
     /// stale data.
     pub load_error: Option<String>,
@@ -262,6 +294,7 @@ impl Default for SettingsUiState {
             region: SettingsRegion::Rail,
             nav_index: 0,
             row_index: 0,
+            sheet_row: 0,
             focused_field: None,
             drafts: BTreeMap::new(),
             search: String::new(),
@@ -271,6 +304,10 @@ impl Default for SettingsUiState {
             busy: false,
             folds: BTreeSet::new(),
             form: None,
+            harnesses: Vec::new(),
+            color_target: 0,
+            color_drag: Rc::new(RefCell::new(None)),
+            theme_select_open: false,
             env_new_group: String::new(),
             env_open_group: None,
             env_var_name: String::new(),
@@ -282,6 +319,7 @@ impl Default for SettingsUiState {
             update_view: crate::update::UpdateView::default(),
             paths: SettingsPaths::default(),
             scroll: Rc::new(RefCell::new(ScrollState::default())),
+            sheet_scroll: Rc::new(RefCell::new(ScrollState::default())),
             load_error: None,
             revisions: BTreeMap::new(),
         }
@@ -532,6 +570,8 @@ pub enum SettingsAction {
     Activate,
     Back,
     ToggleFold(String),
+    /// Refresh the local agent-CLI detection from the service catalog.
+    RefreshHarnesses,
 
     // ---- scalar rows (paths are `[section, key]`; see `fields.rs`) ------
     SetToggle {
@@ -571,6 +611,18 @@ pub enum SettingsAction {
     Reload,
     OpenFile(ConfigFile),
     OpenSettingsFolder,
+
+    // ---- appearance -----------------------------------------------------
+    /// Pick which theme channel the colour wheel edits (index into
+    /// `color_picker::COLOR_TARGET_ORDER`).
+    SetColorTarget(usize),
+    /// Open or close the theme-preset list.
+    ToggleThemeSelect(bool),
+    /// A colour the wheel picked for `target`, written to `[theme] <channel>`.
+    SetColor {
+        target: usize,
+        hex: String,
+    },
 
     // ---- models ---------------------------------------------------------
     NewModel,
@@ -614,6 +666,15 @@ pub enum SettingsAction {
         value: String,
     },
     SaveHostForm,
+
+    // ---- harnesses (side sheet) ----------------------------------------
+    EditHarness(String),
+    HarnessFormText {
+        field: HarnessFormField,
+        value: String,
+    },
+    HarnessFormEnabled(bool),
+    SaveHarnessForm,
 
     // ---- environments ---------------------------------------------------
     EnvNewGroup(String),
@@ -675,6 +736,13 @@ pub enum ModelFormField {
 pub enum ModelFormToggle {
     Hidden,
     SetDefault,
+}
+
+/// The harness override form's text fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HarnessFormField {
+    Command,
+    Args,
 }
 
 /// The connector form's text fields.

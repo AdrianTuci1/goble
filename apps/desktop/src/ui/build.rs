@@ -1,6 +1,6 @@
 use goble_ui::elements::{
-    AppContext, Container, CrossAxisAlignment, Divider, Element, Expanded, Fill, Flex,
-    LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Stack,
+    AppContext, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex,
+    LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Stack,
 };
 use goble_ui::geometry::{rectf, PointF, RectF, Size2F, Vector2F};
 use goble_ui::platform::{CursorKind, WindowControl};
@@ -11,7 +11,7 @@ use super::actions::{AiActions, MediaActions, ProjectsActions, UiActions};
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    agent_dashboard, chat, connectors, crons, hosts, inbox, media, model_form, onboarding,
+    agent_dashboard, chat, connectors, crons, hosts, inbox, media, model_form, onboarding, panes,
     session_menu, settings, shell, shortcuts_help, sidebar, vault, CONNECTORS_WIDTH,
 };
 
@@ -74,15 +74,30 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     let main: Box<dyn Element> = if state.agent_dashboard.open {
         agent_dashboard::build_agent_dashboard(app, state, actions)
     } else {
-        shell::build_main(context)
+        let main = shell::build_main(context);
+        if state.current_tab == AppTab::Chat {
+            // The panel surface — the whole area the panes and panels are
+            // rendered on — is inset [`panes::PANE_AREA_INSET`] from the
+            // window's chrome on every side: the bar block above, the window's
+            // right and bottom edges, and the sidebar on the left. The window's
+            // `Bg` frames the panel area. The per-tab slots tile the area inside
+            // the inset, so every tab's outline keeps its own geometry relative
+            // to its slot.
+            Padding::new(main, EdgeInsets::uniform(panes::PANE_AREA_INSET)).finish()
+        } else {
+            // Every other page is not a panel surface: it takes the whole main
+            // area, the way it always has.
+            main
+        }
     };
-    // The pane area fills the whole main column. The content lane is PER PANE:
-    // each chat pane's content column is centred inside the pane's own width by
-    // the `ContentLane` the view mounts (`ChatView::with_content_lane`), with
-    // its per-pane width preference, while the pane's own header spans the full
+    // The pane area takes the main column, inset from the chrome by
+    // `panes::PANE_AREA_INSET` (see above). The content lane is PER PANE: each
+    // chat pane's content column is centred inside the pane's own width by the
+    // `ContentLane` the view mounts (`ChatView::with_content_lane`), with its
+    // per-pane width preference, while the pane's own header spans the full
     // pane. The app topbar and the sidebar stay full width, and the dashboard
     // and the non-chat pages take the whole main area (they are not
-    // conversation content).
+    // conversation content, so they are not a panel surface).
     let body: Box<dyn Element> = if state.sidebar_visible {
         let on_drag_start = actions.on_sidebar_drag_start.clone();
         let on_drag_move = actions.on_sidebar_drag_move.clone();
@@ -507,7 +522,8 @@ mod tests {
     use goble_ui::elements::{Element, EventContext};
     use goble_ui::event::{DispatchedEvent, ModifiersState};
     use goble_ui::geometry::{rectf, RectF};
-    use goble_ui::render::RenderCommand;
+    use goble_ui::platform::CursorKind;
+    use goble_ui::render::{RenderCommand, Renderer};
     use goble_ui::test_util::render_element;
 
     use crate::root_view::RootView;
@@ -633,7 +649,7 @@ mod tests {
             "the bar block is the bar plus its band"
         );
 
-        let (mut root, _state, _dir) = app_root();
+        let (mut root, state, _dir) = app_root();
         let commands = render_element(&mut root, window(), &app);
         let surface = app.theme.color(ColorToken::Surface);
         let sidebar = commands
@@ -655,22 +671,24 @@ mod tests {
             "the content sheet begins on the band's bottom edge: {sidebar:?}"
         );
 
-        // The panes' header bands bleed back up to that same edge, and the pane
-        // cards keep the gutter below it.
-        let frames = pane_frames(&commands, &app);
+        // The panes' header bands start on the panel surface's top edge, which
+        // is the body origin plus the panel inset; the pane cards keep their own
+        // gutter below it.
+        let frames = pane_frames(&state);
         assert!(!frames.is_empty(), "the frame draws its panes");
         let inset = crate::ui::panes::PANE_INSET;
+        let panel_top = sheet_top + crate::ui::panes::PANE_AREA_INSET;
         for frame in frames {
             assert_eq!(
                 frame.min_y(),
-                sheet_top + inset,
-                "the pane card is the body origin plus its gutter: {frame:?}"
+                panel_top + inset,
+                "the pane card is the panel surface plus its gutter: {frame:?}"
             );
             let header = header_band(&commands, &app, frame).expect("the pane's header band");
             assert_eq!(
                 header.min_y(),
-                sheet_top,
-                "the pane's header band starts exactly where the body does: {header:?}"
+                panel_top,
+                "the pane's header band starts on the panel surface's top edge: {header:?}"
             );
             assert_eq!(
                 header.max_y(),
@@ -697,7 +715,7 @@ mod tests {
 
         // One pane: the window's rule is neutral and the focused tab — the only
         // tab — is accent-outlined, 3 pt inside its slot on every side.
-        let (mut root, _state, _dir) = app_root();
+        let (mut root, state, _dir) = app_root();
         let commands = render_element(&mut root, window(), &app);
         let (_, width, _) = window_rule(&commands, &app).expect("the window's neutral rule");
         assert_eq!(width, WINDOW_BORDER_WIDTH);
@@ -705,12 +723,12 @@ mod tests {
             !has_accent_window_rule(&commands, &app),
             "no accent rule on the window's own rect"
         );
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 1, "one pane: {frames:?}");
         let slots = tab_slots(&frames);
         assert_eq!(
             crate::ui::panes::tab_outline_rect(slots[0], slots[0]),
-            rectf(303.0, 43.0, 718.0, 722.0),
+            rectf(307.0, 47.0, 710.0, 714.0),
             "a solo tab is inset 3 pt on every side of its slot: {:?}",
             slots[0]
         );
@@ -728,7 +746,7 @@ mod tests {
         install_two_panes(&state, 0.5);
         let commands = render_element(&mut root, window(), &app);
         assert!(!has_accent_window_rule(&commands, &app));
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 2, "two panes: {frames:?}");
         let slots = tab_slots(&frames);
         let area = rectf(
@@ -850,25 +868,15 @@ mod tests {
         })
     }
 
-    /// Every pane card in a rendered frame — the `Surface` fill each leaf
-    /// paints, in window order. The body's other `Surface` fills (the tab strip,
-    /// the sidebar) are shorter or outside the pane area.
-    fn pane_frames(commands: &[RenderCommand], app: &AppContext) -> Vec<RectF> {
-        let surface = app.theme.color(ColorToken::Surface);
-        let mut frames: Vec<RectF> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == surface
-                        && rect.min_x() >= crate::ui::SIDEBAR_WIDTH - 0.5
-                        && rect.min_y() > shell::TOPBAR_HEIGHT
-                        && rect.height() > 300.0 =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .collect();
+    /// Every pane card in a rendered frame, in window order: the rectangles the
+    /// panes recorded while painting (`UiSnapshot::pane_bounds`). The card fill
+    /// itself is no longer a reliable marker — an agent pane's card is the same
+    /// `Bg` as the window behind it — so the frame geometry is read from the
+    /// bounds the panes actually painted at, which is also what a drop resolves
+    /// against.
+    fn pane_frames(state: &Rc<RefCell<UiState>>) -> Vec<RectF> {
+        let s = state.borrow();
+        let mut frames: Vec<RectF> = s.pane_bounds.borrow().values().copied().collect();
         frames.sort_by(|a, b| a.min_x().total_cmp(&b.min_x()));
         frames
     }
@@ -899,9 +907,12 @@ mod tests {
         })
     }
 
-    /// The pane's content column: the widest `Bg` fill inside the pane frame.
-    /// With the lane active it is the centred column; on a narrow pane it is
-    /// the pane's full width.
+    /// The pane's content column: the widest `Bg` fill inside the pane frame,
+    /// excluding the card itself. With the lane active it is the centred column;
+    /// on a narrow pane it is the pane's full width. An agent pane's card is the
+    /// same `Bg` as its content column (that is the point of the uniform agent
+    /// surface), so the card's own fill — the frame rect itself — is skipped and
+    /// the column is the tall fill under the pane's chrome.
     fn content_column(commands: &[RenderCommand], app: &AppContext, frame: RectF) -> RectF {
         let bg = app.theme.color(ColorToken::Bg);
         commands
@@ -913,7 +924,9 @@ mod tests {
                         && rect.max_x() <= frame.max_x() + 0.5
                         && rect.min_y() >= frame.min_y() - 0.5
                         && rect.max_y() <= frame.max_y() + 0.5
-                        && rect.width() > 100.0 =>
+                        && rect.width() > 100.0
+                        && !((rect.width() - frame.width()).abs() < 0.5
+                            && (rect.height() - frame.height()).abs() < 0.5) =>
                 {
                     Some(*rect)
                 }
@@ -1054,17 +1067,18 @@ mod tests {
 
         // One pane on a wide window: the pane fills the pane area and its
         // content column is the ratio column, centred in the pane.
-        let (mut root, _state, _dir) = app_root();
+        let (mut root, state, _dir) = app_root();
         let commands = render_element(&mut root, vec2f(1600.0, 900.0), &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 1, "one pane: {frames:?}");
-        // Pane area 1300, leaf inset 4 each side: the pane is 1292 wide.
-        assert!((frames[0].width() - 1292.0).abs() < 0.5, "{:?}", frames[0]);
+        // Main 1300, panel inset 4 each side (1292), leaf inset 4 each side:
+        // the pane is 1284 wide.
+        assert!((frames[0].width() - 1284.0).abs() < 0.5, "{:?}", frames[0]);
         assert_pane_geometry(&commands, &app, &frames, None);
         let (gutter, width) = lane_column(frames[0].width(), None);
         assert!(
-            (width - 826.88).abs() < 0.5 && (gutter - 232.56).abs() < 0.5,
-            "64% of 1292 centred: {width} at gutter {gutter}"
+            (width - 821.76).abs() < 0.5 && (gutter - 231.12).abs() < 0.5,
+            "64% of 1284 centred: {width} at gutter {gutter}"
         );
 
         // Two panes of DIFFERENT widths (ratio 0.6 at 2600): each centres its
@@ -1072,22 +1086,23 @@ mod tests {
         let (mut root, state, _dir) = app_root();
         install_two_panes(&state, 0.6);
         let commands = render_element(&mut root, vec2f(2600.0, 900.0), &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 2, "two panes: {frames:?}");
-        // Pane area 2300, split 0.6: slots 1380 and 920, so the frames are
-        // 1372 and 912 (both above the 856 activation floor).
-        assert!((frames[0].width() - 1372.0).abs() < 0.5, "{:?}", frames[0]);
-        assert!((frames[1].width() - 912.0).abs() < 0.5, "{:?}", frames[1]);
+        // Main 2300, panel inset 4 each side: the pane area is 2292. Split 0.6:
+        // slots 1375.2 and 916.8, so the frames are 1367.2 and 908.8 (both above
+        // the 856 activation floor).
+        assert!((frames[0].width() - 1367.2).abs() < 0.5, "{:?}", frames[0]);
+        assert!((frames[1].width() - 908.8).abs() < 0.5, "{:?}", frames[1]);
         assert_pane_geometry(&commands, &app, &frames, None);
         let left = content_column(&commands, &app, frames[0]);
         let right = content_column(&commands, &app, frames[1]);
         assert!(
-            (left.width() - 878.08).abs() < 0.5,
-            "64% of the left pane's 1372: {left:?}"
+            (left.width() - 875.008).abs() < 0.5,
+            "64% of the left pane's 1367.2: {left:?}"
         );
         assert!(
             (right.width() - 680.0).abs() < 0.5,
-            "64% of the right pane's 912 clamps to the 680 floor: {right:?}"
+            "64% of the right pane's 908.8 clamps to the 680 floor: {right:?}"
         );
         assert!(
             (left.width() - right.width()).abs() > 1.0,
@@ -1098,10 +1113,12 @@ mod tests {
         let (mut root, state, _dir) = app_root();
         install_three_panes(&state);
         let commands = render_element(&mut root, vec2f(3000.0, 900.0), &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 3, "three panes: {frames:?}");
         for frame in &frames {
-            assert!((frame.width() - 892.0).abs() < 0.5, "equal slots: {frame:?}");
+            // 3000 - sidebar 300 = 2700; panel inset 4 each side → 2692; two
+            // equal nested halves → 897.333 slots; minus 8 of card inset each.
+            assert!((frame.width() - 889.333).abs() < 0.5, "equal slots: {frame:?}");
         }
         assert_pane_geometry(&commands, &app, &frames, None);
 
@@ -1138,10 +1155,11 @@ mod tests {
     fn a_narrow_pane_stays_full_width() {
         let app = AppContext::default();
 
-        // 1024 window: the pane is 716 wide, under the 856 activation floor.
-        let (mut root, _state, _dir) = app_root();
+        // 1024 window: the pane is 708 wide (1024 - 300 sidebar - 8 panel
+        // inset - 8 card inset), under the 856 activation floor.
+        let (mut root, state, _dir) = app_root();
         let commands = render_element(&mut root, window(), &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 1);
         assert_pane_geometry(&commands, &app, &frames, None);
         let column = content_column(&commands, &app, frames[0]);
@@ -1152,14 +1170,15 @@ mod tests {
             frames[0]
         );
 
-        // 2 panes at 1600: each pane is 642 wide, so both lanes are inactive.
+        // 2 panes at 1600: each pane is 638 wide (1292 pane area / 2 - 8), so
+        // both lanes are inactive.
         let (mut root, state, _dir) = app_root();
         install_two_panes(&state, 0.5);
         let commands = render_element(&mut root, vec2f(1600.0, 900.0), &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 2);
         for frame in &frames {
-            assert!((frame.width() - 642.0).abs() < 0.5, "{frame:?}");
+            assert!((frame.width() - 638.0).abs() < 0.5, "{frame:?}");
         }
         assert_pane_geometry(&commands, &app, &frames, None);
         for frame in &frames {
@@ -1278,7 +1297,7 @@ mod tests {
         // Learn each pane's width first, then give the two panes different
         // committed widths (844 and 680) — the shape the owner drags in.
         let commands = render_element(&mut root, size, &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 2);
         let expected_left = lane_column(frames[0].width(), None).1;
         let expected_right = lane_column(frames[1].width(), None).1;
@@ -1288,7 +1307,7 @@ mod tests {
             s.content_lane_prefs.insert(8, expected_right);
         }
         let commands = render_element(&mut root, size, &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         let before_left = content_column(&commands, &app, frames[0]);
         let before_right = content_column(&commands, &app, frames[1]);
         assert!(
@@ -1369,7 +1388,7 @@ mod tests {
         // The next frame lays the left pane out at the committed width; the
         // right pane's content column is exactly where it was.
         let commands = render_element(&mut root, size, &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         let left = content_column(&commands, &app, frames[0]);
         let right = content_column(&commands, &app, frames[1]);
         assert!(
@@ -1396,7 +1415,7 @@ mod tests {
         let (mut root, state, _dir) = app_root();
         install_two_panes(&state, 0.6);
         let commands = render_element(&mut root, vec2f(2600.0, 900.0), &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         let (gutter, width) = lane_column(frames[0].width(), None);
         let press = vec2f(frames[0].min_x() + gutter + width + 24.0 + 5.0, 400.0);
         let mut ctx = EventContext::default();
@@ -1467,7 +1486,7 @@ mod tests {
         // The surviving pane fills the pane area and lays its own committed
         // width out inside itself.
         let commands = render_element(&mut root, vec2f(2600.0, 900.0), &app);
-        let frames = pane_frames(&commands, &app);
+        let frames = pane_frames(&state);
         assert_eq!(frames.len(), 1, "the split collapses to the surviving leaf");
         assert_pane_geometry(&commands, &app, &frames, Some(700.0));
     }
@@ -1593,5 +1612,181 @@ mod tests {
             state.borrow().settings_pane().is_some(),
             "the press reached the Settings control under the rule"
         );
+    }
+
+    /// Every thin one-axis rule a frame paints below the bar: a fill no thicker
+    /// than 1.5 px and at least 40 px long. These are the divider rules a
+    /// resizable boundary must not draw.
+    fn thin_rules(commands: &[RenderCommand]) -> Vec<RectF> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if rect.min_y() >= shell::TOPBAR_HEIGHT
+                        && ((rect.width() <= 1.5 && rect.height() >= 40.0)
+                            || (rect.height() <= 1.5 && rect.width() >= 40.0)) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Paint the already-built frame once more with the pointer at `pointer`, so
+    /// the cursor the tree asks the platform for is observable.
+    fn paint_with_pointer(root: &mut Box<dyn Element>, app: &AppContext, pointer: Vector2F) {
+        let mut ctx = goble_ui::elements::PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = pointer;
+        root.paint(vec2f(0.0, 0.0), &mut ctx, app);
+    }
+
+    /// The surface the panes are rendered on is inset 4 px from the window's
+    /// chrome on every side, and the pane cards keep their own `PANE_INSET`
+    /// gutter inside it: the panel surface never touches the bar block, the
+    /// sidebar or the window edges. The per-tab outline keeps its geometry
+    /// relative to its slot (`every_tab_wears_its_own_outline_not_the_window`).
+    #[test]
+    fn the_panel_surface_is_inset_four_px_from_the_chrome() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let window = window();
+        let sheet_top = shell::TOPBAR_HEIGHT + shell::TOPBAR_BOTTOM_BAND;
+        let commands = render_element(&mut root, window, &app);
+
+        let surface = app.theme.color(ColorToken::Surface);
+        let band = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == surface
+                    && *corner_radius == 0.0
+                    && (rect.height() - (shell::TOPBAR_HEIGHT + crate::ui::panes::PANE_INSET))
+                        .abs()
+                        < 0.5
+                    && rect.min_y() > shell::TOPBAR_HEIGHT
+                    && rect.width() > window.x / 2.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the pane's full-bleed header band is painted");
+        assert_eq!(
+            band.min_y(),
+            sheet_top + crate::ui::panes::PANE_AREA_INSET,
+            "the panel surface starts 4 px below the bar block: {band:?}"
+        );
+        assert_eq!(
+            band.min_x(),
+            crate::ui::SIDEBAR_WIDTH + crate::ui::panes::PANE_AREA_INSET,
+            "and 4 px right of the sidebar: {band:?}"
+        );
+        assert_eq!(
+            band.max_x(),
+            window.x - crate::ui::panes::PANE_AREA_INSET,
+            "and 4 px inside the window's right edge: {band:?}"
+        );
+
+        // The pane card keeps its own gutter inside the panel surface, and the
+        // window's bottom edge keeps the same 4 px inset below it.
+        let frames = pane_frames(&state);
+        assert_eq!(frames.len(), 1, "one pane: {frames:?}");
+        assert_eq!(
+            frames[0].min_x(),
+            band.min_x() + crate::ui::panes::PANE_INSET,
+            "the card sits PANE_INSET inside the panel surface: {:?}",
+            frames[0]
+        );
+        assert_eq!(
+            window.y - (frames[0].max_y() + crate::ui::panes::PANE_INSET),
+            crate::ui::panes::PANE_AREA_INSET,
+            "and 4 px above the window's bottom edge: {:?}",
+            frames[0]
+        );
+    }
+
+    /// No divider line is drawn at the split boundary or at the sidebar edge —
+    /// neither idle nor while either resize drag is in flight — and the
+    /// boundary's whole affordance is the resize cursor over its grab band.
+    #[test]
+    fn the_resize_boundaries_draw_no_line_and_show_the_resize_cursor() {
+        let app = AppContext::default();
+        for (split_dragging, sidebar_dragging) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let (mut root, state, _dir) = app_root();
+            install_two_panes(&state, 0.5);
+            {
+                let mut s = state.borrow_mut();
+                s.dragging_pane_id = split_dragging.then_some(9);
+                s.sidebar_dragging = sidebar_dragging;
+            }
+            let command = || {
+                format!("split dragging {split_dragging}, sidebar dragging {sidebar_dragging}")
+            };
+            let commands = render_element(&mut root, window(), &app);
+
+            let rules = thin_rules(&commands);
+            assert!(
+                rules.is_empty(),
+                "{}: no divider rule at a resizable boundary: {rules:?}",
+                command()
+            );
+
+            // The split's boundary: half-way between the two neighbouring pane
+            // cards, in the middle of the grab band.
+            let frames = pane_frames(&state);
+            assert_eq!(frames.len(), 2, "two panes: {frames:?}");
+            let boundary_x = (frames[0].max_x() + frames[1].min_x()) / 2.0;
+            let mid_y = (sheet_top() + window().y) / 2.0;
+            paint_with_pointer(&mut root, &app, vec2f(boundary_x, mid_y));
+            assert_eq!(
+                app.window_control.cursor(),
+                CursorKind::EwResize,
+                "{}: the split boundary shows the resize cursor",
+                command()
+            );
+
+            // The sidebar edge.
+            paint_with_pointer(
+                &mut root,
+                &app,
+                vec2f(crate::ui::SIDEBAR_WIDTH, mid_y),
+            );
+            assert_eq!(
+                app.window_control.cursor(),
+                CursorKind::EwResize,
+                "{}: the sidebar edge shows the resize cursor",
+                command()
+            );
+
+            // Off the bands the cursor is the ordinary arrow — unless a drag is
+            // in flight, which captures it as a resize arrow wherever it is.
+            let over_content = vec2f(
+                frames[0].min_x() + frames[0].width() / 2.0,
+                frames[0].min_y() + frames[0].height() / 2.0,
+            );
+            paint_with_pointer(&mut root, &app, over_content);
+            let expected = if split_dragging || sidebar_dragging {
+                CursorKind::EwResize
+            } else {
+                CursorKind::Default
+            };
+            assert_eq!(
+                app.window_control.cursor(),
+                expected,
+                "{}: off the grab bands",
+                command()
+            );
+        }
+    }
+
+    fn sheet_top() -> f32 {
+        shell::TOPBAR_HEIGHT + shell::TOPBAR_BOTTOM_BAND
     }
 }

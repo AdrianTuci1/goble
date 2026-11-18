@@ -57,16 +57,18 @@ enum Scene {
     Archived,
 }
 
-/// The six-row DSH session menu the app builds for a listed conversation:
-/// Star, Rename, Fork — separator — Copy ID — separator — Archive, then
-/// Goble's own Delete last behind another separator.
+/// The DSH session menu the app builds for a listed conversation: Pin session,
+/// Rename, Fork session — separator — Copy Session ID — separator — Archive
+/// session, then Goble's own Delete last behind another separator.
 fn full_menu_items() -> Vec<SidebarMenuItem> {
     vec![
-        SidebarMenuItem::new("Star", "pin-outline", || {}),
-        SidebarMenuItem::new("Rename conversation", "edit", || {}),
-        SidebarMenuItem::new("Fork conversation", "branch", || {}),
-        SidebarMenuItem::new("Copy conversation ID", "copy", || {}).with_separator_before(true),
-        SidebarMenuItem::new("Archive conversation", "archive", || {}).with_separator_before(true),
+        SidebarMenuItem::new("Pin session", "pin-outline", || {}),
+        SidebarMenuItem::new("Rename", "edit", || {}),
+        SidebarMenuItem::new("Fork session", "branch", || {}),
+        SidebarMenuItem::new("Copy Session ID", "copy", || {})
+            .with_separator_before(true),
+        SidebarMenuItem::new("Archive session", "archive", || {})
+            .with_separator_before(true),
         SidebarMenuItem::new("Delete conversation", "trash-02", || {})
             .with_separator_before(true)
             .with_danger(true),
@@ -77,11 +79,13 @@ fn row_ui() -> Rc<RefCell<AgentCardUi>> {
     Rc::new(RefCell::new(AgentCardUi::default()))
 }
 
-/// The workspace rows' tray rows: DSH's workspace context menu (Rename, then
-/// Delete behind a separator). The app supplies these per row.
+/// The workspace rows' tray rows: DSH's complete workspace context menu
+/// (Rename, Show in Finder, then Delete workspace behind a separator). The app
+/// supplies these per row.
 fn workspace_menu_items() -> Vec<SidebarMenuItem> {
     vec![
-        SidebarMenuItem::new("Rename workspace", "edit", || {}),
+        SidebarMenuItem::new("Rename", "edit", || {}),
+        SidebarMenuItem::new("Show in Finder", "folder-open", || {}),
         SidebarMenuItem::new("Delete workspace", "trash-02", || {})
             .with_separator_before(true)
             .with_danger(true),
@@ -119,7 +123,10 @@ fn hovered_group(label: &str, expanded: bool, active: bool) -> Box<dyn Element> 
 fn open_menu_group(label: &str, expanded: bool) -> Box<dyn Element> {
     let ui = Rc::new(RefCell::new(SidebarGroupUi {
         menu_open: true,
-        highlight: 0,
+        // DSH opens a context menu unfilled: no row carries the selection fill
+        // until the pointer or the keyboard reaches one (the app opens at
+        // `usize::MAX`, the "no row" marker).
+        highlight: usize::MAX,
     }));
     SidebarGroupRow::new(label, expanded)
         .with_hovered(true)
@@ -401,6 +408,8 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
             let mut ui = AgentCardUi::default();
             ui.hover = true;
             ui.menu_open = true;
+            // DSH opens the context menu unfilled (see `open_menu_group`).
+            ui.highlight = usize::MAX;
             rows.push(block(vec![
                 group("goble", true, false),
                 SidebarSessionRow::new("s1", "Redesign panouri și composer-ul", "4min")

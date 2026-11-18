@@ -274,6 +274,7 @@ pub fn make_actions(
     let on_sidebar_workspace_rename_commit = Rc::clone(&state);
     let desktop_sidebar_workspace_rename_commit = desktop.clone();
     let on_sidebar_workspace_rename_cancel = Rc::clone(&state);
+    let on_sidebar_workspace_show_in_finder = Rc::clone(&state);
     let on_sidebar_workspace_delete = Rc::clone(&state);
     let desktop_sidebar_workspace_delete = desktop.clone();
     let on_sidebar_workspace_menu = Rc::clone(&state);
@@ -2331,6 +2332,15 @@ pub fn make_actions(
             on_sidebar_workspace_rename_cancel
                 .borrow_mut()
                 .cancel_workspace_rename();
+        })),
+        // DSH's workspace "Show in Finder": the real platform reveal
+        // (`NSWorkspace` on macOS). The workspace's directory is the row's own
+        // path — the stored Workspace's, or the folder the section's sessions
+        // imply — so a folder group the user never added reveals too.
+        on_sidebar_workspace_show_in_finder: Rc::new(RefCell::new(move |path: String| {
+            on_sidebar_workspace_show_in_finder
+                .borrow_mut()
+                .reveal_workspace_in_file_manager(&path);
         })),
         on_sidebar_workspace_delete: Rc::new(RefCell::new(move |path: String| {
             on_sidebar_workspace_delete

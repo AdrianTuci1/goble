@@ -61,6 +61,26 @@ pub fn pick_directory() -> Option<String> {
         .map(|path| path.to_string())
 }
 
+/// Reveal `path` in Finder, selecting it in its enclosing folder — DSH's
+/// "Show in Finder" workspace action (`NSWorkspace`'s
+/// `selectFile:inFileViewerRootedAtPath:`).
+///
+/// `path` is the directory a Workspace row stands for: Finder opens the folder
+/// around it with the item selected, which is exactly what the menu row's label
+/// promises. It answers whether AppKit accepted the request; like the pickers,
+/// it answers `false` off the main thread rather than driving AppKit from it.
+pub fn reveal_in_file_manager(path: &str) -> bool {
+    if objc2::MainThreadMarker::new().is_none() {
+        return false;
+    }
+    let full_path = objc2_foundation::NSString::from_str(path);
+    // An empty root asks Finder to reveal the item in its own enclosing folder
+    // (the same call `open -R` makes) instead of opening a new rooted window.
+    let root = objc2_foundation::NSString::from_str("");
+    objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .selectFile_inFileViewerRootedAtPath(Some(&full_path), &root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +105,17 @@ mod tests {
             "the test runs on a worker thread, so the panel is never opened here"
         );
         assert_eq!(pick_directory(), None);
+    }
+
+    /// "Show in Finder" is a real AppKit call, so a test thread does not drive
+    /// it: it answers `false` and the caller reports the failure instead of
+    /// pretending the reveal happened.
+    #[test]
+    fn reveal_in_file_manager_returns_false_off_the_main_thread() {
+        assert!(
+            objc2::MainThreadMarker::new().is_none(),
+            "the test runs on a worker thread, so Finder is never driven here"
+        );
+        assert!(!reveal_in_file_manager("/tmp"));
     }
 }

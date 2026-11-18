@@ -96,6 +96,15 @@ pub const SETTINGS_SECTION_HEADER_SIZE: f32 = 16.0;
 pub const SETTINGS_SECTION_HEADER_GAP: f32 = 10.0;
 /// The group card's corner radius (`rounded-xl` = 12).
 pub const SETTINGS_GROUP_RADIUS: f32 = 12.0;
+/// A fold's header line: T3's `min-h-9` group header, compact enough that the
+/// Providers page's one-fold-per-CLI list reads as a list of headers.
+pub const SETTINGS_FOLD_HEADER_HEIGHT: f32 = 36.0;
+
+/// The side sheet's width: the add/edit form docked to the settings pane's
+/// trailing edge (T3's detail pane / DSH's side panel).
+pub const SETTINGS_SHEET_WIDTH: f32 = 380.0;
+/// The side sheet's inner padding.
+pub const SETTINGS_SHEET_PADDING: f32 = 16.0;
 
 /// A row's horizontal padding (`px-3 sm:px-4` = 16).
 pub const SETTINGS_ROW_H_PADDING: f32 = 16.0;

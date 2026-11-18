@@ -5,6 +5,9 @@
 //! enumerates, and the slot counter is what puts the focus ring on the row the
 //! keyboard model says is focused.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use goble_core::config::ConfigFile;
 use goble_ui::color::ColorU;
 use goble_ui::elements::settings::{
@@ -12,12 +15,15 @@ use goble_ui::elements::settings::{
     SettingsNoticeKind, SettingsRow, SettingsRowStatus, SettingsRowStatusKind, SettingsSecretField,
     SettingsSection, SettingsSelect, SettingsSlider, SettingsTextField, SettingsToggle,
     SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING, SETTINGS_RAIL_WIDTH, SETTINGS_SECTION_GAP,
+    SETTINGS_SHEET_PADDING, SETTINGS_SHEET_WIDTH,
 };
 use goble_ui::elements::{
-    AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider, Element, Expanded, Fill,
-    Flex, Icon, IconButton, MainAxisAlignment, MainAxisSize, Text,
+    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, Element, EventContext,
+    Expanded, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment, MainAxisSize,
+    PaintContext, Point, Scrollable, SizeConstraint, Text, Tooltip, TooltipPosition,
 };
-use goble_ui::geometry::{vec2f, Vector2F};
+use goble_ui::event::DispatchedEvent;
+use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::platform::text_atlas::FontWeight;
 use goble_ui::theme::ColorToken;
 
@@ -28,7 +34,7 @@ use super::state::{SettingsAction, SettingsActions, SettingsUiState as State, St
 
 /// The rail: the grouped pages, filtered by the search query.
 pub fn render_nav(
-    app: &AppContext,
+    _app: &AppContext,
     settings: &State,
     actions: &SettingsActions,
 ) -> Box<dyn Element> {
@@ -87,42 +93,69 @@ pub fn render_nav(
         .finish()
 }
 
-/// The header band: the breadcrumb, the reload and open-file buttons.
+/// The header band: the breadcrumb, the reload and open-file buttons, and the
+/// X that closes the settings pane at the trailing end.
+///
+/// The band is the compact DSH/T3 settings header (`h-9`, 36pt): a 28pt button
+/// row fits inside it with no vertical padding, so the page title keeps the top
+/// of the surface while the page gains 12pt of height against the old 48pt bar.
 pub fn render_header(
     app: &AppContext,
     settings: &State,
     actions: &SettingsActions,
     page: SettingsCategory,
+    close: Rc<RefCell<dyn FnMut()>>,
 ) -> Box<dyn Element> {
     let crumb = Text::new("Settings")
-        .with_font_size(13.0)
+        .with_font_size(12.0)
         .with_color(app.theme.color(ColorToken::Muted))
         .finish();
     let slash = Text::new("/")
-        .with_font_size(13.0)
+        .with_font_size(12.0)
         .with_color(app.theme.color(ColorToken::Border))
         .finish();
     let title = Text::new(page.label())
-        .with_font_size(14.0)
+        .with_font_size(13.0)
         .with_weight(FontWeight::SemiBold)
         .with_color(app.theme.color(ColorToken::Text))
         .finish();
     let left = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(8.0)
+        .with_spacing(7.0)
         .with_child(crumb)
         .with_child(slash)
         .with_child(title)
         .finish();
-    let right = action_buttons(
+    let reload = action_button(
         app,
-        &[
-            ActionModel::new("Reload", SettingsAction::Reload).with_icon("refresh"),
-            ActionModel::new("Open file", SettingsAction::OpenFile(ConfigFile::Config))
-                .with_icon("file"),
-        ],
+        &ActionModel::new("Reload", SettingsAction::Reload).with_icon("refresh"),
         actions,
     );
+    let open = action_button(
+        app,
+        &ActionModel::new("Open file", SettingsAction::OpenFile(ConfigFile::Config))
+            .with_icon("file"),
+        actions,
+    );
+    let close_button = IconButton::new(
+        Icon::new("x")
+            .with_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(vec2f(24.0, 24.0))
+    .with_on_click(move || (close.borrow_mut())())
+    .finish();
+    let close_button = Tooltip::new(close_button, "Close settings")
+        .with_position(TooltipPosition::Below)
+        .finish();
+    let right = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(reload)
+        .with_child(open)
+        .with_child(close_button)
+        .finish();
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -130,8 +163,11 @@ pub fn render_header(
         .with_child(left)
         .with_child(right)
         .finish();
+    // EdgeInsets::new(left, top, right, bottom): horizontal inset only, so the
+    // 31.6pt button row is the band's height and the compact header really is
+    // shorter than the old 48pt band (which had 20pt of top padding).
     let band = Container::new(row)
-        .with_padding(goble_ui::elements::EdgeInsets::new(0.0, 20.0, 0.0, 12.0))
+        .with_padding(goble_ui::elements::EdgeInsets::new(16.0, 0.0, 10.0, 0.0))
         .finish();
     let band = ConstrainedBox::new(band)
         .with_min_height(super::HEADER_HEIGHT)
@@ -157,12 +193,31 @@ pub fn render_page(
         children.push(render_notice(app, notice, actions));
     }
     let mut slot = 0usize;
-    for section in &model.sections {
+    let section_count = model.sections.len();
+    for (index, section) in model.sections.iter().enumerate() {
         children.push(render_section(app, section, settings, actions, &mut slot));
+        if index + 1 < section_count {
+            // A run of folds (the per-CLI groups) is a tight list: 10pt between
+            // a heading and the next, while ordinary page sections keep T3's
+            // 32pt. The gap is a real element so the flex needs no spacing.
+            let next_is_fold = model
+                .sections
+                .get(index + 1)
+                .is_some_and(|next| next.fold.is_some());
+            let gap = if section.fold.is_some() || next_is_fold {
+                10.0
+            } else {
+                SETTINGS_SECTION_GAP
+            };
+            children.push(
+                goble_ui::elements::Empty::new()
+                    .with_size(vec2f(0.0, gap))
+                    .finish(),
+            );
+        }
     }
     let column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(SETTINGS_SECTION_GAP)
         .with_children(children)
         .finish();
     let padded = Container::new(column)
@@ -211,8 +266,22 @@ fn render_section(
     if section.plain {
         element = element.plain();
     }
-    for row in &section.rows {
-        element = element.with_row(render_row(app, row, settings, actions, slot));
+    if let Some(fold) = section.fold.as_ref() {
+        let dispatch = actions.dispatch.clone();
+        let forwarded = fold.action.clone();
+        element = element
+            .with_fold(fold.open)
+            .compact_header()
+            .with_on_fold_toggle(move || {
+                (dispatch.borrow_mut())(forwarded.clone());
+            });
+    }
+    // A closed fold draws its heading only; its rows are left out of the same
+    // order the keyboard model counts.
+    if section.is_open() {
+        for row in &section.rows {
+            element = element.with_row(render_row(app, row, settings, actions, slot));
+        }
     }
     element.finish()
 }
@@ -239,6 +308,9 @@ fn render_row(
     let row_ring = focused && settings.focused_field.is_none();
     let mut element =
         SettingsRow::new(app, row.label.clone(), row.hint.clone()).with_focused(row_ring);
+    if let Some(swatch) = row.swatch {
+        element = element.with_swatch(swatch);
+    }
     if row.disabled {
         element = element.with_disabled(true);
     }
@@ -248,7 +320,23 @@ fn render_row(
     if let Some(reset) = row.reset.as_ref() {
         element = element.with_reset(reset_button(app, reset, actions));
     }
-    if let Some(control) = render_control(app, row, settings, actions, focused) {
+    if let ControlModel::ColorWheel {
+        channel,
+        label,
+        stored,
+    } = &row.control
+    {
+        // The wheel is the row's full-width body: a 190pt wheel plus its
+        // swatch/hex readout, aligned under the label.
+        element = element.with_body(color_wheel_body(
+            app,
+            settings,
+            *channel,
+            label,
+            stored.as_deref(),
+            actions,
+        ));
+    } else if let Some(control) = render_control(app, row, settings, actions, focused, false) {
         element = element.with_control(control);
     }
     if !row.children.is_empty() {
@@ -287,6 +375,7 @@ fn render_control(
     settings: &State,
     actions: &SettingsActions,
     focused: bool,
+    full_width: bool,
 ) -> Option<Box<dyn Element>> {
     let dispatch = actions.dispatch.clone();
     let control = match &row.control {
@@ -352,25 +441,29 @@ fn render_control(
                 });
             };
             if *secret {
-                SettingsSecretField::new()
+                let field = SettingsSecretField::new()
                     .with_configured(*configured)
                     .with_draft(value.clone())
                     .with_focused(focused_field)
-                    .with_disabled(*disabled)
-                    .with_width(240.0)
-                    .with_on_change(on_change)
-                    .with_on_submit(on_submit)
-                    .finish()
+                    .with_disabled(*disabled);
+                let field = if full_width {
+                    field
+                } else {
+                    field.with_width(240.0)
+                };
+                field.with_on_change(on_change).with_on_submit(on_submit).finish()
             } else {
-                SettingsTextField::new()
+                let field = SettingsTextField::new()
                     .with_value(value.clone())
                     .with_placeholder(placeholder.clone())
                     .with_focused(focused_field)
-                    .with_disabled(*disabled)
-                    .with_width(240.0)
-                    .with_on_change(on_change)
-                    .with_on_submit(on_submit)
-                    .finish()
+                    .with_disabled(*disabled);
+                let field = if full_width {
+                    field
+                } else {
+                    field.with_width(240.0)
+                };
+                field.with_on_change(on_change).with_on_submit(on_submit).finish()
             }
         }
         ControlModel::Slider {
@@ -429,9 +522,238 @@ fn render_control(
                 .finish()
         }
         ControlModel::Buttons(button_models) => action_buttons(app, button_models, actions),
+        // The wheel is drawn as the row's body (see `render_row`), not here.
+        ControlModel::ColorWheel { .. } => return None,
         ControlModel::None => return None,
     };
     Some(control)
+}
+
+/// A theme channel's token, so the wheel starts from the colour the live theme
+/// paints with when the file has no override for it.
+fn channel_token(channel: usize) -> ColorToken {
+    use crate::ui::color_picker::COLOR_TARGET_ORDER;
+    use crate::ui::color_picker::ColorTarget as T;
+    match COLOR_TARGET_ORDER.get(channel).copied().unwrap_or(T::Accent) {
+        T::Primary => ColorToken::Text,
+        T::Secondary => ColorToken::Muted,
+        T::Accent => ColorToken::Accent,
+        T::Background => ColorToken::Bg,
+        T::Surface => ColorToken::Surface,
+    }
+}
+
+/// The colour wheel body: the wheel, the channel's swatch and its exact hex.
+fn color_wheel_body(
+    app: &AppContext,
+    settings: &State,
+    channel: usize,
+    label: &str,
+    stored: Option<&str>,
+    actions: &SettingsActions,
+) -> Box<dyn Element> {
+    let current = stored
+        .and_then(ColorU::from_hex)
+        .unwrap_or_else(|| app.theme.color(channel_token(channel)));
+    let dispatch = actions.dispatch.clone();
+    let hex = current.to_hex_string();
+    let channel_index = channel;
+    let wheel = crate::ui::color_picker::ColorWheel::new(current)
+        .with_drag(Rc::clone(&settings.color_drag))
+        .with_on_change(move |color: ColorU| {
+            (dispatch.borrow_mut())(SettingsAction::SetColor {
+                target: channel_index,
+                hex: color.to_hex_string(),
+            });
+        });
+    let wheel_box: Box<dyn Element> = Box::new(wheel);
+    let swatch = Container::new(
+        goble_ui::elements::Empty::new()
+            .with_size(vec2f(18.0, 18.0))
+            .finish(),
+    )
+    .with_background(Fill::Solid(current))
+    .with_border(
+        goble_ui::elements::Border::all(1.0)
+            .with_border_color(app.theme.color(ColorToken::Border)),
+    )
+    .with_corner_radius(5.0)
+    .finish();
+    let swatch = ConstrainedBox::new(swatch)
+        .with_width(18.0)
+        .with_height(18.0)
+        .finish();
+    let label = Text::new(format!("{label} · {hex}"))
+        .with_font_size(12.0)
+        .with_color(app.theme.color(ColorToken::Text))
+        .finish();
+    let readout = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(7.0)
+        .with_child(swatch)
+        .with_child(label)
+        .finish();
+    Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(18.0)
+        .with_child(wheel_box)
+        .with_child(readout)
+        .finish()
+}
+
+/// The add/edit side sheet: a docked panel on the settings pane's trailing
+/// edge, with its own header (title, close X), the form's rows and the same
+/// scroll state the page keeps for its own list.
+pub fn render_side_sheet(
+    app: &AppContext,
+    section: &SectionModel,
+    settings: &State,
+    actions: &SettingsActions,
+) -> Box<dyn Element> {
+    let dispatch = actions.dispatch.clone();
+    let title = Text::new(section.title.clone())
+        .with_font_size(14.0)
+        .with_weight(FontWeight::SemiBold)
+        .with_color(app.theme.color(ColorToken::Text))
+        .finish();
+    let heading = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(title)
+        .with_child(
+            IconButton::new(
+                Icon::new("x")
+                    .with_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(vec2f(24.0, 24.0))
+            .with_on_click(move || (dispatch.borrow_mut())(SettingsAction::CancelForm))
+            .finish(),
+        )
+        .finish();
+    let mut children: Vec<Box<dyn Element>> = vec![heading];
+    if !section.description.is_empty() {
+        children.push(
+            Container::new(
+                Text::new(section.description.clone())
+                    .with_font_size(12.0)
+                    .with_line_height(1.45)
+                    .with_color(app.theme.color(ColorToken::Muted))
+                    .finish(),
+            )
+            .with_padding(goble_ui::elements::EdgeInsets::new(6.0, 0.0, 0.0, 0.0))
+            .finish(),
+        );
+    }
+    if let Some((kind, text)) = settings.status.as_ref() {
+        if matches!(kind, StatusKind::Error) {
+            children.push(
+                Container::new(
+                    Text::new(text.clone())
+                        .with_font_size(11.0)
+                        .with_color(app.theme.color(ColorToken::Error))
+                        .finish(),
+                )
+                .with_padding(goble_ui::elements::EdgeInsets::new(8.0, 0.0, 0.0, 0.0))
+                .finish(),
+            );
+        }
+    }
+    let header = Container::new(
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_children(children)
+            .finish(),
+    )
+    .with_padding(goble_ui::elements::EdgeInsets::new(
+        SETTINGS_SHEET_PADDING,
+        SETTINGS_SHEET_PADDING,
+        13.0,
+        SETTINGS_SHEET_PADDING,
+    ))
+    .finish();
+    let divider = Divider::horizontal().finish();
+    let mut slot = 0usize;
+    let mut form_children: Vec<Box<dyn Element>> = Vec::new();
+    for row in &section.rows {
+        form_children.push(render_sheet_row(app, row, settings, actions, &mut slot));
+    }
+    let body = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_children(form_children)
+        .finish();
+    let body = Container::new(body)
+        .with_padding(goble_ui::elements::EdgeInsets::new(
+            0.0,
+            SETTINGS_SHEET_PADDING,
+            16.0,
+            SETTINGS_SHEET_PADDING,
+        ))
+        .finish();
+    let scroll = Scrollable::new(body, Axis::Vertical)
+        .with_state(Rc::clone(&settings.sheet_scroll))
+        .finish();
+    let column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(header)
+        .with_child(divider)
+        .with_child(Expanded::new(scroll).finish())
+        .finish();
+    ConstrainedBox::new(
+        Container::new(column)
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .with_border(
+                goble_ui::elements::Border::all(1.0)
+                    .with_border_color(app.theme.color(ColorToken::Border)),
+            )
+            .finish(),
+    )
+    .with_width(SETTINGS_SHEET_WIDTH)
+    .finish()
+}
+
+/// One sheet row: the label, its description, and the control full-width under
+/// them (a side panel is too narrow for T3's label/control columns).
+fn render_sheet_row(
+    app: &AppContext,
+    row: &RowModel,
+    settings: &State,
+    actions: &SettingsActions,
+    slot: &mut usize,
+) -> Box<dyn Element> {
+    let interactive = !row.disabled && row.control.is_interactive();
+    let focused = settings.region == super::SettingsRegion::Sheet
+        && interactive
+        && *slot == settings.sheet_row;
+    if interactive {
+        *slot += 1;
+    }
+    let row_ring = focused && settings.focused_field.is_none();
+    let mut element =
+        SettingsRow::new(app, row.label.clone(), row.hint.clone()).with_focused(row_ring);
+    if let Some(swatch) = row.swatch {
+        element = element.with_swatch(swatch);
+    }
+    if row.disabled {
+        element = element.with_disabled(true);
+    }
+    if let Some((text, kind)) = row.status.as_ref() {
+        element = element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+    }
+    if let ControlModel::ReadOnly { text } = &row.control {
+        element = element.with_body(
+            Text::new(text.clone())
+                .with_font_size(13.0)
+                .with_color(app.theme.color(ColorToken::Text))
+                .finish(),
+        );
+    } else if let Some(control) = render_control(app, row, settings, actions, focused, true) {
+        element = element.with_body(control);
+    }
+    element.finish()
 }
 
 /// The `<output>` box beside a slider.
@@ -514,4 +836,80 @@ fn reset_button(
         (dispatch.borrow_mut())(forwarded.clone());
     })
     .finish()
+}
+
+
+/// The sheet's outside-click/dim layer: paints the page dimmed and consumes the
+/// first pointer press as "dismiss the sheet", so the main surface behind a
+/// sheet is a focus trap rather than a second interactive region.
+pub struct DismissLayer {
+    child: Box<dyn Element>,
+    tint: ColorU,
+    on_dismiss: Rc<RefCell<dyn FnMut()>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl DismissLayer {
+    pub fn new(
+        child: Box<dyn Element>,
+        tint: ColorU,
+        on_dismiss: Rc<RefCell<dyn FnMut()>>,
+    ) -> Self {
+        Self {
+            child,
+            tint,
+            on_dismiss,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for DismissLayer {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.child.paint(origin, ctx, app);
+        if let (Some(size), Some(renderer)) = (self.size, ctx.renderer.as_mut()) {
+            renderer.fill_rect(rectf(origin.x, origin.y, size.x, size.y), self.tint);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        match event {
+            DispatchedEvent::MouseDown { .. } => {
+                (self.on_dismiss.borrow_mut())();
+                true
+            }
+            // Nothing behind the sheet receives hover or drag while it is open.
+            DispatchedEvent::MouseMove { .. }
+            | DispatchedEvent::MouseUp { .. }
+            | DispatchedEvent::Scroll { .. } => true,
+            _ => false,
+        }
+    }
 }

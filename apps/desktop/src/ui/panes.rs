@@ -297,9 +297,11 @@ pub fn build_active_space(
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_child(Expanded::new(chat).finish());
+            // The fallback is an agent pane like any other chat leaf: its whole
+            // surface is the agent background (see [`pane_surface`]).
             Box::new(SlotFrame::new(
                 Container::new(column.finish())
-                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                    .with_background(Fill::Solid(pane_surface(app, &PaneKind::Chat)))
                     .with_border(app.theme.color(ColorToken::Border).into())
                     .finish(),
                 true,
@@ -903,6 +905,39 @@ impl RegionChild {
 /// keeps the outline visible at split boundaries and against the window edge.
 pub(crate) const PANE_INSET: f32 = 4.0;
 
+/// The inset of the whole pane area — the surface where panes and panels are
+/// rendered — from the window's chrome on every side: the bar block above, the
+/// window's right and bottom edges, and the sidebar on the left. The window's
+/// own `Bg` frames the panel surface on all four sides; the per-tab slots tile
+/// the area inside this inset, so every tab's outline keeps its own
+/// [`tab_outline_rect`] geometry relative to its slot.
+pub(crate) const PANE_AREA_INSET: f32 = 4.0;
+
+/// The background a pane's card paints.
+///
+/// An agent surface uses the same darker `Bg` the agent content lane paints its
+/// text column on, so the area outside the text column and the column itself
+/// read as one continuous surface — the adjustable column is a width, not a
+/// different material. Every other pane keeps the lighter `Surface` card.
+///
+/// The returned value is a theme token's colour, never a hardcoded one, so the
+/// dark and light themes both follow their own palette.
+fn pane_surface(app: &AppContext, kind: &PaneKind) -> goble_ui::ColorU {
+    let token = match kind {
+        // The agent view the chat leaf mounts, the worker's conversation view
+        // and a terminal pane's agent mode all draw the same agent surface.
+        // A terminal's shell view paints its own `Bg` output area, so it is the
+        // same darker token either way.
+        PaneKind::Chat | PaneKind::Worker | PaneKind::Terminal => ColorToken::Bg,
+        // Reader and tooling panes keep their lighter card: they are not agent
+        // surfaces and have no content column whose background they must match.
+        PaneKind::File { .. } | PaneKind::Diff { .. } | PaneKind::Settings { .. } => {
+            ColorToken::Surface
+        }
+    };
+    app.theme.color(token)
+}
+
 /// `rect` shrunk by `amount` on every side, never past half its width or
 /// height. Pane frames are painted and hit-tested against this rectangle.
 fn inset_rect(rect: RectF, amount: f32) -> RectF {
@@ -1209,6 +1244,7 @@ fn build_window(
     minimize: bool,
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
+    let surface = pane_surface(app, &kind);
     let titlebar = build_window_titlebar(app, actions, id, &kind, active, minimize);
     let body = build_leaf_column(app, state, actions, id, kind, false);
     let column = Flex::column()
@@ -1227,7 +1263,7 @@ fn build_window(
         ColorToken::Border
     };
     let window: Box<dyn Element> = Container::new(column.finish())
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_background(Fill::Solid(surface))
         .with_border(Border::all(1.0).with_border_color(app.theme.color(border)))
         .with_corner_radius(WINDOW_CORNER_RADIUS)
         .finish();
@@ -1371,13 +1407,16 @@ fn build_leaf_with_lift(
     lift: bool,
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
+    let surface = pane_surface(app, &kind);
     let column = build_leaf_column(app, state, actions, id, kind, lift);
     // The card's own edge stays the ordinary `Border`: the tab's accent outline
     // is drawn on its whole slot by [`SlotOutlineLayer`], around the card and
     // the chrome band together. A card edge in the accent as well would put a
-    // second purple rule `PANE_INSET` inside the tab's real border.
+    // second purple rule `PANE_INSET` inside the tab's real border. The fill is
+    // the leaf's own surface (see [`pane_surface`]): an agent pane's card is the
+    // same darker `Bg` as its content column, the rest keep `Surface`.
     let pane = Container::new(column)
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_background(Fill::Solid(surface))
         .with_border(app.theme.color(ColorToken::Border).into())
         .with_corner_radius(WINDOW_CORNER_RADIUS)
         .finish();
@@ -1553,5 +1592,62 @@ mod tests {
     fn the_inset_clamps_on_a_slot_smaller_than_the_frame() {
         let frame = inset_rect(rectf(10.0, 20.0, 6.0, 4.0), PANE_INSET);
         assert_eq!(frame, rectf(12.0, 22.0, 2.0, 1.0));
+    }
+
+    /// The panel surface is inset 4 px from the chrome on every side.
+    #[test]
+    fn the_panel_surface_is_inset_from_the_chrome() {
+        assert_eq!(PANE_AREA_INSET, 4.0);
+    }
+
+    /// An agent pane's card is the same darker `Bg` its agent content lane
+    /// paints its text column on: outside the text column reads exactly like
+    /// inside it, in both themes. The other panes keep their lighter `Surface`
+    /// card, and no value is hardcoded.
+    #[test]
+    fn agent_panes_paint_the_lane_background_on_the_whole_surface() {
+        fn assert_uniform(app: &AppContext) {
+            let bg = app.theme.color(ColorToken::Bg);
+            let surface = app.theme.color(ColorToken::Surface);
+            assert_ne!(bg, surface, "the two tokens are distinct materials");
+            // Every surface that draws the agent view: the whole card is the
+            // token the lane column uses.
+            assert_eq!(pane_surface(app, &PaneKind::Chat), bg);
+            assert_eq!(pane_surface(app, &PaneKind::Worker), bg);
+            assert_eq!(
+                pane_surface(app, &PaneKind::Terminal),
+                bg,
+                "the shell paints its own Bg output area; agent mode is the chat surface"
+            );
+            // A reader/tooling pane keeps the lighter card.
+            assert_eq!(
+                pane_surface(
+                    app,
+                    &PaneKind::File {
+                        path: String::from("/tmp/x")
+                    }
+                ),
+                surface
+            );
+            assert_eq!(
+                pane_surface(app, &PaneKind::Diff { cwd: String::new() }),
+                surface
+            );
+            assert_eq!(
+                pane_surface(
+                    app,
+                    &PaneKind::Settings {
+                        page: crate::ui::SettingsCategory::General
+                    }
+                ),
+                surface
+            );
+        }
+
+        // Dark and light: the relationship is the theme's, not a fixed colour.
+        assert_uniform(&AppContext::default());
+        let mut light = AppContext::default();
+        light.theme = goble_ui::theme::Theme::light();
+        assert_uniform(&light);
     }
 }

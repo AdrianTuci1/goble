@@ -5,10 +5,11 @@
 use crate::color::ColorU;
 
 use crate::elements::settings::{
-    row::SettingsRowStatus, SettingsFold, SettingsNav, SettingsNavGroup, SettingsNavItem,
-    SettingsNotice, SettingsRow, SettingsSecretField, SettingsSection, SettingsSelect,
-    SettingsSlider, SettingsTextField, SettingsToggle, SETTINGS_GROUP_RADIUS, SETTINGS_RAIL_WIDTH,
-    SETTINGS_ROW_HINT_SIZE, SETTINGS_ROW_LABEL_SIZE, SETTINGS_TOGGLE_HEIGHT, SETTINGS_TOGGLE_WIDTH,
+    row::SettingsRowStatus, SettingsButton, SettingsFold, SettingsNav, SettingsNavGroup,
+    SettingsNavItem, SettingsNotice, SettingsRow, SettingsSecretField, SettingsSection,
+    SettingsSelect, SettingsSlider, SettingsTextField, SettingsToggle, SETTINGS_GROUP_RADIUS,
+    SETTINGS_RAIL_WIDTH, SETTINGS_ROW_HINT_SIZE, SETTINGS_ROW_LABEL_SIZE, SETTINGS_TOGGLE_HEIGHT,
+    SETTINGS_TOGGLE_WIDTH,
 };
 use crate::elements::{AppContext, Element, LayoutContext, PaintContext, SizeConstraint, Text};
 use crate::event::DispatchedEvent;
@@ -518,4 +519,87 @@ fn a_row_with_a_body_is_taller_than_a_plain_row() {
         with_body.layout(SizeConstraint::loose(vec2f(700.0, 300.0)), &mut ctx, &app)
     };
     assert!(body_size.y > plain_size.y);
+}
+
+/// A fold section keeps its heading and hides its rows until opened: the
+/// heading is the trigger (chevron + title + summary), pressing it runs the
+/// section's toggle callback, and the open section draws the group card.
+#[test]
+fn a_fold_section_hides_its_rows_until_opened() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let app = dark();
+    let opened = Rc::new(Cell::new(false));
+    let flag = Rc::clone(&opened);
+    let mut closed: Box<dyn Element> = Box::new(
+        SettingsSection::new("Agent CLIs")
+            .with_description("installed · claude")
+            .with_fold(false)
+            .with_on_fold_toggle(move || flag.set(true))
+            .compact_header()
+            .with_row(SettingsRow::new(&app, "Launch command", "claude").finish()),
+    );
+    let commands = render_element(&mut closed, vec2f(640.0, 300.0), &app);
+    assert!(
+        !drawn(&commands, "Launch command"),
+        "a closed fold draws no rows"
+    );
+    assert!(
+        drawn(&commands, "installed · claude"),
+        "the summary is in the heading"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "chevron-right"
+        )),
+        "the closed fold's chevron points right"
+    );
+    assert!(
+        press(&mut closed, &app, vec2f(120.0, 18.0)),
+        "the heading claims the press"
+    );
+    assert!(opened.get(), "the heading runs the fold's toggle");
+
+    let mut open: Box<dyn Element> = Box::new(
+        SettingsSection::new("Agent CLIs")
+            .with_description("installed · claude")
+            .with_fold(true)
+            .compact_header()
+            .with_row(SettingsRow::new(&app, "Launch command", "claude").finish()),
+    );
+    let commands = render_element(&mut open, vec2f(640.0, 300.0), &app);
+    assert!(
+        drawn(&commands, "Launch command"),
+        "the open fold draws its rows"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "chevron-down"
+        )),
+        "the open fold's chevron points down"
+    );
+}
+
+/// A row's swatch is a real 14px colour chip before the label: the Appearance
+/// page's channel and palette rows are readable at a glance.
+#[test]
+fn a_row_swatch_paints_its_colour() {
+    let app = dark();
+    let red = ColorU::new(255, 0, 0, 255);
+    let mut row: Box<dyn Element> = SettingsRow::new(&app, "Accent", "The accent channel.")
+        .with_swatch(red)
+        .finish();
+    let commands = render_element(&mut row, vec2f(640.0, 80.0), &app);
+    let chip = fills(&commands).into_iter().find(|(rect, color, radius)| {
+        *color == red && (rect.width() - 14.0).abs() < 0.5 && (rect.height() - 14.0).abs() < 0.5
+    });
+    let (rect, _, radius) = chip.expect("the red 14px swatch is drawn");
+    assert_eq!(radius, 4.0, "the chip's corner radius");
+    assert!(
+        rect.min_x() < rect.min_y() + 100.0,
+        "the chip is in the row: {rect:?}"
+    );
 }

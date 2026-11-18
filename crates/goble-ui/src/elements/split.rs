@@ -19,9 +19,11 @@ use crate::elements::{
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, RectF, Vector2F};
-use crate::theme::ColorToken;
+use crate::platform::window::CursorKind;
 
-/// Half the thickness (along the cross axis) of the draggable divider band.
+/// Half the thickness (along the cross axis) of the invisible grab band on the
+/// boundary between the two children. The split paints no divider: the band is
+/// the drag target, and the resize cursor over it is its whole affordance.
 const DIVIDER_HALF: f32 = 4.0;
 
 /// The smallest extent (along the main axis) a pane is allowed to have. The
@@ -100,7 +102,10 @@ impl SplitNode {
     fn handle_bounds(&self) -> Option<RectF> {
         let origin = self.origin?;
         let boundary = self.boundary();
-        let cross = self.size.map(|s| s.along(self.axis.invert())).unwrap_or(0.0);
+        let cross = self
+            .size
+            .map(|s| s.along(self.axis.invert()))
+            .unwrap_or(0.0);
         Some(match self.axis {
             Axis::Horizontal => rectf(
                 origin.x() + boundary - DIVIDER_HALF,
@@ -108,7 +113,12 @@ impl SplitNode {
                 DIVIDER_HALF * 2.0,
                 cross,
             ),
-            Axis::Vertical => rectf(origin.x(), origin.y() + boundary - DIVIDER_HALF, cross, DIVIDER_HALF * 2.0),
+            Axis::Vertical => rectf(
+                origin.x(),
+                origin.y() + boundary - DIVIDER_HALF,
+                cross,
+                DIVIDER_HALF * 2.0,
+            ),
         })
     }
 
@@ -137,6 +147,31 @@ impl SplitNode {
         };
         Self::clamp_ratio(pointer / main, main)
     }
+
+    /// Ask the platform for the cursor this frame should show.
+    ///
+    /// The split has no painted divider; the only affordance at the boundary is
+    /// the resize cursor over the invisible grab band (and while a drag is in
+    /// flight, where the pointer is captured and keeps the cursor wherever it
+    /// goes). Like a content lane, a split only owns the cursor while the
+    /// pointer is over its own band, so a split the pointer is outside leaves
+    /// another surface's request in place.
+    fn request_cursor(&self, ctx: &PaintContext, app: &AppContext) {
+        let over_handle = ctx.cursor_inside
+            && self
+                .handle_bounds()
+                .is_some_and(|bounds| contains(bounds, ctx.cursor_position));
+        if !self.dragging && !over_handle {
+            return;
+        }
+        let kind = match self.axis {
+            // The children are side by side: the boundary is a vertical edge.
+            Axis::Horizontal => CursorKind::EwResize,
+            // The children are stacked: the boundary is a horizontal edge.
+            Axis::Vertical => CursorKind::NsResize,
+        };
+        app.window_control.set_cursor(kind);
+    }
 }
 
 impl Element for SplitNode {
@@ -156,8 +191,12 @@ impl Element for SplitNode {
         let first_main = main * self.ratio;
         let second_main = main - first_main;
 
-        let _ = self.first.layout(self.axis_constraint(first_main, cross), ctx, app);
-        let _ = self.second.layout(self.axis_constraint(second_main, cross), ctx, app);
+        let _ = self
+            .first
+            .layout(self.axis_constraint(first_main, cross), ctx, app);
+        let _ = self
+            .second
+            .layout(self.axis_constraint(second_main, cross), ctx, app);
 
         let size = constraint.max;
         self.size = Some(size);
@@ -167,25 +206,18 @@ impl Element for SplitNode {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let boundary = self.boundary();
-        self.first.paint(origin + self.axis_offset(0.0, 0.0), ctx, app);
-        self.second.paint(origin + self.axis_offset(boundary, 0.0), ctx, app);
+        self.first
+            .paint(origin + self.axis_offset(0.0, 0.0), ctx, app);
+        self.second
+            .paint(origin + self.axis_offset(boundary, 0.0), ctx, app);
 
-        // A split draws its rule only while the divider is being dragged, as
-        // the drag affordance. At rest the panes keep their own separation: the
-        // app wears one accent outline around each tab and leaves the window's
-        // `Bg` between them, so a rule here would be a third line inside that
-        // gutter.
-        if self.dragging {
-            let cross = self.size.map(|s| s.along(self.axis.invert())).unwrap_or(0.0);
-            let color = app.theme.color(ColorToken::Accent);
-            if let Some(renderer) = ctx.renderer.as_mut() {
-                let rule = match self.axis {
-                    Axis::Horizontal => rectf(origin.x + boundary - 0.5, origin.y, 1.0, cross),
-                    Axis::Vertical => rectf(origin.x, origin.y + boundary - 0.5, cross, 1.0),
-                };
-                renderer.fill_rounded_rect(rule, color, 0.0);
-            }
-        }
+        // A split paints no divider, neither at rest nor while dragging: the
+        // panes keep their own separation (the app wears one outline around
+        // each tab and leaves the window's `Bg` between them), and a rule here
+        // would be a third line inside that gutter. The boundary reads through
+        // the resize cursor over its grab band, the same cursor-only affordance
+        // the agent content-lane handles use.
+        self.request_cursor(ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -239,6 +271,7 @@ impl Element for SplitNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::{RenderCommand, Renderer};
 
     #[test]
     fn clamp_ratio_respects_min_pane_pixels() {
@@ -263,5 +296,144 @@ mod tests {
         // equal split so neither pane is empty.
         assert!((SplitNode::clamp_ratio(0.1, 100.0) - 0.5).abs() < 1e-6);
         assert!((SplitNode::clamp_ratio(0.9, 100.0) - 0.5).abs() < 1e-6);
+    }
+
+    /// A child that paints nothing, so every command in a frame belongs to the
+    /// split itself.
+    struct SilentChild;
+
+    impl Element for SilentChild {
+        fn layout(
+            &mut self,
+            _constraint: SizeConstraint,
+            _ctx: &mut LayoutContext,
+            _app: &AppContext,
+        ) -> Vector2F {
+            vec2f(0.0, 0.0)
+        }
+
+        fn paint(&mut self, _origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {}
+
+        fn size(&self) -> Option<Vector2F> {
+            None
+        }
+
+        fn origin(&self) -> Option<Point> {
+            None
+        }
+
+        fn dispatch_event(
+            &mut self,
+            _event: &DispatchedEvent,
+            _ctx: &mut EventContext,
+            _app: &AppContext,
+        ) -> bool {
+            false
+        }
+    }
+
+    fn split(axis: Axis, dragging: bool) -> SplitNode {
+        SplitNode::new(axis, 0.5, Box::new(SilentChild), Box::new(SilentChild))
+            .with_dragging(dragging)
+    }
+
+    /// Lay the split out in a 600x400 box and paint it, returning the frame's
+    /// commands. `pointer` is the cursor position the frame is painted with.
+    fn frame_at(axis: Axis, dragging: bool, pointer: Vector2F) -> Vec<RenderCommand> {
+        let app = AppContext::default();
+        let mut node = split(axis, dragging);
+        let _ = node.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = pointer;
+        node.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        ctx.renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// No rule is ever drawn at the split boundary — idle or dragging. The
+    /// gutter between the panes is the window's `Bg`, and the resize cursor is
+    /// the boundary's whole affordance.
+    #[test]
+    fn a_split_never_paints_a_divider() {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            for dragging in [false, true] {
+                let commands = frame_at(axis, dragging, vec2f(299.0, 199.0));
+                assert!(
+                    commands.is_empty(),
+                    "{axis:?} split (dragging {dragging}) paints no rule: {commands:?}"
+                );
+            }
+        }
+    }
+
+    /// The resize cursor over the invisible grab band is the boundary's only
+    /// affordance, and it stays for the whole of a captured drag. Away from the
+    /// band a split leaves the cursor alone.
+    #[test]
+    fn the_boundary_shows_a_resize_cursor_instead_of_a_line() {
+        let app = AppContext::default();
+        // Side-by-side panes: the boundary is a vertical edge at x = 300.
+        let mut horizontal = split(Axis::Horizontal, false);
+        let _ = horizontal.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = vec2f(300.0, 200.0);
+        horizontal.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        assert_eq!(
+            app.window_control.cursor(),
+            CursorKind::EwResize,
+            "a vertical boundary asks for the east-west resize arrow"
+        );
+
+        // Stacked panes: the boundary is a horizontal edge at y = 200.
+        let mut vertical = split(Axis::Vertical, false);
+        let _ = vertical.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = vec2f(300.0, 200.0);
+        vertical.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        assert_eq!(
+            app.window_control.cursor(),
+            CursorKind::NsResize,
+            "a horizontal boundary asks for the north-south resize arrow"
+        );
+
+        // Away from the band the split makes no request: the pointer stays on
+        // the platform default another surface left it on.
+        app.window_control.set_cursor(CursorKind::Default);
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = vec2f(100.0, 100.0);
+        horizontal.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        assert_eq!(app.window_control.cursor(), CursorKind::Default);
+
+        // While dragging the pointer is captured: the arrow stays wherever the
+        // pointer has travelled.
+        let mut dragged = split(Axis::Horizontal, true);
+        let _ = dragged.layout(
+            SizeConstraint::loose(vec2f(600.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = vec2f(20.0, 20.0);
+        dragged.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+        assert_eq!(app.window_control.cursor(), CursorKind::EwResize);
     }
 }

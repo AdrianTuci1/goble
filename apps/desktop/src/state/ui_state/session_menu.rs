@@ -35,6 +35,10 @@ pub enum ToastKind {
     ArchivedNotOpenable,
     /// The store refused the archive write (the dialog/list stay honest).
     ArchiveFailed,
+    /// The platform could not reveal a workspace's folder in Finder (DSH's
+    /// Show in Finder reports the same failure instead of pretending the
+    /// folder opened).
+    RevealFailed,
 }
 
 impl ToastKind {
@@ -49,6 +53,7 @@ impl ToastKind {
                 "Archived conversations can’t be opened. Unarchive one to view.".to_string()
             }
             Self::ArchiveFailed => "Couldn’t archive the conversation.".to_string(),
+            Self::RevealFailed => "Couldn’t show the folder in Finder.".to_string(),
         }
     }
 
@@ -57,7 +62,10 @@ impl ToastKind {
     pub fn is_warning(&self) -> bool {
         matches!(
             self,
-            Self::ConversationIdCopyFailed | Self::ArchivedNotOpenable | Self::ArchiveFailed
+            Self::ConversationIdCopyFailed
+                | Self::ArchivedNotOpenable
+                | Self::ArchiveFailed
+                | Self::RevealFailed
         )
     }
 
@@ -73,7 +81,9 @@ impl ToastKind {
         match self {
             Self::ConversationIdCopied | Self::ConversationIdCopyFailed => SHORT_TOAST,
             Self::Archived { .. } | Self::StoppedAndArchived { .. } => ARCHIVE_TOAST,
-            Self::ArchivedNotOpenable | Self::ArchiveFailed => BLOCKED_TOAST,
+            Self::ArchivedNotOpenable | Self::ArchiveFailed | Self::RevealFailed => {
+                BLOCKED_TOAST
+            }
         }
     }
 }

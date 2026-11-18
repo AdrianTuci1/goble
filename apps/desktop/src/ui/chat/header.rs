@@ -1932,16 +1932,28 @@ mod tests {
         );
     }
 
-    /// The agent conversation column is the darker background while the pane
-    /// body/gutters keep the pane's surface: the adjustable width reads as a
-    /// distinct darker column. Checked in both themes, with theme tokens only.
+    /// The agent pane is ONE surface: the card's whole background is the same
+    /// darker `Bg` token the adjustable content column paints, so the area
+    /// outside the text column reads exactly like the column — the lane is a
+    /// width, not a different material. Checked in both themes with theme
+    /// tokens only.
     #[test]
-    fn the_agent_lane_column_is_darker_than_the_pane_surface() {
-        fn luminance(color: goble_ui::ColorU) -> f32 {
-            0.2126 * color.r as f32 + 0.7152 * color.g as f32 + 0.0722 * color.b as f32
+    fn the_agent_pane_surface_matches_the_lane_column() {
+        fn topmost_fill(cmds: &[RenderCommand], point: Vector2F) -> Option<goble_ui::ColorU> {
+            cmds.iter().rev().find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if point.x >= rect.min_x()
+                        && point.x <= rect.max_x()
+                        && point.y >= rect.min_y()
+                        && point.y <= rect.max_y() =>
+                {
+                    Some(*color)
+                }
+                _ => None,
+            })
         }
 
-        fn assert_darker(app: &AppContext) {
+        fn assert_uniform(app: &AppContext) {
             use goble_ui::elements::resolve_content_width;
 
             let (mut root, state, _desktop, _dir) = pane_root();
@@ -1949,15 +1961,15 @@ mod tests {
             let _ = frame_sized(&mut root, app, size);
             let cmds = frame_sized(&mut root, app, size);
             let pane = pane_rect(&state);
+            let bg = app.theme.color(ColorToken::Bg);
 
-            // The pane card's surface: the tall fill spanning the pane.
-            let surface = app.theme.color(ColorToken::Surface);
+            // The pane card: the tall fill spanning the pane. An agent pane's
+            // card is the darker `Bg`, not the lighter `Surface`.
             let (card, card_color) = cmds
                 .iter()
                 .find_map(|command| match command {
                     RenderCommand::FillRect { rect, color, .. }
-                        if *color == surface
-                            && (rect.width() - pane.width()).abs() < 0.5
+                        if (rect.width() - pane.width()).abs() < 0.5
                             && rect.height() > 300.0
                             && (rect.min_x() - pane.min_x()).abs() < 0.5 =>
                     {
@@ -1966,9 +1978,13 @@ mod tests {
                     _ => None,
                 })
                 .expect("the pane card paints its surface");
-            assert_eq!(card_color, surface);
+            assert_eq!(
+                card_color, bg,
+                "the whole agent pane card is the darker `Bg` token, not a hardcoded colour"
+            );
 
-            // The lane column: the tall fill inside the pane, narrower than it.
+            // The lane column: the tall fill under the pane's chrome, narrower
+            // than the card, centred.
             let (column, column_color) = cmds
                 .iter()
                 .filter_map(|command| match command {
@@ -1993,21 +2009,35 @@ mod tests {
                 "the column is the centred lane: {column:?} vs {lane} @ {gutter}"
             );
             assert_eq!(
-                column_color,
-                app.theme.color(ColorToken::Bg),
+                column_color, bg,
                 "the lane column is the darker `Bg` token, not a hardcoded colour"
             );
-            assert!(
-                luminance(column_color) < luminance(card_color),
-                "the lane column reads darker than the pane surface: {column_color:?} vs {card_color:?}"
+            assert_eq!(
+                column_color, card_color,
+                "outside the text column is the same background as inside it"
             );
+
+            // And what the frame actually leaves visible in the gutter beside
+            // the column, under the chrome band, is the same `Bg` — the
+            // outside matches the inside on screen, not only in the fill list.
+            for x in [
+                pane.min_x() + gutter / 2.0,
+                pane.min_x() + gutter + lane + gutter / 2.0,
+            ] {
+                let point = vec2f(x, pane.min_y() + pane.height() / 2.0);
+                assert_eq!(
+                    topmost_fill(&cmds, point),
+                    Some(bg),
+                    "the gutter beside the content column is the agent background at {point:?}: {card:?}"
+                );
+            }
         }
 
-        // Dark: the window's gray `Bg` under the pane's `Surface`.
-        assert_darker(&AppContext::default());
-        // Light: the same token relationship, no hardcoded colours.
+        // Dark: the window's gray `Bg` across the whole pane.
+        assert_uniform(&AppContext::default());
+        // Light: the same token, no hardcoded colours.
         let mut light = AppContext::default();
         light.theme = goble_ui::theme::Theme::light();
-        assert_darker(&light);
+        assert_uniform(&light);
     }
 }

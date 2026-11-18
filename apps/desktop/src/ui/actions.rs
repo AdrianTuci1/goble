@@ -337,6 +337,11 @@ pub struct UiActions {
     pub on_sidebar_workspace_rename_commit: Rc<RefCell<dyn FnMut()>>,
     /// Cancel the workspace Rename dialog (Escape or its backdrop).
     pub on_sidebar_workspace_rename_cancel: Rc<RefCell<dyn FnMut()>>,
+    /// Reveal the workspace's own directory in the platform's file manager —
+    /// DSH's "Show in Finder" workspace menu row (`NSWorkspace` selects the
+    /// folder). A platform that cannot reveal raises the transient notice
+    /// instead of pretending the folder opened.
+    pub on_sidebar_workspace_show_in_finder: Rc<RefCell<dyn FnMut(String)>>,
     /// Delete a Workspace row (its list entry only; the folder and its
     /// conversations are kept, DSH's delete contract).
     pub on_sidebar_workspace_delete: Rc<RefCell<dyn FnMut(String)>>,

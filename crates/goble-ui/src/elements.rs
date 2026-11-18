@@ -11,20 +11,19 @@ pub use chat_composer::{
     ChatComposer, CommandProposalUi, DiffFileStat, DiffSummary, COMPOSER_CARD_GUTTER,
     COMPOSER_CARD_INSET, COMPOSER_CARD_RADIUS, COMPOSER_EDITOR_MAX_HEIGHT,
     COMPOSER_EDITOR_MIN_HEIGHT, COMPOSER_FOOTER_GAP, COMPOSER_FOOTER_HEIGHT,
-    COMPOSER_INPUT_MIN_HEIGHT,
-    COMPOSER_INPUT_RADIUS, COMPOSER_SEND_SIZE, CONTEXT_SEGMENT_HEIGHT,
+    COMPOSER_INPUT_MIN_HEIGHT, COMPOSER_INPUT_RADIUS, COMPOSER_SEND_SIZE, CONTEXT_SEGMENT_HEIGHT,
 };
 pub use chat_content::{
-    tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole, SubAgentPanel,
-    SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode, WorkDock, WorkGroup, WorkRow,
-    WorkSection,
+    tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole,
+    SubAgentPanel, SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode, WorkDock, WorkGroup,
+    WorkRow, WorkSection,
 };
 pub use chat_header::ChatHeader;
 pub use chat_layout::{ChatLayout, CHAT_RIGHT_SIDEBAR_WIDTH};
 pub use chat_sidebar::{ChatSidebar, RoutineItem, CHAT_SIDEBAR_WIDTH};
 pub use conversation_list_item::{
-    harness_accent, harness_bar_mark, harness_icon, harness_mark, AgentCardUi, ConversationListItem,
-    ConversationStatus,
+    harness_accent, harness_bar_mark, harness_icon, harness_mark, AgentCardUi,
+    ConversationListItem, ConversationStatus,
 };
 pub use conversation_sidebar::{
     ConversationEntry, ConversationSidebar, CONVERSATION_SIDEBAR_WIDTH,
@@ -46,17 +45,15 @@ pub use command_approval::{
 pub use composer_button::{ComposerButton, COMPOSER_CONTROL_RADIUS};
 pub use connector_card::ConnectorCard;
 pub use constrained_box::ConstrainedBox;
+pub use container::Container;
 pub use content_lane::{
     lane_column, lane_handle_width, lane_is_active, resolve_content_width, ContentLane, LaneEdge,
     CONTENT_LANE_HANDLE_GAP, CONTENT_LANE_HANDLE_HIDE_GUTTER, CONTENT_LANE_HANDLE_LINE_HEIGHT,
     CONTENT_LANE_HANDLE_LINE_WIDTH, CONTENT_LANE_HANDLE_WIDTH, CONTENT_LANE_MARGIN_BUDGET,
-    CONTENT_LANE_MIN_ACTIVE_COLUMN, CONTENT_LANE_MIN_CONTENT_WIDTH,
-    CONTENT_LANE_PASSIVE_MAX_WIDTH, CONTENT_LANE_PASSIVE_MIN_WIDTH, CONTENT_LANE_PASSIVE_RATIO,
+    CONTENT_LANE_MIN_ACTIVE_COLUMN, CONTENT_LANE_MIN_CONTENT_WIDTH, CONTENT_LANE_PASSIVE_MAX_WIDTH,
+    CONTENT_LANE_PASSIVE_MIN_WIDTH, CONTENT_LANE_PASSIVE_RATIO,
 };
-pub use container::Container;
-pub use context_pill::{
-    ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT, CONTEXT_PILL_LABEL_SIZE,
-};
+pub use context_pill::{ContextPill, PillTraySide, CONTEXT_PILL_HEIGHT, CONTEXT_PILL_LABEL_SIZE};
 pub use conversation_card::{ConversationCard, ConversationCardStatus, CARD_RAIL_WIDTH};
 pub use divider::Divider;
 pub use drawer::{Drawer, DrawerAnchor};
@@ -69,23 +66,25 @@ pub use header::Header;
 pub use hover_button::HoverButton;
 pub use hover_chip::{HoverChipLayer, HoverChipRegistry};
 pub use hover_row::HoverRow;
-pub use icon::{Icon, IconName};
 pub(crate) use icon::icon_atlas_name;
+pub use icon::{Icon, IconName};
 pub use icon_button::IconButton;
 pub use inline_text::{resolve_span as resolve_inline_span, InlineText, TextSpan};
 pub use key_handler::KeyHandler;
 pub use label::{Label, LabelSize};
 pub use markdown::parse_markdown;
 pub use modal::Modal;
-pub use open_menu::{MenuClose, MenuId, MenuPointer, OpenMenus, DEFAULT_MENU_ID};
 pub use model_tray::{
-    handle_tray_key, level_label, ComposerModelTray, ModelTray, ModelTrayHarness, ModelTrayKey,
-    ModelTrayModel, ModelTrayPane, ModelTrayState, MODEL_TRAY_ROWS,
+    handle_tray_key, level_label, ComposerModelTray, ModelTray, ModelTrayBounds, ModelTrayHarness,
+    ModelTrayKey, ModelTrayModel, ModelTrayPane, ModelTrayState, MODEL_TRAY_ROWS,
 };
+pub use open_menu::{MenuClose, MenuId, MenuPointer, OpenMenus, DEFAULT_MENU_ID};
 pub use padding::Padding;
 pub use page::Page;
 pub use pointer_menu::PointerMenu;
-pub use popup_menu::{PanelScroll, PopupMenu, PopupMenuItem, PopupMenuPosition, MENU_MAX_VISIBLE_ROWS};
+pub use popup_menu::{
+    PanelScroll, PopupMenu, PopupMenuItem, PopupMenuPosition, MENU_MAX_VISIBLE_ROWS,
+};
 pub use progress_bar::ProgressBar;
 pub use quick_action_button::QuickActionButton;
 pub use rect::Rect;
@@ -94,24 +93,23 @@ pub use running_indicator::{RunningIndicator, SPINNER_FRAMES};
 pub use scrollable::{ScrollState, Scrollable};
 pub use search_input::SearchInput;
 pub use select::{Select, SelectOption};
+pub use settings::{
+    SettingsButton, SettingsFold, SettingsNav, SettingsNavGroup, SettingsNavItem, SettingsNotice,
+    SettingsNoticeKind, SettingsPathField, SettingsRow, SettingsRowStatus, SettingsRowStatusKind,
+    SettingsSecretField, SettingsSection, SettingsSelect, SettingsSlider, SettingsTextField,
+    SettingsToggle, SETTINGS_CONTROL_HEIGHT, SETTINGS_CONTROL_MIN_WIDTH, SETTINGS_CONTROL_RADIUS,
+    SETTINGS_GROUP_RADIUS, SETTINGS_NAV_ROW_HEIGHT, SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING,
+    SETTINGS_RAIL_WIDTH, SETTINGS_ROW_HINT_LINE_HEIGHT, SETTINGS_ROW_HINT_SIZE,
+    SETTINGS_ROW_H_PADDING, SETTINGS_ROW_LABEL_SIZE, SETTINGS_ROW_V_PADDING, SETTINGS_SECTION_GAP,
+};
 pub use sheet::{Sheet, SHEET_DEFAULT_WIDTH};
 pub use shell::{ActiveView, SettingsTab, ShellState, ShellView, SidebarMode};
 pub use shortcut_hints::{key_has_icon, ShortcutHint, ShortcutHints};
-pub use settings::{
-    SettingsButton, SettingsFold, SettingsNav, SettingsNavGroup, SettingsNavItem,
-    SettingsNotice, SettingsNoticeKind, SettingsPathField, SettingsRow, SettingsRowStatus,
-    SettingsRowStatusKind, SettingsSecretField, SettingsSection, SettingsSelect, SettingsSlider,
-    SettingsTextField, SettingsToggle, SETTINGS_CONTROL_HEIGHT, SETTINGS_CONTROL_MIN_WIDTH,
-    SETTINGS_CONTROL_RADIUS, SETTINGS_GROUP_RADIUS, SETTINGS_NAV_ROW_HEIGHT,
-    SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING, SETTINGS_RAIL_WIDTH, SETTINGS_ROW_HINT_SIZE,
-    SETTINGS_ROW_HINT_LINE_HEIGHT, SETTINGS_ROW_H_PADDING, SETTINGS_ROW_LABEL_SIZE,
-    SETTINGS_ROW_V_PADDING, SETTINGS_SECTION_GAP,
-};
+pub use sidebar::Sidebar;
+pub use sidebar_item::SidebarItem;
 pub use slash_menu::{
     slash_menu_open, DraftTrigger, ModelMenu, SlashMenu, SlashMenuItem, SLASH_MENU_ROWS,
 };
-pub use sidebar::Sidebar;
-pub use sidebar_item::SidebarItem;
 pub use spacer::Spacer;
 pub use split::SplitNode;
 pub use stack::Stack;
@@ -121,17 +119,17 @@ pub use terminal_block::{
     filter_option_labels, terminal_block, terminal_block_styled, terminal_block_with_cursor_styled,
     terminal_block_with_selection, terminal_block_with_selection_styled, TerminalBlock,
     TerminalBlockCursor, TerminalBlockPlumbing, TerminalCopyHandler, TerminalCursorShape,
-    TerminalData, TerminalFilter, TerminalLine, TerminalLineGeometry, TerminalLineKind, TerminalMeta,
-    TerminalStatus, TerminalTextSelection, TerminalTextStyle,
+    TerminalData, TerminalFilter, TerminalLine, TerminalLineGeometry, TerminalLineKind,
+    TerminalMeta, TerminalStatus, TerminalTextSelection, TerminalTextStyle,
 };
 pub use terminal_grid::{GridRange, TerminalGrid, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT};
 pub use text::Text;
 pub use text_area::{LineRuns, TextArea};
+pub use text_input::TextInput;
 pub use text_selection::{
     RunMetrics, SelectableLine, SelectableText, SelectedFragment, SelectionPoint, SelectionRun,
     TranscriptSelection,
 };
-pub use text_input::TextInput;
 pub use thread_list_item::ThreadListItem;
 pub use titlebar::TitleBar;
 pub use toggle_button::ToggleButton;
@@ -248,10 +246,9 @@ impl PaintContext {
     /// Whether the pointer is on the open menu's surface.
     pub fn pointer_on_open_menu(&self) -> bool {
         self.cursor_inside
-            && self
-                .open_menu_surfaces
-                .iter()
-                .any(|surface| crate::elements::interactive::contains(*surface, self.cursor_position))
+            && self.open_menu_surfaces.iter().any(|surface| {
+                crate::elements::interactive::contains(*surface, self.cursor_position)
+            })
     }
 
     /// Mark the start of painting an open menu's own surface. While raised,
@@ -714,8 +711,8 @@ pub mod command_approval;
 pub mod composer_button;
 pub mod connector_card;
 pub mod constrained_box;
-pub mod content_lane;
 pub mod container;
+pub mod content_lane;
 pub mod context_pill;
 pub mod conversation_card;
 pub mod conversation_list_item;
@@ -762,9 +759,9 @@ pub mod settings;
 pub mod sheet;
 pub mod shell;
 pub mod shortcut_hints;
-pub mod slash_menu;
 pub mod sidebar;
 pub mod sidebar_item;
+pub mod slash_menu;
 pub mod spacer;
 pub mod split;
 pub mod stack;

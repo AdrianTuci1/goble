@@ -26,6 +26,9 @@ pub enum CursorKind {
     /// A horizontal (east-west) resize cursor, for a vertical edge that moves
     /// left and right.
     EwResize,
+    /// A vertical (north-south) resize cursor, for a horizontal edge that
+    /// moves up and down.
+    NsResize,
 }
 
 /// The smallest inner width the window may be resized to. Matches warp-new's
@@ -398,6 +401,7 @@ impl ApplicationHandler for App {
             cursor_window.set_cursor(match kind {
                 CursorKind::Default => winit::window::CursorIcon::Default,
                 CursorKind::EwResize => winit::window::CursorIcon::EwResize,
+                CursorKind::NsResize => winit::window::CursorIcon::NsResize,
             });
         });
 

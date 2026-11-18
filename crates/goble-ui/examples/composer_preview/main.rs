@@ -21,6 +21,9 @@
 //!   (`Model` / `Effort` cells), anchored above the model chip.
 //! - `model-pane` — the same card drilled into the provider-grouped model list,
 //!   with DSH's trailing check on the model in force.
+//! - `model-effort` — the same card drilled into the effort list, checked on the
+//!   level in force; `--long-model` swaps in names that overflow the chip and the
+//!   cells so the ellipsis pass is visible.
 //! - `slash-menu` — the `/` command list as the DSH card over the composer, with
 //!   the context band hidden so the card is the input segment plus the menu.
 //! - `terminal-placeholder` — the shell bar's rich input: "Run any command" and
@@ -88,9 +91,16 @@ fn main() -> anyhow::Result<()> {
         "env-menu" => render_menu(&options, &assets, MenuKind::Environment)?,
         "branch-menu" => render_menu(&options, &assets, MenuKind::Branch)?,
         "model-menu" => render_model_menu(&options, &assets)?,
-        "model-pane" => render_model_pane(&options, &assets)?,
+        "model-pane" => {
+            render_model_pane(&options, &assets, goble_ui::elements::ModelTrayPane::Model)?
+        }
+        "model-effort" => {
+            render_model_pane(&options, &assets, goble_ui::elements::ModelTrayPane::Effort)?
+        }
         "slash-menu" => render_slash_menu(&options, &assets)?,
-        "terminal-placeholder" => render_placeholder(&options, &assets, PlaceholderSurface::Terminal)?,
+        "terminal-placeholder" => {
+            render_placeholder(&options, &assets, PlaceholderSurface::Terminal)?
+        }
         "agent-placeholder" => render_placeholder(&options, &assets, PlaceholderSurface::Agent)?,
         "lane" => render_lane(&options, &assets)?,
         "all" => {
@@ -105,7 +115,10 @@ fn main() -> anyhow::Result<()> {
                 None => options.out.clone(),
             };
             std::fs::create_dir_all(&dir)?;
-            render_composer(&options.sub_scene("composer", dir.join("composer.png")), &assets)?;
+            render_composer(
+                &options.sub_scene("composer", dir.join("composer.png")),
+                &assets,
+            )?;
             let focused = options.sub_scene("composer", dir.join("composer-focused.png"));
             render_composer(
                 &Options {
@@ -124,16 +137,19 @@ fn main() -> anyhow::Result<()> {
             render_model_pane(
                 &options.sub_scene("model-pane", dir.join("model-pane.png")),
                 &assets,
+                goble_ui::elements::ModelTrayPane::Model,
+            )?;
+            render_model_pane(
+                &options.sub_scene("model-effort", dir.join("model-effort.png")),
+                &assets,
+                goble_ui::elements::ModelTrayPane::Effort,
             )?;
             render_slash_menu(
                 &options.sub_scene("slash-menu", dir.join("slash-menu.png")),
                 &assets,
             )?;
             render_placeholder(
-                &options.sub_scene(
-                    "terminal-placeholder",
-                    dir.join("placeholder-terminal.png"),
-                ),
+                &options.sub_scene("terminal-placeholder", dir.join("placeholder-terminal.png")),
                 &assets,
                 PlaceholderSurface::Terminal,
             )?;
@@ -162,7 +178,6 @@ fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
-
 
 /// Print the paint commands that place text, icons and boxes, for debugging a
 /// scene's geometry (used by `--dump-commands`).
@@ -235,6 +250,10 @@ struct Options {
     drag_edge: LaneEdge,
     focused: bool,
     dump_commands: bool,
+    /// Use the long-form catalogue for the composer/model scenes: a model whose
+    /// display name and effort overflow the chip's 360pt cap and the menu's
+    /// cells, the case the value-ellipsis pass exists for.
+    long_model: bool,
 }
 
 impl Options {
@@ -250,6 +269,7 @@ impl Options {
             drag_edge: self.drag_edge,
             focused: self.focused,
             dump_commands: self.dump_commands,
+            long_model: self.long_model,
         }
     }
 
@@ -264,6 +284,7 @@ impl Options {
         let mut drag_edge = LaneEdge::Left;
         let mut focused = false;
         let mut dump_commands = false;
+        let mut long_model = false;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             let mut value = |name: &str| -> anyhow::Result<String> {
@@ -293,6 +314,7 @@ impl Options {
                 }
                 "--focused" => focused = true,
                 "--dump-commands" => dump_commands = true,
+                "--long-model" => long_model = true,
                 "--help" | "-h" => {
                     print_usage();
                     std::process::exit(0);
@@ -318,6 +340,7 @@ impl Options {
             drag_edge,
             focused,
             dump_commands,
+            long_model,
         })
     }
 
@@ -339,7 +362,7 @@ fn print_usage() {
     println!(
         "composer_preview — rasterize goble-ui scenes to PNG\n\
          \n\
-         --scene composer|menus|env-menu|branch-menu|model-menu|model-pane|slash-menu|\n\
+         --scene composer|menus|env-menu|branch-menu|model-menu|model-pane|model-effort|slash-menu|\n\
          --scene terminal-placeholder|agent-placeholder|lane|all  (default: composer)\n\
          --out PATH        output PNG path (default: /tmp/goble-work/out/<scene>.png)\n\
          --scale N         device pixel ratio to rasterize at (default: 2 for composer/menus, 1 for lane)\n\
@@ -349,6 +372,7 @@ fn print_usage() {
          --dragging        lane scene: paint the lane's in-drag edge rule\n\
          --drag-edge E     lane drag edge: left (default) or right\n\
          --focused         composer scene: render the editor focused (caret only; no ring)\n\
+         --long-model      composer/model scenes: use the overflow-length model catalogue\n\
          --dump-commands   print every DrawText/DrawIcon/rect command of the scene\n\
          \n\
          `menus` writes two PNGs next to --out: <stem>-env-menu.png and <stem>-branch-menu.png.\n\
@@ -356,12 +380,8 @@ fn print_usage() {
     );
 }
 
-
 fn with_out_suffix(out: &Path, suffix: &str) -> PathBuf {
-    let is_dir = out.is_dir()
-        || out
-            .to_string_lossy()
-            .ends_with(std::path::MAIN_SEPARATOR);
+    let is_dir = out.is_dir() || out.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR);
     if is_dir {
         return out.join(format!("{suffix}.png"));
     }
@@ -395,7 +415,6 @@ fn frame_scene(
     raster::render_to_png(assets, app, &mut root, canvas, scale, None, out)
 }
 
-
 // ---------------------------------------------------------------------------
 // Scenes
 // ---------------------------------------------------------------------------
@@ -405,6 +424,11 @@ fn frame_scene(
 /// open before layout.
 #[derive(Clone)]
 struct MenuFlags {
+    /// The catalogue the model chip and card read: the short one by default,
+    /// the overflow-length one with `--long-model`.
+    harnesses: Vec<ModelTrayHarness>,
+    tray_model: &'static str,
+    tray_level: &'static str,
     dir_open: Rc<RefCell<bool>>,
     branch_open: Rc<RefCell<bool>>,
     harness_open: Rc<RefCell<bool>>,
@@ -417,6 +441,16 @@ struct MenuFlags {
 }
 
 impl MenuFlags {
+    /// The long-form catalogue: names that overflow the chip and the cells, plus
+    /// a three-level model so the effort caption and the effort pane both show
+    /// real values.
+    fn with_long_catalogue(mut self) -> Self {
+        self.harnesses = model_tray_harnesses(true);
+        self.tray_model = "deepseek-v4-flash";
+        self.tray_level = "high";
+        self
+    }
+
     fn new() -> Self {
         Self {
             dir_open: Rc::new(RefCell::new(false)),
@@ -425,6 +459,9 @@ impl MenuFlags {
             model_open: Rc::new(RefCell::new(false)),
             tray_open: Rc::new(RefCell::new(false)),
             tray_state: Rc::new(RefCell::new(ModelTrayState::default())),
+            harnesses: model_tray_harnesses(false),
+            tray_model: "deepseek-flash",
+            tray_level: "off",
             slash_index: Rc::new(RefCell::new(0)),
             slash_dismissed: Rc::new(RefCell::new(false)),
             caret: Rc::new(RefCell::new(0)),
@@ -433,17 +470,43 @@ impl MenuFlags {
 }
 
 /// The model catalogue the DSH card lists: two providers, the models each one
-/// runs, and the thinking levels those models accept.
-fn model_tray_harnesses() -> Vec<ModelTrayHarness> {
+/// runs, and the thinking levels those models accept. `long` swaps in names long
+/// enough to overflow the chip's 360pt cap, the menu's 240pt cells and the
+/// menu's 420pt list cap, so the ellipsis passes are visible in the PNGs.
+fn model_tray_harnesses(long: bool) -> Vec<ModelTrayHarness> {
+    let thinking = || vec!["off".to_string(), "high".to_string(), "max".to_string()];
+    if long {
+        return vec![
+            ModelTrayHarness::new("deepseek", "DeepSeek").with_models(vec![
+                ModelTrayModel::new(
+                    "deepseek-v4-flash",
+                    "DeepSeek-V4.1-Flash-Experimental-Preview-Candidate-2026-11",
+                )
+                .with_thinking(thinking()),
+                ModelTrayModel::new(
+                    "deepseek-v4-pro",
+                    "DeepSeek-V4.1-Pro-Reasoning-Long-Context",
+                )
+                .with_thinking(thinking()),
+            ]),
+            ModelTrayHarness::new("anthropic", "Anthropic").with_models(vec![ModelTrayModel::new(
+                "claude-sonnet-4-5-thinking",
+                "Claude Sonnet 4.5 Thinking Extended",
+            )
+            .with_thinking(thinking())]),
+        ];
+    }
     let thinking = || vec!["off".to_string(), "on".to_string()];
     vec![
         ModelTrayHarness::new("deepseek", "DeepSeek").with_models(vec![
             ModelTrayModel::new("deepseek-flash", "DeepSeek Flash").with_thinking(thinking()),
             ModelTrayModel::new("deepseek-pro", "DeepSeek Pro").with_thinking(thinking()),
         ]),
-        ModelTrayHarness::new("anthropic", "Anthropic").with_models(vec![
-            ModelTrayModel::new("claude-sonnet", "Claude Sonnet").with_thinking(thinking()),
-        ]),
+        ModelTrayHarness::new("anthropic", "Anthropic").with_models(vec![ModelTrayModel::new(
+            "claude-sonnet",
+            "Claude Sonnet",
+        )
+        .with_thinking(thinking())]),
     ]
 }
 
@@ -453,14 +516,14 @@ fn slash_menu_items() -> Vec<SlashMenuItem> {
     vec![
         SlashMenuItem::new("new", "Start a fresh conversation").with_icon("new-chat"),
         SlashMenuItem::new("clear", "Clear this conversation's transcript").with_icon("trash-02"),
-        SlashMenuItem::new("fork", "Branch this conversation into a new one").with_icon("git-branch"),
+        SlashMenuItem::new("fork", "Branch this conversation into a new one")
+            .with_icon("git-branch"),
         SlashMenuItem::new("compact", "Compact older conversation history").with_icon("flash"),
         SlashMenuItem::new("permissions", "Switch the permission preset").with_icon("sliders"),
         SlashMenuItem::new("model deepseek-flash", "Run this pane on another model")
             .with_icon("database"),
     ]
 }
-
 
 /// The agent composer as the app wires it (`views/chat_view/transcript.rs`):
 /// the same builder calls, on the same public element, with the reference
@@ -526,11 +589,11 @@ fn composer_with(flags: &MenuFlags, focused: bool, value: &str) -> ChatComposer 
         // shape (providers → models → thinking levels) and selection callbacks.
         .with_model_tray(
             ComposerModelTray::new(
-                model_tray_harnesses(),
+                flags.harnesses.clone(),
                 flags.tray_state.clone(),
                 flags.tray_open.clone(),
             )
-            .with_current("deepseek-flash", "off")
+            .with_current(flags.tray_model, flags.tray_level)
             .with_on_select_model(|_| {})
             .with_on_select_level(|_| {}),
         )
@@ -578,7 +641,11 @@ fn render_composer(options: &Options, assets: &PreviewAssets) -> anyhow::Result<
     app.theme = theme;
     let width = options.width.unwrap_or(REFERENCE_WIDTH);
     let scale = options.scale(2.0);
-    let flags = MenuFlags::new();
+    let flags = if options.long_model {
+        MenuFlags::new().with_long_catalogue()
+    } else {
+        MenuFlags::new()
+    };
     let focused = options.focused;
 
     // Measure the composer at the width the scene will give it, so the canvas
@@ -621,14 +688,9 @@ impl MenuKind {
             MenuKind::Branch => "branch-menu",
         }
     }
-
 }
 
-fn render_menu(
-    options: &Options,
-    assets: &PreviewAssets,
-    kind: MenuKind,
-) -> anyhow::Result<()> {
+fn render_menu(options: &Options, assets: &PreviewAssets, kind: MenuKind) -> anyhow::Result<()> {
     let theme = options.theme()?;
     let mut app = AppContext::default();
     app.theme = theme;
@@ -656,13 +718,21 @@ fn render_menu(
     let build_flags = flags.clone();
     // The auto-framing pass finds the open panel above the composer and gives
     // the scene exactly that headroom.
-    frame_scene(width, scale, &app, assets, &out, content.y, move |headroom| {
-        Padding::new(
-            composer_element(&build_flags, focused),
-            EdgeInsets::new(0.0, headroom, 0.0, 0.0),
-        )
-        .finish()
-    })
+    frame_scene(
+        width,
+        scale,
+        &app,
+        assets,
+        &out,
+        content.y,
+        move |headroom| {
+            Padding::new(
+                composer_element(&build_flags, focused),
+                EdgeInsets::new(0.0, headroom, 0.0, 0.0),
+            )
+            .finish()
+        },
+    )
 }
 
 /// The composer with the DSH model card open on its root pane: the `Model` and
@@ -672,7 +742,11 @@ fn render_model_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Resul
     app.theme = options.theme()?;
     let width = options.width.unwrap_or(REFERENCE_WIDTH);
     let scale = options.scale(2.0);
-    let flags = MenuFlags::new();
+    let flags = if options.long_model {
+        MenuFlags::new().with_long_catalogue()
+    } else {
+        MenuFlags::new()
+    };
     *flags.tray_open.borrow_mut() = true;
     let focused = options.focused;
     let mut probe = composer_element(&flags, false);
@@ -683,29 +757,61 @@ fn render_model_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Resul
         dump_commands(&commands);
     }
     let build_flags = flags.clone();
-    frame_scene(width, scale, &app, assets, &options.out, content.y, move |headroom| {
-        Padding::new(
-            composer_element(&build_flags, focused),
-            EdgeInsets::new(0.0, headroom, 0.0, 0.0),
-        )
-        .finish()
-    })
+    frame_scene(
+        width,
+        scale,
+        &app,
+        assets,
+        &options.out,
+        content.y,
+        move |headroom| {
+            Padding::new(
+                composer_element(&build_flags, focused),
+                EdgeInsets::new(0.0, headroom, 0.0, 0.0),
+            )
+            .finish()
+        },
+    )
 }
 
-/// The same card drilled into the model list: provider headings over the models
-/// they run, each model row with DSH's trailing check on the value in force.
-fn render_model_pane(options: &Options, assets: &PreviewAssets) -> anyhow::Result<()> {
+/// The same card drilled into one of its lists: the model list with provider
+/// headings over the models they run and DSH's trailing check on the value in
+/// force, or the effort list with its check on the level in force.
+fn render_model_pane(
+    options: &Options,
+    assets: &PreviewAssets,
+    pane: goble_ui::elements::ModelTrayPane,
+) -> anyhow::Result<()> {
     let mut app = AppContext::default();
     app.theme = options.theme()?;
     let width = options.width.unwrap_or(REFERENCE_WIDTH);
     let scale = options.scale(2.0);
-    let flags = MenuFlags::new();
+    let flags = if options.long_model {
+        MenuFlags::new().with_long_catalogue()
+    } else {
+        MenuFlags::new()
+    };
+    // The effort pane opens on the level in force, the model pane on the model
+    // in force: the card marks what the composer runs.
+    let level = flags
+        .harnesses
+        .iter()
+        .flat_map(|group| group.models.iter())
+        .find(|model| model.id == flags.tray_model)
+        .and_then(|model| {
+            model
+                .thinking
+                .iter()
+                .position(|one| one == flags.tray_level)
+        })
+        .unwrap_or(0);
     *flags.tray_open.borrow_mut() = true;
     *flags.tray_state.borrow_mut() = ModelTrayState {
-        pane: goble_ui::elements::ModelTrayPane::Model,
+        pane,
         cell: 0,
+        cell_active: false,
         row: 0,
-        level: 0,
+        level,
         seeded: true,
     };
     let focused = options.focused;
@@ -717,13 +823,21 @@ fn render_model_pane(options: &Options, assets: &PreviewAssets) -> anyhow::Resul
         dump_commands(&commands);
     }
     let build_flags = flags.clone();
-    frame_scene(width, scale, &app, assets, &options.out, content.y, move |headroom| {
-        Padding::new(
-            composer_element(&build_flags, focused),
-            EdgeInsets::new(0.0, headroom, 0.0, 0.0),
-        )
-        .finish()
-    })
+    frame_scene(
+        width,
+        scale,
+        &app,
+        assets,
+        &options.out,
+        content.y,
+        move |headroom| {
+            Padding::new(
+                composer_element(&build_flags, focused),
+                EdgeInsets::new(0.0, headroom, 0.0, 0.0),
+            )
+            .finish()
+        },
+    )
 }
 
 /// The `/` command list: the DSH card over the composer, with the context band
@@ -743,13 +857,21 @@ fn render_slash_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Resul
         dump_commands(&commands);
     }
     let build_flags = flags.clone();
-    frame_scene(width, scale, &app, assets, &options.out, content.y, move |headroom| {
-        Padding::new(
-            slash_scene(&build_flags, focused),
-            EdgeInsets::new(0.0, headroom, 0.0, 0.0),
-        )
-        .finish()
-    })
+    frame_scene(
+        width,
+        scale,
+        &app,
+        assets,
+        &options.out,
+        content.y,
+        move |headroom| {
+            Padding::new(
+                slash_scene(&build_flags, focused),
+                EdgeInsets::new(0.0, headroom, 0.0, 0.0),
+            )
+            .finish()
+        },
+    )
 }
 
 ///
@@ -801,7 +923,7 @@ fn placeholder_element(
             .with_model_label("DeepSeek Flash")
             .with_model_tray(
                 ComposerModelTray::new(
-                    model_tray_harnesses(),
+                    model_tray_harnesses(false),
                     flags.tray_state.clone(),
                     flags.tray_open.clone(),
                 )
@@ -836,13 +958,21 @@ fn render_placeholder(
         dump_commands(&commands);
     }
     let build_flags = flags.clone();
-    frame_scene(width, scale, &app, assets, &options.out, content.y, move |headroom| {
-        Padding::new(
-            placeholder_element(&build_flags, surface, focused),
-            EdgeInsets::new(0.0, headroom, 0.0, 0.0),
-        )
-        .finish()
-    })
+    frame_scene(
+        width,
+        scale,
+        &app,
+        assets,
+        &options.out,
+        content.y,
+        move |headroom| {
+            Padding::new(
+                placeholder_element(&build_flags, surface, focused),
+                EdgeInsets::new(0.0, headroom, 0.0, 0.0),
+            )
+            .finish()
+        },
+    )
 }
 
 /// A full-height pane column: a representative transcript and the real
@@ -938,5 +1068,13 @@ fn render_lane(options: &Options, assets: &PreviewAssets) -> anyhow::Result<()> 
         .with_on_drag_end(|| {})
         .finish();
     let mut root: Box<dyn Element> = lane;
-    raster::render_to_png(assets, &app, &mut root, vec2f(width, height), scale, None, &options.out)
+    raster::render_to_png(
+        assets,
+        &app,
+        &mut root,
+        vec2f(width, height),
+        scale,
+        None,
+        &options.out,
+    )
 }

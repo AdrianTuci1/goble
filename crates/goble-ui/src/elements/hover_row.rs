@@ -28,6 +28,12 @@ pub struct HoverRow {
     selected: bool,
     padding: EdgeInsets,
     corner_radius: f32,
+    /// The token the pointer's hover band paints. Defaults to
+    /// [`ColorToken::Hover`]; a menu row over the raised menu surface passes
+    /// [`ColorToken::Selected`] instead, because the plain hover fill and the
+    /// raised surface resolve to the same colour there (DSH's menu rows fill
+    /// with their interactive-hover step, which is visible on the card).
+    hover_token: ColorToken,
     /// Whether the row paints its hover band. A row whose own content changes
     /// under the pointer (a tool row that shows its arrow, say) turns the band
     /// off and carries the hover in its content instead.
@@ -51,6 +57,7 @@ impl HoverRow {
             selected: false,
             padding: EdgeInsets::uniform(0.0),
             corner_radius: 0.0,
+            hover_token: ColorToken::Hover,
             hover_highlight: true,
             hover_key: None,
             on_click: None,
@@ -78,6 +85,16 @@ impl HoverRow {
     /// rather than a slice of the panel.
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
+        self
+    }
+
+    /// Paint the pointer's hover band with `token` instead of
+    /// [`ColorToken::Hover`]. A menu row on the raised menu surface uses
+    /// [`ColorToken::Selected`]: the plain hover fill resolves to the same
+    /// colour as that surface, so the row would show no band at all (DSH's menu
+    /// rows fill with their visible interactive-hover step).
+    pub fn with_hover_token(mut self, token: ColorToken) -> Self {
+        self.hover_token = token;
         self
     }
 
@@ -168,7 +185,7 @@ impl Element for HoverRow {
             } else if self.selected {
                 Some(ColorToken::Selected)
             } else if hovered {
-                Some(ColorToken::Hover)
+                Some(self.hover_token)
             } else {
                 None
             };
@@ -242,6 +259,7 @@ impl Element for HoverRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::ColorU;
     use crate::elements::Text;
     use crate::geometry::{rectf, vec2f, RectF};
     use crate::render::{RenderCommand, Renderer};
@@ -370,6 +388,47 @@ mod tests {
             ),
             Some(4.0),
             "the explorer's row rounds its band"
+        );
+    }
+
+    /// A menu row over the raised menu surface passes its own hover fill: the
+    /// plain `Hover` token resolves to that surface's colour, so the row would
+    /// show no band. The band follows the requested token.
+    #[test]
+    fn a_row_can_pick_the_hover_band_token() {
+        let app = AppContext::default();
+        let painted = |row: &mut HoverRow, app: &AppContext| -> Vec<ColorU> {
+            let mut ctx = PaintContext::new(Renderer::new());
+            ctx.cursor_inside = true;
+            ctx.cursor_position = vec2f(10.0, 10.0);
+            let _ = paint(row, &mut ctx, app);
+            ctx.renderer
+                .as_ref()
+                .expect("renderer")
+                .commands()
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::FillRect { color, .. } => Some(*color),
+                    _ => None,
+                })
+                .collect()
+        };
+        let plain = painted(&mut row(Text::new("src").finish()), &app);
+        assert!(
+            plain.contains(&app.theme.color(ColorToken::Hover)),
+            "the default band is the plain hover fill: {plain:?}"
+        );
+        let menu = painted(
+            &mut row(Text::new("src").finish()).with_hover_token(ColorToken::Selected),
+            &app,
+        );
+        assert!(
+            menu.contains(&app.theme.color(ColorToken::Selected)),
+            "the menu row paints the visible fill instead: {menu:?}"
+        );
+        assert!(
+            !menu.contains(&app.theme.color(ColorToken::Hover)),
+            "and not the invisible one: {menu:?}"
         );
     }
 

@@ -79,19 +79,72 @@ const TRAY_GAP: f32 = 4.0;
 
 /// The tray's own corner radius, inset and hairline: the card is the same one
 /// the rich input's controls open beside themselves, so the two trays read as
-/// one surface (see `PopupMenu`).
+/// one surface (see `PopupMenu`). The chat card's own tray keeps this; the
+/// sidebar rows use the DSH context-menu metrics below.
 const TRAY_RADIUS: f32 = 6.0;
-/// The sidebar row tray's panel radius: the spec pins the sidebar's menus to
-/// the theme's 12pt card radius (rows inside stay 6).
-const SIDEBAR_MENU_RADIUS: f32 = 12.0;
 /// The tray's vertical padding, and the horizontal inset each of its rows keeps
 /// for its own content. The tray itself has no horizontal padding: a row's band
 /// spans the tray edge to edge.
 const TRAY_PADDING: f32 = 8.0;
 
+// -- the sidebar rows' context menus (DSH's `Menu` primitive) ----------------
+//
+// The sidebar's workspace and session trays are DSH context menus: the shared
+// `Menu` card in `packages/client/ui-primitives/src/Menu.module.css` plus the
+// `MenuSurface` radii/tokens in `MenuSurface.module.css` and
+// `ui-theme/src/styles/{base,design-platform,gradient-shadow-text}.css`:
+//   .list     padding 4px; min-width 144px; max-width 360px; radius-lg 16px
+//   .item     min-height 34px; padding 6px 8px; gap 6px; radius-md 12px;
+//             font-size 13px; line-height 20px
+//   .itemIcon 14px, `--dsw-alias-menu-icon`
+//   .separator height .5px; margin 3px 8px; `--dsw-alias-border-l2`
+//   .danger   `--dsw-alias-state-error-primary` text/icon, danger hover fill
+//   hover/focus fill `--dsw-alias-interactive-bg-hover` (the selected row's
+//             `selectedFill` uses the same step: DSH has one visible hover fill)
+// Goble maps those onto its own tokens: `SurfaceRaised` + `Border` casing,
+// `Text` label / `Muted` icon, `Error` for danger, and `Selected` for the
+// hover/selection band (the plain `Hover` token equals the raised surface's own
+// colour, so it would paint no band on the card).
+
+/// DSH's menu minimum width (`.list { min-width: 144px }`).
+const SIDEBAR_MENU_MIN_WIDTH: f32 = 144.0;
+/// The widest a sidebar tray grows: DSH's `.list` caps at 360px, a sidebar row's
+/// menu keeps inside the sidebar's own budget.
+const SIDEBAR_MENU_MAX_WIDTH: f32 = 240.0;
+/// The casing's own padding (DSH's `.list { padding: 4px }`).
+const SIDEBAR_MENU_PADDING: f32 = 4.0;
+/// The casing's radius: DSH's `--dsw-radius-lg` (16px).
+const SIDEBAR_MENU_RADIUS: f32 = 16.0;
+/// A row band's radius: DSH's `--dsw-radius-md` (12px).
+const SIDEBAR_MENU_ROW_RADIUS: f32 = 12.0;
+/// A row's height: DSH's `.item { min-height: 34px }` (the label's 20px line
+/// plus the 6px padding above and below is 32, so the row pads to 34).
+const SIDEBAR_MENU_ROW_HEIGHT: f32 = 34.0;
+/// A row's label: DSH's `.item { font-size: 13px; line-height: 20px }`.
+const SIDEBAR_MENU_LABEL_SIZE: f32 = 13.0;
+const SIDEBAR_MENU_LABEL_LINE: f32 = 20.0;
+/// The gap between a row's icon and its label (DSH `.item { gap: 6px }`).
+const SIDEBAR_MENU_ICON_GAP: f32 = 6.0;
+/// A row's leading icon box (DSH `.itemIcon { width/height: 14px }`).
+const SIDEBAR_MENU_ICON_SIZE: f32 = 14.0;
+/// A row's own horizontal padding inside the casing (DSH `.item { padding: 6px
+/// 8px }`; the 4px casing padding puts the content 12px inside the card).
+const SIDEBAR_MENU_ROW_PADDING_X: f32 = 8.0;
+/// A separator's rule and breathing room (DSH `.separator { height: .5px;
+/// margin: 3px 8px }`).
+const SIDEBAR_MENU_SEPARATOR_HEIGHT: f32 = 0.5;
+const SIDEBAR_MENU_SEPARATOR_MARGIN: f32 = 3.0;
+const SIDEBAR_MENU_SEPARATOR_INSET: f32 = 8.0;
+
 /// The tray's rows, in paint order: the star toggle first, then delete.
 const STAR_ROW: usize = 0;
 const DELETE_ROW: usize = 1;
+
+/// The sidebar trays' "no row highlighted yet" marker. DSH opens a context
+/// menu with its first row focused but not filled (the menu's hover fill only
+/// appears for a pointer hover or a keyboard walk), so the app opens a sidebar
+/// tray with no painted highlight; Enter still runs the first row.
+const NO_HIGHLIGHT: usize = usize::MAX;
 
 /// Per-card interaction state that must survive the per-frame element rebuild.
 /// Owned by the app (a map keyed by conversation id) and shared with the card
@@ -201,8 +254,7 @@ pub fn harness_bar_mark(harness: &str, size: f32, app: &AppContext) -> Box<dyn E
 /// takes. A harness with no brand colour of its own — and one this build does
 /// not know — draws in the theme's muted ink.
 pub fn harness_accent(harness: &str, app: &AppContext) -> crate::ColorU {
-    let id = goble_core::harness::harness_for(harness)
-        .map_or("goble", |spec| spec.id);
+    let id = goble_core::harness::harness_for(harness).map_or("goble", |spec| spec.id);
     match id {
         "goble" => app.theme.color(ColorToken::Accent),
         "claude" => crate::ColorU::new(0xD9, 0x77, 0x57, 255),
@@ -450,17 +502,12 @@ impl ConversationListItem {
                 .finish(),
         )
         .with_background(Fill::Solid(app.theme.color(self.status.color_token())))
-        .with_border(
-            Border::all(STATUS_BADGE_RING).with_border_color(self.bg),
-        )
+        .with_border(Border::all(STATUS_BADGE_RING).with_border_color(self.bg))
         .with_corner_radius(STATUS_BADGE_SIZE / 2.0)
         .finish();
         let harness = Stack::new()
             .with_children([mark])
-            .with_overlay(
-                badge,
-                vec2f(STATUS_BADGE_OFFSET, STATUS_BADGE_OFFSET),
-            )
+            .with_overlay(badge, vec2f(STATUS_BADGE_OFFSET, STATUS_BADGE_OFFSET))
             .finish();
 
         let title = Flex::row()
@@ -833,6 +880,158 @@ fn menu_row_padding(app: &AppContext) -> EdgeInsets {
     EdgeInsets::new(horizontal, vertical, horizontal, vertical)
 }
 
+/// The width a DSH sidebar context-menu card takes: its widest row's natural
+/// width, held between DSH's 144pt menu minimum and the sidebar's own budget.
+/// DSH's `.list` is `width: max-content` between those bounds, so a two-word
+/// workspace menu stays narrow while a long session row grows the card.
+fn sidebar_menu_width(items: &[SidebarMenuItem]) -> f32 {
+    let widest = items
+        .iter()
+        .map(|item| {
+            let label = measure_text(
+                &item.label,
+                SIDEBAR_MENU_LABEL_SIZE,
+                SIDEBAR_MENU_LABEL_LINE,
+                f32::INFINITY,
+            )
+            .x;
+            SIDEBAR_MENU_ROW_PADDING_X * 2.0
+                + SIDEBAR_MENU_ICON_SIZE
+                + SIDEBAR_MENU_ICON_GAP
+                + label
+        })
+        .fold(0.0_f32, f32::max);
+    (widest + 2.0 * SIDEBAR_MENU_PADDING).clamp(SIDEBAR_MENU_MIN_WIDTH, SIDEBAR_MENU_MAX_WIDTH)
+}
+
+/// One row of a DSH sidebar context-menu card: a 14pt leading icon, a 13/20
+/// label, a 34pt row band with a 12pt radius, the label in `Text`, the icon in
+/// `Muted`, and both in `Error` for a destructive row (DSH's `.danger`). The
+/// band's fill is the visible `Selected` step on hover and for the keyboard
+/// highlight, DSH's single interactive-hover fill.
+fn sidebar_menu_row<F>(
+    app: &AppContext,
+    item: &SidebarMenuItem,
+    selected: bool,
+    on_activate: F,
+) -> Box<dyn Element>
+where
+    F: FnMut() + 'static,
+{
+    let (label_ink, icon_ink) = if item.danger {
+        (ColorToken::Error, ColorToken::Error)
+    } else {
+        (ColorToken::Text, ColorToken::Muted)
+    };
+    let vertical = (SIDEBAR_MENU_ROW_HEIGHT - SIDEBAR_MENU_LABEL_LINE) / 2.0;
+    let content = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(SIDEBAR_MENU_ICON_GAP)
+        .with_child(
+            Icon::new(item.icon)
+                .with_size(SIDEBAR_MENU_ICON_SIZE)
+                .with_theme_color(icon_ink, app)
+                .finish(),
+        )
+        .with_child(
+            Expanded::new(
+                Text::new(item.label.clone())
+                    .with_font_size(SIDEBAR_MENU_LABEL_SIZE)
+                    .with_line_height(SIDEBAR_MENU_LABEL_LINE / SIDEBAR_MENU_LABEL_SIZE)
+                    .with_max_lines(1)
+                    .with_theme_color(label_ink, app)
+                    .finish(),
+            )
+            .finish(),
+        )
+        .finish();
+    HoverRow::new(content)
+        .with_padding(EdgeInsets::new(
+            SIDEBAR_MENU_ROW_PADDING_X,
+            vertical,
+            SIDEBAR_MENU_ROW_PADDING_X,
+            vertical,
+        ))
+        .with_selected(selected)
+        .with_hover_token(ColorToken::Selected)
+        .with_corner_radius(SIDEBAR_MENU_ROW_RADIUS)
+        .with_on_click(on_activate)
+        .finish()
+}
+
+/// The casing of a DSH sidebar context-menu: the raised surface with a hairline
+/// border, the 16pt card radius and the 4pt padding that surrounds the rows.
+fn sidebar_menu_tray(
+    app: &AppContext,
+    rows: Box<dyn Element>,
+    items: &[SidebarMenuItem],
+) -> Box<dyn Element> {
+    ConstrainedBox::new(
+        Container::new(rows)
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_border(app.theme.color(ColorToken::Border).into())
+            .with_corner_radius(SIDEBAR_MENU_RADIUS)
+            .with_padding(EdgeInsets::uniform(SIDEBAR_MENU_PADDING))
+            .finish(),
+    )
+    .with_width(sidebar_menu_width(items))
+    .finish()
+}
+
+/// The hairline between two groups of a DSH sidebar context menu: a 0.5pt rule
+/// with 3pt above and below, inset 8pt to the row content (12pt inside the
+/// card once the casing's own padding is counted).
+struct SidebarTraySeparator {
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl Element for SidebarTraySeparator {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        let width = if constraint.max.x.is_finite() {
+            constraint.max.x
+        } else {
+            0.0
+        };
+        let size = vec2f(
+            width,
+            SIDEBAR_MENU_SEPARATOR_HEIGHT + 2.0 * SIDEBAR_MENU_SEPARATOR_MARGIN,
+        );
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(size) = self.size else { return };
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.fill_rect(
+                rectf(
+                    origin.x + SIDEBAR_MENU_SEPARATOR_INSET,
+                    origin.y + SIDEBAR_MENU_SEPARATOR_MARGIN,
+                    (size.x - 2.0 * SIDEBAR_MENU_SEPARATOR_INSET).max(0.0),
+                    SIDEBAR_MENU_SEPARATOR_HEIGHT,
+                ),
+                app.theme.color(ColorToken::Border),
+            );
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
+
 impl Element for ConversationListItem {
     fn layout(
         &mut self,
@@ -848,9 +1047,11 @@ impl Element for ConversationListItem {
         let size = row;
         self.menu_size = None;
         if let Some(menu) = self.menu.as_ref() {
-            let menu_size = menu
-                .borrow_mut()
-                .layout(SizeConstraint::loose(vec2f(TRAY_MAX_WIDTH, 400.0)), ctx, app);
+            let menu_size = menu.borrow_mut().layout(
+                SizeConstraint::loose(vec2f(TRAY_MAX_WIDTH, 400.0)),
+                ctx,
+                app,
+            );
             self.menu_size = Some(menu_size);
         }
         // The control's box is fixed, so it is laid out tight and placed by
@@ -1016,13 +1217,7 @@ mod tests {
     fn conversation_list_item_layouts() {
         let app = AppContext::default();
         let ui = Rc::new(RefCell::new(AgentCardUi::default()));
-        let mut item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "40 min ago",
-            ui,
-            false,
-        );
+        let mut item = ConversationListItem::new("c1", "Ada", "40 min ago", ui, false);
         let size = item.layout(
             SizeConstraint::loose(vec2f(260.0, 200.0)),
             &mut LayoutContext::default(),
@@ -1038,14 +1233,8 @@ mod tests {
         let clicked_clone = clicked.clone();
         let app = AppContext::default();
         let ui = Rc::new(RefCell::new(AgentCardUi::default()));
-        let mut item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "5 min ago",
-            ui,
-            false,
-        )
-        .with_on_click(move || *clicked_clone.borrow_mut() = true);
+        let mut item = ConversationListItem::new("c1", "Ada", "5 min ago", ui, false)
+            .with_on_click(move || *clicked_clone.borrow_mut() = true);
 
         item.layout(
             SizeConstraint::loose(vec2f(260.0, 200.0)),
@@ -1073,13 +1262,7 @@ mod tests {
     fn hover_updates_shared_state() {
         let app = AppContext::default();
         let ui = Rc::new(RefCell::new(AgentCardUi::default()));
-        let mut item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "5 min ago",
-            Rc::clone(&ui),
-            false,
-        );
+        let mut item = ConversationListItem::new("c1", "Ada", "5 min ago", Rc::clone(&ui), false);
         item.layout(
             SizeConstraint::loose(vec2f(260.0, 200.0)),
             &mut LayoutContext::default(),
@@ -1112,7 +1295,10 @@ mod tests {
         let mut element: Box<dyn Element> = Box::new(item);
         let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
         let counts = crate::test_util::command_counts(&commands);
-        assert_eq!(counts.fill_rect_fade, 1, "idle card should emit a right fade");
+        assert_eq!(
+            counts.fill_rect_fade, 1,
+            "idle card should emit a right fade"
+        );
         assert!(counts.draw_text > 0, "card should render text");
     }
 
@@ -1139,11 +1325,9 @@ mod tests {
         let (mark_origin, mark_size) = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, size, .. }
-                    if name == "harness-claude" =>
-                {
-                    Some((*origin, *size))
-                }
+                RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "harness-claude" => Some((*origin, *size)),
                 _ => None,
             })
             .expect("the card draws the Claude mark");
@@ -1209,10 +1393,7 @@ mod tests {
     fn dots_box(commands: &[RenderCommand]) -> Option<RectF> {
         commands.iter().find_map(|command| match command {
             RenderCommand::DrawIcon {
-                name,
-                origin,
-                size,
-                ..
+                name, origin, size, ..
             } if name == "dots-horizontal" => Some(rectf(origin.x, origin.y, *size, *size)),
             _ => None,
         })
@@ -1277,7 +1458,11 @@ mod tests {
         let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
 
         let dots = dots_box(&commands).expect("a hovered card draws its dots");
-        assert_eq!(dots.width(), DOTS_SIZE, "the control's box is the glyph's box");
+        assert_eq!(
+            dots.width(),
+            DOTS_SIZE,
+            "the control's box is the glyph's box"
+        );
         assert_eq!(
             dots.max_x(),
             width - 1.0,
@@ -1338,14 +1523,8 @@ mod tests {
             menu_open: true,
             ..Default::default()
         }));
-        let mut item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "5 min ago",
-            ui,
-            false,
-        )
-        .with_on_toggle_star(|| {});
+        let mut item = ConversationListItem::new("c1", "Ada", "5 min ago", ui, false)
+            .with_on_toggle_star(|| {});
         let card = item.layout(
             SizeConstraint::loose(vec2f(260.0, 200.0)),
             &mut LayoutContext::default(),
@@ -1362,9 +1541,9 @@ mod tests {
         let has_dots = commands.iter().any(|c| {
             matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "dots-horizontal")
         });
-        let has_star = commands.iter().any(|c| {
-            matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Star")
-        });
+        let has_star = commands.iter().any(
+            |c| matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Star"),
+        );
         let has_delete = commands.iter().any(|c| {
             matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Delete conversation")
         });
@@ -1410,14 +1589,8 @@ mod tests {
         }));
         let toggled = Rc::new(RefCell::new(0usize));
         let ran = Rc::clone(&toggled);
-        let item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "5 min ago",
-            Rc::clone(&ui),
-            false,
-        )
-        .with_on_toggle_star(move || *ran.borrow_mut() += 1);
+        let item = ConversationListItem::new("c1", "Ada", "5 min ago", Rc::clone(&ui), false)
+            .with_on_toggle_star(move || *ran.borrow_mut() += 1);
         let mut element: Box<dyn Element> = Box::new(item);
         let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
 
@@ -1478,15 +1651,9 @@ mod tests {
         let deletes = Rc::new(RefCell::new(0usize));
         let on_star = Rc::clone(&stars);
         let on_delete = Rc::clone(&deletes);
-        let item = ConversationListItem::new(
-            "c1",
-            "Ada",
-            "5 min ago",
-            Rc::clone(&ui),
-            false,
-        )
-        .with_on_toggle_star(move || *on_star.borrow_mut() += 1)
-        .with_on_delete(move || *on_delete.borrow_mut() += 1);
+        let item = ConversationListItem::new("c1", "Ada", "5 min ago", Rc::clone(&ui), false)
+            .with_on_toggle_star(move || *on_star.borrow_mut() += 1)
+            .with_on_delete(move || *on_delete.borrow_mut() += 1);
         let mut element: Box<dyn Element> = Box::new(item);
         let _ = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), app);
         (element, ui, stars, deletes)
@@ -1800,10 +1967,7 @@ mod tests {
     fn harness_box(commands: &[RenderCommand]) -> Option<RectF> {
         commands.iter().find_map(|command| match command {
             RenderCommand::DrawIcon {
-                name,
-                origin,
-                size,
-                ..
+                name, origin, size, ..
             } if name.starts_with("harness-") => Some(rectf(origin.x, origin.y, *size, *size)),
             RenderCommand::DrawImage { rect, source, .. } if source == "harness-goble-mark" => {
                 Some(*rect)
@@ -1856,7 +2020,8 @@ mod tests {
             )
             .with_status(status);
             let mut element: Box<dyn Element> = Box::new(item);
-            let commands = crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
+            let commands =
+                crate::test_util::render_element(&mut element, vec2f(260.0, 200.0), &app);
 
             let (badge, color) =
                 status_badge(&commands).unwrap_or_else(|| panic!("{status:?}: no badge"));
@@ -2490,7 +2655,13 @@ fn sidebar_time_text(text: String, app: &AppContext) -> Box<dyn Element> {
 
 /// The width the resting trailing cluster takes for a measured time label.
 fn resting_cluster_width(time_label: &str, remote: bool, starred: bool) -> f32 {
-    let time = measure_text(time_label, SIDEBAR_TIME_SIZE, SIDEBAR_TIME_LINE, f32::INFINITY).x;
+    let time = measure_text(
+        time_label,
+        SIDEBAR_TIME_SIZE,
+        SIDEBAR_TIME_LINE,
+        f32::INFINITY,
+    )
+    .x;
     let mut width = SIDEBAR_HARNESS_MARK + SIDEBAR_TRAILING_GAP + time;
     if remote {
         width += SIDEBAR_TRAILING_GAP + SIDEBAR_HARNESS_MARK;
@@ -2712,7 +2883,7 @@ impl SidebarGroupUi {
     /// Put the tray away and reset the keyboard highlight.
     pub fn close_menu(&mut self) {
         self.menu_open = false;
-        self.highlight = 0;
+        self.highlight = NO_HIGHLIGHT;
     }
 }
 
@@ -2724,8 +2895,9 @@ impl SidebarGroupUi {
 /// `new-chat` glyph). Both sit in 16pt slots with a 13pt gap and a 24pt hit
 /// target, at the row's trailing edge; the label cell keeps clear of the strip
 /// while it is shown, so the row never grows past its 32pt band. The tray the
-/// dots open carries the workspace's own actions (Rename workspace / Delete
-/// workspace), supplied by the app exactly like the session row's tray rows.
+/// dots open carries the workspace's own actions (Rename / Show in Finder /
+/// Delete workspace), supplied by the app exactly like the session row's tray
+/// rows.
 pub struct SidebarGroupRow {
     label: String,
     /// A fixed leading glyph (the Starred group's pin). `None` draws the
@@ -2951,9 +3123,8 @@ impl SidebarGroupRow {
         let mut boxes = Vec::with_capacity(count);
         for (index, kind) in kinds.into_iter().enumerate() {
             let from_right = (count - 1 - index) as f32;
-            let glyph_x = right
-                - SIDEBAR_QUICK_SLOT
-                - from_right * (SIDEBAR_QUICK_SLOT + SIDEBAR_QUICK_GAP);
+            let glyph_x =
+                right - SIDEBAR_QUICK_SLOT - from_right * (SIDEBAR_QUICK_SLOT + SIDEBAR_QUICK_GAP);
             let glyph = rectf(
                 glyph_x,
                 origin.y() + (size.y - SIDEBAR_LEADING_SLOT_H) / 2.0,
@@ -2972,13 +3143,14 @@ impl SidebarGroupRow {
     }
 
     /// The actionable tray row a highlight index lands on (separators are flags
-    /// on rows, not rows).
+    /// on rows, not rows). [`NO_HIGHLIGHT`] lands on the first row: Enter on a
+    /// freshly opened tray runs its first row, as DSH's focused first item does.
     fn menu_row(&self, index: usize) -> usize {
         let count = self.menu_items.len();
-        if count == 0 {
+        if count == 0 || index >= count {
             0
         } else {
-            index.min(count - 1)
+            index
         }
     }
 
@@ -2994,8 +3166,7 @@ impl SidebarGroupRow {
         } else {
             (origin.y() - TRAY_GAP - tray_size.y).max(4.0)
         };
-        let x =
-            (origin.x() + size.x - SIDEBAR_PAINT_INSET - tray_size.x).max(SIDEBAR_PAINT_INSET);
+        let x = (origin.x() + size.x - SIDEBAR_PAINT_INSET - tray_size.x).max(SIDEBAR_PAINT_INSET);
         Some(rectf(x, y, tray_size.x, tray_size.y))
     }
 
@@ -3063,11 +3234,15 @@ impl SidebarGroupRow {
         }
         match key.as_str() {
             "ArrowUp" | "ArrowDown" => {
-                let current = self.menu_row(self.ui.borrow().highlight);
-                let next = if key == "ArrowDown" {
-                    (current + 1).min(count - 1)
-                } else {
-                    current.saturating_sub(1)
+                let stored = self.ui.borrow().highlight;
+                let next = match (key.as_str(), stored >= count) {
+                    // Nothing is highlighted yet: Down enters at the first row,
+                    // Up enters at the last (DSH's menu walk).
+                    ("ArrowDown", true) => 0,
+                    ("ArrowUp", true) => count - 1,
+                    ("ArrowDown", false) => (stored + 1).min(count - 1),
+                    (_, false) => stored.saturating_sub(1),
+                    _ => unreachable!(),
                 };
                 self.ui.borrow_mut().highlight = next;
                 true
@@ -3092,57 +3267,6 @@ impl SidebarGroupRow {
         }
     }
 
-    /// One tray row: the icon and label in the row's ink colour (error for the
-    /// destructive rows), hovering and highlighting like the session tray's.
-    fn menu_row_widget(
-        &self,
-        app: &AppContext,
-        item: &SidebarMenuItem,
-        selected: bool,
-    ) -> Box<dyn Element> {
-        let xs = app.theme.spacing_px(SpacingToken::Xs);
-        let ink = if item.danger {
-            ColorToken::Error
-        } else {
-            ColorToken::Muted
-        };
-        let row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(xs)
-            .with_child(
-                Icon::new(item.icon)
-                    .with_size(14.0)
-                    .with_theme_color(ink, app)
-                    .finish(),
-            )
-            .with_child(
-                Text::new(item.label.clone())
-                    .with_theme_color(ink, app)
-                    .with_font_size(12.0)
-                    .finish(),
-            )
-            .finish();
-        let ui = Rc::clone(&self.ui);
-        let run = Rc::clone(&item.run);
-        HoverRow::new(row)
-            .with_padding(menu_row_padding(app))
-            .with_selected(selected)
-            .with_corner_radius(TRAY_RADIUS)
-            .with_on_click(move || {
-                ui.borrow_mut().close_menu();
-                (run.borrow_mut())();
-            })
-            .finish()
-    }
-
-    fn menu_separator(&self) -> Box<dyn Element> {
-        Box::new(SidebarMenuSeparator {
-            size: None,
-            origin: None,
-        })
-    }
-
     /// Open or close the tray. Opening claims the window's one open menu (which
     /// closes whatever was open) and tells the app, so every other menu it owns
     /// goes away first (DSH's context-menu contract).
@@ -3157,14 +3281,15 @@ impl SidebarGroupRow {
         if self.menu_items.is_empty() {
             return;
         }
-        app.open_menus.open(WORKSPACE_TRAY_MENU_ID, self.tray_close());
+        app.open_menus
+            .open(WORKSPACE_TRAY_MENU_ID, self.tray_close());
         if let Some(callback) = self.on_menu_open.clone() {
             (callback.borrow_mut())();
         }
         let mut ui = self.ui.borrow_mut();
         if !ui.menu_open {
             ui.menu_open = true;
-            ui.highlight = 0;
+            ui.highlight = NO_HIGHLIGHT;
         }
     }
 
@@ -3173,7 +3298,7 @@ impl SidebarGroupRow {
             return;
         }
         let menu_open = self.menu_open();
-        let highlight = self.menu_row(self.ui.borrow().highlight);
+        let highlight = self.ui.borrow().highlight;
         let (glyph, size, color) = self.glyph();
         let leading = sidebar_leading_slot(
             Icon::new(glyph)
@@ -3183,12 +3308,9 @@ impl SidebarGroupRow {
             size,
         );
         let label = match label_width {
-            Some(width) if width.is_finite() => truncate_with_ellipsis(
-                &self.label,
-                SIDEBAR_TITLE_SIZE,
-                SIDEBAR_TITLE_LINE,
-                width,
-            ),
+            Some(width) if width.is_finite() => {
+                truncate_with_ellipsis(&self.label, SIDEBAR_TITLE_SIZE, SIDEBAR_TITLE_LINE, width)
+            }
             _ => self.label.clone(),
         };
         let mut row = Flex::row()
@@ -3233,25 +3355,23 @@ impl SidebarGroupRow {
                 .finish(),
         );
         if menu_open {
-            let mut rows = Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_spacing(app.theme.spacing_px(SpacingToken::Xs));
+            let mut rows = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             for (index, item) in self.menu_items.iter().enumerate() {
                 if index > 0 && item.separator_before {
-                    rows = rows.with_child(self.menu_separator());
+                    rows = rows.with_child(Box::new(SidebarTraySeparator {
+                        size: None,
+                        origin: None,
+                    }));
                 }
-                rows = rows.with_child(self.menu_row_widget(app, item, highlight == index));
+                let ui = Rc::clone(&self.ui);
+                let run = Rc::clone(&item.run);
+                rows =
+                    rows.with_child(sidebar_menu_row(app, item, highlight == index, move || {
+                        ui.borrow_mut().close_menu();
+                        (run.borrow_mut())();
+                    }));
             }
-            let tray = ConstrainedBox::new(
-                Container::new(rows.finish())
-                    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                    .with_border(app.theme.color(ColorToken::Border).into())
-                    .with_corner_radius(SIDEBAR_MENU_RADIUS)
-                    .with_padding(EdgeInsets::new(0.0, TRAY_PADDING, 0.0, TRAY_PADDING))
-                    .finish(),
-            )
-            .with_max_width(TRAY_MAX_WIDTH)
-            .finish();
+            let tray = sidebar_menu_tray(app, rows.finish(), &self.menu_items);
             self.tray = Some(Rc::new(RefCell::new(tray)));
         }
     }
@@ -3292,9 +3412,11 @@ impl Element for SidebarGroupRow {
         self.size = Some(size);
         self.tray_size = None;
         if let Some(tray) = self.tray.as_ref() {
-            let tray_size = tray
-                .borrow_mut()
-                .layout(SizeConstraint::loose(vec2f(TRAY_MAX_WIDTH, 400.0)), ctx, app);
+            let tray_size = tray.borrow_mut().layout(
+                SizeConstraint::loose(vec2f(SIDEBAR_MENU_MAX_WIDTH, 400.0)),
+                ctx,
+                app,
+            );
             self.tray_size = Some(tray_size);
         }
         size
@@ -3714,11 +3836,7 @@ pub struct SidebarMenuItem {
 }
 
 impl SidebarMenuItem {
-    pub fn new(
-        label: impl Into<String>,
-        icon: &'static str,
-        run: impl FnMut() + 'static,
-    ) -> Self {
+    pub fn new(label: impl Into<String>, icon: &'static str, run: impl FnMut() + 'static) -> Self {
         Self {
             label: label.into(),
             icon,
@@ -3797,7 +3915,11 @@ pub struct SidebarSessionRow {
 }
 
 impl SidebarSessionRow {
-    pub fn new(id: impl Into<String>, title: impl Into<String>, time_label: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        time_label: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             group: String::new(),
@@ -4031,9 +4153,8 @@ impl SidebarSessionRow {
         let mut boxes = Vec::with_capacity(count);
         for (index, kind) in kinds.into_iter().enumerate() {
             let from_right = (count - 1 - index) as f32;
-            let glyph_x = right
-                - SIDEBAR_QUICK_SLOT
-                - from_right * (SIDEBAR_QUICK_SLOT + SIDEBAR_QUICK_GAP);
+            let glyph_x =
+                right - SIDEBAR_QUICK_SLOT - from_right * (SIDEBAR_QUICK_SLOT + SIDEBAR_QUICK_GAP);
             let glyph = rectf(
                 glyph_x,
                 origin.y() + (size.y - SIDEBAR_LEADING_SLOT_H) / 2.0,
@@ -4089,10 +4210,10 @@ impl SidebarSessionRow {
     /// actionable; separators are flags on them, not rows).
     fn menu_row(&self, index: usize) -> usize {
         let count = self.menu_items().len();
-        if count == 0 {
+        if count == 0 || index >= count {
             0
         } else {
-            index.min(count - 1)
+            index
         }
     }
 
@@ -4112,8 +4233,7 @@ impl SidebarSessionRow {
         } else {
             (origin.y() - TRAY_GAP - tray_size.y).max(4.0)
         };
-        let x =
-            (origin.x() + size.x - SIDEBAR_PAINT_INSET - tray_size.x).max(SIDEBAR_PAINT_INSET);
+        let x = (origin.x() + size.x - SIDEBAR_PAINT_INSET - tray_size.x).max(SIDEBAR_PAINT_INSET);
         Some(rectf(x, y, tray_size.x, tray_size.y))
     }
 
@@ -4183,11 +4303,15 @@ impl SidebarSessionRow {
         }
         match key.as_str() {
             "ArrowUp" | "ArrowDown" => {
-                let current = self.menu_row(self.ui.borrow().highlight);
-                let next = if key == "ArrowDown" {
-                    (current + 1).min(count - 1)
-                } else {
-                    current.saturating_sub(1)
+                let stored = self.ui.borrow().highlight;
+                let next = match (key.as_str(), stored >= count) {
+                    // Nothing is highlighted yet: Down enters at the first row,
+                    // Up enters at the last (DSH's menu walk).
+                    ("ArrowDown", true) => 0,
+                    ("ArrowUp", true) => count - 1,
+                    ("ArrowDown", false) => (stored + 1).min(count - 1),
+                    (_, false) => stored.saturating_sub(1),
+                    _ => unreachable!(),
                 };
                 self.ui.borrow_mut().highlight = next;
                 true
@@ -4213,58 +4337,6 @@ impl SidebarSessionRow {
         }
     }
 
-    /// One tray row: the icon and label in the row's ink colour (error for the
-    /// destructive rows), hovering and highlighting like the legacy pair did.
-    fn menu_row_widget(
-        &self,
-        app: &AppContext,
-        item: &SidebarMenuItem,
-        selected: bool,
-    ) -> Box<dyn Element> {
-        let xs = app.theme.spacing_px(SpacingToken::Xs);
-        let ink = if item.danger {
-            ColorToken::Error
-        } else {
-            ColorToken::Muted
-        };
-        let row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(xs)
-            .with_child(
-                Icon::new(item.icon)
-                    .with_size(14.0)
-                    .with_theme_color(ink, app)
-                    .finish(),
-            )
-            .with_child(
-                Text::new(item.label.clone())
-                    .with_theme_color(ink, app)
-                    .with_font_size(12.0)
-                    .finish(),
-            )
-            .finish();
-        let ui = Rc::clone(&self.ui);
-        let run = Rc::clone(&item.run);
-        HoverRow::new(row)
-            .with_padding(menu_row_padding(app))
-            .with_selected(selected)
-            .with_corner_radius(TRAY_RADIUS)
-            .with_on_click(move || {
-                ui.borrow_mut().close_menu();
-                (run.borrow_mut())();
-            })
-            .finish()
-    }
-
-    /// The hairline between two tray groups.
-    fn menu_separator(&self) -> Box<dyn Element> {
-        Box::new(SidebarMenuSeparator {
-            size: None,
-            origin: None,
-        })
-    }
-
     fn status_glyph(&self, app: &AppContext) -> Box<dyn Element> {
         // Archived rows lead with a blank slot: no status dot or ring reads a
         // history row as live.
@@ -4285,14 +4357,15 @@ impl SidebarSessionRow {
                 sidebar_status_dot(ColorToken::Warning, app),
                 SIDEBAR_STATUS_DOT,
             ),
-            ConversationStatus::Error => {
-                icon_leading_slot(sidebar_status_dot(ColorToken::Error, app), SIDEBAR_STATUS_DOT)
-            }
-            ConversationStatus::Success | ConversationStatus::Stopped | ConversationStatus::Default => {
-                Empty::new()
-                    .with_size(vec2f(SIDEBAR_LEADING_SLOT_W, SIDEBAR_LEADING_SLOT_H))
-                    .finish()
-            }
+            ConversationStatus::Error => icon_leading_slot(
+                sidebar_status_dot(ColorToken::Error, app),
+                SIDEBAR_STATUS_DOT,
+            ),
+            ConversationStatus::Success
+            | ConversationStatus::Stopped
+            | ConversationStatus::Default => Empty::new()
+                .with_size(vec2f(SIDEBAR_LEADING_SLOT_W, SIDEBAR_LEADING_SLOT_H))
+                .finish(),
         }
     }
 
@@ -4302,7 +4375,7 @@ impl SidebarSessionRow {
         }
         let ui = self.ui.borrow();
         let menu_open = ui.menu_open;
-        let highlight = self.menu_row(ui.highlight);
+        let highlight = ui.highlight;
         drop(ui);
 
         // The trailing cell is one fixed width in every state: at rest it draws
@@ -4341,8 +4414,8 @@ impl SidebarSessionRow {
                 );
             }
             let cluster = cluster.finish();
-            let gap =
-                (slot - resting_cluster_width(&self.time_label, self.remote, self.starred)).max(0.0);
+            let gap = (slot - resting_cluster_width(&self.time_label, self.remote, self.starred))
+                .max(0.0);
             if gap > 0.0 {
                 Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -4402,11 +4475,7 @@ impl SidebarSessionRow {
             .with_child(self.status_glyph(app))
             .with_child(
                 Expanded::new(
-                    Padding::new(
-                        title,
-                        EdgeInsets::new(SIDEBAR_LABEL_GAP, 0.0, 6.0, 0.0),
-                    )
-                    .finish(),
+                    Padding::new(title, EdgeInsets::new(SIDEBAR_LABEL_GAP, 0.0, 6.0, 0.0)).finish(),
                 )
                 .finish(),
             )
@@ -4425,25 +4494,23 @@ impl SidebarSessionRow {
 
         if menu_open {
             let items = self.menu_items();
-            let mut rows = Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_spacing(app.theme.spacing_px(SpacingToken::Xs));
+            let mut rows = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             for (index, item) in items.iter().enumerate() {
                 if index > 0 && item.separator_before {
-                    rows = rows.with_child(self.menu_separator());
+                    rows = rows.with_child(Box::new(SidebarTraySeparator {
+                        size: None,
+                        origin: None,
+                    }));
                 }
-                rows = rows.with_child(self.menu_row_widget(app, item, highlight == index));
+                let ui = Rc::clone(&self.ui);
+                let run = Rc::clone(&item.run);
+                rows =
+                    rows.with_child(sidebar_menu_row(app, item, highlight == index, move || {
+                        ui.borrow_mut().close_menu();
+                        (run.borrow_mut())();
+                    }));
             }
-            let tray = ConstrainedBox::new(
-                Container::new(rows.finish())
-                    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                    .with_border(app.theme.color(ColorToken::Border).into())
-                    .with_corner_radius(SIDEBAR_MENU_RADIUS)
-                    .with_padding(EdgeInsets::new(0.0, TRAY_PADDING, 0.0, TRAY_PADDING))
-                    .finish(),
-            )
-            .with_max_width(TRAY_MAX_WIDTH)
-            .finish();
+            let tray = sidebar_menu_tray(app, rows.finish(), &items);
             self.tray = Some(Rc::new(RefCell::new(tray)));
         }
         if self.ui.borrow().hover_card_open {
@@ -4542,20 +4609,21 @@ impl Element for SidebarSessionRow {
         self.row_size = Some(size);
         self.hover_card_size = None;
         if self.hover_card.is_some() {
-            let card_size = self
-                .hover_card
-                .as_ref()
-                .unwrap()
-                .borrow_mut()
-                .layout(SizeConstraint::loose(vec2f(HOVER_CARD_WIDTH, 400.0)), ctx, app);
+            let card_size = self.hover_card.as_ref().unwrap().borrow_mut().layout(
+                SizeConstraint::loose(vec2f(HOVER_CARD_WIDTH, 400.0)),
+                ctx,
+                app,
+            );
             self.hover_card_size = Some(card_size);
         }
         self.size = Some(size);
         self.tray_size = None;
         if let Some(tray) = self.tray.as_ref() {
-            let tray_size = tray
-                .borrow_mut()
-                .layout(SizeConstraint::loose(vec2f(TRAY_MAX_WIDTH, 400.0)), ctx, app);
+            let tray_size = tray.borrow_mut().layout(
+                SizeConstraint::loose(vec2f(SIDEBAR_MENU_MAX_WIDTH, 400.0)),
+                ctx,
+                app,
+            );
             self.tray_size = Some(tray_size);
         }
         size
@@ -4584,11 +4652,7 @@ impl Element for SidebarSessionRow {
         // The row a drag was lifted from reads as a raised card above the list.
         let drag_source = self.drag.as_ref().is_some_and(|drag| {
             let drag = drag.borrow();
-            drag.active
-                && drag
-                    .press
-                    .as_ref()
-                    .is_some_and(|press| press.id == self.id)
+            drag.active && drag.press.as_ref().is_some_and(|press| press.id == self.id)
         });
         if let Some(renderer) = ctx.renderer.as_mut() {
             let fill = if drag_source {
@@ -4604,11 +4668,21 @@ impl Element for SidebarSessionRow {
                 renderer.fill_rounded_rect(card, app.theme.color(token), SIDEBAR_ROW_RADIUS);
             }
             if drag_source {
-                renderer.stroke_rect(card, app.theme.color(ColorToken::Border), 1.0, SIDEBAR_ROW_RADIUS);
+                renderer.stroke_rect(
+                    card,
+                    app.theme.color(ColorToken::Border),
+                    1.0,
+                    SIDEBAR_ROW_RADIUS,
+                );
             }
             if self.focus {
                 renderer.stroke_rect(
-                    rectf(card.min_x() + 1.0, card.min_y() + 1.0, card.width() - 2.0, card.height() - 2.0),
+                    rectf(
+                        card.min_x() + 1.0,
+                        card.min_y() + 1.0,
+                        card.width() - 2.0,
+                        card.height() - 2.0,
+                    ),
                     app.theme.color(ColorToken::Focus),
                     2.0,
                     SIDEBAR_ROW_RADIUS,
@@ -4687,12 +4761,8 @@ impl Element for SidebarSessionRow {
         // The hover card sits beside the row, over the main content, queued
         // into the frame's top layer with the tray. Its left edge is 8pt off the
         // row's painted fill (not its layout box), matching the web's card.
-        if let (Some(card), Some(card_size)) = (self.hover_card.as_ref(), self.hover_card_size)
-        {
-            let at = vec2f(
-                origin.x + size.x - SIDEBAR_PAINT_INSET + 8.0,
-                origin.y,
-            );
+        if let (Some(card), Some(card_size)) = (self.hover_card.as_ref(), self.hover_card_size) {
+            let at = vec2f(origin.x + size.x - SIDEBAR_PAINT_INSET + 8.0, origin.y);
             card.borrow_mut().paint(at, ctx, app);
             let _ = card_size;
             app.hover_chips
@@ -4779,9 +4849,9 @@ impl Element for SidebarSessionRow {
                                     let mut ui = self.ui.borrow_mut();
                                     if !ui.menu_open {
                                         ui.menu_open = true;
-                                        // Opening the tray puts the highlight on
-                                        // its first row.
-                                        ui.highlight = 0;
+                                        // DSH opens the menu unfilled; the first
+                                        // arrow key enters the row walk.
+                                        ui.highlight = NO_HIGHLIGHT;
                                     }
                                 }
                             }
@@ -4897,8 +4967,9 @@ impl SidebarSessionRow {
                             .as_ref()
                             .map(|press| press.id.clone())
                             .unwrap_or_default();
-                        let after = position.y > self.origin.unwrap_or_default().y()
-                            + self.size.unwrap_or_default().y / 2.0;
+                        let after = position.y
+                            > self.origin.unwrap_or_default().y()
+                                + self.size.unwrap_or_default().y / 2.0;
                         if let Some(handler) = self.drop_handler.as_ref() {
                             (handler.borrow_mut())(&source, &self.id, after);
                         }
@@ -5097,58 +5168,6 @@ fn sidebar_hover_card(
     .finish()
 }
 
-/// The 1pt hairline between two groups of the session tray. It spans the tray's
-/// content width (a stretched `Flex::column` hands it that width) and keeps the
-/// rows' own `Xs` breathing room above and below.
-struct SidebarMenuSeparator {
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl Element for SidebarMenuSeparator {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        _ctx: &mut LayoutContext,
-        app: &AppContext,
-    ) -> Vector2F {
-        let padding = app.theme.spacing_px(SpacingToken::Xs);
-        let width = if constraint.max.x.is_finite() {
-            constraint.max.x
-        } else {
-            0.0
-        };
-        let size = vec2f(width, 1.0 + 2.0 * padding);
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        let Some(size) = self.size else { return };
-        let inset = app.theme.spacing_px(SpacingToken::Xs);
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.fill_rect(
-                rectf(
-                    origin.x + inset,
-                    origin.y + inset,
-                    (size.x - 2.0 * inset).max(0.0),
-                    1.0,
-                ),
-                app.theme.color(ColorToken::Border),
-            );
-        }
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-}
-
 /// The title while its row is hovered: the full run, clipped to the row's
 /// title cell and scrolled by the marquee offset (DSH's crawl to the far edge).
 struct SidebarMarqueeTitle {
@@ -5294,7 +5313,6 @@ fn pointer_inside(event: &DispatchedEvent, bounds: RectF) -> bool {
     pointer_position(event).is_some_and(|position| contains(bounds, position))
 }
 
-
 /// Replace a leading home directory with `~`, so a hover card's path reads like
 /// the rest of the desktop's paths.
 fn abbreviate_home(path: &str) -> String {
@@ -5312,9 +5330,9 @@ fn abbreviate_home(path: &str) -> String {
 #[cfg(test)]
 mod sidebar_workspaces_tests {
     use super::*;
-    use crate::test_util::render_element;
     use crate::geometry::vec2f;
     use crate::render::RenderCommand;
+    use crate::test_util::render_element;
 
     fn app() -> AppContext {
         AppContext::default()
@@ -5324,7 +5342,9 @@ mod sidebar_workspaces_tests {
         commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, font_size, .. } => Some((text.clone(), *font_size)),
+                RenderCommand::DrawText {
+                    text, font_size, ..
+                } => Some((text.clone(), *font_size)),
                 _ => None,
             })
             .collect()
@@ -5360,7 +5380,10 @@ mod sidebar_workspaces_tests {
         let wide = truncate_with_ellipsis("Redesign the sidebar", 14.0, 20.0, 400.0);
         assert_eq!(wide, "Redesign the sidebar");
         let cut = truncate_with_ellipsis("Redesign the sidebar", 14.0, 20.0, 60.0);
-        assert!(cut.ends_with('…'), "the cut title ends in an ellipsis: {cut:?}");
+        assert!(
+            cut.ends_with('…'),
+            "the cut title ends in an ellipsis: {cut:?}"
+        );
         assert!(cut.chars().count() < "Redesign the sidebar".chars().count());
     }
 
@@ -5371,14 +5394,23 @@ mod sidebar_workspaces_tests {
         let app = app();
         let mut rest: Box<dyn Element> = SidebarGroupRow::new("goble", false).finish();
         let resting = render_element(&mut rest, vec2f(240.0, 32.0), &app);
-        assert!(icons(&resting).iter().any(|name| name == SIDEBAR_ICON_FOLDER_CLOSE));
-        assert!(!icons(&resting).iter().any(|name| name == SIDEBAR_ICON_TRIANGLE_RIGHT));
+        assert!(icons(&resting)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_FOLDER_CLOSE));
+        assert!(!icons(&resting)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_TRIANGLE_RIGHT));
 
-        let mut hovered: Box<dyn Element> =
-            SidebarGroupRow::new("goble", false).with_hovered(true).finish();
+        let mut hovered: Box<dyn Element> = SidebarGroupRow::new("goble", false)
+            .with_hovered(true)
+            .finish();
         let drawn = render_element(&mut hovered, vec2f(240.0, 32.0), &app);
-        assert!(icons(&drawn).iter().any(|name| name == SIDEBAR_ICON_TRIANGLE_RIGHT));
-        assert!(!icons(&drawn).iter().any(|name| name == SIDEBAR_ICON_FOLDER_CLOSE));
+        assert!(icons(&drawn)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_TRIANGLE_RIGHT));
+        assert!(!icons(&drawn)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_FOLDER_CLOSE));
         let band = drawn
             .iter()
             .find_map(|command| match command {
@@ -5403,15 +5435,21 @@ mod sidebar_workspaces_tests {
         let mut rest: Box<dyn Element> =
             SidebarSessionRow::new("c1", "Redesign the sidebar", "4min").finish();
         let resting = render_element(&mut rest, vec2f(240.0, 32.0), &app);
-        assert!(texts(&resting).iter().any(|(text, size)| text == "4min" && (*size - 10.0).abs() < 0.01));
-        assert!(!icons(&resting).iter().any(|name| name == SIDEBAR_ICON_ELLIPSIS));
+        assert!(texts(&resting)
+            .iter()
+            .any(|(text, size)| text == "4min" && (*size - 10.0).abs() < 0.01));
+        assert!(!icons(&resting)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_ELLIPSIS));
 
         let mut hovered: Box<dyn Element> =
             SidebarSessionRow::new("c1", "Redesign the sidebar", "4min")
                 .with_hovered(true)
                 .finish();
         let drawn = render_element(&mut hovered, vec2f(240.0, 32.0), &app);
-        assert!(icons(&drawn).iter().any(|name| name == SIDEBAR_ICON_ELLIPSIS));
+        assert!(icons(&drawn)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_ELLIPSIS));
         assert!(!texts(&drawn).iter().any(|(text, _)| text == "4min"));
         assert!(drawn.iter().any(|command| matches!(
             command,
@@ -5438,13 +5476,17 @@ mod sidebar_workspaces_tests {
             .with_status(ConversationStatus::Running)
             .finish();
         let drawn = render_element(&mut running, vec2f(240.0, 32.0), &app);
-        assert!(icons(&drawn).iter().any(|name| name == SIDEBAR_ICON_STATUS_RUNNING));
+        assert!(icons(&drawn)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_STATUS_RUNNING));
 
         let mut waiting: Box<dyn Element> = SidebarSessionRow::new("c1", "Work", "now")
             .with_status(ConversationStatus::Waiting)
             .finish();
         let drawn = render_element(&mut waiting, vec2f(240.0, 32.0), &app);
-        assert!(!icons(&drawn).iter().any(|name| name == SIDEBAR_ICON_STATUS_RUNNING));
+        assert!(!icons(&drawn)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_STATUS_RUNNING));
         assert!(drawn.iter().any(|command| matches!(
             command,
             RenderCommand::FillRect { color, .. } if *color == app.theme.color(ColorToken::Warning)
@@ -5460,8 +5502,9 @@ mod sidebar_workspaces_tests {
             active: true,
             marker: Some(("c1".to_string(), true)),
         }));
-        let mut row: Box<dyn Element> =
-            SidebarSessionRow::new("c1", "Work", "now").with_drag(drag).finish();
+        let mut row: Box<dyn Element> = SidebarSessionRow::new("c1", "Work", "now")
+            .with_drag(drag)
+            .finish();
         let drawn = render_element(&mut row, vec2f(240.0, 32.0), &app);
         // The spec cue colour is the cyan focus/accent cue (web palette.accent).
         let accent = app.theme.color(ColorToken::Focus);
@@ -5526,7 +5569,9 @@ mod sidebar_workspaces_tests {
             (band.height() - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
             "and it is one 32pt row high: {band:?}"
         );
-        assert!(icons(&drawn).iter().any(|name| name == SIDEBAR_ICON_NEW_CHAT));
+        assert!(icons(&drawn)
+            .iter()
+            .any(|name| name == SIDEBAR_ICON_NEW_CHAT));
         assert!(texts(&drawn)
             .iter()
             .any(|(text, size)| text == "New conversation"
@@ -5537,9 +5582,7 @@ mod sidebar_workspaces_tests {
         let glyph = drawn
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { name, origin, .. }
-                    if name == SIDEBAR_ICON_NEW_CHAT =>
-                {
+                RenderCommand::DrawIcon { name, origin, .. } if name == SIDEBAR_ICON_NEW_CHAT => {
                     Some(*origin)
                 }
                 _ => None,
@@ -5600,9 +5643,7 @@ mod sidebar_workspaces_tests {
                     rect,
                     corner_radius,
                     ..
-                } if (*corner_radius - SIDEBAR_ROW_RADIUS).abs() < 0.01
-                    && rect.min_x() > 300.0 =>
-                {
+                } if (*corner_radius - SIDEBAR_ROW_RADIUS).abs() < 0.01 && rect.min_x() > 300.0 => {
                     Some(*rect)
                 }
                 _ => None,
@@ -5675,9 +5716,7 @@ mod sidebar_workspaces_tests {
                         origin,
                         font_size,
                         ..
-                    } if origin.x > 300.0
-                        && (*font_size - SIDEBAR_TITLE_SIZE).abs() < 0.01 =>
-                    {
+                    } if origin.x > 300.0 && (*font_size - SIDEBAR_TITLE_SIZE).abs() < 0.01 => {
                         Some(text.clone())
                     }
                     _ => None,
@@ -5741,7 +5780,8 @@ mod sidebar_workspaces_tests {
             .with_ui(ui)
             .with_viewport_height(1000.0)
             .with_menu_items(vec![
-                SidebarMenuItem::new("Rename workspace", "edit", || {}),
+                SidebarMenuItem::new("Rename", "edit", || {}),
+                SidebarMenuItem::new("Show in Finder", "folder-open", || {}),
                 SidebarMenuItem::new("Delete workspace", "trash-02", || {})
                     .with_separator_before(true)
                     .with_danger(true),
@@ -5776,15 +5816,11 @@ mod sidebar_workspaces_tests {
             - SIDEBAR_LABEL_GAP
             - 6.0
             - trailing_slot_width(time, remote, starred))
-            .max(0.0)
+        .max(0.0)
     }
 
     /// The rounded card the row paints for a given fill token.
-    fn row_band(
-        commands: &[RenderCommand],
-        app: &AppContext,
-        token: ColorToken,
-    ) -> Option<RectF> {
+    fn row_band(commands: &[RenderCommand], app: &AppContext, token: ColorToken) -> Option<RectF> {
         commands.iter().find_map(|command| match command {
             RenderCommand::FillRect {
                 rect,
@@ -5840,16 +5876,29 @@ mod sidebar_workspaces_tests {
                 let drawn = render_element(&mut selected_box, vec2f(284.0, 1000.0), &app);
                 let band = row_band(&drawn, &app, ColorToken::Selected)
                     .unwrap_or_else(|| panic!("[{time}] the selected row paints its band"));
-                assert!((band.height() - SIDEBAR_ROW_HEIGHT).abs() < 0.01, "{band:?}");
-                assert!((band.min_x() - SIDEBAR_PAINT_INSET).abs() < 0.01, "{band:?}");
+                assert!(
+                    (band.height() - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
+                    "{band:?}"
+                );
+                assert!(
+                    (band.min_x() - SIDEBAR_PAINT_INSET).abs() < 0.01,
+                    "{band:?}"
+                );
 
-                let mut hovered_box: Box<dyn Element> =
-                    session_row(time, remote, starred).with_hovered(true).finish();
+                let mut hovered_box: Box<dyn Element> = session_row(time, remote, starred)
+                    .with_hovered(true)
+                    .finish();
                 let drawn = render_element(&mut hovered_box, vec2f(284.0, 1000.0), &app);
                 let band = row_band(&drawn, &app, ColorToken::Hover)
                     .unwrap_or_else(|| panic!("[{time}] the hovered row paints its band"));
-                assert!((band.height() - SIDEBAR_ROW_HEIGHT).abs() < 0.01, "{band:?}");
-                assert!((band.min_x() - SIDEBAR_PAINT_INSET).abs() < 0.01, "{band:?}");
+                assert!(
+                    (band.height() - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
+                    "{band:?}"
+                );
+                assert!(
+                    (band.min_x() - SIDEBAR_PAINT_INSET).abs() < 0.01,
+                    "{band:?}"
+                );
             }
         }
     }
@@ -5998,8 +6047,162 @@ mod sidebar_workspaces_tests {
             "the tray starts 4pt under the row's 32pt bottom: {tray:?}"
         );
         assert!(
-            tray.width() >= TRAY_MAX_WIDTH - 0.01,
-            "the tray takes its full casing width so its rows span it: {tray:?}"
+            (tray.width() - SIDEBAR_MENU_MIN_WIDTH).abs() < 0.01,
+            "an itemless tray still keeps DSH's 144pt menu minimum: {tray:?}"
+        );
+    }
+
+    /// The tray's casing is DSH's context-menu card: a 16pt radius, 4pt padding,
+    /// a 34pt row with a 12pt band, a 14pt icon and a 13/20 label, and a 0.5pt
+    /// separator inset to the row content. Both sidebar trays are built by the
+    /// same app-supplied items.
+    #[test]
+    fn the_sidebar_tray_wears_the_dsh_menu_metrics() {
+        let app = app();
+        let ui = Rc::new(RefCell::new(AgentCardUi {
+            menu_open: true,
+            ..Default::default()
+        }));
+        let mut row: Box<dyn Element> = SidebarSessionRow::new("c1", "Work", "4min")
+            .with_hovered(true)
+            .with_ui(Rc::clone(&ui))
+            .with_menu_items(vec![
+                SidebarMenuItem::new("Pin session", SIDEBAR_ICON_PIN_OUTLINE, || {}),
+                SidebarMenuItem::new("Copy Session ID", "copy", || {}).with_separator_before(true),
+                SidebarMenuItem::new("Delete conversation", "trash-02", || {}).with_danger(true),
+            ])
+            .finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+
+        // The casing: the raised surface with a 16pt radius.
+        let casing = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && (*corner_radius - SIDEBAR_MENU_RADIUS).abs() < 0.01 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the tray paints DSH's 16pt-radius card");
+        assert!(
+            (casing.width()
+                - sidebar_menu_width(&[
+                    SidebarMenuItem::new("Pin session", SIDEBAR_ICON_PIN_OUTLINE, || {}),
+                    SidebarMenuItem::new("Copy Session ID", "copy", || {})
+                        .with_separator_before(true),
+                    SidebarMenuItem::new("Delete conversation", "trash-02", || {})
+                        .with_danger(true),
+                ]))
+            .abs()
+                < 0.01,
+            "the card takes its contents' width between DSH's bounds: {casing:?}"
+        );
+
+        // The rows: 34pt tall, a 13pt label, a 12pt band radius, the visible
+        // hover fill and a 14pt icon.
+        let label = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text,
+                    font_size,
+                    origin,
+                    ..
+                } if text == "Copy Session ID" => Some((*font_size, *origin)),
+                _ => None,
+            })
+            .expect("the tray draws its row labels");
+        assert!(
+            (label.0 - SIDEBAR_MENU_LABEL_SIZE).abs() < 0.01,
+            "the row label is DSH's 13pt menu type: {label:?}"
+        );
+        let bands: Vec<RectF> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    corner_radius,
+                    ..
+                } if (*corner_radius - SIDEBAR_MENU_ROW_RADIUS).abs() < 0.01
+                    && rect.min_y() > SIDEBAR_ROW_HEIGHT =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !bands.is_empty(),
+            "a row paints its 12pt-radius band: {commends:?}",
+            commends = commands
+        );
+        for band in &bands {
+            assert!(
+                (band.height() - SIDEBAR_MENU_ROW_HEIGHT).abs() < 0.01,
+                "a row is DSH's 34pt tall: {band:?}"
+            );
+        }
+        let icon = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name, size, .. } if name == "copy" => Some(*size),
+                _ => None,
+            })
+            .expect("the row draws its icon");
+        assert!(
+            (icon - SIDEBAR_MENU_ICON_SIZE).abs() < 0.01,
+            "the row icon is DSH's 14pt: {icon}"
+        );
+
+        // The separator: a 0.5pt rule inset 8pt inside the row content's width.
+        let rule = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::Border)
+                        && (rect.height() - SIDEBAR_MENU_SEPARATOR_HEIGHT).abs() < 0.01 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the separator draws DSH's 0.5pt rule");
+        assert!(
+            (rule.min_x() - (casing.min_x() + SIDEBAR_MENU_PADDING + SIDEBAR_MENU_SEPARATOR_INSET))
+                .abs()
+                < 0.01,
+            "the rule is inset to the row content: {rule:?} in {casing:?}"
+        );
+        assert!(
+            (rule.width()
+                - (casing.width()
+                    - 2.0 * SIDEBAR_MENU_PADDING
+                    - 2.0 * SIDEBAR_MENU_SEPARATOR_INSET))
+                .abs()
+                < 0.01,
+            "the rule spans the inset content width: {rule:?}"
+        );
+
+        // The destructive row is the error colour, its label too.
+        let danger_label = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, color, .. } if text == "Delete conversation" => {
+                    Some(*color)
+                }
+                _ => None,
+            })
+            .expect("the destructive row is drawn");
+        assert_eq!(
+            danger_label,
+            app.theme.color(ColorToken::Error),
+            "the Delete row reads in the error ink"
         );
     }
 
@@ -6009,11 +6212,18 @@ mod sidebar_workspaces_tests {
     fn a_group_row_stays_thirty_two_points_on_hover() {
         let mut rest: Box<dyn Element> = SidebarGroupRow::new("goble", false).finish();
         let rest_size = lay_out_boxed(&mut rest, 284.0);
-        assert!((rest_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01, "{rest_size:?}");
-        let mut hover: Box<dyn Element> =
-            SidebarGroupRow::new("goble", false).with_hovered(true).finish();
+        assert!(
+            (rest_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
+            "{rest_size:?}"
+        );
+        let mut hover: Box<dyn Element> = SidebarGroupRow::new("goble", false)
+            .with_hovered(true)
+            .finish();
         let hover_size = lay_out_boxed(&mut hover, 284.0);
-        assert!((hover_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01, "{hover_size:?}");
+        assert!(
+            (hover_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
+            "{hover_size:?}"
+        );
     }
 
     /// The "New conversation" action row is 32pt rested and hovered.
@@ -6022,15 +6232,19 @@ mod sidebar_workspaces_tests {
         let mut rest: Box<dyn Element> =
             SidebarActionRow::new(SIDEBAR_ICON_NEW_CHAT, "New conversation").finish();
         let rest_size = lay_out_boxed(&mut rest, 284.0);
-        assert!((rest_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01, "{rest_size:?}");
-        let mut hover: Box<dyn Element> = SidebarActionRow::new(
-            SIDEBAR_ICON_NEW_CHAT,
-            "New conversation",
-        )
-        .with_hovered(true)
-        .finish();
+        assert!(
+            (rest_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
+            "{rest_size:?}"
+        );
+        let mut hover: Box<dyn Element> =
+            SidebarActionRow::new(SIDEBAR_ICON_NEW_CHAT, "New conversation")
+                .with_hovered(true)
+                .finish();
         let hover_size = lay_out_boxed(&mut hover, 284.0);
-        assert!((hover_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01, "{hover_size:?}");
+        assert!(
+            (hover_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
+            "{hover_size:?}"
+        );
     }
 
     /// A row near the window's bottom flips its tall tray above itself (and the
@@ -6044,11 +6258,11 @@ mod sidebar_workspaces_tests {
         }));
         let mut items = Vec::new();
         for label in [
-            "Star",
-            "Rename conversation",
-            "Fork conversation",
-            "Copy conversation ID",
-            "Archive conversation",
+            "Pin session",
+            "Rename",
+            "Fork session",
+            "Copy Session ID",
+            "Archive session",
             "Delete conversation",
         ] {
             items.push(SidebarMenuItem::new(label, SIDEBAR_ICON_PIN_OUTLINE, || {}));
@@ -6069,8 +6283,14 @@ mod sidebar_workspaces_tests {
             "the flipped tray sits above the row: {tray:?}"
         );
         assert!(tray.min_y() >= 0.0, "and not off the top: {tray:?}");
-        let at = vec2f(tray.min_x() + tray.width() / 2.0, tray.min_y() + tray.height() / 2.0);
-        assert!(row.pointer_on_tray(at), "the hit area follows the flipped tray");
+        let at = vec2f(
+            tray.min_x() + tray.width() / 2.0,
+            tray.min_y() + tray.height() / 2.0,
+        );
+        assert!(
+            row.pointer_on_tray(at),
+            "the hit area follows the flipped tray"
+        );
     }
 
     /// An archived row keeps the normal 32pt metrics in both states. The app
@@ -6080,13 +6300,19 @@ mod sidebar_workspaces_tests {
     fn an_archived_row_keeps_its_metrics() {
         let mut rest = SidebarSessionRow::new("c1", "Work", "4min").with_archived(true);
         let rest_size = lay_out_row(&mut rest, 284.0);
-        assert!((rest_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01, "{rest_size:?}");
+        assert!(
+            (rest_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
+            "{rest_size:?}"
+        );
         assert!((rest_size.x - 284.0).abs() < 0.01, "{rest_size:?}");
         let mut hover = SidebarSessionRow::new("c1", "Work", "4min")
             .with_archived(true)
             .with_hovered(true);
         let hover_size = lay_out_row(&mut hover, 284.0);
-        assert!((hover_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01, "{hover_size:?}");
+        assert!(
+            (hover_size.y - SIDEBAR_ROW_HEIGHT).abs() < 0.01,
+            "{hover_size:?}"
+        );
     }
 
     /// An archived row drops the live status glyph, the resting pin and the
@@ -6101,12 +6327,16 @@ mod sidebar_workspaces_tests {
             .finish();
         let drawn = render_element(&mut row, vec2f(284.0, 32.0), &app);
         assert!(
-            !icons(&drawn).iter().any(|name| name == SIDEBAR_ICON_STATUS_RUNNING),
+            !icons(&drawn)
+                .iter()
+                .any(|name| name == SIDEBAR_ICON_STATUS_RUNNING),
             "no running ring in the leading slot: {:?}",
             icons(&drawn)
         );
         assert!(
-            !icons(&drawn).iter().any(|name| name == SIDEBAR_ICON_PIN_FILL),
+            !icons(&drawn)
+                .iter()
+                .any(|name| name == SIDEBAR_ICON_PIN_FILL),
             "no resting pin on an archived row: {:?}",
             icons(&drawn)
         );
@@ -6148,7 +6378,10 @@ mod sidebar_workspaces_tests {
                     if text == "Archived" && origin.x > 300.0
             )
         });
-        assert!(archived, "the hover card carries the Archived line: {drawn:?}");
+        assert!(
+            archived,
+            "the hover card carries the Archived line: {drawn:?}"
+        );
         let card = drawn
             .iter()
             .find_map(|command| match command {
@@ -6177,15 +6410,16 @@ mod sidebar_workspaces_tests {
 
         let build = || {
             let labels = [
-                ("Star", SIDEBAR_ICON_PIN_OUTLINE, false, false),
-                ("Rename conversation", "edit", false, false),
-                ("Fork conversation", "branch", false, false),
-                ("Copy conversation ID", "copy", true, false),
-                ("Archive conversation", "archive", true, false),
+                ("Pin session", SIDEBAR_ICON_PIN_OUTLINE, false, false),
+                ("Rename", "edit", false, false),
+                ("Fork session", "branch", false, false),
+                ("Copy Session ID", "copy", true, false),
+                ("Archive session", "archive", true, false),
                 ("Delete conversation", "trash-02", true, true),
             ];
-            let counters: Vec<Rc<RefCell<usize>>> =
-                (0..labels.len()).map(|_| Rc::new(RefCell::new(0usize))).collect();
+            let counters: Vec<Rc<RefCell<usize>>> = (0..labels.len())
+                .map(|_| Rc::new(RefCell::new(0usize)))
+                .collect();
             let items: Vec<SidebarMenuItem> = labels
                 .iter()
                 .zip(counters.iter())
@@ -6218,7 +6452,9 @@ mod sidebar_workspaces_tests {
                     origin,
                     font_size,
                     ..
-                } if (*font_size - 12.0).abs() < 0.01 && origin.y > SIDEBAR_ROW_HEIGHT => {
+                } if (*font_size - SIDEBAR_MENU_LABEL_SIZE).abs() < 0.01
+                    && origin.y > SIDEBAR_ROW_HEIGHT =>
+                {
                     Some(text.clone())
                 }
                 _ => None,
@@ -6227,11 +6463,11 @@ mod sidebar_workspaces_tests {
         assert_eq!(
             tray_labels,
             vec![
-                "Star",
-                "Rename conversation",
-                "Fork conversation",
-                "Copy conversation ID",
-                "Archive conversation",
+                "Pin session",
+                "Rename",
+                "Fork session",
+                "Copy Session ID",
+                "Archive session",
                 "Delete conversation",
             ],
             "the tray draws the app's rows in order"
@@ -6243,7 +6479,7 @@ mod sidebar_workspaces_tests {
                     command,
                     RenderCommand::FillRect { rect, color, .. }
                         if *color == app.theme.color(ColorToken::Border)
-                            && (rect.height() - 1.0).abs() < 0.01
+                            && (rect.height() - SIDEBAR_MENU_SEPARATOR_HEIGHT).abs() < 0.01
                 )
             })
             .count();
@@ -6259,7 +6495,8 @@ mod sidebar_workspaces_tests {
                 assert!(row.dispatch_event(&key_event("ArrowDown"), &mut event_ctx, &app));
             }
             assert_eq!(
-                ui.borrow().highlight, target,
+                ui.borrow().highlight,
+                target,
                 "the highlight walks actionable rows only"
             );
             assert!(row.dispatch_event(&key_event("Enter"), &mut event_ctx, &app));
@@ -6316,9 +6553,11 @@ mod sidebar_workspaces_tests {
             commands
                 .iter()
                 .find_map(|command| match command {
-                    RenderCommand::DrawIcon { name: drawn, origin, .. } if drawn == name => {
-                        Some(*origin)
-                    }
+                    RenderCommand::DrawIcon {
+                        name: drawn,
+                        origin,
+                        ..
+                    } if drawn == name => Some(*origin),
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("the row draws {name:?}: {commands:?}"))
@@ -6335,7 +6574,7 @@ mod sidebar_workspaces_tests {
         let mut row: Box<dyn Element> = SidebarGroupRow::new("goble", true)
             .with_hovered(true)
             .with_ui(Rc::new(RefCell::new(SidebarGroupUi::default())))
-            .with_menu_items(vec![SidebarMenuItem::new("Rename workspace", "edit", || {})])
+            .with_menu_items(vec![SidebarMenuItem::new("Rename", "edit", || {})])
             .with_on_create_session(move || *flag.borrow_mut() = true)
             .finish();
         let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
@@ -6343,16 +6582,25 @@ mod sidebar_workspaces_tests {
         let at = new_chat + vec2f(8.0, 8.0);
         let mut ctx = EventContext::default();
         for event in [
-            DispatchedEvent::MouseDown { position: at, button: 0 },
-            DispatchedEvent::MouseUp { position: at, button: 0 },
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
         ] {
             row.dispatch_event(&event, &mut ctx, &app);
         }
-        assert!(*created.borrow(), "the create control runs the app's action");
+        assert!(
+            *created.borrow(),
+            "the create control runs the app's action"
+        );
     }
 
-    /// The workspace tray is the app-supplied list (Rename, then Delete behind
-    /// a separator); the dots toggle it, its rows run, and the row keeps the
+    /// The workspace tray is the app-supplied list (Rename, Show in Finder, then
+    /// Delete behind a separator); the dots toggle it, its rows run, and the row keeps the
     /// strip on screen while the menu is up.
     #[test]
     fn a_workspace_row_opens_its_tray_and_keeps_the_strip_shown() {
@@ -6372,8 +6620,14 @@ mod sidebar_workspaces_tests {
         let at = dots + vec2f(8.0, 8.0);
         let mut ctx = EventContext::default();
         for event in [
-            DispatchedEvent::MouseDown { position: at, button: 0 },
-            DispatchedEvent::MouseUp { position: at, button: 0 },
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
         ] {
             row.dispatch_event(&event, &mut ctx, &app);
         }
@@ -6384,8 +6638,15 @@ mod sidebar_workspaces_tests {
         let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
         let labels = texts(&commands);
         assert!(
-            labels.iter().any(|(text, size)| text == "Rename workspace" && (*size - 12.0).abs() < 0.01),
+            labels
+                .iter()
+                .any(|(text, size)| text == "Rename"
+                    && (*size - SIDEBAR_MENU_LABEL_SIZE).abs() < 0.01),
             "the tray lists its rows: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|(text, _)| text == "Show in Finder"),
+            "the tray lists the reveal row: {labels:?}"
         );
         assert!(
             labels.iter().any(|(text, _)| text == "Delete workspace"),
@@ -6407,9 +6668,130 @@ mod sidebar_workspaces_tests {
             &app,
         );
         assert!(
-            icons(&open).iter().any(|name| name == SIDEBAR_ICON_ELLIPSIS),
+            icons(&open)
+                .iter()
+                .any(|name| name == SIDEBAR_ICON_ELLIPSIS),
             "the open row still draws its strip"
         );
+    }
+
+    /// DSH opens a context menu unfilled: the first row is focused but paints
+    /// no fill until the pointer or the keyboard reaches it. The sidebar trays
+    /// follow that, and the first arrow key enters the row walk at row 0.
+    #[test]
+    fn a_sidebar_tray_opens_unfilled_and_the_first_arrow_enters_the_walk() {
+        let app = app();
+        let ui = default_group_ui();
+        let mut row: Box<dyn Element> = workspace_row(true, Rc::clone(&ui)).finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let dots = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. } if name == SIDEBAR_ICON_ELLIPSIS => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the hovered row draws its dots");
+        let at = dots + vec2f(8.0, 8.0);
+        let mut ctx = EventContext::default();
+        for event in [
+            DispatchedEvent::MouseDown { position: at, button: 0 },
+            DispatchedEvent::MouseUp { position: at, button: 0 },
+        ] {
+            row.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(ui.borrow().menu_open, "the dots open the tray");
+        assert_eq!(
+            ui.borrow().highlight,
+            NO_HIGHLIGHT,
+            "opening paints no row: DSH's menu opens unfilled"
+        );
+
+        // The frame the next one would build: no selection band below the row.
+        let frame = || {
+            let mut row: Box<dyn Element> = workspace_row(true, Rc::clone(&ui)).finish();
+            render_element(&mut row, vec2f(284.0, 1000.0), &app)
+        };
+        let bands = |commands: &[RenderCommand]| -> usize {
+            commands
+                .iter()
+                .filter(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::FillRect { rect, color, corner_radius }
+                            if *color == app.theme.color(ColorToken::Selected)
+                                && (*corner_radius - SIDEBAR_MENU_ROW_RADIUS).abs() < 0.01
+                                && rect.min_y() > SIDEBAR_ROW_HEIGHT
+                    )
+                })
+                .count()
+        };
+        let unfilled = frame();
+        assert_eq!(bands(&unfilled), 0, "no row is filled on open");
+
+        // The first ArrowDown enters the walk at the first row.
+        let mut row: Box<dyn Element> = workspace_row(true, Rc::clone(&ui)).finish();
+        let _ = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        assert!(row.dispatch_event(&key_event("ArrowDown"), &mut ctx, &app));
+        assert_eq!(ui.borrow().highlight, 0, "Down enters at the first row");
+        assert_eq!(bands(&frame()), 1, "and the first row paints its fill");
+    }
+
+    /// Enter on a freshly opened tray runs its first row even though no row is
+    /// painted: DSH focuses the first item on open, so keyboard activation does
+    /// not need an arrow first.
+    #[test]
+    fn enter_on_a_freshly_opened_tray_runs_the_first_row() {
+        let app = app();
+        let ui = default_group_ui();
+        let runs = Rc::new(RefCell::new(0usize));
+        let counter = Rc::clone(&runs);
+        let items = vec![
+            SidebarMenuItem::new("Rename", "edit", move || *counter.borrow_mut() += 1),
+            SidebarMenuItem::new("Delete workspace", "trash-02", || {})
+                .with_separator_before(true)
+                .with_danger(true),
+        ];
+        let mut row: Box<dyn Element> = SidebarGroupRow::new("goble", true)
+            .with_hovered(true)
+            .with_ui(Rc::clone(&ui))
+            .with_viewport_height(1000.0)
+            .with_menu_items(items.clone())
+            .with_on_create_session(|| {})
+            .with_on_menu_open(|| {})
+            .finish();
+        let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
+        let dots = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. } if name == SIDEBAR_ICON_ELLIPSIS => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the hovered row draws its dots");
+        let at = dots + vec2f(8.0, 8.0);
+        let mut ctx = EventContext::default();
+        for event in [
+            DispatchedEvent::MouseDown { position: at, button: 0 },
+            DispatchedEvent::MouseUp { position: at, button: 0 },
+        ] {
+            row.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(ui.borrow().menu_open);
+        let mut next: Box<dyn Element> = SidebarGroupRow::new("goble", true)
+            .with_hovered(true)
+            .with_ui(Rc::clone(&ui))
+            .with_viewport_height(1000.0)
+            .with_menu_items(items)
+            .with_on_create_session(|| {})
+            .with_on_menu_open(|| {})
+            .finish();
+        let _ = render_element(&mut next, vec2f(284.0, 1000.0), &app);
+        assert!(next.dispatch_event(&key_event("Enter"), &mut ctx, &app));
+        assert_eq!(*runs.borrow(), 1, "Enter runs the first row straight away");
+        assert!(!ui.borrow().menu_open, "and closes the tray");
     }
 
     /// A conversation row's hover strip is DSH's three controls in order — the
@@ -6427,15 +6809,24 @@ mod sidebar_workspaces_tests {
             commands
                 .iter()
                 .find_map(|command| match command {
-                    RenderCommand::DrawIcon { name: drawn, origin, .. } if drawn == name => {
-                        Some(*origin)
-                    }
+                    RenderCommand::DrawIcon {
+                        name: drawn,
+                        origin,
+                        ..
+                    } if drawn == name => Some(*origin),
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("the row draws {name:?}: {commands:?}"))
         };
-        for icon in [SIDEBAR_ICON_ELLIPSIS, SIDEBAR_ICON_ARCHIVE, SIDEBAR_ICON_PIN_OUTLINE] {
-            assert!(drawn.iter().any(|name| name == icon), "the strip draws {icon:?}");
+        for icon in [
+            SIDEBAR_ICON_ELLIPSIS,
+            SIDEBAR_ICON_ARCHIVE,
+            SIDEBAR_ICON_PIN_OUTLINE,
+        ] {
+            assert!(
+                drawn.iter().any(|name| name == icon),
+                "the strip draws {icon:?}"
+            );
         }
         assert!(position(SIDEBAR_ICON_ELLIPSIS).x < position(SIDEBAR_ICON_ARCHIVE).x);
         assert!(position(SIDEBAR_ICON_ARCHIVE).x < position(SIDEBAR_ICON_PIN_OUTLINE).x);
@@ -6453,8 +6844,14 @@ mod sidebar_workspaces_tests {
         let pin = position(SIDEBAR_ICON_PIN_OUTLINE);
         let mut ctx = EventContext::default();
         for event in [
-            DispatchedEvent::MouseDown { position: pin + vec2f(8.0, 8.0), button: 0 },
-            DispatchedEvent::MouseUp { position: pin + vec2f(8.0, 8.0), button: 0 },
+            DispatchedEvent::MouseDown {
+                position: pin + vec2f(8.0, 8.0),
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: pin + vec2f(8.0, 8.0),
+                button: 0,
+            },
         ] {
             row.dispatch_event(&event, &mut ctx, &app);
         }
@@ -6463,8 +6860,14 @@ mod sidebar_workspaces_tests {
         let commands = render_element(&mut row, vec2f(284.0, 1000.0), &app);
         let archive = position(SIDEBAR_ICON_ARCHIVE);
         for event in [
-            DispatchedEvent::MouseDown { position: archive + vec2f(8.0, 8.0), button: 0 },
-            DispatchedEvent::MouseUp { position: archive + vec2f(8.0, 8.0), button: 0 },
+            DispatchedEvent::MouseDown {
+                position: archive + vec2f(8.0, 8.0),
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: archive + vec2f(8.0, 8.0),
+                button: 0,
+            },
         ] {
             row.dispatch_event(&event, &mut ctx, &app);
         }

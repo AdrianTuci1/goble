@@ -21,6 +21,8 @@ use std::sync::Arc;
 
 use goble_app::root_view::RootView;
 use goble_app::state::UiState;
+use goble_app::ui::settings::state::{HostForm, ModelForm, SettingsForm};
+use goble_app::ui::settings::SettingsRegion;
 use goble_app::ui::SettingsCategory;
 use goble_core::store::Store;
 use goble_desktop_service::{DesktopState, ThreadStore};
@@ -219,5 +221,147 @@ fn main() -> anyhow::Result<()> {
         raster::render_element_to_png(&assets, &app, &mut root, size.x, size.y, SCALE, None, &out)?;
         println!("light {} · {}", page.label(), out.display());
     }
+    // The owner's follow-up scenes: the Providers page with its accounts and
+    // the CLI folds collapsed/expanded, the Appearance page's colour picker and
+    // open theme select, and the Add/Edit side sheets.
+    render_scene_scrolled(
+        &assets,
+        &desktop,
+        size,
+        "providers-collapsed",
+        1650.0,
+        |_s| {},
+    )?;
+    render_scene_scrolled(&assets, &desktop, size, "providers-expanded", 1650.0, |s| {
+        let ids: Vec<String> = s
+            .settings
+            .harnesses
+            .iter()
+            .take(2)
+            .map(|harness| format!("harness.{}", harness.id))
+            .collect();
+        for id in ids {
+            s.settings.folds.insert(id);
+        }
+    })?;
+    render_scene(&assets, &desktop, size, "appearance-select", |s| {
+        s.settings_set_page(SettingsCategory::Appearance);
+        s.settings.theme_select_open = true;
+        s.settings.color_target = 2;
+    })?;
+    render_scene(&assets, &desktop, size, "appearance-picker", |s| {
+        s.settings_set_page(SettingsCategory::Appearance);
+        s.settings.theme_select_open = false;
+        s.settings.color_target = 0;
+        s.settings.region = SettingsRegion::Page;
+        s.settings.row_index = 0;
+    })?;
+    render_scene(&assets, &desktop, size, "hosts-sheet", |s| {
+        s.settings_set_page(SettingsCategory::Hosts);
+        s.settings.form = Some(SettingsForm::Host(Box::new(HostForm {
+            editing: None,
+            name: "staging-2".to_string(),
+            host: "staging2.example.com".to_string(),
+            user: "deploy".to_string(),
+            port: "2222".to_string(),
+            identity: "~/.ssh/id_ed25519".to_string(),
+        })));
+        s.settings.region = SettingsRegion::Sheet;
+    })?;
+    render_scene(&assets, &desktop, size, "providers-sheet", |s| {
+        s.settings_set_page(SettingsCategory::Providers);
+        if let Some(model) = s.settings.models().first().cloned() {
+            s.settings.form = Some(SettingsForm::Model(Box::new(ModelForm::edit(&model))));
+        }
+        s.settings.region = SettingsRegion::Sheet;
+    })?;
+    Ok(())
+}
+
+/// Render one settings state over the real app tree, after a closure mutates
+/// the tab's state (the scene's page, folds, open sheet, form).
+fn render_scene(
+    assets: &raster::PreviewAssets,
+    desktop: &Arc<DesktopState>,
+    size: Vector2F,
+    name: &str,
+    mutate: impl FnOnce(&mut UiState),
+) -> anyhow::Result<()> {
+    render_scene_on(assets, desktop, size, name, SettingsCategory::Providers, 0.0, mutate)
+}
+
+/// Render a scene scrolled down the page (the CLI fold list sits below the
+/// provider accounts on the Providers page).
+fn render_scene_scrolled(
+    assets: &raster::PreviewAssets,
+    desktop: &Arc<DesktopState>,
+    size: Vector2F,
+    name: &str,
+    scroll: f32,
+    mutate: impl FnOnce(&mut UiState),
+) -> anyhow::Result<()> {
+    render_scene_on(
+        assets,
+        desktop,
+        size,
+        name,
+        SettingsCategory::Providers,
+        scroll,
+        mutate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_scene_on(
+    assets: &raster::PreviewAssets,
+    desktop: &Arc<DesktopState>,
+    size: Vector2F,
+    name: &str,
+    page: SettingsCategory,
+    scroll: f32,
+    mutate: impl FnOnce(&mut UiState),
+) -> anyhow::Result<()> {
+    let app_context = Rc::new(RefCell::new(AppContext::default()));
+    let view = RootView::new(&app_context.borrow(), desktop, None)
+        .with_app_context(Rc::clone(&app_context));
+    let state: Rc<RefCell<UiState>> = view.state_rc();
+    {
+        let mut s = state.borrow_mut();
+        s.show_workspace_choice = false;
+        s.show_llm_key_banner = false;
+        s.show_onboarding_tip = false;
+        s.sidebar_visible = false;
+        s.crons_open = false;
+        s.open_settings_tab(Some(desktop));
+        s.settings_set_page(page);
+        s.settings.region = SettingsRegion::Rail;
+        s.refresh_settings(desktop);
+        mutate(&mut s);
+    }
+    let mut root: Box<dyn Element> = Box::new(view);
+    let app = prepare(&mut root, &app_context, size);
+    if scroll > 0.0 {
+        state
+            .borrow_mut()
+            .settings
+            .scroll
+            .borrow_mut()
+            .scroll_by(scroll);
+    }
+    let commands = paint_frame(&app, &mut root, size);
+    let texts = commands
+        .iter()
+        .filter(|command| matches!(command, RenderCommand::DrawText { .. }))
+        .count();
+    let icons = commands
+        .iter()
+        .filter(|command| matches!(command, RenderCommand::DrawIcon { .. }))
+        .count();
+    let out = Path::new(OUT_DIR).join(format!("settings-scene-{name}.png"));
+    raster::render_element_to_png(assets, &app, &mut root, size.x, size.y, SCALE, None, &out)?;
+    println!(
+        "scene {name} · {page:?} · {texts} text runs · {icons} icons · {}",
+        out.display()
+    );
     Ok(())
 }

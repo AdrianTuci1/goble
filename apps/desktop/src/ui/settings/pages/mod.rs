@@ -29,7 +29,7 @@ mod updates;
 use goble_core::config::ConfigFile;
 
 use super::model::{ActionModel, ControlModel, RowModel, SectionModel};
-use super::state::{SettingsAction, SettingsUiState, StatusKind};
+use super::state::{SettingsAction, SettingsForm, SettingsUiState, StatusKind};
 
 pub use super::model::{ActionStyle, PageModel};
 
@@ -247,6 +247,20 @@ pub fn problem_section(state: &SettingsUiState, file: ConfigFile) -> Option<Sect
     )
 }
 
+/// The open add/edit form, as the side sheet that renders beside the page.
+///
+/// A form is not part of the page's own model: the page keeps drawing its list
+/// behind the sheet, while the sheet owns its own title, fields, focus order and
+/// Save/Cancel actions.
+pub fn form_section(state: &SettingsUiState) -> Option<SectionModel> {
+    match state.form.as_ref()? {
+        SettingsForm::Model(form) => Some(providers::model_form_section(state, form)),
+        SettingsForm::Connector(form) => Some(connectors::connector_form_section(state, form)),
+        SettingsForm::Host(form) => Some(hosts::host_form_section(state, form)),
+        SettingsForm::Harness(form) => Some(providers::harness_form_section(state, form)),
+    }
+}
+
 /// The keyboard hint strip every page's footer names.
 pub fn footer_hints() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
@@ -274,6 +288,7 @@ pub fn control_text(row: &RowModel) -> String {
             .map(|action| action.label.clone())
             .collect::<Vec<_>>()
             .join(" · "),
+        ControlModel::ColorWheel { label, .. } => label.clone(),
         ControlModel::None => String::new(),
     }
 }

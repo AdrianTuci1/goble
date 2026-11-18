@@ -29,17 +29,23 @@ fn window() -> Vector2F {
 
 /// The menu's row labels, in the order DSH's session menu draws them (Goble's
 /// own Delete row last). Used to pull the tray's rows out of a frame the same
-/// way a reader sees them.
+/// way a reader sees them. The labels are DSH's own (`ui-workspace`
+/// `registerSessionMenus` locale keys).
 const MENU_LABELS: [&str; 8] = [
-    "Star",
-    "Unstar",
-    "Rename conversation",
-    "Fork conversation",
-    "Copy conversation ID",
-    "Archive conversation",
-    "Unarchive conversation",
+    "Pin session",
+    "Unpin session",
+    "Rename",
+    "Fork session",
+    "Copy Session ID",
+    "Archive session",
+    "Unarchive session",
     "Delete conversation",
 ];
+
+/// DSH's menu row label type: `.item { font-size: 13px }` in
+/// `ui-primitives/src/Menu.module.css`. The tray no longer draws the old 12pt
+/// row, so the frame reader below keys on the menu's own size.
+const MENU_LABEL_SIZE: f32 = 13.0;
 
 /// The app over a real store with two answered conversations.
 fn seeded() -> (
@@ -174,7 +180,7 @@ fn menu_labels(commands: &[RenderCommand]) -> Vec<String> {
                 origin,
                 font_size,
                 ..
-            } if (*font_size - 12.0).abs() < 0.01
+            } if (*font_size - MENU_LABEL_SIZE).abs() < 0.01
                 && origin.y > crate::ui::shell::TOPBAR_HEIGHT
                 && MENU_LABELS.contains(&text.as_str()) =>
             {
@@ -253,17 +259,17 @@ fn the_row_menu_lists_every_dsh_option_in_order() {
     assert_eq!(
         menu_labels(&commands),
         vec![
-            "Star",
-            "Rename conversation",
-            "Fork conversation",
-            "Copy conversation ID",
-            "Archive conversation",
+            "Pin session",
+            "Rename",
+            "Fork session",
+            "Copy Session ID",
+            "Archive session",
             "Delete conversation",
         ]
     );
 }
 
-/// An archived row resolves DSH's archived menu: no Star and no Archive (it
+/// An archived row resolves DSH's archived menu: no Pin and no Archive (it
 /// becomes Unarchive); Rename, Fork, Copy and Delete stay.
 #[test]
 fn the_archived_row_menu_offers_unarchive_not_star_or_archive() {
@@ -280,17 +286,17 @@ fn the_archived_row_menu_offers_unarchive_not_star_or_archive() {
     assert_eq!(
         menu_labels(&commands),
         vec![
-            "Rename conversation",
-            "Fork conversation",
-            "Copy conversation ID",
-            "Unarchive conversation",
+            "Rename",
+            "Fork session",
+            "Copy Session ID",
+            "Unarchive session",
             "Delete conversation",
         ]
     );
 }
 
-/// Star/Unstar is durable: the row's menu writes `chats.starred` and the
-/// Starred set is seeded from the store on the next start.
+/// Pin/Unpin is durable: the row's menu writes `chats.starred` and the Starred
+/// set is seeded from the store on the next start.
 #[test]
 fn starring_from_the_menu_persists() {
     let app = AppContext::default();
@@ -298,7 +304,7 @@ fn starring_from_the_menu_persists() {
     let id = archive_id(&state);
 
     let commands = open_row_menu(&mut root, &state, &app, &id);
-    click_menu_label(&mut root, &app, &commands, "Star");
+    click_menu_label(&mut root, &app, &commands, "Pin session");
 
     assert!(desktop.chat_starred(&id).unwrap(), "the store keeps the pin");
     assert!(
@@ -321,7 +327,7 @@ fn renaming_a_conversation_from_the_menu_persists_the_title() {
     let id = archive_id(&state);
 
     let commands = open_row_menu(&mut root, &state, &app, &id);
-    click_menu_label(&mut root, &app, &commands, "Rename conversation");
+    click_menu_label(&mut root, &app, &commands, "Rename");
     {
         let opened = state.borrow();
         let rename = opened.sidebar_rename.as_ref().expect("the dialog opened");
@@ -368,7 +374,7 @@ fn forking_a_conversation_from_the_menu_creates_the_inheriting_fork() {
     let before_selection = state.borrow().selected_id.clone();
 
     let commands = open_row_menu(&mut root, &state, &app, &id);
-    click_menu_label(&mut root, &app, &commands, "Fork conversation");
+    click_menu_label(&mut root, &app, &commands, "Fork session");
 
     assert_eq!(desktop.list_chats().len(), before_chats + 1, "a new chat");
     let forked = desktop
@@ -409,7 +415,7 @@ fn copying_a_conversation_id_writes_the_clipboard_and_toasts() {
     };
 
     let commands = open_row_menu(&mut root, &state, &app, &id);
-    click_menu_label(&mut root, &app, &commands, "Copy conversation ID");
+    click_menu_label(&mut root, &app, &commands, "Copy Session ID");
 
     assert_eq!(toast_kind(&state), Some(expected.clone()), "the copy toasted");
     if expected == ToastKind::ConversationIdCopied {
@@ -427,7 +433,7 @@ fn archiving_a_quiet_conversation_hides_the_row_and_persists() {
     let id = archive_id(&state);
 
     let commands = open_row_menu(&mut root, &state, &app, &id);
-    click_menu_label(&mut root, &app, &commands, "Archive conversation");
+    click_menu_label(&mut root, &app, &commands, "Archive session");
 
     assert!(
         desktop.archived_chat_ids().unwrap().contains(&id),
@@ -545,7 +551,7 @@ fn archiving_a_live_conversation_asks_first_then_stops_and_archives() {
     }
 
     let commands = open_row_menu(&mut root, &state, &app, &id);
-    click_menu_label(&mut root, &app, &commands, "Archive conversation");
+    click_menu_label(&mut root, &app, &commands, "Archive session");
     {
         let s = state.borrow();
         let confirm = s.archive_confirm.as_ref().expect("the confirm opened");
@@ -572,7 +578,7 @@ fn archiving_a_live_conversation_asks_first_then_stops_and_archives() {
 
     // Reopen the menu and confirm: the work is stopped, then archived.
     let commands = open_row_menu(&mut root, &state, &app, &id);
-    click_menu_label(&mut root, &app, &commands, "Archive conversation");
+    click_menu_label(&mut root, &app, &commands, "Archive session");
     assert!(state.borrow().archive_confirm.is_some());
     state.borrow_mut().confirm_archive(Some(desktop.as_ref()));
 
@@ -613,7 +619,7 @@ fn unarchiving_restores_the_row_in_its_slot() {
     state.borrow().set_archived_filter(ArchivedFilter::Show);
 
     let commands = open_row_menu(&mut root, &state, &app, &id);
-    click_menu_label(&mut root, &app, &commands, "Unarchive conversation");
+    click_menu_label(&mut root, &app, &commands, "Unarchive session");
 
     assert!(
         !desktop.archived_chat_ids().unwrap().contains(&id),

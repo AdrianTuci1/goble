@@ -37,7 +37,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
-tungstenite = "0.26"
+tungstenite = "0.30"
 
 # telemetry collector object storage
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }

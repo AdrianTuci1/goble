@@ -32,14 +32,11 @@ use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::platform::text_atlas::{measure_text_family, FontWeight};
 use crate::theme::ColorToken;
 
-/// The prompt marker that leads the user's own message, its room before the
-/// text, and the paragraph size of the row. They mirror the constants of
+/// The paragraph size of the pinned row. It mirrors the constants of
 /// [`ChatMessageBubble`](crate::elements::ChatMessageBubble)'s user row so the
 /// pinned line is the size and shape of the message it pins; the sticky turn's
 /// tests compare the pin against that row's own render commands, which is what
 /// keeps the two in step.
-const PROMPT_ARROW_SIZE: f32 = chat_typography::PROMPT_ARROW_SIZE;
-const PROMPT_ARROW_GAP: f32 = chat_typography::PROMPT_ARROW_GAP;
 const MESSAGE_FONT_SIZE: f32 = chat_typography::BODY_SIZE;
 const MESSAGE_LINE_HEIGHT: f32 = chat_typography::USER_LH;
 
@@ -211,12 +208,6 @@ impl StickyHeader {
         MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT + 2.0 * chat_typography::BAND_PADDING_Y
     }
 
-    /// Where the marker and the text sit inside the band, as the user's row
-    /// lays them out: the marker is centred on the first line's box and the
-    /// text starts one marker and one gap past it.
-    fn marker_top() -> f32 {
-        chat_typography::prompt_marker_top()
-    }
 }
 
 impl Element for StickyHeader {
@@ -270,18 +261,15 @@ impl Element for StickyHeader {
         let pad_x = chat_typography::BAND_PADDING_X;
         let pad_y = chat_typography::BAND_PADDING_Y;
         let family = chat_typography::chat_font(app);
-        renderer.fill_rect(
+        // The pinned band mirrors the user's rounded bubble: no prompt marker,
+        // so the first line starts at the band's own text inset.
+        renderer.fill_rounded_rect(
             rectf(origin.x, top, size.x, size.y),
             app.theme.color(ColorToken::SurfaceRaised),
+            12.0,
         );
-        renderer.draw_icon(
-            vec2f(origin.x + pad_x, top + pad_y + Self::marker_top()),
-            "prompt-arrow",
-            PROMPT_ARROW_SIZE,
-            app.theme.color(ColorToken::Accent),
-        );
-        let text_x = origin.x + pad_x + PROMPT_ARROW_SIZE + PROMPT_ARROW_GAP;
-        let available = (size.x - pad_x - PROMPT_ARROW_SIZE - PROMPT_ARROW_GAP - pad_x).max(0.0);
+        let text_x = origin.x + pad_x;
+        let available = (size.x - pad_x * 2.0).max(0.0);
         if available > 0.0 {
             let line = elide_to_width(&self.text, available, family);
             renderer.draw_text_with_font(

@@ -125,8 +125,8 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     );
     let _ = command_counts(&commands);
 
-    // The user's message band is the pane-wide square fill; the composer's
-    // input segment is rounded, so the square fill can only be the message.
+    // The user's message is a pane-wide rounded bubble. It is the only raised
+    // fill at the bubble radius.
     let band = commands
         .iter()
         .find_map(|command| match command {
@@ -134,17 +134,19 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
                 rect,
                 color,
                 corner_radius,
-            } if *color == app.theme.color(ColorToken::SurfaceRaised) && *corner_radius == 0.0 => {
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - 12.0).abs() < 0.01 =>
+            {
                 Some((*rect, *corner_radius))
             }
             _ => None,
         })
-        .expect("the user's message paints its band");
-    assert_eq!(band.1, 0.0, "the user's band has square corners");
+        .expect("the user's message paints its bubble");
+    assert!(band.1 > 0.0, "the user's bubble is rounded");
     assert_eq!(
         (band.0.min_x(), band.0.max_x()),
         (0.0, width),
-        "the user's band runs across the pane"
+        "the user's bubble still spans the pane"
     );
 
     let text_x = |label: &str| {
@@ -167,21 +169,18 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
         "the agent's row keeps DSH's 16 px band inset, got {reply_x}"
     );
 
-    // The user's message opens with the prompt marker on its first line, so
-    // its text starts one marker-width past the pane's padding.
-    let marker = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawIcon {
-                name, origin, size, ..
-            } if name == "prompt-arrow" => Some((*origin, *size)),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the user's message draws its prompt marker: {commands:?}"));
+    // No prompt marker: the user's text starts at the same band inset as the
+    // agent's, inside the rounded bubble.
     assert!(
-        user_x >= marker.0.x + marker.1 + 2.0 && user_x > reply_x,
-        "the user's text starts at {user_x}, past the marker ending at {} and the reply at {reply_x}",
-        marker.0.x + marker.1
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+        )),
+        "the user's message draws no prompt marker"
+    );
+    assert!(
+        (user_x - reply_x).abs() < 1.5,
+        "the user's text shares the band inset: {user_x} against {reply_x}"
     );
 }
 
@@ -1023,8 +1022,9 @@ fn the_agent_transcript_paints_no_pill() {
         })
         .collect();
 
+    // The user's rounded bubble is the deliberate exception to the no-pill
+    // rule; this test is about every agent row around it.
     let messages = vec![
-        ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Fix the build")]),
         ChatMessage::new(
             ChatRole::Assistant,
             vec![
@@ -3514,33 +3514,12 @@ mod sticky_turn {
         })
     }
 
-    /// The prompt marker inside `strip`: its origin, its size and its colour.
-    fn strip_marker(commands: &[RenderCommand], strip: RectF) -> Option<(Vector2F, f32, ColorU)> {
-        commands.iter().find_map(|command| match command {
-            RenderCommand::DrawIcon {
-                name,
-                origin,
-                size,
-                color,
-            } if name == "prompt-arrow"
-                && origin.x >= strip.min_x() - 0.5
-                && origin.x <= strip.max_x() + 0.5
-                && origin.y >= strip.min_y() - 0.5
-                && origin.y <= strip.max_y() + 0.5 =>
-            {
-                Some((*origin, *size, *color))
-            }
-            _ => None,
-        })
-    }
-
-    /// The user's own row, painted on its own at the pane's width: the band it
-    /// draws, the marker on its first line and that line's run. It is what the
-    /// pin has to match, so the pin is compared against the bubble's own
-    /// render commands rather than against repeated numbers.
+    /// The user's own row, painted on its own at the pane's width: the rounded
+    /// band it draws and its first line's run. It is what the pin has to match,
+    /// so the pin is compared against the bubble's own render commands rather
+    /// than against repeated numbers.
     struct Row {
         band: RectF,
-        marker: (Vector2F, f32, ColorU),
         origin: Vector2F,
         font_size: f32,
         line_height: f32,
@@ -3561,12 +3540,10 @@ mod sticky_turn {
                 _ => None,
             })
             .expect("the user's row paints its band");
-        let marker = strip_marker(&commands, band).expect("the user's row draws its marker");
         let line = strip_line(&commands, band).expect("the user's row draws its line");
         assert_eq!(line.text, text, "the row's first line is the message");
         Row {
             band,
-            marker,
             origin: line.origin,
             font_size: line.font_size,
             line_height: line.line_height,
@@ -3669,9 +3646,9 @@ mod sticky_turn {
             app.theme.color(ColorToken::SurfaceRaised),
             "the pin is the grey of the user's own message"
         );
-        assert_eq!(
-            corner_radius, 0.0,
-            "the user's band has square corners and the pin is its top edge"
+        assert!(
+            corner_radius > 0.0,
+            "the user's band is a rounded bubble and the pin mirrors its top edge"
         );
         assert!(
             !commands.iter().any(|command| matches!(
@@ -3683,10 +3660,10 @@ mod sticky_turn {
         );
     }
 
-    /// The arrow and the text sit exactly where the bubble's own first line
-    /// puts them: same x, same y, same size, same colours.
+    /// The pinned line sits exactly where the bubble's own first line puts it:
+    /// same x, same y, same size, same colours — no prompt marker any more.
     #[test]
-    fn the_pin_draws_the_marker_and_the_line_where_the_bubble_does() {
+    fn the_pin_draws_the_line_where_the_bubble_does() {
         let app = AppContext::default();
         let width = 600.0;
         let size = vec2f(width, 480.0);
@@ -3697,29 +3674,13 @@ mod sticky_turn {
         let commands = frame(&messages, &scroll, size, &app);
         let band = strip(&commands, &app, width).expect("the turn pins");
         let row = user_row("Fix the login bug", width, &app);
-
-        let (origin, icon_size, color) =
-            strip_marker(&commands, band).expect("the pinned band draws the prompt marker");
-        assert_eq!(
-            icon_size, row.marker.1,
-            "the pin's marker is the bubble's marker size"
-        );
-        assert_eq!(
-            color,
-            app.theme.color(ColorToken::Accent),
-            "the marker is drawn at the user accent"
-        );
-        assert_eq!(
-            color, row.marker.2,
-            "the pin's marker is the colour the bubble draws"
-        );
         assert!(
-            (origin.x - row.marker.0.x).abs() < 0.01 && (origin.y - row.marker.0.y).abs() < 0.01,
-            "the marker sits at {:?}, the bubble draws it at {:?}",
-            origin,
-            row.marker.0
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+            )),
+            "the pin does not draw a prompt marker either"
         );
-
         let line = strip_line(&commands, band).expect("the pinned band draws its line");
         assert!(
             (line.origin.x - row.origin.x).abs() < 0.01,

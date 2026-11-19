@@ -100,6 +100,8 @@ pub fn build_terminal(
         // pane happens to hold: out of agent mode this pane is the shell.
         None,
         Some(chat::PaneHeading::Path(cwd.clone())),
+        // A shell pane is already the terminal; it has no dock of its own.
+        false,
     );
     // Whether the pane's whole-output filter bar holds the caret (see the input
     // rule below).
@@ -980,4 +982,50 @@ impl TerminalView {
             .finish();
         self.root = Some(content);
     }
+}
+
+/// The body of an agent pane's bottom terminal dock: the same PTY-backed
+/// [`TerminalView`] the shell pane draws, without the pane header or the rich
+/// input bar. The dock's own header/resize chrome is built by the chat module;
+/// this is only the live shell surface inside it.
+pub fn build_terminal_dock(
+    app: &AppContext,
+    state: &crate::ui::UiSnapshot,
+    actions: &crate::ui::UiActions,
+    pane_id: u64,
+    cwd: String,
+    active: bool,
+) -> Box<dyn Element> {
+    let view = TerminalView::new(
+        state.terminal.clone(),
+        pane_id,
+        cwd,
+        active,
+        BlockView::Terminal,
+        false,
+        None,
+        actions.on_pane_activate.clone(),
+        actions.on_terminal_command.clone(),
+        actions.on_set_pane_harness_mode.clone(),
+        actions.on_open_agent_view.clone(),
+        actions.on_shell_line.clone(),
+        actions.on_copy_terminal.clone(),
+    )
+    .with_conversation_info(card_infos(state))
+    .with_scroll(
+        state
+            .pane_terminal_scroll
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| Rc::new(RefCell::new(goble_ui::ScrollState::following()))),
+    )
+    .with_block_plumbing(TerminalBlockPlumbing::new(
+        state.terminal_filters.clone(),
+        state.terminal_global_filters.get(&pane_id).cloned(),
+        Some(actions.on_copy_terminal.clone()),
+    ))
+    .finish();
+    Container::new(view)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .finish()
 }

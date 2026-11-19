@@ -1472,8 +1472,8 @@ fn the_panes_bar_draws_no_expand_control_in_a_one_pane_space() {
         "a one-pane space draws no expand control: {icons:?}"
     );
     assert!(
-        !icons.iter().any(|name| *name == "dots-horizontal"),
-        "and no tray trigger: {icons:?}"
+        icons.iter().any(|name| *name == "ellipsis"),
+        "DSH's More trigger is present: {icons:?}"
     );
 
     let drawn: Vec<&String> = commands
@@ -1860,7 +1860,7 @@ fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view
 /// harness leads its bar with. A shell pane draws none of them, and the
 /// shell's own bar draws the one instruction that belongs to a command line
 /// (the shared-composer test above pins that side).
-const AGENT_SURFACE_RUNS: [&str; 4] = ["send", "send to cloud", "tasks", "for terminal"];
+const AGENT_SURFACE_RUNS: [&str; 3] = ["send", "send to cloud", "tasks"];
 
 /// S4: a shell pane in terminal mode builds no agent surface and dispatches
 /// no agent action. Nothing about the pane's kind has made it an agent
@@ -2068,8 +2068,8 @@ fn the_panes_mode_decides_its_surface_and_the_switch_puts_the_agent_surface_up()
         "the agent surface's own instruction strip is drawn: {runs:?}"
     );
     assert!(
-        pane_has(&runs, "for terminal"),
-        "and its bar leads with the way back to the shell: {runs:?}"
+        !pane_has(&runs, "for terminal") && !pane_has(&runs, "esc"),
+        "the retired esc-for-terminal hint is gone: {runs:?}"
     );
     assert!(
         !pane_has(&runs, "new conversation"),
@@ -2585,16 +2585,23 @@ fn the_harness_hint_starts_past_the_focus_mark() {
             _ => None,
         })
         .expect("the focused pane draws its corner mark");
-    let esc = commands
+    let title = commands
         .iter()
         .find_map(|c| match c {
-            RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
+            RenderCommand::DrawText { origin, text, .. } if text == "New Agent" => Some(*origin),
             _ => None,
         })
-        .expect("the harness bar leads with the esc hint");
+        .expect("the harness bar leads with its title cluster");
     assert!(
-        esc.x >= mark.x + mark_size,
-        "the hint starts past the mark: esc at {esc:?}, mark at {mark:?} sized {mark_size}"
+        title.x >= mark.x + mark_size,
+        "the title starts past the mark: title at {title:?}, mark at {mark:?} sized {mark_size}"
+    );
+    assert!(
+        !commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawText { text, .. } if text == "esc" || text == "for terminal"
+        )),
+        "the retired esc-for-terminal hint is not drawn"
     );
 }
 
@@ -3824,8 +3831,8 @@ fn the_shell_bar_centres_its_working_directory() {
         .expect("the pane recorded its bounds");
     let pane_middle = (bounds.min_x() + bounds.max_x()) / 2.0;
     assert!(
-        (centred - pane_middle).abs() <= 0.5,
-        "the directory sits in the pane's middle: {centred} vs {pane_middle}"
+        centred < pane_middle - 80.0,
+        "the directory leads the bar, not its middle: {centred} vs {pane_middle}"
     );
 }
 

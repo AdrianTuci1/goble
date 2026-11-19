@@ -1421,15 +1421,10 @@ fn build_leaf_column(
         Some(view) => chat::build_workflow_view(app, state, actions, id, active, &view),
         None => match kind {
             PaneKind::Chat => {
-                // Esc at the agent view of a pane with no shell behind it: the
-                // bar's `esc for terminal` hint and the key give the pane a
-                // terminal of its own, in place — the conversation stays bound,
-                // so Cmd+Enter opens its agent view over that shell again.
-                let on_show_terminal = actions.on_show_pane_terminal.clone();
-                let leave: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
-                    (on_show_terminal.borrow_mut())(id);
-                }));
-                chat::build_agent_chat(app, state, actions, id, active, false, Some(leave))
+                // One surface per agent pane: there is no Esc-to-terminal and
+                // no second surface any more. The pane's terminal is the bottom
+                // dock toggled from the header icon.
+                chat::build_agent_chat(app, state, actions, id, active, false, None)
             }
             // A viewer session: the conversation runs on a worker, so the pane is
             // the conversation's own surface with no shell behind it. It is never
@@ -1485,44 +1480,6 @@ fn build_leaf_column(
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(Expanded::new(content).finish())
-        .finish()
-}
-
-/// While the harness is active on a pane, its topbar shows `esc for terminal`:
-/// the way back to the plain pty, spelled out and clickable, so the surface can
-/// be switched with the pointer as well as with the key. A chat pane shows the
-/// same hint over the terminal Esc gives it, since the pane has no pty behind
-/// its agent view yet.
-pub(crate) fn build_esc_hint<F: FnMut() + 'static>(
-    app: &AppContext,
-    hover: Rc<RefCell<bool>>,
-    on_click: F,
-) -> Box<dyn Element> {
-    let xs = app.theme.spacing_px(SpacingToken::Xs);
-    let keycap = Container::new(
-        Text::new("esc")
-            .with_font_size(10.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_padding(EdgeInsets::new(xs, 1.0, xs, 1.0))
-    .with_border(app.theme.color(ColorToken::Border).into())
-    .with_corner_radius(4.0)
-    .finish();
-    let row = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(4.0)
-        .with_child(keycap)
-        .with_child(
-            Text::new("for terminal")
-                .with_font_size(11.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .finish();
-    HoverButton::new(row, hover)
-        .with_padding(EdgeInsets::new(xs, 2.0, xs, 2.0))
-        .with_on_click(on_click)
         .finish()
 }
 

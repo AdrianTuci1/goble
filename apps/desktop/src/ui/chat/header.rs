@@ -4,8 +4,8 @@ use std::rc::Rc;
 use goble_ui::elements::{
     harness_bar_mark, AppContext, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Flex, Icon, LayoutContext,
-    MainAxisAlignment, MainAxisSize, PaintContext, Point, SizeConstraint, Spacer, Text, Tooltip,
-    TooltipPosition, TopbarButton,
+    MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem,
+    PopupMenuPosition, SizeConstraint, Text, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
@@ -131,7 +131,10 @@ pub(crate) enum PaneHeading {
 }
 
 impl PaneHeading {
-    fn element(self, app: &AppContext) -> Box<dyn Element> {
+    /// The title cluster's current crumb. DSH draws the current crumb at
+    /// 14/20, weight 500, label-primary, with its ancestors muted before a
+    /// `/` separator; a shell path is the whole cluster.
+    fn element(self, app: &AppContext, crumb: Option<String>) -> Box<dyn Element> {
         let (text, tooltip) = match self {
             PaneHeading::Path(path) => {
                 let display = crate::state::display_path(&path);
@@ -139,20 +142,43 @@ impl PaneHeading {
             }
             PaneHeading::Agent(subject) => (subject, None),
         };
-        let label = Text::new(text)
-            .with_font_size(12.0)
+        let current = Text::new(text)
+            .with_font_size(14.0)
+            .with_line_height(20.0 / 14.0)
+            .with_weight(goble_ui::platform::text_atlas::FontWeight::Medium)
             .with_theme_color(ColorToken::Text, app)
             .with_max_lines(1)
             .finish();
-        let label = match tooltip {
-            Some(tooltip) => Tooltip::new(label, tooltip)
+        let current = match tooltip {
+            Some(tooltip) => Tooltip::new(current, tooltip)
                 .with_position(TooltipPosition::Below)
                 .finish(),
-            None => label,
+            None => current,
         };
-        // A long path or subject stops short of the pane's own controls; the
-        // tooltip still carries the whole label.
-        ConstrainedBox::new(label).with_max_width(340.0).finish()
+        let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(4.0);
+        if let Some(crumb) = crumb.filter(|crumb| !crumb.trim().is_empty()) {
+            row = row
+                .with_child(
+                    Text::new(crumb)
+                        .with_font_size(14.0)
+                        .with_line_height(20.0 / 14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_max_lines(1)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new("/")
+                        .with_font_size(14.0)
+                        .with_line_height(20.0 / 14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                );
+        }
+        row = row.with_child(ConstrainedBox::new(current).with_max_width(340.0).finish());
+        row.finish()
     }
 }
 
@@ -182,55 +208,52 @@ pub(crate) fn build_agent_header(
     state: &UiSnapshot,
     actions: &UiActions,
     pane_id: u64,
-    // The way off the surface this bar heads, drawn as the `esc for terminal`
-    // hint at the bar's leading edge: a terminal pane's harness view passes its
-    // return to the shell, a chat pane the switch that gives it a terminal to
-    // return to. `None` draws no hint.
-    esc: Option<Rc<RefCell<dyn FnMut()>>>,
+    // Retired: the bar no longer draws `esc for terminal`. Kept in the signature
+    // while the terminal-pane legacy callers are reworked.
+    _esc: Option<Rc<RefCell<dyn FnMut()>>>,
     // The harness the pane's surface works with when no CLI agent is running in
     // its pty: the conversation's own harness on the agent view, `None` on a
     // plain shell.
     surface_harness: Option<&'static goble_core::harness::HarnessSpec>,
     heading: Option<PaneHeading>,
+    // Whether this pane offers the header's bottom-terminal-dock icon.
+    terminal_dock: bool,
 ) -> Box<dyn Element> {
-    // The bar's title carries its harness on the left: the mark sits in the
-    // title's own group, immediately before the words, so the pane reads as
-    // "🐙 New Agent" wherever the bar puts it. A pane with no heading keeps the
-    // mark at the leading edge, where it can still be seen.
+    // DSH's title cluster: the harness mark, the parent crumb (the harness the
+    // surface works with), a `/` and the current conversation title. A shell
+    // path has no parent crumb; the path is the current crumb alone.
     let mark = harness_chip(app, state, pane_id, surface_harness);
-    let (leading, center) = match (mark, heading) {
-        (mark, Some(heading)) => {
-            let has_mark = mark.is_some();
-            let mut title = Flex::row()
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
-            if let Some(mark) = mark {
-                title = title.with_child(mark);
-            }
-            title = title.with_child(heading.element(app));
-            if has_mark {
-                // The mark hangs to the left of the words; matching room on
-                // the right keeps the words in the pane's own middle.
+    let crumb = surface_harness.map(|harness| harness.name.to_string());
+    let mut title = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0);
+    if let Some(mark) = mark {
+        title = title.with_child(mark);
+    }
+    match heading {
+        Some(heading) => title = title.with_child(heading.element(app, crumb)),
+        None => {
+            if let Some(crumb) = crumb {
                 title = title.with_child(
-                    Empty::new()
-                        .with_size(vec2f(HARNESS_MARK_SIZE, 0.0))
+                    Text::new(crumb)
+                        .with_font_size(14.0)
+                        .with_line_height(20.0 / 14.0)
+                        .with_theme_color(ColorToken::Text, app)
                         .finish(),
                 );
             }
-            (None, Some(title.finish()))
         }
-        (mark, None) => (mark, None),
-    };
+    }
     build_agent_header_with(
         app,
         state,
         actions,
         pane_id,
-        esc,
+        None,
         HeaderSlots {
-            center,
-            leading,
+            leading: Some(title.finish()),
+            terminal_dock,
             ..HeaderSlots::default()
         },
     )
@@ -281,6 +304,9 @@ pub(crate) struct HeaderSlots {
     /// Drawn at the bar's trailing edge, before the expand and close controls:
     /// the pane's own controls, to the left of the ones every pane shares.
     pub trailing: Option<Box<dyn Element>>,
+    /// Whether the bar draws the terminal-dock icon in its utilities. Agent
+    /// panes with a local shell offer it; shell/settings/file panes do not.
+    pub terminal_dock: bool,
 }
 
 /// The same bar, with the pane's own content in its leading and trailing slots.
@@ -289,33 +315,25 @@ pub(crate) fn build_agent_header_with(
     state: &UiSnapshot,
     actions: &UiActions,
     pane_id: u64,
-    esc: Option<Rc<RefCell<dyn FnMut()>>>,
+    // Retired: the `esc for terminal` hint is gone with the dual surface.
+    _esc: Option<Rc<RefCell<dyn FnMut()>>>,
     slots: HeaderSlots,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Sm);
-    // The agent header is the pane's topbar, so it is padded out to the same
-    // height as the general topbar and the terminal pane header (36px on
-    // macOS) instead of hugging its tallest control.
-    let v_pad = ((super::super::shell::TOPBAR_HEIGHT - HEADER_CONTROL_HEIGHT) / 2.0).max(0.0);
-    // The focused pane's corner mark is drawn over the left end of this bar, so
-    // the bar starts past it — the mark is the pane's, the bar is what it opens.
+    // DSH's header metrics: actions gap 10, utilities gap 8, a 28x28 More
+    // surface and 28x28 corner controls.
+    let actions_gap = 10.0;
+    let utilities_gap = 8.0;
+    // DSH's header controls are 28x28; pad the row out to the pane's topbar
+    // height around that control height.
+    let dsh_control = HEADER_CONTROL_HEIGHT;
+    let v_pad = ((super::super::shell::TOPBAR_HEIGHT - dsh_control) / 2.0).max(0.0);
     let marker_inset = if state.active_pane_id == pane_id {
         super::super::panes::FOCUS_MARKER_SIZE
     } else {
         0.0
     };
 
-    // The pane's fullscreen control: it grows this pane over the whole panes
-    // space, and the exit glyph puts the pane back. The pane tree is left alone
-    // either way, so retracting restores the layout the pane had rather than
-    // recomputing one.
-    //
-    // A pane has something to expand over only while its space holds a second
-    // pane, so a one-pane space draws no control at all (a disabled button
-    // there only added a dead target and a bar to explain it). The exception is
-    // a pane that is still expanded after its neighbour went away: the exit
-    // control stays, because taking the expansion back is always allowed and
-    // the header must keep that way out.
     let maximized = state.maximized_pane == Some(pane_id);
     let expandable = state
         .spaces
@@ -323,8 +341,6 @@ pub(crate) fn build_agent_header_with(
         .is_some_and(|space| space.root.leaf_count() > 1);
     let on_toggle_maximized = actions.on_toggle_pane_maximized.clone();
     let expand_button: Option<Box<dyn Element>> = (expandable || maximized).then(|| {
-        // DeepSeek Harness' panel chrome: 28x28 button, 15px glyph, muted at
-        // rest, hover band under the pointer.
         let glyph = if maximized {
             "fullscreen-exit"
         } else {
@@ -350,24 +366,88 @@ pub(crate) fn build_agent_header_with(
     let on_close = actions.on_close_pane.clone();
     let close_button = TopbarButton::new(
         Icon::new("x")
-            .with_size(16.0)
+            .with_size(15.0)
             .with_theme_color(ColorToken::Muted, app)
             .finish(),
     )
+    .with_size(28.0)
     .with_on_click(move || (on_close.borrow_mut())())
     .finish();
 
-    let esc_hint = esc.map(|on_escape| {
-        // Clicking the hint is the switch itself: the callback is the same one
-        // Esc fires — the harness closes and the bar's editor lets go of the
-        // keys, or a chat pane becomes the terminal it has no shell behind.
-        let hover = state
-            .pane_hover
-            .get(&pane_id)
-            .cloned()
-            .unwrap_or_else(|| Rc::new(RefCell::new(false)));
-        super::super::panes::build_esc_hint(app, hover, move || (on_escape.borrow_mut())())
+    let controls = state.pane_controls.get(&pane_id).cloned();
+    let dock_open = controls.as_ref().is_some_and(|c| c.terminal_dock_open);
+    let on_toggle_dock = actions.on_toggle_terminal_dock.clone();
+    let dock_button: Option<Box<dyn Element>> = slots.terminal_dock.then(|| {
+        Tooltip::new(
+            TopbarButton::new(
+                Icon::new("terminal")
+                    .with_size(15.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(28.0)
+            .with_corner_radius(app.theme.radius_px())
+            .with_active(dock_open)
+            .with_on_click(move || (on_toggle_dock.borrow_mut())(pane_id))
+            .finish(),
+            "Toggle terminal drawer",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish()
     });
+
+    // DSH's header More: a 28x28 ellipsis that opens the panel's actions menu.
+    // The menu is the header's own seat for the controls that used to be
+    // scattered (and for the dock, so the icon also has a keyboard path).
+    let menu_open = controls
+        .as_ref()
+        .map(|c| c.header_menu_open.clone())
+        .unwrap_or_else(|| Rc::new(RefCell::new(false)));
+    let on_menu_close = actions.on_close_pane.clone();
+    let on_menu_max = actions.on_toggle_pane_maximized.clone();
+    let on_menu_dock = actions.on_toggle_terminal_dock.clone();
+    let mut dock_item = PopupMenuItem::new("Toggle terminal drawer").with_icon("terminal");
+    if !slots.terminal_dock {
+        dock_item = dock_item.disabled();
+    }
+    let mut max_item =
+        PopupMenuItem::new(if maximized { "Exit fullscreen" } else { "Fullscreen" })
+            .with_icon("fullscreen-enter");
+    if !expandable && !maximized {
+        max_item = max_item.disabled();
+    }
+    let menu_items = vec![
+        dock_item,
+        max_item,
+        PopupMenuItem::new("Close pane").with_icon("x"),
+    ];
+    let menu = PopupMenu::new(
+        Tooltip::new(
+            TopbarButton::new(
+                Icon::new("ellipsis")
+                    .with_size(15.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(28.0)
+            .with_corner_radius(app.theme.radius_px())
+            .finish(),
+            "More",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish(),
+        menu_items,
+    )
+    .with_open(menu_open)
+    .with_position(PopupMenuPosition::AboveEnd)
+    .with_max_width(220.0)
+    .with_on_select(move |index| match index {
+        0 => (on_menu_dock.borrow_mut())(pane_id),
+        1 => (on_menu_max.borrow_mut())(pane_id),
+        _ => (on_menu_close.borrow_mut())(),
+    })
+    .finish();
+
     let work_chip = build_work_chip(
         app,
         state
@@ -378,87 +458,77 @@ pub(crate) fn build_agent_header_with(
     );
     let HeaderSlots {
         leading,
-        center,
+        center: _center,
         trailing,
+        terminal_dock: _,
     } = slots;
 
-    // A titled bar keeps the marker's room inside its left group instead of
-    // padding the whole bar, so the title sits in the pane's true middle.
-    let bar_inset = if center.is_some() { 0.0 } else { marker_inset };
+    // The title cluster is the bar's leading group; everything else is the DSH
+    // utilities/actions tail on the right. The cluster takes the leftover room
+    // and clips a long title, so the controls never leave the bar.
+    let mut title = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0);
+    if let Some(leading) = leading {
+        title = title.with_child(leading);
+    }
+    let title = Container::new(title.finish())
+        .with_padding(EdgeInsets::new(marker_inset, 0.0, 0.0, 0.0))
+        .finish();
 
-    let row = if let Some(center) = center {
-        // A titled bar splits into two equal flexible halves with the title
-        // between them, so the title sits in the middle of the pane however
-        // much room the pane's own content takes on either side.
-        let mut left = Flex::row()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing);
-        if let Some(esc_hint) = esc_hint {
-            left = left.with_child(esc_hint);
-        }
-        if let Some(leading) = leading {
-            left = left.with_child(leading);
-        }
-        let left = Container::new(left.finish())
-            .with_padding(EdgeInsets::new(marker_inset, 0.0, 0.0, 0.0))
-            .finish();
-        let mut right = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_main_axis_alignment(MainAxisAlignment::End)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(work_chip);
-        if let Some(trailing) = trailing {
-            right = right.with_child(trailing);
-        }
-        let mut right = right;
-        if let Some(expand_button) = expand_button {
-            right = right.with_child(expand_button);
-        }
-        let right = right.with_child(close_button).finish();
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(Expanded::new(left).finish())
-            .with_child(center)
-            .with_child(Expanded::new(right).finish())
-            .finish()
-    } else {
-        let mut row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing);
-        if let Some(esc_hint) = esc_hint {
-            row = row.with_child(esc_hint);
-        }
-        // The pane's own content takes the leading edge and the leftover
-        // space: it is the bar's only flexible child, so the controls after it
-        // stay against the trailing edge however wide the pane is. A pane with
-        // nothing to say leaves the space empty, exactly as the bar always did.
-        let row = match leading {
-            Some(leading) => row.with_child(Expanded::new(leading).finish()),
-            None => row.with_child(Spacer::new().finish()),
-        };
-        let row = row.with_child(work_chip);
-        let row = match trailing {
-            Some(trailing) => row.with_child(trailing),
-            None => row,
-        };
-        let row = match expand_button {
-            Some(expand_button) => row.with_child(expand_button),
-            None => row,
-        };
-        row.with_child(close_button).finish()
-    };
+    let mut utilities = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(utilities_gap)
+        .with_child(work_chip);
+    if let Some(dock_button) = dock_button {
+        utilities = utilities.with_child(dock_button);
+    }
+    utilities = utilities.with_child(menu);
+    if let Some(expand_button) = expand_button {
+        utilities = utilities.with_child(expand_button);
+    }
+    let utilities = utilities.with_child(close_button).finish();
+
+    let mut right = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_main_axis_alignment(MainAxisAlignment::End)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(actions_gap);
+    if let Some(trailing) = trailing {
+        right = right.with_child(trailing);
+    }
+    let right = right.with_child(utilities).finish();
+
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(spacing)
+        .with_child(
+            // The bar's controls are 28x28, but the band's control height is
+            // 32: a zero-width strut keeps the row at that height even when a
+            // pane has no work chip to hold it open.
+            Empty::new()
+                .with_size(vec2f(0.0, dsh_control))
+                .finish(),
+        )
+        .with_child(Expanded::new(title).finish())
+        .with_child(right)
+        .finish();
 
     // The bar is the pane's chrome: its band paints flush with the pane's slot
     // (past the pane card's own inset, square) while only the row inside it is
     // bounded to the tab's content width and centred. The band's height stays
     // the row's own `TOPBAR_HEIGHT`, so the pane below starts exactly under it.
+    // DSH's header controls are 28x28, while the band's own control height is
+    // 32: reserve the bar's control height so the band stays exactly
+    // `TOPBAR_HEIGHT` tall (the pane below starts on that edge).
+    let row = ConstrainedBox::new(row)
+        .with_min_height(dsh_control)
+        .finish();
     let row = Container::new(row)
-        .with_padding(EdgeInsets::new(bar_inset, v_pad, 0.0, v_pad))
+        .with_padding(EdgeInsets::new(0.0, v_pad, 0.0, v_pad))
         .finish();
     HeaderBand::new(row, app.theme.color(ColorToken::Surface)).finish()
 }
@@ -847,6 +917,123 @@ mod tests {
         record
     }
 
+    /// A chat pane is one surface: Escape no longer turns it into a terminal,
+    /// and no harness-mode flag is touched.
+    #[test]
+    fn escape_does_not_switch_a_chat_pane_to_a_terminal() {
+        use goble_ui::event::DispatchedEvent;
+
+        let app = AppContext::default();
+        let (mut root, state, _desktop, _dir) = pane_root();
+        let pane_id = state.borrow().active_pane_id;
+        let _ = frame(&mut root, &app, None);
+        let handled = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: goble_ui::event::ModifiersState::none(),
+            },
+            &mut goble_ui::elements::EventContext::default(),
+            &app,
+        );
+        let _ = handled;
+        let s = state.borrow();
+        assert!(
+            !s.pane_controls(pane_id).harness_mode,
+            "Escape never turns a chat pane into a harness terminal"
+        );
+        assert_eq!(
+            s.spaces[0].leaf_kind(pane_id),
+            Some(&crate::ui::PaneKind::Chat),
+            "the pane is still the agent chat"
+        );
+        drop(s);
+        let cmds = frame(&mut root, &app, None);
+        assert!(
+            !cmds.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "Run any command"
+            )),
+            "no terminal surface replaced the chat"
+        );
+    }
+
+    /// DSH's header More is a real menu: the ellipsis opens a card with the
+    /// pane's actions (terminal drawer, fullscreen, close).
+    #[test]
+    fn the_header_ellipsis_opens_the_actions_menu() {
+        let app = AppContext::default();
+        let (mut root, _state, _desktop, _dir) = pane_root();
+        let _ = frame(&mut root, &app, None);
+        let cmds = frame(&mut root, &app, None);
+        let dots = topmost_icon(&cmds, "ellipsis");
+        click(&mut root, &app, (dots.0 + 8.0, dots.1 + 8.0));
+        let cmds = frame(&mut root, &app, None);
+        let texts: Vec<String> = cmds
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        for item in ["Toggle terminal drawer", "Close pane"] {
+            assert!(
+                texts.iter().any(|text| text == item),
+                "the More menu draws {item:?}: {texts:?}"
+            );
+        }
+    }
+
+    /// The header's terminal icon toggles the pane's bottom terminal dock
+    /// (T3 Code's drawer); the agent chat itself stays the pane's surface.
+    #[test]
+    fn the_header_terminal_icon_toggles_the_bottom_dock() {
+        let app = AppContext::default();
+        let (mut root, state, _desktop, _dir) = pane_root();
+        let pane_id = state.borrow().active_pane_id;
+        let _ = frame(&mut root, &app, None);
+        let cmds = frame(&mut root, &app, None);
+        let icon = topmost_icon(&cmds, "terminal");
+        click(&mut root, &app, (icon.0 + 8.0, icon.1 + 8.0));
+        assert!(
+            state.borrow().pane_controls(pane_id).terminal_dock_open,
+            "the header icon opened the dock"
+        );
+        let cmds = frame(&mut root, &app, None);
+        let texts: Vec<String> = cmds
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| text == "Terminal"),
+            "the drawer names itself: {texts:?}"
+        );
+        // The agent surface is still the pane: its composer and transcript are
+        // drawn above the dock.
+        assert!(
+            texts.iter().any(|text| text == "Ask anything..."),
+            "the chat is still the pane's surface: {texts:?}"
+        );
+        // The drawer clamps to its 180pt floor.
+        state
+            .borrow_mut()
+            .set_terminal_dock_height(pane_id, 80.0);
+        assert_eq!(
+            state.borrow().pane_controls(pane_id).terminal_dock_height,
+            180.0,
+            "the drawer never shrinks below MIN_DRAWER_HEIGHT"
+        );
+
+        let icon = topmost_icon(&cmds, "terminal");
+        click(&mut root, &app, (icon.0 + 8.0, icon.1 + 8.0));
+        assert!(
+            !state.borrow().pane_controls(pane_id).terminal_dock_open,
+            "a second press closes the dock"
+        );
+    }
+
     /// The pane bar's actions: a one-pane space has nothing to expand over, so
     /// the bar draws no fullscreen control at all — only the close X — and
     /// nothing that opens a tray. The acts that used to live in the tray are
@@ -874,8 +1061,8 @@ mod tests {
             })
             .collect();
         assert!(
-            !icons.iter().any(|name| name == "dots-horizontal"),
-            "the 3-dots trigger is gone from the pane bar: {icons:?}"
+            icons.iter().any(|name| name == "ellipsis"),
+            "DSH's More menu is present in the pane bar: {icons:?}"
         );
         for gone in ["fullscreen-enter", "fullscreen-exit", "maximize-01", "minimize-01"] {
             assert!(
@@ -1360,11 +1547,11 @@ mod tests {
         origin.x + measure_text(needle, 12.0, 1.2, f32::INFINITY).x / 2.0
     }
 
-    /// A pane that talks to an agent names itself in the middle of its bar —
-    /// the placeholder while its conversation has no subject — and the pane's
-    /// own content on either side does not move it off that middle.
+    /// A pane that talks to an agent leads with its title cluster — the
+    /// placeholder while its conversation has no subject. DSH's header is a
+    /// leading cluster with the utilities on the right, not a centred title.
     #[test]
-    fn an_agent_pane_centres_its_placeholder_subject() {
+    fn an_agent_pane_leads_with_its_placeholder_subject() {
         let app = AppContext::default();
         let (mut root, state, _desktop, _dir) = pane_root();
         let _ = frame(&mut root, &app, None);
@@ -1372,11 +1559,11 @@ mod tests {
         let bar = rightmost_icon(&cmds, "x-close");
         let pane_id = state.borrow().active_pane_id;
 
-        let centred = heading_center(&cmds, bar.1, "New Agent");
+        let title = heading_center(&cmds, bar.1, "New Agent");
         let pane_middle = pane_center(&state, pane_id);
         assert!(
-            (centred - pane_middle).abs() <= 0.5,
-            "the placeholder sits in the pane's middle: {centred} vs {pane_middle}"
+            title < pane_middle - 80.0,
+            "the placeholder leads the bar, not its middle: {title} vs {pane_middle}"
         );
 
         // The work chip takes room on the right only; the two flexible halves
@@ -1392,15 +1579,15 @@ mod tests {
         let cmds = frame(&mut root, &app, None);
         let with_work = heading_center(&cmds, bar.1, "New Agent");
         assert!(
-            (with_work - centred).abs() <= 0.5,
-            "the chip on the right does not shift the title: {with_work} vs {centred}"
+            (with_work - title).abs() <= 0.5,
+            "the chip on the right does not shift the title: {with_work} vs {title}"
         );
     }
 
-    /// Once the conversation has a subject, the bar centres that instead of
-    /// the placeholder.
+    /// Once the conversation has a subject, the title cluster leads with that
+    /// instead of the placeholder.
     #[test]
-    fn an_agent_pane_centres_the_conversations_subject() {
+    fn an_agent_pane_leads_with_the_conversations_subject() {
         let app = AppContext::default();
         let (mut root, state, desktop, _dir) = pane_root();
         let subject = desktop
@@ -1420,11 +1607,11 @@ mod tests {
         let bar = rightmost_icon(&cmds, "x-close");
         let pane_id = state.borrow().active_pane_id;
 
-        let centred = heading_center(&cmds, bar.1, "Demo · Hot reload");
+        let title = heading_center(&cmds, bar.1, "Demo · Hot reload");
         let pane_middle = pane_center(&state, pane_id);
         assert!(
-            (centred - pane_middle).abs() <= 0.5,
-            "the subject sits in the pane's middle: {centred} vs {pane_middle}"
+            title < pane_middle - 80.0,
+            "the subject leads the bar, not its middle: {title} vs {pane_middle}"
         );
         assert!(
             !header_texts(&cmds, bar.1)
@@ -1901,15 +2088,22 @@ mod tests {
             "and not on the lane's: {close:?} vs lane right {lane_right}"
         );
 
-        // The `esc` hint keeps the pane's leading edge, outside the lane.
-        let esc = header_texts(&cmds, close.1)
+        // The title cluster keeps the pane's leading edge, outside the lane;
+        // the retired `esc for terminal` hint is gone.
+        let title = header_texts(&cmds, close.1)
             .into_iter()
-            .find(|(text, _)| text == "esc")
+            .find(|(text, _)| text == "New Agent" || text.contains("Demo"))
             .map(|(_, origin)| origin)
-            .expect("the bar draws its esc hint");
+            .expect("the bar draws its title cluster");
         assert!(
-            esc.x < lane_left - 20.0,
-            "the esc hint sits on the pane's leading edge: {esc:?} vs lane left {lane_left}"
+            title.x < lane_left - 20.0,
+            "the title cluster sits on the pane's leading edge: {title:?} vs lane left {lane_left}"
+        );
+        assert!(
+            !header_texts(&cmds, close.1)
+                .iter()
+                .any(|(text, _)| text == "esc" || text == "for terminal"),
+            "the retired esc-for-terminal hint is not drawn"
         );
 
         // The work chip is a bar control, not lane content: it stays on the
@@ -1923,12 +2117,12 @@ mod tests {
             "the work chip sits on the pane's edge, outside the lane: {diamond} vs lane right {lane_right}"
         );
 
-        // The title still centres in the pane.
-        let centred = heading_center(&cmds, close.1, "New Agent");
+        // The title is a leading cluster, not a centred one.
+        let title_center = heading_center(&cmds, close.1, "New Agent");
         let pane_middle = (pane.min_x() + pane.max_x()) / 2.0;
         assert!(
-            (centred - pane_middle).abs() <= 0.5,
-            "the title centres in the pane: {centred} vs {pane_middle}"
+            title_center < pane_middle - 80.0,
+            "the title leads the pane: {title_center} vs {pane_middle}"
         );
     }
 

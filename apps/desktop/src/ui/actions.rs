@@ -245,10 +245,13 @@ pub struct UiActions {
     /// Turn one pane's harness mode on/off at the rich input (Warp-new style:
     /// Cmd+Enter activates the harness, Esc returns to the plain pty).
     pub on_set_pane_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
-    /// Esc at a chat pane's agent view: the pane has no shell behind it, so the
-    /// way to a terminal is to make the pane one — same directory, conversation
-    /// kept for Cmd+Enter to reopen.
+    /// Esc at a chat pane's agent view: kept for the legacy call sites while
+    /// the dual-surface switch is retired.
     pub on_show_pane_terminal: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Toggle an agent pane's bottom terminal dock from the header icon.
+    pub on_toggle_terminal_dock: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Set the bottom terminal dock's height while its resize handle is dragged.
+    pub on_terminal_dock_height: Rc<RefCell<dyn FnMut(u64, f32)>>,
     /// Enter a conversation's agent view in a pane by clicking the card it left
     /// behind in the terminal (Warp-new style: the `EnterAgentView` block).
     pub on_open_agent_view: Rc<RefCell<dyn FnMut(u64, String)>>,

@@ -57,6 +57,7 @@ use std::sync::Arc;
 
 use goble_app::root_view::RootView;
 use goble_app::state::{PaneSession, UiState};
+use goble_app::terminal::TerminalSession;
 use goble_app::ui::shell::{TOPBAR_BOTTOM_BAND, TOPBAR_HEIGHT};
 use goble_app::ui::{Pane, PaneKind, Space, SplitDir};
 use goble_core::harness::ToolCallStatus;
@@ -92,10 +93,12 @@ enum Scene {
     /// width: shown above 768, gone below it (the responsive second step).
     Panel1600,
     Panel760,
+    /// The agent pane with its bottom terminal dock open (T3 Code's drawer).
+    Dock,
 }
 
 impl Scene {
-    fn all() -> [Self; 11] {
+    fn all() -> [Self; 12] {
         [
             Self::OnePane,
             Self::TwoPanes,
@@ -108,6 +111,7 @@ impl Scene {
             Self::Responsive760,
             Self::Panel1600,
             Self::Panel760,
+            Self::Dock,
         ]
     }
 
@@ -121,6 +125,7 @@ impl Scene {
             Self::Responsive900 => vec2f(900.0, 900.0),
             Self::Responsive760 | Self::Panel760 => vec2f(760.0, 900.0),
             Self::Panel1600 => vec2f(1600.0, 900.0),
+            Self::Dock => vec2f(1600.0, 900.0),
         }
     }
 
@@ -137,6 +142,7 @@ impl Scene {
             Self::Responsive760 => "responsive-760.png",
             Self::Panel1600 => "panel-1600.png",
             Self::Panel760 => "panel-760.png",
+            Self::Dock => "panel-chrome-dock.png",
         }
     }
 
@@ -165,6 +171,7 @@ impl Scene {
             }
             Self::Panel1600 => "agent panel open at 1600: the secondary surface is shown",
             Self::Panel760 => "agent panel open at 760: the secondary surface leaves the view",
+            Self::Dock => "agent pane with its bottom terminal dock open",
         }
     }
 }
@@ -296,6 +303,7 @@ fn build_scene(
                 // visible and measurable.
                 s.right_sidebar_open = true;
             }
+            Scene::Dock => {}
         }
         // A pane snapshot is what makes the pane draw its own chat view (and
         // with it the work dock); every scene gives its panes one.
@@ -306,6 +314,22 @@ fn build_scene(
             s.content_lane_prefs.insert(pane_id, 700.0);
         }
         s.pane_sessions.entry(pane_id).or_insert_with(chat_session);
+        if scene == Scene::Dock {
+            // The app's own path opens a real PTY; a headless example has no
+            // daemon to start, so it seeds the drawer with a representative
+            // screen and renders the same surface.
+            assert!(
+                s.toggle_terminal_dock(pane_id),
+                "the agent pane offers its header terminal dock"
+            );
+            s.set_terminal_dock_height(pane_id, 260.0);
+            s.terminal.borrow_mut().sessions.insert(
+                pane_id,
+                TerminalSession::preview_screen(
+                    "$ cargo test -p goble-ui --lib\r\n                     test result: ok. 916 passed; 0 failed\r\n                     $ git status --short\r\n                     ?? functii.py\r\n$ ",
+                ),
+            );
+        }
         let runtime = s.pane_runtime.entry(pane_id).or_default();
         runtime
             .in_flight_tools
@@ -448,7 +472,7 @@ fn main() -> anyhow::Result<()> {
     // corner scenes are rendered in the other theme too.
     let mut light = AppContext::default();
     light.theme = goble_ui::theme::Theme::light();
-    for scene in [Scene::OnePane, Scene::TwoPanes] {
+    for scene in [Scene::OnePane, Scene::TwoPanes, Scene::Dock] {
         render_scene(&light, &assets, scene, "-light")?;
     }
     Ok(())

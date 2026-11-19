@@ -352,6 +352,8 @@ pub fn make_actions(
     let on_fork_conversation = Rc::clone(&state);
     let on_set_harness_mode = Rc::clone(&state);
     let on_show_pane_terminal = Rc::clone(&state);
+    let on_toggle_terminal_dock = Rc::clone(&state);
+    let on_terminal_dock_height = Rc::clone(&state);
     let on_open_agent_view = Rc::clone(&state);
     let on_send_queued = Rc::clone(&state);
     let on_dismiss_queued = Rc::clone(&state);
@@ -1650,6 +1652,17 @@ pub fn make_actions(
                     state.save_panes(desktop);
                 }
             }
+        })),
+        // The header's terminal icon opens the pane's bottom dock instead of
+        // switching the whole pane to a shell. The first open starts a real PTY
+        // in the pane's own directory.
+        on_toggle_terminal_dock: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_toggle_terminal_dock.borrow_mut();
+            state.toggle_terminal_dock(pane_id);
+        })),
+        on_terminal_dock_height: Rc::new(RefCell::new(move |pane_id: u64, height: f32| {
+            let mut state = on_terminal_dock_height.borrow_mut();
+            state.set_terminal_dock_height(pane_id, height);
         })),
         // A click on the card a conversation left behind in the terminal enters
         // that conversation's agent view; the harness input comes with it, the

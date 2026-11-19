@@ -5,8 +5,8 @@ use std::time::SystemTime;
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
 use goble_ui::elements::{
-    AppContext, ComposerModelTray, Element, LaneEdge, ModelTrayHarness, ModelTrayModel,
-    PopupMenuItem,
+    AppContext, ComposerModelTray, CrossAxisAlignment, Element, Expanded, Flex, LaneEdge,
+    MainAxisSize, ModelTrayHarness, ModelTrayModel, PopupMenuItem,
 };
 use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView, WorkSection};
 
@@ -15,8 +15,8 @@ use crate::state::PaneControls;
 
 use super::super::{UiActions, UiSnapshot};
 use super::{
-    build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay,
-    pane_session_snapshot, PaneChatSnapshot, PaneHeading,
+    build_agent_error, build_agent_header, build_sub_agent_child_view, build_terminal_dock,
+    chat_action_relay, pane_session_snapshot, PaneChatSnapshot, PaneHeading,
 };
 
 /// If `pane_id` has a live PTY session with output, draw its newest command as
@@ -230,10 +230,10 @@ where
 /// the terminal pane's harness view — so its transcript carries the
 /// conversation's own terminal blocks rather than the pane's inline ones.
 ///
-/// `on_escape` is the transcript's Escape hook and the bar's `esc for terminal`
-/// hint: a terminal pane passes its return to the shell, a chat pane the switch
-/// that gives it a terminal to return to, and a pane with neither passes
-/// `None`.
+/// `on_escape` is the transcript's Escape hook. The chat pane passes `None`:
+/// its terminal is the bottom dock toggled from the header, never a second
+/// surface reached with Escape. A legacy terminal pane still passes its return
+/// to the shell.
 pub fn build_agent_chat(
     app: &AppContext,
     state: &UiSnapshot,
@@ -300,6 +300,9 @@ pub fn build_agent_chat(
         on_escape.clone(),
         surface_harness,
         Some(PaneHeading::Agent(heading)),
+        // A local agent pane gets the header's bottom-terminal-dock icon; a
+        // viewer pane has no local PTY to dock.
+        session.worker.is_none(),
     );
 
     // The rich-input controls belong to this pane, not to the workspace: two
@@ -827,7 +830,21 @@ pub fn build_agent_chat(
     //
     // The agent surface runs to the pane's edges: its own rows carry the
     // padding they need, and a gutter here read as a grey inset on both sides.
-    chat.finish()
+    let chat = chat.finish();
+    // The bottom terminal dock: T3 Code's drawer, opened from the header icon.
+    // It is a sibling under the whole chat view (transcript + composer), so the
+    // agent surface is never replaced by a second one.
+    if controls.terminal_dock_open && session.worker.is_none() {
+        let dock = build_terminal_dock(app, state, actions, pane_id, active);
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(Expanded::new(chat).finish())
+            .with_child(dock)
+            .finish()
+    } else {
+        chat
+    }
 }
 
 #[cfg(test)]
@@ -950,10 +967,10 @@ mod transcript_scroll_tests {
 
 /// R1: the pane's transcript is full-width rows, not pills. The app's own chat
 /// surface is rendered over a real store, so the geometry is asserted where the
-/// user sees it: the user's message is one square band running to the pane's
+/// user sees it: the user's message is one rounded bubble running to the pane's
 /// edges with no box of its own behind the agent's reply, and the agent's row
-/// keeps the transcript's 10-15 px of padding. The user's row is led by the
-/// prompt marker, which sets its text one marker-width further right.
+/// keeps the transcript's 10-15 px of padding. The user's row has no prompt
+/// marker, so both rows share the same text inset.
 #[cfg(test)]
 mod chat_geometry_tests {
     use super::*;
@@ -1006,12 +1023,12 @@ mod chat_geometry_tests {
         let (reply_x, _) =
             pane_run_origin(&commands, "Bine ai venit!").expect("the agent's reply is drawn");
         assert!(
-            user_x > reply_x,
-            "the user's message starts at {user_x}, past the agent's reply at {reply_x}"
+            (user_x - reply_x).abs() < 1.5,
+            "the user's message shares the agent's left inset (no marker): {user_x} against {reply_x}"
         );
 
-        // The user's own message: the square band behind its text, running from
-        // the pane's left edge to its right.
+        // The user's own message: the rounded bubble behind its text, still
+        // running from the pane's left edge to its right.
         let band = commands
             .iter()
             .find_map(|command| match command {
@@ -1030,7 +1047,7 @@ mod chat_geometry_tests {
                 _ => None,
             })
             .expect("the user's message paints its band");
-        assert_eq!(band.1, 0.0, "the user's band has square corners");
+        assert!(band.1 > 0.0, "the user's bubble is rounded");
         assert_eq!(
             band.0.min_x(),
             crate::ui::SIDEBAR_WIDTH
@@ -1049,27 +1066,18 @@ mod chat_geometry_tests {
             "the agent's row keeps DSH's 16 px band inset, got {padded}"
         );
 
-        // The user's message opens with the prompt marker on its first line,
-        // inside the band, and the text starts past it.
-        let marker = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon {
-                    name, origin, size, ..
-                } if name == "prompt-arrow" => Some((*origin, *size)),
-                _ => None,
-            })
-            .expect("the user's message draws its prompt marker");
+        // No prompt marker any more: the user's text starts at the same band
+        // inset as the agent's reply.
         assert!(
-            marker.0.x >= band.0.min_x() && marker.0.y >= band.0.min_y(),
-            "the marker sits inside the user's band: {:?} in {:?}",
-            marker.0,
-            band.0
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+            )),
+            "the user's message draws no prompt marker"
         );
         assert!(
-            user_x >= marker.0.x + marker.1 + 2.0,
-            "the user's text starts at {user_x}, past the marker ending at {}",
-            marker.0.x + marker.1
+            (user_x - reply_x).abs() < 1.5,
+            "the user's text shares the agent's inset: {user_x} against {reply_x}"
         );
     }
 }
@@ -1459,8 +1467,9 @@ mod agent_pill_tests {
 
         // The rows the transcript drew, as the runs they own. A pill is a
         // rounded box (or a border) drawn over the row its run belongs to.
+        // The user's rounded bubble is the deliberate exception to the no-pill
+        // rule, so the measured rows start at the agent's reply.
         let row_labels = [
-            "Fix the build",
             "Reading the sidebar, then the panes.",
             "Read src/sidebar.rs",
             "Edit src/panes.rs",

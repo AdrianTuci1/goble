@@ -122,10 +122,23 @@ fn no_agent_row_paints_a_pill() {
     assert_pill_free(&commands, "the agent's markdown row");
     assert_no_row_border(&commands, "the agent's markdown row");
 
+    // The user's row is now the one deliberate rounded bubble: no marker, but
+    // a corner radius of its own. It still draws no border.
     let mut user = ChatMessageBubble::new(ChatRole::User, vec![ChatFragment::text("Salut!")]);
     let commands = paint_bubble(&mut user, &app);
-    assert_pill_free(&commands, "the user's message");
     assert_no_row_border(&commands, "the user's message");
+    let rounded = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                corner_radius,
+                color,
+                ..
+            } if *color == app.theme.color(ColorToken::SurfaceRaised) => Some(*corner_radius),
+            _ => None,
+        })
+        .expect("the user's message paints its bubble");
+    assert!(rounded > 0.0, "the user's bubble is rounded: {commands:?}");
 
     // A reasoning step, collapsed and expanded.
     for expanded in [false, true] {

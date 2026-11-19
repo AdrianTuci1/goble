@@ -45,7 +45,7 @@ mod input;
 mod tests;
 
 pub use blocks::{executed_command_block, executed_command_block_at, section_data};
-pub use build::build_terminal;
+pub use build::{build_terminal, build_terminal_dock};
 
 const FONT_SIZE: f32 = 12.0;
 const LINE_HEIGHT: f32 = 1.35;

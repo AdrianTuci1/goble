@@ -15,13 +15,10 @@ use crate::elements::table_grid::{self, TableCell, TableGrid};
 use crate::elements::terminal_block::TerminalBlockPlumbing;
 use super::tool_call::{build_tool_call_rows, to_text_span};
 
-/// The prompt marker that leads a user's own message. grok-build's `❯` is a
-/// wide, short-armed chevron at the user accent, and the bundled mono face
-/// draws that glyph tall and narrow, so the marker is its own glyph. The size
-/// and the room before the text are pinned in the shared chat type sheet so
-/// the sticky pin draws the same line.
-const PROMPT_ARROW_SIZE: f32 = chat_typography::PROMPT_ARROW_SIZE;
-const PROMPT_ARROW_GAP: f32 = chat_typography::PROMPT_ARROW_GAP;
+/// The user's bubble corner radius. The owner removed the prompt marker and
+/// asked for a rounded bubble; the row may still span the pane, so the radius
+/// sits on the band's own rounded surface.
+const USER_BUBBLE_RADIUS: f32 = 12.0;
 /// The paragraph size of a transcript row; the marker is centred on the
 /// first line's box rather than on the row's top edge. DSH's 14 px content
 /// size, from the shared chat type sheet.
@@ -363,52 +360,31 @@ impl ChatMessageBubble {
             ));
         }
 
-        // The user's own message opens with the prompt marker on its first
-        // line, the way grok-build's prompt row does: the marker sits beside
-        // the text and every wrapped line starts at the same x, so a long
-        // message hangs under its first character. The agent's rows carry no
-        // marker; their tool marks are part of the reply itself. Both rows are
-        // full-width and left-aligned: the marker is the only permitted
-        // difference between their text origins (DSH's own user bubble is a
-        // right-aligned capped inset, which the owner explicitly rejected).
-        let content: Box<dyn Element> = match self.role {
-            ChatRole::User => {
-                let marker_top = chat_typography::prompt_marker_top();
-                Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                    .with_spacing(PROMPT_ARROW_GAP)
-                    .with_child(
-                        Padding::new(
-                            Icon::new("prompt-arrow")
-                                .with_size(PROMPT_ARROW_SIZE)
-                                .with_theme_color(ColorToken::Accent, app)
-                                .finish(),
-                            EdgeInsets::new(0.0, marker_top, 0.0, 0.0),
-                        )
-                        .finish(),
-                    )
-                    .with_child(Expanded::new(column.finish()).with_flex(1.0).finish())
-                    .finish()
-            }
-            ChatRole::Assistant | ChatRole::Tool => column.finish(),
-        };
+        // The user's own message is a rounded bubble with no prompt marker:
+        // the owner removed the `▸`/arrow marker and the square band. The row
+        // still spans the pane's column (a full-width left row), but its own
+        // surface is rounded so a user prompt reads as a message, not as a
+        // header or a second composer.
+        let content = column.finish();
 
-        // No width cap and no radius: the row is laid out at whatever the
-        // transcript gives it, which is the pane's full width. The marker and
-        // the assistant's own rows share the column's left edge.
+        // No width cap: the row is laid out at whatever the transcript gives
+        // it, which is the pane's full width. The user's band carries the
+        // bubble's radius; the assistant's rows stay flat prose.
         let band_padding = EdgeInsets::new(
             chat_typography::BAND_PADDING_X,
             chat_typography::BAND_PADDING_Y,
             chat_typography::BAND_PADDING_X,
             chat_typography::BAND_PADDING_Y,
         );
-        self.root = Some(
-            Container::new(content)
-                .with_background(bg)
-                .with_padding(band_padding)
-                .finish(),
-        );
+        let band = Container::new(content)
+            .with_background(bg)
+            .with_padding(band_padding);
+        let band = if self.role == ChatRole::User {
+            band.with_corner_radius(USER_BUBBLE_RADIUS)
+        } else {
+            band
+        };
+        self.root = Some(band.finish());
     }
 
     fn render_block(&self, block: &ChatBlock, app: &crate::elements::AppContext) -> Box<dyn Element> {

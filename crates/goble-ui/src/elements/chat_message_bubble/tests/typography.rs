@@ -107,35 +107,12 @@ fn every_chat_surface_draws_dsh_type() {
     assert_eq!(color, app.theme.color(ColorToken::Text), "user ink");
     assert_eq!(weight, FontWeight::Regular);
     assert_eq!(run_family, family);
-    let marker = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawIcon {
-                name, origin, size, ..
-            } if name == "prompt-arrow" => Some((*origin, *size)),
-            _ => None,
-        })
-        .expect("the user's row keeps its prompt marker");
-    let text_y = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawText {
-                origin,
-                text: drawn,
-                ..
-            } if drawn == "Salut, monde." => Some(origin.y),
-            _ => None,
-        })
-        .expect("the message is drawn");
     assert!(
-        (marker.0.y + marker.1 / 2.0 - (text_y + 14.0 * chat_typography::USER_LH / 2.0)).abs()
-            <= 1.0,
-        "the marker is centred on the 22 px user line, got {marker:?} for a line at {text_y}"
-    );
-    approx(
-        "the marker sits on the band's 16 px inset",
-        marker.0.x,
-        chat_typography::BAND_PADDING_X,
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+        )),
+        "the user's row carries no prompt marker any more"
     );
 
     // Reasoning: a 13 / 24 regular disclosure row over a 13 / 20 body, both in
@@ -264,8 +241,8 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
     approx("the agent's row spans the pane", reply_size.x, width);
     approx("the user's row spans the pane", message_size.x, width);
 
-    // The user's band is the full pane edge to edge and square — no inset,
-    // no right-aligned capped bubble.
+    // The user's band is the full pane edge to edge and rounded — no inset,
+    // no right-aligned capped bubble, and no prompt marker.
     let band = message
         .iter()
         .find_map(|command| match command {
@@ -279,7 +256,7 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
         .expect("the user's row paints its band");
     approx("the user band's left edge", band.0.min_x(), 0.0);
     approx("the user band's right edge", band.0.max_x(), width);
-    approx("the user band's radius", band.1, 0.0);
+    assert!(band.1 > 0.0, "the user band is a rounded bubble");
     assert!(
         !reply.iter().any(|command| matches!(
             command,
@@ -298,11 +275,9 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
         chat_typography::BAND_PADDING_X,
     );
     approx(
-        "the user's text starts one marker and one gap past the same inset",
+        "the user's text starts at the same inset (no marker)",
         message_x,
-        chat_typography::BAND_PADDING_X
-            + chat_typography::PROMPT_ARROW_SIZE
-            + chat_typography::PROMPT_ARROW_GAP,
+        chat_typography::BAND_PADDING_X,
     );
 
     // No right-aligned run: every painted text ends inside the row's own
@@ -332,21 +307,16 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
         }
     }
 
-    // The marker belongs to the user's row only.
-    assert!(
-        message.iter().any(|command| matches!(
-            command,
-            RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
-        )),
-        "the user's row keeps its marker"
-    );
-    assert!(
-        !reply.iter().any(|command| matches!(
-            command,
-            RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
-        )),
-        "the agent's row draws no marker"
-    );
+    // Neither row draws the retired prompt marker.
+    for commands in [&message, &reply] {
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+            )),
+            "no chat row draws a prompt marker"
+        );
+    }
 }
 
 /// §6.3: Settings stay the source of truth. Every asserted ink is the theme's

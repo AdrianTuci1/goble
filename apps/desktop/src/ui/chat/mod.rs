@@ -16,6 +16,7 @@ use super::{PaneChatSnapshot, UiSnapshot};
 
 mod agent;
 mod composer;
+mod dock;
 mod header;
 mod overlays;
 mod sub_agent;
@@ -23,6 +24,7 @@ mod workflow;
 
 pub(crate) use agent::build_agent_chat;
 pub(crate) use composer::{build_pending_approval, build_terminal_composer};
+pub(crate) use dock::build_terminal_dock;
 pub(crate) use header::{
     build_agent_header, build_agent_header_with, HeaderSlots, PaneHeading, HEADER_CONTROL_HEIGHT,
 };

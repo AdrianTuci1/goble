@@ -393,7 +393,7 @@ fn transcript_rows_are_full_width_bands_not_pills() {
         "the agent's reply draws no border"
     );
 
-    // The user's message: one square grey band, edge to edge.
+    // The user's message: one rounded grey bubble, edge to edge.
     let message_counts = command_counts(&message);
     assert_eq!(
         message_counts.fill_rect, 1,
@@ -416,7 +416,7 @@ fn transcript_rows_are_full_width_bands_not_pills() {
             _ => None,
         })
         .expect("the user's message paints its grey band");
-    assert_eq!(band.1, 0.0, "the user's band has square corners");
+    assert!(band.1 > 0.0, "the user's band is a rounded bubble");
     assert_eq!(
         (band.0.min_x(), band.0.max_x()),
         (0.0, width),
@@ -431,51 +431,24 @@ fn transcript_rows_are_full_width_bands_not_pills() {
         "the agent's reply keeps its 16 px band inset, got {reply_x}"
     );
 
-    // The user's row draws the prompt marker on its first line, and the
-    // message starts past it.
-    let marker = message
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawIcon {
-                name, origin, size, ..
-            } if name == "prompt-arrow" => Some((*origin, *size)),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the user's message draws its prompt marker: {message:?}"));
+    // The user's row draws no prompt marker: the text starts at the same
+    // band inset as the agent's, inside the rounded bubble.
     assert!(
-        !reply.iter().any(|command| matches!(
+        !message.iter().any(|command| matches!(
             command,
             RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
         )),
-        "the agent's reply draws no prompt marker"
-    );
-    let first_line = 14.0 * crate::elements::chat_typography::USER_LH;
-    let message_y = message
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawText {
-                origin, text: drawn, ..
-            } if drawn == "Salut!" => Some(origin.y),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the message's first line is drawn: {message:?}"));
-    assert!(
-        (marker.0.y + marker.1 / 2.0 - (message_y + first_line / 2.0)).abs() <= 1.0,
-        "the marker is centred on the message's first line, got y {} for a line at {message_y}",
-        marker.0.y
+        "the user's message draws no prompt marker: {message:?}"
     );
     let message_x = drawn_text_x(&message, "Salut!");
     assert!(
-        message_x >= marker.0.x + marker.1 + 2.0,
-        "the message starts at {message_x}, past the marker ending at {}",
-        marker.0.x + marker.1
+        (message_x - reply_x).abs() < 1.5,
+        "the user's text shares the band inset: {message_x} against {reply_x}"
     );
 }
 
-/// A user message wraps under its first character: the prompt marker takes
-/// the first column and every line of the message starts at the same x, so a
-/// long prompt reads as one indented block instead of running under the
-/// marker.
+/// A user message wraps inside its rounded bubble: every line starts at the
+/// same x, so a long prompt reads as one block.
 #[test]
 fn a_wrapped_user_message_hangs_under_its_first_character() {
     let long = "the quick brown fox jumps over the lazy dog ".repeat(8);

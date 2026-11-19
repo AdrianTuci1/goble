@@ -71,7 +71,9 @@ const COMPACT_COMMIT: f32 = 280.0;
 /// blocks above it: the file header and whichever body it draws. These are the
 /// heights those blocks are laid out at, and a test pins the editor's rows to
 /// the same box the field uses.
-const FILE_HEADER_HEIGHT: f32 = 30.0;
+/// DSH's changed-file card header: a 40pt file tile in a 60pt row.
+const FILE_HEADER_HEIGHT: f32 = 60.0;
+const FILE_TILE_SIZE: f32 = 40.0;
 /// The height of the review's controls bar under the pane's topbar, and of the
 /// hairline that separates the two. The bars are the pane's overlay chrome, so
 /// the content column reserves their heights to start below them.
@@ -466,7 +468,7 @@ impl Element for PathLabel {
             self.color,
             f32::INFINITY,
             PATH_LINE_HEIGHT,
-            FontWeight::Regular,
+            FontWeight::Medium,
             FontFamily::System,
             false,
         );
@@ -1009,10 +1011,37 @@ fn file_header(
 ) -> Box<dyn Element> {
     let on_diff = actions.on_diff_panel.clone();
     let path = file.path.clone();
+    // DSH's changed-file header: a 40pt rounded tile beside a 13/20 medium
+    // path with a 10/16 mono stat line under it. The fold chevron stays at the
+    // leading edge so the card still folds from the header.
+    let tile = Container::new(
+        Icon::new(goble_ui::elements::file_icon_name(&file.path))
+            .with_size(20.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::uniform((FILE_TILE_SIZE - 20.0) / 2.0))
+    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+    .with_border(Border::all(1.0).with_border_fill(app.theme.color(ColorToken::Border)))
+    .with_corner_radius(10.0)
+    .finish();
+    // DSH's 13/20 medium path: the host's own fade label keeps the cut edge
+    // legible when the controls leave it less room than the path needs.
+    let title = Box::new(PathLabel::new(
+        file.path.clone(),
+        app.theme.color(ColorToken::Text),
+        app.theme.color(ColorToken::SurfaceRaised),
+    )) as Box<dyn Element>;
+    let titles = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(2.0)
+        .with_child(title)
+        .with_child(file_counts(app, file.added, file.removed))
+        .finish();
     let mut left = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.0)
+        .with_spacing(10.0)
         .with_child(
             Icon::new(if open {
                 "chevron-down"
@@ -1023,17 +1052,8 @@ fn file_header(
             .with_theme_color(ColorToken::Muted, app)
             .finish(),
         )
-        // The path owns whatever room the controls leave: it stops before the
-        // copy button instead of painting under it, and fades into the card at
-        // the edge it was cut at.
-        .with_child(
-            Expanded::new(Box::new(PathLabel::new(
-                file.path.clone(),
-                app.theme.color(ColorToken::Text),
-                app.theme.color(ColorToken::Surface),
-            )))
-            .finish(),
-        );
+        .with_child(tile)
+        .with_child(Expanded::new(titles).finish());
     // An editor's buffer says whether its text has been written back; the
     // counts above describe the change itself.
     if editing {
@@ -1103,8 +1123,7 @@ fn file_header(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(4.0)
         .with_child(Expanded::new(toggle).finish())
-        .with_child(copy_button)
-        .with_child(stat_badge(app, file.added, file.removed));
+        .with_child(copy_button);
     if confirming_revert {
         // A second press is the one that discards the change; the header asks
         // in place, so no press on a narrow icon can throw work away alone.
@@ -1383,19 +1402,24 @@ fn stat_badge(app: &AppContext, added: u32, removed: u32) -> Box<dyn Element> {
             .with_spacing(3.0)
             .with_child(
                 Text::new(format!("+{added}"))
+                    .with_font_family(FontFamily::Mono)
                     .with_font_size(10.0)
+                    .with_line_height(16.0 / 10.0)
                     .with_theme_color(ColorToken::Success, app)
                     .finish(),
             )
             .with_child(
                 Text::new("·")
+                    .with_font_family(FontFamily::Mono)
                     .with_font_size(10.0)
                     .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
             .with_child(
                 Text::new(format!("-{removed}"))
+                    .with_font_family(FontFamily::Mono)
                     .with_font_size(10.0)
+                    .with_line_height(16.0 / 10.0)
                     .with_theme_color(removed_color, app)
                     .finish(),
             )
@@ -1416,7 +1440,9 @@ fn file_counts(app: &AppContext, added: u32, removed: u32) -> Box<dyn Element> {
     if added > 0 {
         row = row.with_child(
             Text::new(format!("+{added}"))
-                .with_font_size(10.0)
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(11.0)
+                .with_line_height(18.0 / 11.0)
                 .with_theme_color(ColorToken::Success, app)
                 .finish(),
         );
@@ -1424,7 +1450,9 @@ fn file_counts(app: &AppContext, added: u32, removed: u32) -> Box<dyn Element> {
     if removed > 0 {
         row = row.with_child(
             Text::new(format!("-{removed}"))
-                .with_font_size(10.0)
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(11.0)
+                .with_line_height(18.0 / 11.0)
                 .with_theme_color(ColorToken::Error, app)
                 .finish(),
         );

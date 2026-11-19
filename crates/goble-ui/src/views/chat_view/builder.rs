@@ -291,6 +291,21 @@ impl ChatView {
         self
     }
 
+    /// Plumb the usage dialog's per-call data: the latest reported model call,
+    /// how many calls have reported one, and the model's context window when
+    /// the host knows it. `None`/0 are honest unknowns.
+    pub fn with_usage_detail(
+        mut self,
+        last_call: Option<TokenUsage>,
+        calls: u64,
+        context_window: Option<u64>,
+    ) -> Self {
+        self.usage_last_call = last_call;
+        self.usage_calls = calls;
+        self.usage_context_window = context_window;
+        self
+    }
+
     /// Share the usage popover's open state with the host, so it survives the
     /// per-frame rebuild.
     pub fn with_usage_open(mut self, open: Rc<RefCell<bool>>) -> Self {

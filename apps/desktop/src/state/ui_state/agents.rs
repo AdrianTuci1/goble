@@ -359,6 +359,21 @@ impl UiState {
                 .or_default(),
             &payload.usage,
         );
+        // One reported model call: keep the latest beside the running total so
+        // the usage dialog can show "this call" honestly, and count the calls
+        // the provider actually accounted.
+        self.conversation_last_usage.insert(
+            payload.chat_id.clone(),
+            goble_ui::TokenUsage {
+                input: payload.usage.input,
+                cached: payload.usage.cached,
+                output: payload.usage.output,
+            },
+        );
+        *self
+            .conversation_usage_calls
+            .entry(payload.chat_id.clone())
+            .or_default() += 1;
     }
 
     /// Seed a conversation's token total from the store: what its model calls

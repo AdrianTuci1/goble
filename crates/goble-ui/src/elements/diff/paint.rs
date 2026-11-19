@@ -13,20 +13,27 @@ use super::model::{DiffLineKind, DiffRow, DiffStats, Hunk, build_rows, gap_text,
 
 const FONT_SIZE: f32 = 12.0;
 
-const LINE_HEIGHT: f32 = 1.35;
+/// DSH's file-diff line box: 22px at the mono 12px size.
+const LINE_HEIGHT: f32 = 22.0 / FONT_SIZE;
 
 /// Width of the vertical rail drawn down the left of a changed row.
-const RAIL_WIDTH: f32 = 2.0;
+const RAIL_WIDTH: f32 = 3.0;
 
-const GUTTER_GAP: f32 = 8.0;
+/// DSH's line-number gutter is 3.5em wide; there is no gap between the two
+/// gutters and the sign column, they tile.
+const GUTTER_W: f32 = 3.5 * FONT_SIZE;
+const GUTTER_GAP: f32 = 0.0;
 
-const MARKER_GAP: f32 = 8.0;
+/// The sign column is 1.2em of the row, immediately after the gutters.
+const MARKER_W: f32 = 1.2 * FONT_SIZE;
+const MARKER_GAP: f32 = 0.0;
 
-const PAD_RIGHT: f32 = 8.0;
+const PAD_RIGHT: f32 = 16.0;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Metrics {
-    number_x: f32,
+    old_number_x: f32,
+    new_number_x: f32,
     number_w: f32,
     marker_x: f32,
     text_x: f32,
@@ -548,20 +555,21 @@ impl Element for Diff {
 
         let mut metrics = Metrics {
             row_h: FONT_SIZE * LINE_HEIGHT,
-            header_x: RAIL_WIDTH,
+            header_x: PAD_RIGHT + RAIL_WIDTH,
             ..Metrics::default()
         };
         let mut x = RAIL_WIDTH;
         if self.show_line_numbers {
-            // One gutter, not one per side: an added or context row shows its
-            // new number and a removed row the old one it left.
-            let number_w = line_width(&"0".repeat(max_digits as usize));
-            metrics.number_x = x;
+            // DSH's two tiled 3.5em gutters: the old file's number then the new
+            // file's, each right-aligned, then the 1.2em sign column.
+            let number_w = GUTTER_W.max(line_width(&"0".repeat(max_digits as usize)));
+            metrics.old_number_x = x;
+            metrics.new_number_x = x + number_w + GUTTER_GAP;
             metrics.number_w = number_w;
-            x += number_w + GUTTER_GAP;
+            x += number_w * 2.0 + GUTTER_GAP * 2.0;
         }
         metrics.marker_x = x;
-        x += line_width("+") + MARKER_GAP;
+        x += MARKER_W + MARKER_GAP;
         metrics.text_x = x;
 
         // A panel-width diff does not need its longest row: the width comes
@@ -631,14 +639,38 @@ impl Element for Diff {
                         );
                         renderer.fill_rect(rectf(origin.x, y, RAIL_WIDTH, metrics.row_h), color);
                     }
+                    // DSH's gutter band under the numbers, in the change's
+                    // own fill, then the marker colour for the number ink.
+                    if line.kind != DiffLineKind::Context {
+                        let gutter = Self::change_bg(line.kind, app)
+                            .mix(&app.theme.color(ColorToken::Text), 0.10);
+                        let gutter_w = metrics.number_w * 2.0 + GUTTER_GAP * 2.0;
+                        renderer.fill_rect(
+                            rectf(origin.x + RAIL_WIDTH, y, gutter_w, metrics.row_h),
+                            gutter,
+                        );
+                        renderer.fill_rect(
+                            rectf(origin.x + RAIL_WIDTH, y, 3.0, metrics.row_h),
+                            color,
+                        );
+                    }
                     if self.show_line_numbers {
-                        if let Some(number) = line.new_line.or(line.old_line) {
+                        if let Some(number) = line.old_line {
                             draw_number(
                                 renderer,
-                                origin.x + metrics.number_x + metrics.number_w,
+                                origin.x + metrics.old_number_x + metrics.number_w,
                                 y,
                                 number,
-                                muted,
+                                if line.kind == DiffLineKind::Removed { color } else { muted },
+                            );
+                        }
+                        if let Some(number) = line.new_line {
+                            draw_number(
+                                renderer,
+                                origin.x + metrics.new_number_x + metrics.number_w,
+                                y,
+                                number,
+                                if line.kind == DiffLineKind::Added { color } else { muted },
                             );
                         }
                     }
@@ -649,7 +681,7 @@ impl Element for Diff {
                             marker,
                             FONT_SIZE,
                             color,
-                            f32::INFINITY,
+                            MARKER_W,
                             LINE_HEIGHT,
                             FontWeight::Regular,
                             FontFamily::Mono,
@@ -666,8 +698,12 @@ impl Element for Diff {
                     );
                 }
                 DiffRow::HunkHeader { .. } => {
+                    renderer.fill_rect(
+                        rectf(origin.x, y, size.x, metrics.row_h),
+                        app.theme.color(ColorToken::SurfaceRaised),
+                    );
                     renderer.draw_text_with_font(
-                        vec2f(origin.x + metrics.header_x, y),
+                        vec2f(origin.x + metrics.header_x, y + 4.0),
                         header_text(row),
                         FONT_SIZE,
                         muted,

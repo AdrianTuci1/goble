@@ -174,6 +174,12 @@ pub struct PaneChatSnapshot {
     /// The tokens this conversation has spent, summed from the provider-reported
     /// usage of its own model calls. Accounting only, never a price.
     pub usage: goble_ui::TokenUsage,
+    /// The latest reported model call's usage, when one has been reported.
+    pub usage_last_call: Option<goble_ui::TokenUsage>,
+    /// How many model calls have reported usage for this conversation.
+    pub usage_calls: u64,
+    /// The model's context window, when this host's configuration states one.
+    pub usage_context_window: Option<u64>,
     /// Whether the usage disclosure is expanded. App-owned so it survives the
     /// per-frame rebuild.
     pub usage_open: Rc<RefCell<bool>>,

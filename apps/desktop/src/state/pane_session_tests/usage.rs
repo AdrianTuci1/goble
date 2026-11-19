@@ -94,3 +94,27 @@ fn a_conversation_that_reported_nothing_gets_no_total() {
         "the pane's footer draws no counts"
     );
 }
+
+/// Each reported model call also keeps the latest call and its count, which is
+/// what the usage dialog labels "Last call" and "Calls". These are real event
+/// data, not a per-turn invention: the host reports per call.
+#[test]
+fn the_latest_call_and_the_call_count_reach_the_dialog() {
+    let mut state = pane_on("c1");
+    for (input, output) in [(100, 10), (240, 32)] {
+        state.apply_token_usage(&crate::state::TokenUsagePayload {
+            chat_id: "c1".to_string(),
+            usage: goble_desktop_service::TokenUsageEvent {
+                input,
+                cached: Some(input / 2),
+                output,
+            },
+        });
+    }
+    let snapshot = state.pane_chat_snapshot();
+    let pane = snapshot.get(&1).expect("the pane's snapshot");
+    assert_eq!(pane.usage_calls, 2, "two reported calls");
+    let last = pane.usage_last_call.expect("the latest call");
+    assert_eq!((last.input, last.cached, last.output), (240, Some(120), 32));
+    assert_eq!(pane.usage.total(), 382, "the session total still sums both");
+}

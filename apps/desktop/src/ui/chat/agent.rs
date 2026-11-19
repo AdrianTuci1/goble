@@ -728,6 +728,11 @@ pub fn build_agent_chat(
         let on_fork = actions.on_fork_conversation.clone();
         chat = chat
             .with_usage(session.usage)
+            .with_usage_detail(
+                session.usage_last_call,
+                session.usage_calls,
+                session.usage_context_window,
+            )
             .with_usage_open(session.usage_open.clone())
             .with_on_fork(move || (on_fork.borrow_mut())(pane_id));
     }

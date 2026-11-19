@@ -115,6 +115,12 @@ pub struct ChatView {
     /// Drawn at the end of the transcript as DSH's usage pill, with its details
     /// panel a click away; accounting only, never a price.
     usage: TokenUsage,
+    /// The latest reported model call, when one exists.
+    usage_last_call: Option<TokenUsage>,
+    /// How many model calls reported usage.
+    usage_calls: u64,
+    /// The model's context window when the host knows it.
+    usage_context_window: Option<u64>,
     /// Whether the usage pill's details panel is open. App-owned so it survives
     /// the per-frame rebuild (the popover element is rebuilt every frame).
     usage_open: Rc<RefCell<bool>>,
@@ -321,6 +327,9 @@ impl ChatView {
             composer_clipboard: None,
             composer_anchor: Rc::new(RefCell::new(None)),
             usage: TokenUsage::default(),
+            usage_last_call: None,
+            usage_calls: 0,
+            usage_context_window: None,
             usage_open: Rc::new(RefCell::new(false)),
             on_fork: None,
             composer_focused: false,

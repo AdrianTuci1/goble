@@ -280,6 +280,11 @@ pub struct UiState {
     /// from the provider-reported usage of its own model calls (`chat:usage`).
     /// Accounting only; nothing here is a price.
     pub conversation_usage: HashMap<String, goble_ui::TokenUsage>,
+    /// The most recent model call's reported usage per conversation, and how
+    /// many calls have reported one. The usage dialog shows the last call
+    /// beside the session total; the host reports per call, not per turn.
+    pub conversation_last_usage: HashMap<String, goble_ui::TokenUsage>,
+    pub conversation_usage_calls: HashMap<String, u64>,
     /// Custom theme color overrides as `#rrggbb` hex, set via the color wheel
     /// pickers in Settings→Appearance. `None` uses the theme's built-in color.
     pub theme_primary: Option<String>,

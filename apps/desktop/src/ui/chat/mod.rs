@@ -101,6 +101,9 @@ pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneCha
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
             text_selection: Rc::new(RefCell::new(goble_ui::TranscriptSelection::default())),
             usage: Default::default(),
+            usage_last_call: None,
+            usage_calls: 0,
+            usage_context_window: None,
             usage_open: Rc::new(RefCell::new(false)),
         })
 }

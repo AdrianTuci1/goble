@@ -16,7 +16,7 @@ use crate::elements::{
 };
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
 use super::sticky::StickyTurn;
 use super::usage_popover::UsagePopover;
@@ -104,7 +104,12 @@ pub(super) fn cache_hit_percent(cached: u64, input: u64) -> Option<String> {
 /// One label/value row of the usage panel: DSH's two-column detail grid, the
 /// label in the muted tier at the leading edge and the exact count in the text
 /// tier at the trailing one.
-fn usage_row(app: &AppContext, label: &str, value: String) -> Box<dyn Element> {
+fn usage_row_mono(
+    app: &AppContext,
+    label: &str,
+    value: String,
+    emphasis: bool,
+) -> Box<dyn Element> {
     Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -114,17 +119,46 @@ fn usage_row(app: &AppContext, label: &str, value: String) -> Box<dyn Element> {
             Text::new(label)
                 .with_theme_color(ColorToken::Muted, app)
                 .with_font_family(chat_typography::chat_font(app))
-                .with_font_size(chat_typography::SMALL_SIZE)
-                .with_line_height(chat_typography::SMALL_LH)
+                .with_font_size(12.0)
+                .with_line_height(18.0 / 12.0)
                 .finish(),
         )
         .with_child(
             Text::new(value)
-                .with_theme_color(ColorToken::Text, app)
-                .with_font_family(chat_typography::chat_font(app))
-                .with_font_size(chat_typography::SMALL_SIZE)
-                .with_line_height(chat_typography::SMALL_LH)
+                .with_theme_color(if emphasis { ColorToken::Text } else { ColorToken::Muted }, app)
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(12.0)
+                .with_line_height(18.0 / 12.0)
+                .with_weight(if emphasis { FontWeight::Medium } else { FontWeight::Regular })
                 .finish(),
+        )
+        .finish()
+}
+
+/// A section heading inside the usage card ("Last call"), with DSH's small
+/// rule above it.
+fn usage_section_heading(app: &AppContext, title: &str) -> Box<dyn Element> {
+    Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(
+            Padding::new(
+                Divider::horizontal().finish(),
+                EdgeInsets::new(0.0, 8.0, 0.0, 6.0),
+            )
+            .finish(),
+        )
+        .with_child(
+            Padding::new(
+                Text::new(title)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_family(chat_typography::chat_font(app))
+                    .with_font_size(12.0)
+                    .with_line_height(18.0 / 12.0)
+                    .with_weight(FontWeight::Medium)
+                    .finish(),
+                EdgeInsets::new(0.0, 0.0, 0.0, 4.0),
+            )
+            .finish(),
         )
         .finish()
 }
@@ -643,20 +677,14 @@ impl ChatView {
         *self.usage_open.borrow_mut() = false;
     }
 
-    /// The details panel the footer pill opens, DSH's stat-dialog anatomy on
-    /// Goble's accounting: a title row carrying the exact billed total, a 1px
-    /// rule, then the rows the provider's counts can fill.
-    ///
-    /// DSH's headline is the call size (`totalTokens`); Goble keeps its
-    /// existing cache-aware meter, so the headline is `spend()` — what the
-    /// conversation paid for — and the call size is demoted to the `Total` row
-    /// so no DSH information is lost. `Consumed` is the same Goble-only row
-    /// stated plainly. Rows DSH can show but Goble does not track (provider /
-    /// model routes, cache write, the reasoning subset) are omitted rather than
-    /// drawn as zeros, and a provider without cache accounting gets the plain
-    /// `Input` label instead of a cache split.
+    /// The details panel the footer pill opens, DSH's stat-dialog anatomy:
+    /// a 16pt casing, a 12/18 section heading with the exact headline on the
+    /// right, the hairline under it, then the label/value grid with tabular
+    /// mono values. Session totals and the latest reported call are separate
+    /// sections; anything the host does not report is `—`, never a zero.
     fn build_usage_panel(&self, app: &AppContext) -> Box<dyn Element> {
         let usage = &self.usage;
+        let total = usage.total();
         let title = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -673,27 +701,27 @@ impl ChatView {
                             .finish(),
                     )
                     .with_child(
-                        Text::new("Turn usage")
+                        Text::new("Session usage")
                             .with_theme_color(ColorToken::Text, app)
                             .with_font_family(chat_typography::chat_font(app))
-                            .with_font_size(chat_typography::SMALL_SIZE)
-                            .with_line_height(chat_typography::SMALL_LH)
+                            .with_font_size(12.0)
+                            .with_line_height(18.0 / 12.0)
                             .with_weight(FontWeight::Medium)
                             .finish(),
                     )
                     .finish(),
             )
             .with_child(
-                Text::new(group_digits(usage.spend()))
+                Text::new(group_digits(total))
                     .with_theme_color(ColorToken::Text, app)
-                    .with_font_family(chat_typography::chat_font(app))
-                    .with_font_size(chat_typography::SMALL_SIZE)
-                    .with_line_height(chat_typography::SMALL_LH)
+                    .with_font_family(FontFamily::Mono)
+                    .with_font_size(12.0)
+                    .with_line_height(18.0 / 12.0)
+                    .with_weight(FontWeight::Medium)
                     .finish(),
             )
             .finish();
 
-        // DSH's `titleRule`: a hairline between the heading and the rows.
         let rule = Padding::new(
             Divider::horizontal().finish(),
             EdgeInsets::new(0.0, 8.0, 0.0, 10.0),
@@ -703,27 +731,135 @@ impl ChatView {
         let mut rows = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(6.0);
+        rows = rows.with_child(usage_row_mono(
+            app,
+            "Model",
+            self.composer_model_label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| "—".to_string()),
+            false,
+        ));
+
+        // Context: the latest call's prompt against the model's window. Both
+        // halves are required for a share; without the configured window the
+        // number is honestly unknown (the host does not report it).
+        let context = match (self.usage_last_call, self.usage_context_window) {
+            (Some(last), Some(window)) if window > 0 => {
+                let used = last.input.min(window);
+                let percent = used as f64 / window as f64 * 100.0;
+                format!(
+                    "{} / {} · {:.1}%",
+                    compact_tokens(used),
+                    compact_tokens(window),
+                    percent
+                )
+            }
+            _ => "—".to_string(),
+        };
+        rows = rows.with_child(usage_row_mono(app, "Context", context, false));
+        rows = rows.with_child(usage_row_mono(
+            app,
+            "Calls",
+            if self.usage_calls == 0 {
+                "—".to_string()
+            } else {
+                group_digits(self.usage_calls)
+            },
+            false,
+        ));
+
         if let Some(cached) = usage.cached {
-            // A reported cache split says how much of the prompt the provider
-            // served from its cache. `cached: Some(0)` is a reported miss and
-            // reads 0%; `None` omits the whole split.
             if usage.input > 0 {
                 if let Some(percent) = cache_hit_percent(cached, usage.input) {
-                    rows = rows.with_child(usage_row(app, "Cache hit", percent));
+                    rows = rows.with_child(usage_row_mono(app, "Cache hit", percent, false));
                 }
             }
-            rows = rows.with_child(usage_row(
+            rows = rows.with_child(usage_row_mono(
                 app,
-                "Uncached input",
+                "Input (uncached)",
                 group_digits(usage.input.saturating_sub(cached)),
+                false,
             ));
-            rows = rows.with_child(usage_row(app, "Cached input", group_digits(cached)));
+            rows = rows.with_child(usage_row_mono(
+                app,
+                "Cache read",
+                group_digits(cached),
+                false,
+            ));
         } else {
-            rows = rows.with_child(usage_row(app, "Input", group_digits(usage.input)));
+            rows = rows.with_child(usage_row_mono(
+                app,
+                "Input",
+                group_digits(usage.input),
+                false,
+            ));
         }
-        rows = rows.with_child(usage_row(app, "Output", group_digits(usage.output)));
-        rows = rows.with_child(usage_row(app, "Consumed", group_digits(usage.spend())));
-        rows = rows.with_child(usage_row(app, "Total", group_digits(usage.total())));
+        rows = rows.with_child(usage_row_mono(
+            app,
+            "Output",
+            group_digits(usage.output),
+            false,
+        ));
+        rows = rows.with_child(usage_row_mono(
+            app,
+            "Session total",
+            group_digits(total),
+            true,
+        ));
+
+        if let Some(last) = self.usage_last_call {
+            rows = rows.with_child(
+                Padding::new(
+                    Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_child(usage_section_heading(app, "Last call"))
+                        .with_child(usage_row_mono(
+                            app,
+                            "Input",
+                            group_digits(last.input),
+                            false,
+                        ))
+                        .with_child(usage_row_mono(
+                            app,
+                            "Cached",
+                            last.cached
+                                .map(group_digits)
+                                .unwrap_or_else(|| "—".to_string()),
+                            false,
+                        ))
+                        .with_child(usage_row_mono(
+                            app,
+                            "Output",
+                            group_digits(last.output),
+                            false,
+                        ))
+                        .with_child(usage_row_mono(
+                            app,
+                            "Total",
+                            group_digits(last.total()),
+                            true,
+                        ))
+                        .finish(),
+                    EdgeInsets::new(0.0, 8.0, 0.0, 0.0),
+                )
+                .finish(),
+            );
+        }
+
+        let note = if self.usage_calls == 0 {
+            "No model call has reported usage yet."
+        } else if self.usage_context_window.is_none() {
+            "Counts are reported per model call; per-turn attribution and the context window are not reported by this host."
+        } else {
+            "Counts are reported per model call; per-turn attribution is not reported by this host."
+        };
+        let note = Text::new(note)
+            .with_theme_color(ColorToken::Muted, app)
+            .with_font_family(chat_typography::chat_font(app))
+            .with_font_size(11.0)
+            .with_line_height(16.0 / 11.0)
+            .finish();
 
         Container::new(
             Flex::column()
@@ -731,6 +867,7 @@ impl ChatView {
                 .with_child(title)
                 .with_child(rule)
                 .with_child(rows.finish())
+                .with_child(Padding::new(note, EdgeInsets::new(0.0, 12.0, 0.0, 0.0)).finish())
                 .finish(),
         )
         .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))

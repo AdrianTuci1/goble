@@ -823,6 +823,19 @@ impl UiState {
                         .get(&session.conversation_id)
                         .copied()
                         .unwrap_or_default(),
+                    usage_last_call: self
+                        .conversation_last_usage
+                        .get(&session.conversation_id)
+                        .copied(),
+                    usage_calls: self
+                        .conversation_usage_calls
+                        .get(&session.conversation_id)
+                        .copied()
+                        .unwrap_or(0),
+                    // The host's model configuration owns the window; the
+                    // snapshot does not read it here, so the dialog says the
+                    // number is unknown rather than inventing one.
+                    usage_context_window: None,
                 },
             );
         }

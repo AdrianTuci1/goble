@@ -1802,18 +1802,16 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
     );
     let drawn = texts(&layer);
     for needle in [
-        "Turn usage",
+        "Session usage",
         "Cache hit",
         "64.8%",
-        "Uncached input",
+        "Input (uncached)",
         "434",
-        "Cached input",
+        "Cache read",
         "800",
         "Output",
         "56",
-        "Consumed",
-        "490",
-        "Total",
+        "Session total",
         "1,290",
     ] {
         assert!(
@@ -1910,14 +1908,12 @@ fn the_details_panel_names_only_the_fields_the_provider_reported() {
         output: 56,
     });
     for needle in [
-        "Turn usage",
+        "Session usage",
         "Input",
         "1,234",
         "Output",
         "56",
-        "Consumed",
-        "1,290",
-        "Total",
+        "Session total",
         "1,290",
     ] {
         assert!(
@@ -1925,7 +1921,14 @@ fn the_details_panel_names_only_the_fields_the_provider_reported() {
             "the uncached panel shows {needle:?}: {unknown:?}"
         );
     }
-    for gone in ["Cache hit", "Cached input", "Uncached input", "Cache write", "Provider / model"] {
+    for gone in [
+        "Cache hit",
+        "Cached input",
+        "Cache read",
+        "Uncached input",
+        "Cache write",
+        "Provider / model",
+    ] {
         assert!(
             !unknown.iter().any(|text| text == gone),
             "the panel does not invent {gone:?}: {unknown:?}"
@@ -1938,7 +1941,7 @@ fn the_details_panel_names_only_the_fields_the_provider_reported() {
         cached: Some(0),
         output: 10,
     });
-    for needle in ["Cache hit", "0%", "Cached input"] {
+    for needle in ["Cache hit", "0%", "Cache read"] {
         assert!(
             reported.iter().any(|text| text == needle),
             "a reported cache miss shows {needle:?}: {reported:?}"
@@ -1948,6 +1951,144 @@ fn the_details_panel_names_only_the_fields_the_provider_reported() {
 
 /// The pill and its panel are drawn from theme tokens, so the same anatomy
 /// reads on the light palette as on the default dark one.
+#[test]
+fn the_usage_dialog_shows_per_call_and_session_numbers() {
+    use crate::elements::{HoverChipLayer, LayoutContext, PaintContext, SizeConstraint};
+    use crate::render::{RenderCommand, Renderer};
+    use goble_core::llm::TokenUsage;
+
+    let app = AppContext::default();
+    let open = Rc::new(RefCell::new(false));
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("hello")],
+        )])
+        .with_usage(TokenUsage {
+            input: 900,
+            cached: Some(600),
+            output: 100,
+        })
+        .with_usage_detail(
+            Some(TokenUsage {
+                input: 500,
+                cached: Some(400),
+                output: 20,
+            }),
+            3,
+            Some(8_000),
+        )
+        .with_usage_open(open.clone())
+        .finish();
+    let _ = view.layout(
+        SizeConstraint::loose(vec2f(700.0, 800.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    *open.borrow_mut() = true;
+    let _ = view.layout(
+        SizeConstraint::loose(vec2f(700.0, 800.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut ctx = PaintContext::new(Renderer::new());
+    view.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+    let _ = ctx.renderer.take();
+    let mut layer_ctx = PaintContext::new(Renderer::new());
+    HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut layer_ctx, &app);
+    let layer = layer_ctx
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec())
+        .unwrap_or_default();
+    let drawn: Vec<String> = layer
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    for needle in [
+        "Session usage",
+        "Calls",
+        "3",
+        "Context",
+        "500 / 8K · 6.2%",
+        "Last call",
+        "Session total",
+        "1,000",
+    ] {
+        assert!(
+            drawn.iter().any(|text| text == needle),
+            "the dialog shows {needle:?}: {drawn:?}"
+        );
+    }
+    assert!(
+        drawn.iter().any(|text| text.contains("per model call")),
+        "the per-call attribution is stated: {drawn:?}"
+    );
+}
+
+#[test]
+fn the_usage_dialog_says_when_numbers_are_unknown() {
+    use crate::elements::{HoverChipLayer, LayoutContext, PaintContext, SizeConstraint};
+    use crate::render::{RenderCommand, Renderer};
+    use goble_core::llm::TokenUsage;
+
+    let app = AppContext::default();
+    let open = Rc::new(RefCell::new(false));
+    let mut view = ChatView::new()
+        .with_messages(vec![ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("hello")],
+        )])
+        .with_usage(TokenUsage {
+            input: 10,
+            cached: None,
+            output: 2,
+        })
+        .with_usage_open(open.clone())
+        .finish();
+    let _ = view.layout(
+        SizeConstraint::loose(vec2f(700.0, 800.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    *open.borrow_mut() = true;
+    let _ = view.layout(
+        SizeConstraint::loose(vec2f(700.0, 800.0)),
+        &mut LayoutContext::default(),
+        &app,
+    );
+    let mut ctx = PaintContext::new(Renderer::new());
+    view.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+    let _ = ctx.renderer.take();
+    let mut layer_ctx = PaintContext::new(Renderer::new());
+    HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut layer_ctx, &app);
+    let layer = layer_ctx
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec())
+        .unwrap_or_default();
+    let drawn: Vec<String> = layer
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        drawn.iter().filter(|text| *text == "—").count() >= 2,
+        "unknown model/context/calls read as an honest dash: {drawn:?}"
+    );
+    assert!(
+        drawn
+            .iter()
+            .any(|text| text.contains("not reported") || text.contains("No model call")),
+        "the dialog names what the host does not report: {drawn:?}"
+    );
+}
+
 #[test]
 fn the_usage_area_follows_the_light_theme_too() {
     use crate::elements::{HoverChipLayer, LayoutContext, PaintContext, SizeConstraint};
@@ -1995,7 +2136,7 @@ fn the_usage_area_follows_the_light_theme_too() {
             _ => None,
         })
         .collect();
-    assert!(drawn.iter().any(|text| text == "Turn usage"), "{drawn:?}");
+    assert!(drawn.iter().any(|text| text == "Session usage"), "{drawn:?}");
     assert!(drawn.iter().any(|text| text == "64.8%"), "{drawn:?}");
     assert!(
         layer.iter().any(|command| matches!(

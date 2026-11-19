@@ -167,6 +167,8 @@ impl UiState {
             pending_close_pane: None,
             pending_close_file: None,
             conversation_usage: HashMap::new(),
+            conversation_last_usage: HashMap::new(),
+            conversation_usage_calls: HashMap::new(),
             theme_primary: None,
             theme_secondary: None,
             theme_accent: None,

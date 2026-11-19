@@ -141,7 +141,7 @@ const TAB_STRIP_SPACER_FLEX: f32 = 0.5;
 #[cfg(target_os = "macos")]
 pub(super) const TAB_TOP_INSET: f32 = 5.0;
 #[cfg(not(target_os = "macos"))]
-const TAB_TOP_INSET: f32 = 6.0;
+pub(super) const TAB_TOP_INSET: f32 = 6.0;
 
 /// The top corner radius of a tab's fill: Chrome's
 /// `TabStyle::GetTopCornerRadius` (10, `chrome/browser/ui/tabs/tab_style.cc`).

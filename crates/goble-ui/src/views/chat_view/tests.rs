@@ -2201,13 +2201,13 @@ fn the_footer_waits_until_the_turn_finishes() {
     );
 }
 
-/// The instructions the caller hands the view are drawn above the input, as
-/// the content's last row — the warp-new placement, where the shortcuts view
-/// sits between the transcript and the input it describes. A view handed none
-/// draws neither strip nor a gap where one would have been, and no rule
-/// separates the content from the floating composer card.
+/// The instructions the caller hands the view are the composer's **fixed row
+/// under the card**, aligned to the right (owner: Enter send, Cmd+Enter send to
+/// cloud, tasks… belong below the card). A view handed none draws no strip and
+/// no gap where one would have been, and no rule separates the content from the
+/// card.
 #[test]
-fn the_composer_hints_sit_above_the_composer_and_only_when_given() {
+fn the_composer_hints_sit_below_the_composer_and_only_when_given() {
     use crate::elements::ShortcutHint;
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
@@ -2243,8 +2243,6 @@ fn the_composer_hints_sit_above_the_composer_and_only_when_given() {
             })
             .expect("the composer draws its card")
     };
-    // The old horizontal rule over the input is gone: no pane-wide thin fill
-    // may divide the content from the composer card.
     let rules = |commands: &[RenderCommand]| -> Vec<f32> {
         commands
             .iter()
@@ -2286,43 +2284,50 @@ fn the_composer_hints_sit_above_the_composer_and_only_when_given() {
     let tasks = line_of(&commands, "tasks").expect("the whole strip is drawn");
     assert_eq!(strip, tasks, "the strip is one line");
 
-    // The strip is the last row of the content: under the transcript, over the
-    // composer card, over the editor.
-    let transcript = line_of(&commands, "Hi").expect("the message is drawn");
-    let editor = line_of(&commands, "Ask anything...").expect("the editor is drawn");
-    assert!(transcript < strip, "the strip closes the content");
+    // The strip is **under** the card now, and over nothing but its own row.
     let card = composer_card(&commands);
+    let editor = line_of(&commands, "Ask anything...").expect("the editor is drawn");
     assert!(
-        strip < card.min_y(),
-        "the strip is over the input card: strip {strip}, card top {}",
-        card.min_y()
+        strip > card.max_y(),
+        "the strip is under the input card: strip {strip}, card bottom {}",
+        card.max_y()
     );
     assert!(
-        card.min_y() < editor,
-        "and the card's top edge is over the editor: card {} against editor {editor}",
-        card.min_y()
+        card.min_y() < editor && editor < card.max_y(),
+        "the editor stays inside the card: card {card:?}, editor {editor}"
+    );
+    // Right-aligned: the first hint's label starts in the right half.
+    let strip_x = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == "commands" => Some(origin.x),
+            _ => None,
+        })
+        .expect("the strip is drawn");
+    assert!(
+        strip_x > width / 2.0,
+        "the hint row is aligned right: {strip_x} of {width}"
     );
     assert!(
         rules(&commands).is_empty(),
         "no rule separates the strip from the composer: {:?}",
         rules(&commands)
     );
-    // The strip costs the content nothing but its own height: the card stays
-    // exactly where it was in a view handed no hints.
+    // The hint row is outside the card: the card keeps exactly the height it
+    // had in the view handed no hints.
     assert!(
-        (card.min_y() - plain_card.min_y()).abs() < 0.5,
-        "the input did not move: card at {} against {} without the strip",
-        card.min_y(),
-        plain_card.min_y()
+        (card.height() - plain_card.height()).abs() < 0.5,
+        "the hint row does not change the card's height: {} against {}",
+        card.height(),
+        plain_card.height()
     );
 }
 
-/// The strip sits *low* over the input it names: the block is pinned to the
-/// input under it, so what decides the caps' height above the card is the
-/// inset beneath them — a gap of `sm` above them would instead push the whole
-/// block up and leave the caps where they were.
+/// The fixed row is right-aligned and pinned under the card, not inside it:
+/// the card's bottom edge is above the caps and the caps' trailing edge sits at
+/// the card's trailing gutter, so no hint can grow the card.
 #[test]
-fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
+fn the_hint_row_sits_under_the_card_on_the_right() {
     use crate::elements::ShortcutHint;
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
@@ -2333,42 +2338,45 @@ fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
         ChatRole::Assistant,
         vec![ChatFragment::text("Hi")],
     )];
-    let mut view = ChatView::new()
-        .with_messages(messages)
-        .with_composer_hints(vec![
-            ShortcutHint::new(&["⌘", "K"], "commands"),
-            ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
-        ])
-        .finish();
-    let commands = render_element(&mut view, vec2f(width, 520.0), &app);
+    let build = |hints: Vec<ShortcutHint>| {
+        ChatView::new()
+            .with_messages(messages.clone())
+            .with_composer_hints(hints)
+            .finish()
+    };
+    let mut empty = build(Vec::new());
+    let empty_commands = render_element(&mut empty, vec2f(width, 520.0), &app);
+    let mut stated = build(vec![
+        ShortcutHint::new(&["⌘", "K"], "commands"),
+        ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
+    ]);
+    let commands = render_element(&mut stated, vec2f(width, 520.0), &app);
 
-    let strip = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if text == "commands" => Some(origin.y),
-            _ => None,
-        })
-        .expect("the strip is drawn");
-    // The composer card is the block under the strip: the borderless floating
-    // card's rounded `Surface` fill is its top edge.
-    let card_top = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::FillRect {
-                rect,
-                color,
-                corner_radius,
-            } if *color == app.theme.color(ColorToken::Surface)
-                && (*corner_radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01 =>
-            {
-                Some(rect.min_y())
-            }
-            _ => None,
-        })
-        .expect("the composer draws its card");
-    // The strip's caps: the small square boxes over the card, the flat
-    // bordered key caps the strip draws. The block's own content edge is their
-    // bottom, because the caps are its tallest row.
+    let card_of = |commands: &[RenderCommand]| -> crate::geometry::RectF {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::Surface)
+                    && (*corner_radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the composer draws its card")
+    };
+    let stated_card = card_of(&commands);
+    let empty_card = card_of(&empty_commands);
+    assert!(
+        (stated_card.height() - empty_card.height()).abs() < 0.5,
+        "the row is outside the card, so the card keeps its height: {} against {}",
+        stated_card.height(),
+        empty_card.height()
+    );
     let caps: Vec<crate::geometry::RectF> = commands
         .iter()
         .filter_map(|command| match command {
@@ -2376,35 +2384,28 @@ fn the_strip_sits_lower_than_its_own_spacing_over_the_input() {
                 rect,
                 corner_radius,
                 ..
-            } if *corner_radius == 0.0 && rect.height() < 20.0 && rect.max_y() <= card_top => {
-                Some(*rect)
-            }
+            } if *corner_radius == 0.0 && rect.height() < 20.0 => Some(*rect),
             _ => None,
         })
         .collect();
-    let caps_bottom = caps
+    assert!(!caps.is_empty(), "the strip draws its key caps: {commands:?}");
+    let caps_top = caps
         .iter()
-        .map(|rect| rect.max_y())
+        .map(|rect| rect.min_y())
+        .fold(f32::INFINITY, f32::min);
+    let caps_right = caps
+        .iter()
+        .map(|rect| rect.max_x())
         .fold(f32::NEG_INFINITY, f32::max);
     assert!(
-        caps_bottom.is_finite(),
-        "the strip draws its key caps (strip {strip}, card top {card_top}, caps {caps:?})"
+        caps_top > stated_card.max_y(),
+        "the caps are under the card: caps {caps_top}, card bottom {}",
+        stated_card.max_y()
     );
-    let gap = card_top - caps_bottom;
-    let sm = app.theme.spacing_px(SpacingToken::Sm);
-    let md = app.theme.spacing_px(SpacingToken::Md);
-    let rise = super::transcript::STRIP_RISE;
-    // The column's own gap above the card (`md`) plus the inset under the caps,
-    // which is `STRIP_RISE` less than the block's `sm`.
-    let expected = md + (sm - rise);
     assert!(
-        (gap - expected).abs() < 0.5,
-        "the caps sit {expected} px over the card — the column's md plus the \
-         strip's own `sm - STRIP_RISE` — six points lower than the block's own \
-         `sm` inset put them: gap {gap}, strip {strip}, card top {card_top}, \
-         caps {caps:?}"
+        caps_right > width - 80.0,
+        "the caps sit in the row's trailing half: {caps_right} of {width}"
     );
-    assert!(gap > 0.0, "and stay over it: {gap}");
 }
 
 /// The composer card is the pane's bottom block and no rule sits between it
@@ -2471,11 +2472,11 @@ fn the_input_card_is_the_bottom_block_with_no_rule_over_it() {
             _ => None,
         })
         .expect("the composer draws its card");
-    // The card is the pane's bottom block: nothing is painted under it (its own
-    // inset keeps it a few points off the very edge, like the card's sides).
+    // The card is the block above the fixed instruction row: the row is the
+    // last line of the pane, under the card, and nothing paints past the pane.
     assert!(
-        composer_card.max_y() > height - 20.0,
-        "the input pins to the pane's bottom: card {:?} in a {height} tall view",
+        composer_card.max_y() > height - 80.0 && composer_card.max_y() < height - 10.0,
+        "the input card sits above its instruction row: card {:?} in a {height} tall view",
         composer_card
     );
     let below = commands
@@ -2490,30 +2491,26 @@ fn the_input_card_is_the_bottom_block_with_no_rule_over_it() {
         })
         .collect::<Vec<_>>();
     assert!(
-        below.is_empty(),
-        "nothing is painted under the composer card: {below:?}"
+        below.iter().any(|(text, _)| text == "new conversation"),
+        "the instruction row is the only thing under the card: {below:?}"
     );
     assert!(
-        composer_card.min_y() < editor,
-        "the card's top edge is over the editor: card {:?}, editor {editor}",
+        below.iter().all(|(_, origin)| origin.y < height),
+        "the instruction row stays inside the pane: {below:?}"
+    );
+    assert!(
+        composer_card.min_y() < editor && editor < composer_card.max_y(),
+        "the card's top edge is over the editor and its bottom under it: card {:?}, editor {editor}",
         composer_card
     );
 
-    // The card's context band is the row between the card's top and the input
-    // segment: the directory control's glyph sits 12 under the card's top, over
-    // the editor, inside the card.
-    let folder = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawIcon { origin, name, .. } if name == "folder" => Some(*origin),
-            _ => None,
-        })
-        .expect("the context band draws its directory control");
+    // There is no context band any more: the retired directory control never
+    // draws, and the input segment fills the card's content under its casing.
     assert!(
-        folder.y > composer_card.min_y() && folder.y < editor,
-        "the context band is over the editor, inside the card: folder {folder:?}, \
-         card top {}, editor {editor}",
-        composer_card.min_y()
+        !commands
+            .iter()
+            .any(|command| matches!(command, RenderCommand::DrawIcon { name, .. } if name == "folder")),
+        "the retired directory band never draws: {commands:?}"
     );
     let segment = commands
         .iter()
@@ -2531,20 +2528,19 @@ fn the_input_card_is_the_bottom_block_with_no_rule_over_it() {
         })
         .expect("the composer draws its input segment");
     assert!(
-        (segment.min_x() - composer_card.min_x()
-            - crate::elements::COMPOSER_CARD_INSET)
-            .abs()
-            < 0.5
-            && segment.min_y() > folder.y,
-        "the input segment is inset inside the card under the context band: \
-         segment {segment:?}, card {composer_card:?}, folder {folder:?}"
+        (segment.min_x() - composer_card.min_x() - crate::elements::COMPOSER_CARD_INSET).abs() < 0.5
+            && (segment.min_y() - composer_card.min_y() - crate::elements::COMPOSER_CARD_INSET)
+                .abs()
+                < 0.5,
+        "the input segment is the card's one content box: segment {segment:?}, card {composer_card:?}"
     );
 }
 
 /// The models the model control opens are drawn exactly where the draft's
-/// commands are: one band in the one slot over the whole input block, above the
-/// pane's instruction strip. Both are the host's to draw, so which one is up is
-/// the composer's open flags, and the slot does not move between them.
+/// commands are: one band in the one slot directly over the composer card. The
+/// instruction row moved under the card, so both bands sit above the card and
+/// the hints sit below it. Which band is up is the composer's open flags, and
+/// the slot does not move between them.
 #[test]
 fn the_model_band_opens_over_the_strip_like_the_command_list() {
     use crate::elements::{PopupMenuItem, ShortcutHint, SlashMenuItem};
@@ -2599,8 +2595,8 @@ fn the_model_band_opens_over_the_strip_like_the_command_list() {
         "a closed model list draws no rows: {frame:?}"
     );
 
-    // Open: the rows are above the strip, which is above the composer card and
-    // its editor.
+    // Open: the rows are above the composer card; the instruction row is under
+    // the card now.
     *open.borrow_mut() = true;
     let mut opened = build(open.clone(), index.clone()).finish();
     let frame = render_element(&mut opened, vec2f(width, 520.0), &app);
@@ -2626,13 +2622,13 @@ fn the_model_band_opens_over_the_strip_like_the_command_list() {
         })
         .expect("the composer draws its card");
     assert!(
-        model_row < strip,
-        "the list opens above the strip, not under the input: {model_row} against {strip}"
+        model_row < card_top,
+        "the list opens above the input card: {model_row} against {card_top}"
     );
     assert!(
-        strip < card_top && card_top < editor,
-        "and the strip keeps its place over the input card and the editor: \
-         {strip} {card_top} {editor}"
+        card_top < editor && editor < strip,
+        "the editor is inside the card and the instruction row is under it: \
+         {card_top} {editor} {strip}"
     );
 
     // The same view with a command draft: the command list is the band on the

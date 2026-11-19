@@ -614,7 +614,14 @@ pub fn build_agent_chat(
             &on_pane_activate,
             pane_id,
             move |text| (on_send_to_cloud.borrow_mut())(text),
-        ));
+        ))
+        // The attach (`+`) card is app-owned like the model card: its open flag
+        // and highlighted row live on the pane's controls so the menu survives
+        // the per-frame rebuild.
+        .with_composer_attach_menu(
+            controls.attach_menu_open.clone(),
+            controls.attach_menu_highlight.clone(),
+        );
 
     // The pane's content lane: the transcript, hint strip and rich input are
     // centred inside THIS pane's width by the app's width axis, while the

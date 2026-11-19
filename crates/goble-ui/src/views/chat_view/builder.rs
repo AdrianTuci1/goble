@@ -496,6 +496,19 @@ impl ChatView {
         self
     }
 
+    /// Share the composer's attach (`+`) card state with the view: the open
+    /// flag the footer control toggles and the row its keyboard highlight is
+    /// on. Both are app-owned because the composer is rebuilt every frame.
+    pub fn with_composer_attach_menu(
+        mut self,
+        open: Rc<RefCell<bool>>,
+        highlight: Rc<RefCell<Option<usize>>>,
+    ) -> Self {
+        self.composer_attach_menu_open = Some(open);
+        self.composer_attach_menu_highlight = Some(highlight);
+        self
+    }
+
     /// Set the composer's git-branch dropdown.
     pub fn with_composer_branch_menu<F: FnMut(usize) + 'static>(
         mut self,

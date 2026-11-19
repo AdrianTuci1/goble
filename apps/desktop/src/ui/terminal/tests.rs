@@ -675,7 +675,7 @@ fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
 fn the_shells_composer_is_the_panes_bottom_band() {
     use goble_ui::elements::chat_composer::{
         COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_GUTTER, COMPOSER_CARD_INSET,
-        COMPOSER_CARD_RADIUS, COMPOSER_INPUT_RADIUS,
+        COMPOSER_CARD_RADIUS, COMPOSER_CARD_RESERVED_HEIGHT, COMPOSER_INPUT_RADIUS,
     };
     use goble_ui::theme::ColorToken;
 
@@ -779,8 +779,8 @@ fn the_shells_composer_is_the_panes_bottom_band() {
         "the agent card keeps its surface gutter on both sides: {card:?} in {pane:?}"
     );
     assert!(
-        (card.height() - (COMPOSER_BAR_RESERVED_HEIGHT - COMPOSER_CARD_GUTTER)).abs() < 0.5,
-        "the agent card is the same composer less the floating gutter: {card:?}"
+        (card.height() - (COMPOSER_CARD_RESERVED_HEIGHT - COMPOSER_CARD_GUTTER)).abs() < 0.5,
+        "the agent card is the card's own height, without the fixed instruction row: {card:?}"
     );
 }
 
@@ -1088,8 +1088,8 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
     // ... and the chip over the input names it.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
-        "the bound pane's bar names the host it is on: {runs:?}"
+        !pane_has(&runs, CHIP),
+        "the retired session chip is not drawn; the host stays in the topbar: {runs:?}"
     );
 
     // The pane's other surface is the same pane on the same session, so its
@@ -1111,8 +1111,8 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
     );
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
-        "the pane's agent view names the same host: {runs:?}"
+        !pane_has(&runs, CHIP),
+        "the retired session chip is not drawn in the agent view either: {runs:?}"
     );
     assert!(
         press(&mut root, &app, "Escape"),
@@ -1126,8 +1126,8 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
     // the pane never left the session.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
-        "the shell's bar names the host again: {runs:?}"
+        !pane_has(&runs, CHIP),
+        "the shell's bar draws no session chip: {runs:?}"
     );
 
     // `exit` is the way back to a local shell, and the chip goes with the
@@ -1145,12 +1145,11 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
     );
 }
 
-/// The directory pill's menu is a window onto the machine: while it is open
-/// it lists the directories under this pane's working directory — sorted,
-/// hidden entries and plain files left out, the way up last — and while it is
-/// closed it reads nothing at all, so a dropped menu costs no disk.
+/// The directory control belonged to the composer's retired folder band. Even
+/// with the old pane flag left open, the single composer draws no directory pill
+/// and reads no directory rows: the model changes directories through its tools.
 #[test]
-fn the_directory_menu_lists_the_panes_subdirectories_and_the_way_up() {
+fn the_retired_directory_menu_draws_no_rows() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
     let home = tempfile::tempdir().expect("temp home");
@@ -1161,40 +1160,20 @@ fn the_directory_menu_lists_the_panes_subdirectories_and_the_way_up() {
     {
         let mut s = state.borrow_mut();
         s.set_pane_path(1, cwd);
-    }
-
-    let closed = pane_runs(&mut root, &app);
-    assert!(
-        !pane_has(&closed, "goble"),
-        "a closed menu lists nothing: {closed:?}"
-    );
-
-    {
-        let mut s = state.borrow_mut();
         let flag = s.pane_controls_mut(1).dir_menu_open.clone();
         *flag.borrow_mut() = true;
     }
-    let open = pane_runs(&mut root, &app);
+    let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&open, "goble"),
-        "the subdirectory is a row: {open:?}"
-    );
-    assert!(
-        pane_has(&open, crate::ui::pickers::PARENT_LABEL),
-        "the way up is a row: {open:?}"
-    );
-    assert!(
-        !pane_has(&open, ".hidden") && !pane_has(&open, "notes.txt"),
-        "only visible directories are rows: {open:?}"
+        !pane_has(&runs, "goble") && !pane_has(&runs, crate::ui::pickers::PARENT_LABEL),
+        "the retired directory tray draws no rows even with its old flag open: {runs:?}"
     );
 }
 
-/// The branch pill's menu is the repository's own branch list, read while the
-/// menu is open: every local branch is a row, not just the one the pane is
-/// on. The other branch's name is the discriminator — the pill draws the
-/// current one whether the menu is open or not.
+/// The branch pill belonged to the same retired folder band: no branch label
+/// is drawn and the old tray flag opens nothing.
 #[test]
-fn the_branch_menu_lists_the_repositorys_local_branches() {
+fn the_retired_branch_menu_draws_no_rows() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
     let Some(repo) = repository_on_two_branches() else {
@@ -1204,27 +1183,13 @@ fn the_branch_menu_lists_the_repositorys_local_branches() {
     {
         let mut s = state.borrow_mut();
         s.set_pane_path(1, cwd);
-    }
-
-    let closed = pane_runs(&mut root, &app);
-    assert!(
-        pane_has(&closed, "feature/x"),
-        "the pill names the branch the repository is on: {closed:?}"
-    );
-    assert!(
-        !pane_has(&closed, "main"),
-        "a closed menu lists nothing: {closed:?}"
-    );
-
-    {
-        let mut s = state.borrow_mut();
         let flag = s.pane_controls_mut(1).branch_menu_open.clone();
         *flag.borrow_mut() = true;
     }
-    let open = pane_runs(&mut root, &app);
+    let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&open, "main") && pane_has(&open, "feature/x"),
-        "both local branches are rows: {open:?}"
+        !pane_has(&runs, "feature/x") && !pane_has(&runs, "main"),
+        "the retired branch control and tray draw no labels: {runs:?}"
     );
 }
 
@@ -2005,7 +1970,7 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
     );
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
+        !pane_has(&runs, CHIP),
         "the bound pane's bar names the host it is on: {runs:?}"
     );
     assert!(
@@ -2193,8 +2158,8 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
     // output the shell already printed still on it.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
-        "the bound pane names the host it is on: {runs:?}"
+        !pane_has(&runs, CHIP),
+        "the retired session chip is not drawn: {runs:?}"
     );
     assert!(
         pane_has(&runs, MARKER),
@@ -2252,7 +2217,7 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
         );
     }
     assert!(
-        pane_has(&runs, CHIP),
+        !pane_has(&runs, CHIP),
         "and its input names the same host: {runs:?}"
     );
 
@@ -2288,7 +2253,7 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
         "and the output from before the switch is still drawn: {runs:?}"
     );
     assert!(
-        pane_has(&runs, CHIP),
+        !pane_has(&runs, CHIP),
         "with the chip still naming the host: {runs:?}"
     );
 }
@@ -3043,8 +3008,8 @@ fn a_typed_command_shows_its_prompt_in_the_header_not_the_body() {
     let runs = pane_runs(&mut root, &app);
     let header = runs
         .iter()
-        .find(|(text, _)| text.starts_with(&user) && text.ends_with('…'))
-        .unwrap_or_else(|| panic!("the header carries the prompt, cut to its row: {runs:?}"));
+        .find(|(text, _)| text.starts_with(&user) && text.contains("/tmp %"))
+        .unwrap_or_else(|| panic!("the header carries the prompt: {runs:?}"));
     assert!(
         !pane_has(&runs, &prompt),
         "the prompt is part of the header row, not a row of its own: {runs:?}"

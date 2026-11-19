@@ -120,6 +120,9 @@ pub(crate) fn build_terminal_composer(
         // shell draws no chip at all.
         .with_ssh_session(ssh_session)
         .with_stop_visible(session.agent_busy)
+        // The attach (`+`) card's app-owned state, when the bar offers one.
+        .with_attach_menu_open(controls.attach_menu_open.clone())
+        .with_attach_menu_highlight(controls.attach_menu_highlight.clone())
         // The shell's own context — this pane's working directory and its git
         // branch — rides above the editor: it describes the command line below
         // it, the way the shell prompt does.

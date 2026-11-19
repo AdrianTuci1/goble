@@ -15,8 +15,10 @@
 //!   the card itself paints no focus ring — the owner asked for no blue border
 //!   or margin around the rich input.
 //! - `menus` — the same composer with the environment popup open and with the
-//!   branch popup open (two PNGs, `<stem>-env-menu.png` / `<stem>-branch-menu.png`).
-//! - `env-menu`, `branch-menu` — one of those two, to `--out`.
+//!   attach (`+`) card open (two PNGs, `<stem>-env-menu.png` /
+//!   `<stem>-attach-menu.png`).
+//! - `env-menu`, `attach-menu` — one of those two, to `--out` (`branch-menu` is
+//!   kept as an alias for the attach card now that the branch control is gone).
 //! - `model-menu` — the composer with the DSH model card open on its root pane
 //!   (`Model` / `Effort` cells), anchored above the model chip.
 //! - `model-pane` — the same card drilled into the provider-grouped model list,
@@ -97,11 +99,12 @@ fn main() -> anyhow::Result<()> {
         "composer" => render_composer(&options, &assets)?,
         "menus" => {
             render_menu(&options, &assets, MenuKind::Environment)?;
-            render_menu(&options, &assets, MenuKind::Branch)?;
+            render_menu(&options, &assets, MenuKind::Attach)?;
         }
         "env-menu" => render_menu(&options, &assets, MenuKind::Environment)?,
-        "branch-menu" => render_menu(&options, &assets, MenuKind::Branch)?,
+        "branch-menu" => render_menu(&options, &assets, MenuKind::Attach)?,
         "model-menu" => render_model_menu(&options, &assets)?,
+        "attach-menu" => render_attach_menu(&options, &assets)?,
         "model-pane" => {
             render_model_pane(&options, &assets, goble_ui::elements::ModelTrayPane::Model)?
         }
@@ -142,9 +145,13 @@ fn main() -> anyhow::Result<()> {
             )?;
             let menus = options.sub_scene("menus", dir.join("menus.png"));
             render_menu(&menus, &assets, MenuKind::Environment)?;
-            render_menu(&menus, &assets, MenuKind::Branch)?;
+            render_menu(&menus, &assets, MenuKind::Attach)?;
             render_model_menu(
                 &options.sub_scene("model-menu", dir.join("model-menu.png")),
+                &assets,
+            )?;
+            render_attach_menu(
+                &options.sub_scene("attach-menu", dir.join("attach-menu.png")),
                 &assets,
             )?;
             render_model_pane(
@@ -189,8 +196,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
         other => anyhow::bail!(
-            "unknown scene {other:?}; expected composer, menus, env-menu, branch-menu, \
-             model-menu, model-pane, slash-menu, terminal-placeholder, agent-placeholder, \
+            "unknown scene {other:?}; expected composer, menus, env-menu, attach-menu, branch-menu, \
+             model-menu, attach-menu, model-pane, slash-menu, terminal-placeholder, agent-placeholder, \
              terminal-band, agent-band, lane or all"
         ),
     }
@@ -380,7 +387,7 @@ fn print_usage() {
     println!(
         "composer_preview — rasterize goble-ui scenes to PNG\n\
          \n\
-         --scene composer|menus|env-menu|branch-menu|model-menu|model-pane|model-effort|slash-menu|\n\
+         --scene composer|menus|env-menu|attach-menu|branch-menu|model-menu|model-pane|model-effort|slash-menu|\n\
          --scene terminal-placeholder|agent-placeholder|terminal-band|agent-band|lane|all\n\
          (default: composer)\n\
          --out PATH        output PNG path (default: /tmp/goble-work/out/<scene>.png)\n\
@@ -394,7 +401,7 @@ fn print_usage() {
          --long-model      composer/model scenes: use the overflow-length model catalogue\n\
          --dump-commands   print every DrawText/DrawIcon/rect command of the scene\n\
          \n\
-         `menus` writes two PNGs next to --out: <stem>-env-menu.png and <stem>-branch-menu.png.\n\
+         `menus` writes two PNGs next to --out: <stem>-env-menu.png and <stem>-attach-menu.png.\n\
          Use --scene all to render every scene."
     );
 }
@@ -448,11 +455,10 @@ struct MenuFlags {
     harnesses: Vec<ModelTrayHarness>,
     tray_model: &'static str,
     tray_level: &'static str,
-    dir_open: Rc<RefCell<bool>>,
-    branch_open: Rc<RefCell<bool>>,
     harness_open: Rc<RefCell<bool>>,
     model_open: Rc<RefCell<bool>>,
     tray_open: Rc<RefCell<bool>>,
+    attach_open: Rc<RefCell<bool>>,
     tray_state: Rc<RefCell<ModelTrayState>>,
     slash_index: Rc<RefCell<usize>>,
     slash_dismissed: Rc<RefCell<bool>>,
@@ -472,11 +478,10 @@ impl MenuFlags {
 
     fn new() -> Self {
         Self {
-            dir_open: Rc::new(RefCell::new(false)),
-            branch_open: Rc::new(RefCell::new(false)),
             harness_open: Rc::new(RefCell::new(false)),
             model_open: Rc::new(RefCell::new(false)),
             tray_open: Rc::new(RefCell::new(false)),
+            attach_open: Rc::new(RefCell::new(false)),
             tray_state: Rc::new(RefCell::new(ModelTrayState::default())),
             harnesses: model_tray_harnesses(false),
             tray_model: "deepseek-flash",
@@ -554,27 +559,6 @@ fn composer_element(flags: &MenuFlags, focused: bool) -> Box<dyn Element> {
 /// The agent composer builder the menu scenes start from: the same calls the app
 /// makes, with the draft the scene needs.
 fn composer_with(flags: &MenuFlags, focused: bool, value: &str) -> ChatComposer {
-    let dir_items = vec![
-        PopupMenuItem::new("brindlepad-web")
-            .with_icon("folder")
-            .selected(),
-        PopupMenuItem::new("goble").with_icon("folder"),
-        PopupMenuItem::new("sandbox").with_icon("folder"),
-        PopupMenuItem::new("/Users/adrian/Projects/acme-api").with_icon("folder"),
-    ];
-    // The branch tray: the repository header row, its branches with the checked
-    // one marked, and the worktree action.
-    let branch_items = vec![
-        PopupMenuItem::new("brindlepad-web").with_icon("folder"),
-        PopupMenuItem::new("main").with_icon("branch").selected(),
-        PopupMenuItem::new("feature/checkout-flow").with_icon("branch"),
-        PopupMenuItem::new("fix/cart-totals").with_icon("branch"),
-        PopupMenuItem::new("release/2.4").with_icon("branch"),
-        PopupMenuItem::new("Work in a New Worktree")
-            .with_icon("branch")
-            .with_description("Keeps your checkout untouched")
-            .with_separator_before(),
-    ];
     let harness_items = vec![
         PopupMenuItem::new("This Computer")
             .with_icon("environment-computer")
@@ -595,12 +579,11 @@ fn composer_with(flags: &MenuFlags, focused: bool, value: &str) -> ChatComposer 
         .with_placeholder("Ask anything, @ to mention, / for actions")
         .with_caret(flags.caret.clone())
         .with_focused(focused)
-        // The agent pane's composer: the context row rides above the editor and
-        // the bar spans its pane, exactly as the app builds it.
+        // The single composer the app now builds: one card, no folder/branch
+        // band, the environment icon in the footer beside the model chip, and
+        // the fixed instruction row under the card.
         .with_context_above_editor(true)
         .with_edge_to_edge(true)
-        .with_path_label("brindlepad-web")
-        .with_branch_label("main")
         .with_harness_label("This Computer")
         .with_harness_icon("environment-computer")
         .with_model_label("DeepSeek Flash")
@@ -616,11 +599,23 @@ fn composer_with(flags: &MenuFlags, focused: bool, value: &str) -> ChatComposer 
             .with_on_select_model(|_| {})
             .with_on_select_level(|_| {}),
         )
-        .with_dir_menu(dir_items, flags.dir_open.clone(), |_| {})
-        .with_branch_menu(branch_items, flags.branch_open.clone(), |_| {})
         .with_harness_menu(harness_items, flags.harness_open.clone(), |_| {})
         .with_model_menu(model_items, flags.model_open.clone(), |_| {})
+        // Every attach row the owner wants, so the `+` card is the full DSH
+        // menu in the preview.
         .with_on_attach(|| {})
+        .with_on_image(|| {})
+        .with_on_link(|| {})
+        .with_on_code(|| {})
+        .with_on_voice(|| {})
+        .with_attach_menu_open(flags.attach_open.clone())
+        .with_attach_menu_highlight(Rc::new(RefCell::new(None)))
+        // The owner's fixed row under the card: send, cloud, tasks.
+        .with_hints(vec![
+            ShortcutHint::new(&["↵"], "send"),
+            ShortcutHint::new(&["⌘", "↵"], "send to cloud"),
+            ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
+        ])
         .with_on_select_model(|| {})
         .with_on_send(|_text| {})
 }
@@ -697,14 +692,14 @@ fn render_composer(options: &Options, assets: &PreviewAssets) -> anyhow::Result<
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuKind {
     Environment,
-    Branch,
+    Attach,
 }
 
 impl MenuKind {
     fn suffix(self) -> &'static str {
         match self {
             MenuKind::Environment => "env-menu",
-            MenuKind::Branch => "branch-menu",
+            MenuKind::Attach => "attach-menu",
         }
     }
 }
@@ -725,7 +720,7 @@ fn render_menu(options: &Options, assets: &PreviewAssets, kind: MenuKind) -> any
     let focused = options.focused;
     match kind {
         MenuKind::Environment => *flags.harness_open.borrow_mut() = true,
-        MenuKind::Branch => *flags.branch_open.borrow_mut() = true,
+        MenuKind::Attach => *flags.attach_open.borrow_mut() = true,
     }
     let mut probe = composer_element(&flags, false);
     let content = raster::layout_size(&mut probe, vec2f(width, 4000.0), &app);
@@ -767,6 +762,42 @@ fn render_model_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Resul
         MenuFlags::new()
     };
     *flags.tray_open.borrow_mut() = true;
+    let focused = options.focused;
+    let mut probe = composer_element(&flags, false);
+    let content = raster::layout_size(&mut probe, vec2f(width, 4000.0), &app);
+    if options.dump_commands {
+        let mut element = composer_element(&flags, focused);
+        let commands = raster::render_commands(&mut element, vec2f(width, 4000.0), &app);
+        dump_commands(&commands);
+    }
+    let build_flags = flags.clone();
+    frame_scene(
+        width,
+        scale,
+        &app,
+        assets,
+        &options.out,
+        content.y,
+        move |headroom| {
+            Padding::new(
+                composer_element(&build_flags, focused),
+                EdgeInsets::new(0.0, headroom, 0.0, 0.0),
+            )
+            .finish()
+        },
+    )
+}
+
+/// The composer with the attach (`+`) card open above the footer control: the
+/// DSH menu surface lists the real attach gestures the app wires (files, image,
+/// link, code, voice), one row each.
+fn render_attach_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Result<()> {
+    let mut app = AppContext::default();
+    app.theme = options.theme()?;
+    let width = options.width.unwrap_or(REFERENCE_WIDTH);
+    let scale = options.scale(2.0);
+    let flags = MenuFlags::new();
+    *flags.attach_open.borrow_mut() = true;
     let focused = options.focused;
     let mut probe = composer_element(&flags, false);
     let content = raster::layout_size(&mut probe, vec2f(width, 4000.0), &app);
@@ -925,32 +956,38 @@ fn placeholder_element(
         .with_focused(focused)
         .with_context_above_editor(true)
         .with_edge_to_edge(true)
-        .with_path_label("brindlepad-web")
-        .with_branch_label("main")
         .with_placeholder(surface.placeholder())
         .with_on_send(|_| {});
-    // The shell bar ships the one instruction its command line answers (⌘↵ new
-    // conversation), drawn inside the reserved footer row. The agent view hosts
-    // its own hint strip above the card (ChatView), so its card carries none.
-    if surface == PlaceholderSurface::Terminal {
-        composer = composer.with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]);
-    }
-    if surface == PlaceholderSurface::Agent {
-        composer = composer
-            .with_harness_label("This Computer")
-            .with_harness_icon("environment-computer")
-            .with_model_label("DeepSeek Flash")
-            .with_model_tray(
-                ComposerModelTray::new(
-                    model_tray_harnesses(false),
-                    flags.tray_state.clone(),
-                    flags.tray_open.clone(),
+    // Both surfaces ship the fixed instruction row **under** the card: the
+    // shell bar's one gesture, the agent input's send / cloud / tasks set. The
+    // row is the same reserved height either way, so the two cards stay equal.
+    match surface {
+        PlaceholderSurface::Terminal => {
+            composer =
+                composer.with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]);
+        }
+        PlaceholderSurface::Agent => {
+            composer = composer
+                .with_harness_label("This Computer")
+                .with_harness_icon("environment-computer")
+                .with_model_label("DeepSeek Flash")
+                .with_model_tray(
+                    ComposerModelTray::new(
+                        model_tray_harnesses(false),
+                        flags.tray_state.clone(),
+                        flags.tray_open.clone(),
+                    )
+                    .with_current("deepseek-flash", "off")
+                    .with_on_select_model(|_| {})
+                    .with_on_select_level(|_| {}),
                 )
-                .with_current("deepseek-flash", "off")
-                .with_on_select_model(|_| {})
-                .with_on_select_level(|_| {}),
-            )
-            .with_on_attach(|| {});
+                .with_on_attach(|| {})
+                .with_hints(vec![
+                    ShortcutHint::new(&["↵"], "send"),
+                    ShortcutHint::new(&["⌘", "↵"], "send to cloud"),
+                    ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
+                ]);
+        }
     }
     composer.finish()
 }

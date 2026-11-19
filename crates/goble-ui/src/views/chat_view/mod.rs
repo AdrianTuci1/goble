@@ -168,6 +168,12 @@ pub struct ChatView {
     /// and their thinking levels) instead of one flat list. `None` keeps the
     /// flat band.
     composer_model_tray: Option<ComposerModelTray>,
+    /// The composer's attach (`+`) card: its app-owned open flag and keyboard
+    /// highlight. `None` on a view that leaves the cell with the composer's own
+    /// (short-lived) session — the app always passes one so the card survives
+    /// the per-frame rebuild.
+    composer_attach_menu_open: Option<Rc<RefCell<bool>>>,
+    composer_attach_menu_highlight: Option<Rc<RefCell<Option<usize>>>>,
     composer_harness_items: Vec<PopupMenuItem>,
     composer_harness_menu_open: Rc<RefCell<bool>>,
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
@@ -336,6 +342,8 @@ impl ChatView {
             composer_model_index: Rc::new(RefCell::new(0)),
             on_select_model_item: None,
             composer_model_tray: None,
+            composer_attach_menu_open: None,
+            composer_attach_menu_highlight: None,
             composer_harness_label: None,
             composer_harness_icon: None,
             composer_agent_harness: None,

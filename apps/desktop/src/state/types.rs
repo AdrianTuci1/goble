@@ -665,6 +665,11 @@ pub struct PaneControls {
     /// opens — is up. App-owned like the flat menu's flag, so it survives the
     /// per-frame rebuild.
     pub model_tray_open: Rc<RefCell<bool>>,
+    /// Whether the composer's attach (`+`) card is up, and the row its keyboard
+    /// highlight is on. Both are app-owned because the composer is rebuilt
+    /// every frame; the card is DSH's menu surface above the `+`.
+    pub attach_menu_open: Rc<RefCell<bool>>,
+    pub attach_menu_highlight: Rc<RefCell<Option<usize>>>,
     /// The rows the tray's three columns are on. App-owned so the highlight the
     /// arrows and the pointer move survives the rebuild.
     pub model_tray_state: Rc<RefCell<goble_ui::ModelTrayState>>,
@@ -775,6 +780,8 @@ impl PaneControls {
             view: BlockView::Terminal,
             model_menu_open: Rc::new(RefCell::new(false)),
             model_tray_open: Rc::new(RefCell::new(false)),
+            attach_menu_open: Rc::new(RefCell::new(false)),
+            attach_menu_highlight: Rc::new(RefCell::new(None)),
             model_tray_state: Rc::new(RefCell::new(goble_ui::ModelTrayState::default())),
             thinking: "on".to_string(),
             model_index: Rc::new(RefCell::new(0)),

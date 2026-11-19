@@ -72,7 +72,7 @@ mod rich_input_tests {
     use crate::state::UiState;
     use goble_core::store::Store;
     use goble_desktop_service::{DesktopState, ThreadStore};
-    use goble_ui::geometry::vec2f;
+    use goble_ui::geometry::{vec2f, RectF};
     use goble_ui::render::{RenderCommand, Renderer};
     use goble_ui::{AppContext, Element, LayoutContext, PaintContext, SizeConstraint};
     use std::cell::RefCell;
@@ -127,16 +127,6 @@ mod rich_input_tests {
             .collect()
     }
 
-    /// Every run of `text` sits over `ceiling`.
-    fn above(commands: &[RenderCommand], text: &str, ceiling: f32, case: &str) {
-        let lines = lines_of(commands, text);
-        assert!(!lines.is_empty(), "{case}: {text:?} is drawn");
-        assert!(
-            lines.iter().all(|line| *line < ceiling),
-            "{case}: {text:?} is drawn above {ceiling} (found {lines:?})"
-        );
-    }
-
     /// The thin horizontal rules in a frame — the pane's separators, in a
     /// widget-free pane, nothing else.
     fn rules(commands: &[RenderCommand]) -> Vec<f32> {
@@ -153,10 +143,10 @@ mod rich_input_tests {
             .collect()
     }
 
-    /// The top edge of the floating rich-input card: the borderless card is a
-    /// rounded `Surface` fill, so its fill is what locates the input block now
-    /// that the old separator over it is gone.
-    fn composer_card_top(commands: &[RenderCommand], app: &AppContext) -> f32 {
+    /// The floating rich-input card: the borderless card is a rounded
+    /// `Surface` fill, so its rect is what locates the input block now that the
+    /// old separator over it is gone.
+    fn composer_card(commands: &[RenderCommand], app: &AppContext) -> RectF {
         let surface = app.theme.color(goble_ui::theme::ColorToken::Surface);
         commands
             .iter()
@@ -168,51 +158,42 @@ mod rich_input_tests {
                 } if *color == surface
                     && (*corner_radius - goble_ui::elements::COMPOSER_CARD_RADIUS).abs() < 0.01 =>
                 {
-                    Some(rect.min_y())
+                    Some(*rect)
                 }
                 _ => None,
             })
             .expect("the composer draws its floating card")
     }
 
-    /// The agent view's instructions are the pane's own strip above the input:
-    /// the last content row, under the transcript, directly over the floating
-    /// rich-input card (the warp-new order, where the shortcuts view sits
-    /// between the conversation and the input it describes). The old separator
-    /// line over the rich input is gone, so the card's own top edge is the
-    /// input's edge.
+    /// The agent view's instructions are the composer's **fixed row under the
+    /// card**, aligned right (owner: below the card, not above it). The old
+    /// separator line over the rich input is gone, and the row is outside the
+    /// card's own surface so it cannot change the card's height.
     #[test]
-    fn the_agent_strip_sits_above_the_input_card() {
+    fn the_agent_strip_sits_below_the_input_card() {
         let (mut root, state, _dir) = workspace();
         let app = AppContext::default();
-        // The pill reads the pane's working directory. Give it a short project
-        // under the home directory, so the shortened label the composer draws
-        // is the same wherever the test process itself runs.
-        let home = crate::state::home_directory().expect("a home directory");
-        let project = format!("{home}/Projects/goble/app");
-        {
-            let mut s = state.borrow_mut();
-            s.composer_path = project.clone();
-            let pane_id = s.active_pane_id;
-            if let Some(session) = s.pane_sessions.get_mut(&pane_id) {
-                session.path = project;
-            }
-        }
         let commands = frame(&mut root, &app);
 
-        // The editor is on screen, so the strip's place over it means
-        // something: the same frame drew the rich input's placeholder.
+        // The editor is on screen, so the row's place under it means something.
         let placeholder = lines_of(&commands, "Ask anything...");
         let editor = *placeholder.first().expect("the rich input is drawn");
         let case = "idle";
+        let card = composer_card(&commands, &app);
 
         for label in ["send", "send to cloud", "tasks"] {
-            above(&commands, label, editor, case);
+            let lines = lines_of(&commands, label);
+            assert!(!lines.is_empty(), "{case}: {label:?} is drawn");
+            assert!(
+                lines.iter().all(|line| *line > card.max_y()),
+                "{case}: {label:?} is under the input card (found {lines:?} against {})",
+                card.max_y()
+            );
         }
-        // Every key of every chord has its own cap on the strip's own line. A
-        // key the bundled text faces lack is drawn from the icon set, so no
-        // strip ever paints the font's `.notdef` box for it; the ASCII keys keep
-        // their own glyph.
+        // Every key of every chord has its own cap on the row's own line. A key
+        // the bundled text faces lack is drawn from the icon set, so no row ever
+        // paints the font's `.notdef` box for it; the ASCII keys keep their own
+        // glyph.
         let drawn_icons: Vec<&str> = commands
             .iter()
             .filter_map(|command| match command {
@@ -220,7 +201,6 @@ mod rich_input_tests {
                 _ => None,
             })
             .collect();
-        above(&commands, "W", editor, case);
         for icon in ["key-command", "key-option", "key-return", "key-shift"] {
             assert!(
                 drawn_icons.contains(&icon),
@@ -234,45 +214,26 @@ mod rich_input_tests {
             );
         }
 
-        // The floating composer card is the input's top edge, under the strip:
-        // there is no separator line over the rich input anymore. The strip is
-        // the content's last row, directly over the card.
-        let strip_bottom = ["send", "send to cloud", "tasks"]
-            .iter()
-            .flat_map(|label| lines_of(&commands, label))
-            .fold(f32::NEG_INFINITY, f32::max);
-        let card_top = composer_card_top(&commands, &app);
+        // The retired folder/branch band never draws, and the editor stays
+        // inside the one card.
         assert!(
-            card_top > strip_bottom,
-            "{case}: the strip is over the input card (strip {strip_bottom}, card {card_top})"
+            lines_of(&commands, "~/Projects/goble/app").is_empty(),
+            "{case}: the retired path pill is not drawn"
         );
         assert!(
-            rules(&commands)
-                .iter()
-                .all(|y| *y < strip_bottom || *y > card_top),
-            "{case}: no rule divides the strip from the input card (strip {strip_bottom}, \
-             card {card_top}, rules {:?})",
-            rules(&commands)
+            card.min_y() < editor && editor < card.max_y(),
+            "{case}: the editor is inside the card ({editor} in {card:?})"
+        );
+        assert!(
+            rules(&commands).iter().all(|y| {
+                *y < card.min_y() || *y > card.max_y()
+            }) || rules(&commands).is_empty(),
+            "{case}: no rule cuts the card or its instruction row"
         );
 
-        // The context pills are the row under the instruction strip, inside the
-        // input card and over the editor, the way the shell bar keeps the
-        // directory and the branch over the draft.
-        let pills = lines_of(&commands, "~/Projects/goble/app");
-        assert!(!pills.is_empty(), "{case}: the context pills are drawn");
-        assert!(
-            pills.iter().all(|line| *line < editor),
-            "{case}: the pills sit above the editor (found {pills:?} against {editor})"
-        );
-        let pills_top = pills.iter().cloned().fold(f32::INFINITY, f32::min);
-        assert!(
-            card_top < pills_top,
-            "{case}: the pills are inside the input card, under its top edge (card {card_top}, pills {pills_top})"
-        );
-
-        // A running turn: the live status row takes the strip's slot, so the
-        // instruction strip and every hint on it are gone while the turn is in
-        // flight. The row says what the turn is doing, over the same rule.
+        // A running turn puts the live status row above the card; the
+        // instruction row stays under it, with the send entry relabelled
+        // `queue` (the same key queues a follow-up).
         let pane_id = state.borrow().active_pane_id;
         state
             .borrow_mut()
@@ -282,28 +243,26 @@ mod rich_input_tests {
             .busy = true;
         let commands = frame(&mut root, &app);
         let case = "turn running";
-        for label in ["send", "queue", "send to cloud", "tasks"] {
-            assert!(
-                lines_of(&commands, label).is_empty(),
-                "{case}: the {label:?} hint is replaced by the status row"
-            );
-        }
+        let card = composer_card(&commands, &app);
         let status = lines_of(&commands, "Waiting for response…");
         let status_top = *status.first().expect("the status row is drawn");
         assert!(
-            status_top < editor,
-            "{case}: the status row is drawn above the editor (found {status_top} against {editor})"
+            status_top < card.min_y(),
+            "{case}: the status row is above the card (row {status_top}, card top {})",
+            card.min_y()
         );
-        let running_card_top = composer_card_top(&commands, &app);
+        for label in ["queue", "send to cloud", "tasks"] {
+            let lines = lines_of(&commands, label);
+            assert!(!lines.is_empty(), "{case}: {label:?} is still drawn");
+            assert!(
+                lines.iter().all(|line| *line > card.max_y()),
+                "{case}: {label:?} stays under the card (found {lines:?} against {})",
+                card.max_y()
+            );
+        }
         assert!(
-            running_card_top > status_top,
-            "{case}: the status row sits over the input card (row {status_top}, card {running_card_top})"
-        );
-        assert!(
-            rules(&commands)
-                .iter()
-                .all(|y| *y < status_top || *y > running_card_top),
-            "{case}: no rule divides the status row from the input card"
+            lines_of(&commands, "send").is_empty(),
+            "{case}: the send entry is relabelled queue while the turn runs"
         );
     }
 }

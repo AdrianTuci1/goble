@@ -11,7 +11,7 @@ use crate::elements::{
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
     Container, ContentLane, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
     HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
-    Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
+    Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
     TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
@@ -21,11 +21,6 @@ use crate::theme::{ColorToken, SpacingToken};
 use super::sticky::StickyTurn;
 use super::usage_popover::UsagePopover;
 use super::ChatView;
-
-/// How much lower the instruction strip sits than the block's own inset put
-/// it: the strip belongs to the input under it, and the caps read as that
-/// input's row only when they hug the input card under them.
-pub(super) const STRIP_RISE: f32 = 6.0;
 
 /// What the whole-transcript filter bar's field says when it is empty.
 const TRANSCRIPT_FILTER_PLACEHOLDER: &str = "Filter terminal output";
@@ -1113,13 +1108,11 @@ impl ChatView {
             // While a turn is in flight the status row above the input carries
             // the one Stop control; an idle input keeps it in its action row.
             .with_stop_visible(self.composer_stop_visible && !self.turn_status.is_in_flight())
-            // The rich input is built the same way in both surfaces: the
-            // context row (harness, directory, branch, attach) rides above the
-            // editor, where it describes the draft, and the pane's instructions
-            // are drawn by the pane above the input it describes. A terminal
-            // pane's bar is built from this same widget in this same order, so
-            // switching a pane between the shell and its agent view moves
-            // nothing but the text in the editor.
+            // The rich input is one card on both surfaces, and the owner's
+            // instruction row is a fixed line **under** it, right-aligned. A
+            // terminal pane's bar is built from this same widget in this same
+            // order, so switching a pane between the shell and its agent view
+            // moves nothing but the text in the editor.
             .with_context_above_editor(true)
             // The agent bar is the pane's bottom surface, like the shell bar:
             // it spans the pane instead of carrying a gutter of its own, so
@@ -1151,6 +1144,20 @@ impl ChatView {
             });
         if let Some(placeholder) = self.composer_placeholder.clone() {
             composer = composer.with_placeholder(placeholder);
+        }
+        // The pane's instructions are the composer's own fixed row under the
+        // card, aligned to its trailing edge: they can never change the card's
+        // height, and the view no longer stacks a separate strip above it.
+        if !self.composer_hints.is_empty() {
+            composer = composer.with_hints(self.composer_hints.clone());
+        }
+        // The attach (`+`) card's app-owned open flag and highlight, so the
+        // card survives the per-frame rebuild.
+        if let Some(open) = self.composer_attach_menu_open.clone() {
+            composer = composer.with_attach_menu_open(open);
+        }
+        if let Some(highlight) = self.composer_attach_menu_highlight.clone() {
+            composer = composer.with_attach_menu_highlight(highlight);
         }
         if let Some(label) = self.composer_model_label.clone() {
             composer = composer.with_model_label(label);
@@ -1307,19 +1314,11 @@ impl ChatView {
             // is the pane's only typing surface. The turn-status row (with its
             // Stop) stays, because the turn is still in flight.
             let waiting = self.composer_proposal.is_some() || self.pending_ask.is_some();
-            if !waiting {
-                if let Some(menu) = self
-                    .slash_menu()
-                    .or_else(|| self.model_tray())
-                    .or_else(|| self.model_menu())
-                {
-                    column = column.with_child(menu);
-                }
-            }
-            // The live turn-status row takes the instruction strip's slot while
-            // a turn is in flight — the waiting text is what the bar is doing,
-            // and the row also carries the turn's Stop — instead of stacking
-            // above it. An idle pane keeps the strip and pays no status height.
+            // The live turn-status row takes the instruction strip's old slot
+            // while a turn is in flight — the waiting text is what the bar is
+            // doing, and the row also carries the turn's Stop. An idle pane
+            // pays no status height: the composer's own fixed row under the
+            // card carries the hints now.
             if self.turn_status.is_in_flight() {
                 let mut footer = TurnStatusFooter::new(self.turn_status.clone());
                 if self.composer_stop_visible {
@@ -1328,28 +1327,20 @@ impl ChatView {
                     }
                 }
                 column = column.with_child(footer.finish());
-            } else if !waiting && !self.composer_hints.is_empty() {
-                let md = app.theme.spacing_px(SpacingToken::Md);
-                let sm = app.theme.spacing_px(SpacingToken::Sm);
-                let strip = ShortcutHints::new(self.composer_hints.clone()).finish(app);
-                // The strip's caps sit a few points under the transcript's last
-                // row: the gestures belong to the input below them, and the gap
-                // is what reads them as the input's own row rather than as the
-                // conversation's tail.
-                //
-                // The block is pinned to the input card under it (the
-                // transcript above it is the flex child that takes the slack),
-                // so the caps' height above the card is decided by the inset
-                // *beneath* them and not by the gap above: `sm - STRIP_RISE`
-                // puts them six points lower than `sm` alone did, with the
-                // block's own height unchanged.
-                column = column.with_child(
-                    Padding::new(
-                        strip,
-                        EdgeInsets::new(md, 4.0 + STRIP_RISE, md, sm - STRIP_RISE),
-                    )
-                    .finish(),
-                );
+            }
+            // The menu sits **directly over the input card**: the owner asked
+            // for the command popup attached above the composer, not separated
+            // from it by the instruction strip (which now lives under the
+            // card). One slot, which the draft's command list wins, then the
+            // model card / flat list.
+            if !waiting {
+                if let Some(menu) = self
+                    .slash_menu()
+                    .or_else(|| self.model_tray())
+                    .or_else(|| self.model_menu())
+                {
+                    column = column.with_child(menu);
+                }
             }
             // No rule between the content and the card: the floating rich
             // input is the pane's bottom surface and the content simply ends

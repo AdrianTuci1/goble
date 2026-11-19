@@ -358,6 +358,7 @@ pub fn make_actions(
     let on_send_queued = Rc::clone(&state);
     let on_dismiss_queued = Rc::clone(&state);
     let on_settings = Rc::clone(&state);
+    let on_close_settings_overlay = Rc::clone(&state);
     let on_inbox = Rc::clone(&state);
     let on_close_inbox = Rc::clone(&state);
     let on_inbox_move = Rc::clone(&state);
@@ -2572,18 +2573,18 @@ pub fn make_actions(
             state.space_rename_focused = false;
             state.space_rename_draft.clear();
         })),
-        // The settings tab: one space whose root is a settings leaf, opened
-        // once and brought to the front on every later press. It is a tab in
-        // `AppTab::Chat`, so the press comes back to the chat mode the strip is
-        // drawn in.
+        // Settings is an overlay now, not a pane: opening it reads the files
+        // again (they stay the source of truth) and floats the sheet over the
+        // workspace without taking a tab.
         on_settings: Rc::new(RefCell::new(move || {
             let mut state = on_settings.borrow_mut();
-            state.open_settings_tab(desktop_settings.as_deref());
-            // The files are the source of truth: opening the tab reads them
-            // again, so a hand edit made since the last visit shows up.
+            state.settings_overlay_open = true;
             if let Some(desktop) = desktop_settings.as_deref() {
                 state.refresh_settings(desktop);
             }
+        })),
+        on_close_settings_overlay: Rc::new(RefCell::new(move || {
+            on_close_settings_overlay.borrow_mut().settings_overlay_open = false;
         })),
         on_onboarding: action_onboarding.clone(),
         // The settings tab's one dispatch. Every page row, field commit, dialog

@@ -282,6 +282,7 @@ pub struct UiActions {
     /// it, and every row, field and action inside sends its own variant.
     pub on_agent_dashboard: Rc<RefCell<dyn FnMut(AgentDashboardAction)>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
+    pub on_close_settings_overlay: Rc<RefCell<dyn FnMut()>>,
     /// The settings tab's one dispatch: every rail row, control, field commit,
     /// dialog button and keyboard gesture the surface makes. The handler in
     /// `actions/settings_actions.rs` is the single call site for the

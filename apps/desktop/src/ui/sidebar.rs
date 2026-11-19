@@ -19,11 +19,14 @@ use goble_ui::elements::conversation_list_item::{
     SIDEBAR_ICON_PROJECT_ADD, SIDEBAR_ICON_SLIDERS, SIDEBAR_LIST_BOTTOM_PAD, SIDEBAR_SECTION_TITLE,
     SIDEBAR_SECTION_TOP_INSET, SIDEBAR_TITLE_LINE, SIDEBAR_TITLE_SIZE,
 };
+use goble_ui::color::ColorU;
 use goble_ui::elements::{
-    AgentCardUi, AppContext, Axis, Container, ConversationEntry, CrossAxisAlignment, EdgeInsets,
-    Element, Expanded, Fill, Flex, HoverRow, MainAxisSize, Padding, PopupMenu, PopupMenuItem,
-    PopupMenuPosition, Scrollable, SearchInput, Spacer, Text, Tooltip, TooltipPosition,
+    AgentCardUi, AppContext, Axis, ConstrainedBox, Container, ConversationEntry,
+    CrossAxisAlignment, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow,
+    MainAxisSize, Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput,
+    Spacer, Text, Tooltip, TooltipPosition,
 };
+use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
 
 use super::explorer::build_explorer;
@@ -95,7 +98,11 @@ pub fn build_sidebar(
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(sm);
-    column = column.with_child(view_toolbelt(app, state, actions));
+    // The general topbar is gone: the sidebar owns the window's top edge, so
+    // it starts with the traffic lights (native on macOS, drawn elsewhere) and
+    // then the conversation rows. The old view toolbelt lived on the general
+    // bar; the panel header's sidebar toggle replaces it.
+    column = column.with_child(traffic_lights(app));
     column = column.with_child(Expanded::new(view).finish());
 
     // The Surface fill is the sidebar's backdrop, and it must reach the window's
@@ -181,6 +188,48 @@ fn view_toolbelt(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> B
     row.finish()
 }
 
+/// The three window controls at the sidebar's leading edge. On macOS the OS
+/// draws the real lights over this reserved row; elsewhere the same three dots
+/// are painted so the layout still reads as the reference.
+fn traffic_lights(app: &AppContext) -> Box<dyn Element> {
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.0)
+        .with_child(Empty::new().with_size(vec2f(8.0, 0.0)).finish());
+    if !cfg!(target_os = "macos") {
+        for color in ["#ff5f57", "#febc2e", "#28c840"] {
+            row = row.with_child(
+                Container::new(Empty::new().with_size(vec2f(10.0, 10.0)).finish())
+                    .with_background(Fill::Solid(ColorU::hex(
+                        u32::from_str_radix(color.trim_start_matches('#'), 16).unwrap_or(0),
+                    )))
+                    .with_corner_radius(5.0)
+                    .finish(),
+            );
+        }
+    }
+    ConstrainedBox::new(row.finish()).with_height(24.0).finish()
+}
+
+/// One of the sidebar's plain top-level rows (Automations, Customizations).
+fn sidebar_action(
+    _app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    icon: &'static str,
+    label: &'static str,
+    key: &'static str,
+) -> Box<dyn Element> {
+    let on_settings = actions.on_settings.clone();
+    SidebarActionRow::new(icon, label)
+        .with_label_color(ColorToken::Text)
+        .with_hovered(is_hovered(state, key))
+        .with_hover_cell(state.sidebar_hover_row.clone(), key)
+        .with_on_click(move || (on_settings.borrow_mut())())
+        .finish()
+}
+
 /// The conversation view: search, the Workspaces header and its rows.
 fn agents_view(
     app: &AppContext,
@@ -234,13 +283,31 @@ fn agents_view(
         .with_state(state.sidebar_scroll.clone())
         .finish();
 
+    let automations = sidebar_action(app, state, actions, "sparkle", "Automations", "sidebar.automations");
+    let customizations = sidebar_action(
+        app,
+        state,
+        actions,
+        "sliders",
+        "Customizations",
+        "sidebar.customizations",
+    );
+    let on_settings = actions.on_settings.clone();
+    let settings = SidebarActionRow::new("settings", "Settings")
+        .with_label_color(ColorToken::Muted)
+        .with_hover_cell(state.sidebar_hover_row.clone(), "sidebar.settings")
+        .with_on_click(move || (on_settings.borrow_mut())())
+        .finish();
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    column = column.with_child(search);
+    let _ = search;
     column = column.with_child(new_conversation);
+    column = column.with_child(automations);
+    column = column.with_child(customizations);
     column = column.with_child(header);
     column = column.with_child(Expanded::new(list).finish());
+    column = column.with_child(settings);
     column.finish()
 }
 

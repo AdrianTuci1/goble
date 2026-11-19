@@ -66,7 +66,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         media,
         media_actions,
     } = *context;
-    let topbar = shell::build_topbar(app, state, actions, media, media_actions);
     let sidebar = sidebar::build_sidebar(app, state, actions, &media.selected_medium);
     // The agent-management dashboard takes the panes' place beside the tools
     // sidebar: the sidebar and the toolbar stay around it, and the panel gets
@@ -146,8 +145,8 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // window's own `Bg`, so the bar block reads as one dark piece whose bottom
     // edge is the top of the content sheet: the floating pills end above it and
     // the selected tab's fill crosses it into the surface below.
-    shell_col = shell_col.with_child(build_cursor_baseline(app));
-    shell_col = shell_col.with_child(build_topbar_band(app));
+    // The general topbar is retired: the sidebar and the panel own the top
+    // edge, so the shell body starts at the window's first pixel.
     // No rule under the toolbar: Chrome has none between its tab strip and
     // the toolbar, and in Goble the two-tone does the separating — the bar and
     // its band are the window frame's `Bg`, and the content sheet's `Surface`
@@ -227,6 +226,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // Cmd+Shift+N's saved-host list, and the offer shown when a saved host's
     // session ends. Both are dialogs over the workspace; the picker is modal
     // while it is up, the reconnect offer only takes the click it is given.
+    let settings_overlay = settings::overlay::build_settings_overlay(app, state, actions);
     let host_picker_dialog = hosts::build_host_picker(app, state, actions);
     let ssh_target_dialog = hosts::build_ssh_target_overlay(app, state, actions);
     let ssh_reconnect_dialog = hosts::build_reconnect_prompt(app, state, actions);
@@ -239,7 +239,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         // (the "+ ▾" environment menu) sit above the sidebar and the pane
         // surface, and it is dispatched first within the shell for the same
         // reason. Sheets and dialogs below stay above the toolbar.
-        topbar,
         crons_sheet,
         connectors_sheet,
         vault_sheet,
@@ -260,6 +259,9 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         // The Workspaces list's own Rename dialog (workspace rows' "Rename
         // workspace"): same casing, its own copy and callbacks.
         session_menu::build_workspace_rename_dialog_surface(app, state, actions),
+        // Settings floats above every workspace surface; it is a sheet, not a
+        // pane, so it never takes a tab.
+        settings_overlay,
     ]);
 
     // A finished turn is announced here, at the window's top layer, so the
@@ -2716,6 +2718,208 @@ mod tests {
             },
             &mut ctx,
             &app,
+        );
+    }
+
+    /// The general topbar is gone: the sidebar's traffic-light row is the top
+    /// edge and the panel header starts on the same line, with no tab strip or
+    /// global bar above either.
+    #[test]
+    fn the_general_topbar_is_gone_and_the_panel_owns_the_top_edge() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let commands = render_element(&mut root, window(), &app);
+        let new_conversation = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "New conversation" && origin.x < 250.0 =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the sidebar starts with New conversation");
+        assert!(
+            new_conversation.y < 60.0,
+            "the sidebar owns the top edge, got {new_conversation:?}"
+        );
+        let title = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "New Agent" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the panel header names the conversation");
+        assert!(
+            title.y < 40.0,
+            "the panel header is at the window's top, got {title:?}"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. }
+                    if text == "Goble" || text == "Workspaces"
+            )),
+            "no general-topbar/crumb text survives"
+        );
+        let _ = state;
+    }
+
+    /// The panel header's sidebar control is a real toggle now that the
+    /// general topbar no longer carries one.
+    #[test]
+    fn the_panel_header_toggles_the_sidebar() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let commands = render_element(&mut root, window(), &app);
+        let toggle = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { origin, name, size, .. }
+                    if name == "left-panel-close" =>
+                {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the header draws the hide-sidebar toggle");
+        assert!(state.borrow().sidebar_visible);
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: toggle,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: toggle,
+                button: 0,
+            },
+        ] {
+            let _ = root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(
+            !state.borrow().sidebar_visible,
+            "the header toggle hides the sidebar"
+        );
+    }
+
+    /// The panel's More menu carries the DSH actions with their shortcuts, and
+    /// the Split right row really splits the focused pane.
+    #[test]
+    fn the_panel_more_menu_offers_split_replace_and_their_shortcuts() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let commands = render_element(&mut root, window(), &app);
+        let more = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { origin, name, size, .. } if name == "ellipsis" => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the panel header draws its More control");
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown { position: more, button: 0 },
+            DispatchedEvent::MouseUp { position: more, button: 0 },
+        ] {
+            let _ = root.dispatch_event(&event, &mut ctx, &app);
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for expected in [
+            "Split right",
+            "Split down",
+            "Replace with new",
+            "⌘ Space",
+            "⌘ ⇧ D",
+        ] {
+            assert!(
+                texts.iter().any(|text| *text == expected),
+                "the More menu draws {expected:?}: {texts:?}"
+            );
+        }
+
+        let before = state.borrow().spaces[state.borrow().active_space].root.leaf_count();
+        let split = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Split right" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Split right row");
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: split + vec2f(6.0, 6.0),
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: split + vec2f(6.0, 6.0),
+                button: 0,
+            },
+        ] {
+            let _ = root.dispatch_event(&event, &mut ctx, &app);
+        }
+        let after = state.borrow().spaces[state.borrow().active_space].root.leaf_count();
+        assert_eq!(after, before + 1, "Split right splits the focused pane");
+    }
+
+    /// The settings surface is an overlay: wide it floats with its rail; narrow
+    /// it fills and offers the hamburger. Closing returns to the workspace.
+    #[test]
+    fn settings_is_a_wide_sheet_with_a_rail_and_a_narrow_sheet_with_a_hamburger() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.settings_overlay_open = true;
+            s.settings_overlay_wide = true;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for expected in ["Settings", "General", "Friendly name", "Appearance"] {
+            assert!(
+                texts.iter().any(|text| *text == expected),
+                "the wide sheet draws {expected:?}: {texts:?}"
+            );
+        }
+
+        {
+            let mut s = state.borrow_mut();
+            s.settings_overlay_wide = false;
+        }
+        let commands = render_element(&mut root, vec2f(700.0, 900.0), &app);
+        let menu = commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "menu-01"
+        ));
+        assert!(menu, "the narrow sheet draws its hamburger");
+        state.borrow_mut().settings_overlay_open = false;
+        let commands = render_element(&mut root, vec2f(700.0, 900.0), &app);
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if *text == "Friendly name"
+            )),
+            "the closed overlay leaves the workspace"
         );
     }
 }

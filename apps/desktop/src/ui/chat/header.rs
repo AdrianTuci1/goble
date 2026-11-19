@@ -222,8 +222,10 @@ pub(crate) fn build_agent_header(
     // DSH's title cluster: the harness mark, the parent crumb (the harness the
     // surface works with), a `/` and the current conversation title. A shell
     // path has no parent crumb; the path is the current crumb alone.
-    let mark = harness_chip(app, state, pane_id, surface_harness);
-    let crumb = surface_harness.map(|harness| harness.name.to_string());
+    // The panel topbar names ONLY the conversation: the harness mark and the
+    // parent crumb belonged to the retired general bar's title language.
+    let mark = None;
+    let crumb = None;
     let mut title = Flex::row()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -416,7 +418,13 @@ pub(crate) fn build_agent_header_with(
     if !expandable && !maximized {
         max_item = max_item.disabled();
     }
+    let on_split_right = actions.on_split_right.clone();
+    let on_split_down = actions.on_split_down.clone();
+    let on_replace = actions.on_create_submit.clone();
     let menu_items = vec![
+        PopupMenuItem::new("Split right").with_description("⌘ Space"),
+        PopupMenuItem::new("Split down").with_description("⌘ ⇧ D"),
+        PopupMenuItem::new("Replace with new").with_separator_before(),
         dock_item,
         max_item,
         PopupMenuItem::new("Close pane").with_icon("x"),
@@ -442,8 +450,11 @@ pub(crate) fn build_agent_header_with(
     .with_position(PopupMenuPosition::AboveEnd)
     .with_max_width(220.0)
     .with_on_select(move |index| match index {
-        0 => (on_menu_dock.borrow_mut())(pane_id),
-        1 => (on_menu_max.borrow_mut())(pane_id),
+        0 => (on_split_right.borrow_mut())(),
+        1 => (on_split_down.borrow_mut())(),
+        2 => (on_replace.borrow_mut())(),
+        3 => (on_menu_dock.borrow_mut())(pane_id),
+        4 => (on_menu_max.borrow_mut())(pane_id),
         _ => (on_menu_close.borrow_mut())(),
     })
     .finish();
@@ -485,6 +496,49 @@ pub(crate) fn build_agent_header_with(
     if let Some(dock_button) = dock_button {
         utilities = utilities.with_child(dock_button);
     }
+    let on_sidebar = actions.on_toggle_sidebar.clone();
+    let sidebar_open = state.sidebar_visible;
+    let sidebar_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new(if sidebar_open {
+                "left-panel-close"
+            } else {
+                "left-panel-open"
+            })
+            .with_size(15.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(app.theme.radius_px())
+        .with_on_click(move || (on_sidebar.borrow_mut())())
+        .finish(),
+        if sidebar_open {
+            "Hide sidebar"
+        } else {
+            "Show sidebar"
+        },
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    utilities = utilities.with_child(sidebar_button);
+    let on_split = actions.on_split_right.clone();
+    let split_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("split-right")
+                .with_size(15.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(app.theme.radius_px())
+        .with_on_click(move || (on_split.borrow_mut())())
+        .finish(),
+        "Split right",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    utilities = utilities.with_child(split_button);
     utilities = utilities.with_child(menu);
     if let Some(expand_button) = expand_button {
         utilities = utilities.with_child(expand_button);

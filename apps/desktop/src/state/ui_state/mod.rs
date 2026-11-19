@@ -603,6 +603,12 @@ pub struct UiState {
     pub sidebar_add_menu_open: Rc<RefCell<bool>>,
     /// The chat transcript's changed-files card fold, shared across rebuilds.
     pub changed_files_open: Rc<RefCell<bool>>,
+    /// The settings overlay (not a pane): open flag and the hamburger's state
+    /// in the narrow window.
+    pub settings_overlay_open: bool,
+    pub settings_overlay_hamburger: Rc<RefCell<bool>>,
+    /// Whether the settings sheet floats (wide) or fills the window (narrow).
+    pub settings_overlay_wide: bool,
     /// A saved host whose session just ended, offered for reconnect: the pane
     /// it ran in and the entry's name. Cleared by reconnecting or dismissing.
     pub ssh_reconnect_prompt: Option<(u64, String)>,

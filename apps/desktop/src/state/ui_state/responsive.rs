@@ -140,6 +140,7 @@ impl UiState {
             return;
         }
         self.responsive_width = window_width;
+        self.settings_overlay_wide = window_width >= 900.0;
         let breakpoint = self.responsive_breakpoint();
         // Hysteresis: once collapsed, stay collapsed until the window is
         // clearly wider than the breakpoint; once expanded, collapse only when

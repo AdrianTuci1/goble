@@ -37,6 +37,7 @@
 
 pub mod fields;
 pub mod model;
+pub mod overlay;
 pub mod pages;
 pub mod render;
 pub mod state;

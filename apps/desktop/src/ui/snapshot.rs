@@ -183,6 +183,8 @@ pub struct PaneChatSnapshot {
     /// Whether the usage disclosure is expanded. App-owned so it survives the
     /// per-frame rebuild.
     pub usage_open: Rc<RefCell<bool>>,
+    /// The transcript changed-files card's fold.
+    pub changed_files_open: Rc<RefCell<bool>>,
 }
 
 /// The composer's warp-new style context pills: which harness (the selected
@@ -505,6 +507,8 @@ pub struct UiSnapshot {
     pub sidebar_menu_open: Rc<RefCell<bool>>,
     /// The Workspaces header's add menu (New Project / SSH Host…).
     pub sidebar_add_menu_open: Rc<RefCell<bool>>,
+    /// The chat changed-files card's fold.
+    pub changed_files_open: Rc<RefCell<bool>>,
     /// The list's grouping: one flat list or one block per project.
     pub sidebar_flat_list: Rc<RefCell<bool>>,
     /// The list's order: most recent first, or the user's manual drag order.

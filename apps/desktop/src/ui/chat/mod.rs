@@ -105,5 +105,6 @@ pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneCha
             usage_calls: 0,
             usage_context_window: None,
             usage_open: Rc::new(RefCell::new(false)),
+            changed_files_open: Rc::new(RefCell::new(false)),
         })
 }

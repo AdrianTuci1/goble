@@ -286,6 +286,20 @@ impl ChatView {
     /// The tokens this conversation has spent, from the provider's own counts.
     /// Drawn as the transcript's footer usage pill, whose click opens the
     /// details panel; accounting only, never a price.
+    /// The changed-files card's fold, shared with the app so opening it
+    /// survives the per-frame element rebuild.
+    pub fn with_changed_files_open(mut self, open: Rc<RefCell<bool>>) -> Self {
+        self.changed_files_open = open;
+        self
+    }
+
+    /// The Review action at the card's trailing edge: open the existing diff
+    /// pane for this pane's directory.
+    pub fn with_on_review_changes<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_review_changes = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     pub fn with_usage(mut self, usage: TokenUsage) -> Self {
         self.usage = usage;
         self
@@ -709,9 +723,7 @@ impl ChatView {
 
     /// Fired with the mode the user picked from the menu or cycled to with
     /// Shift+Tab, so the host stores it on the pane.
-    pub fn with_on_select_approval_mode<
-        F: FnMut(crate::elements::ApprovalMode) + 'static,
-    >(
+    pub fn with_on_select_approval_mode<F: FnMut(crate::elements::ApprovalMode) + 'static>(
         mut self,
         callback: F,
     ) -> Self {

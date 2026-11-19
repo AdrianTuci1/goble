@@ -512,6 +512,11 @@ pub fn build_agent_chat(
         // The app-owned tool-call fold map: a folded call survives the rebuild.
         .with_tool_fold(state.tool_fold.clone())
         .with_tool_hover(state.tool_hover.clone())
+        .with_changed_files_open(session.changed_files_open.clone())
+        .with_on_review_changes({
+            let open = actions.on_diff_panel.clone();
+            move || (open.borrow_mut())(pane_id, crate::ui::DiffPanelAction::Open(None))
+        })
         // This pane's own filter bar state (seeded per pane before the
         // snapshot), so opening it in one pane leaves the siblings alone.
         .with_global_terminal_filter(state.terminal_global_filters.get(&pane_id).cloned())

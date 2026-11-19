@@ -601,6 +601,8 @@ pub struct UiState {
     pub ssh_target_error: Option<String>,
     /// Whether the Workspaces header's add menu is up.
     pub sidebar_add_menu_open: Rc<RefCell<bool>>,
+    /// The chat transcript's changed-files card fold, shared across rebuilds.
+    pub changed_files_open: Rc<RefCell<bool>>,
     /// A saved host whose session just ended, offered for reconnect: the pane
     /// it ran in and the entry's name. Cleared by reconnecting or dismissing.
     pub ssh_reconnect_prompt: Option<(u64, String)>,

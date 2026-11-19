@@ -595,10 +595,7 @@ impl UiState {
     ) -> Option<String> {
         let desktop = desktop?;
         let messages = desktop.list_chat_messages(source_id).unwrap_or_default();
-        let source = desktop
-            .list_chats()
-            .into_iter()
-            .find(|c| c.id == source_id);
+        let source = desktop.list_chats().into_iter().find(|c| c.id == source_id);
         let title = source
             .as_ref()
             .map(|c| format!("Fork of {}", c.title))
@@ -818,6 +815,7 @@ impl UiState {
                     scroll: self.pane_scroll(*pane_id),
                     text_selection: self.pane_transcript_selection(*pane_id),
                     usage_open: self.pane_usage_open(*pane_id),
+                    changed_files_open: self.changed_files_open.clone(),
                     usage: self
                         .conversation_usage
                         .get(&session.conversation_id)

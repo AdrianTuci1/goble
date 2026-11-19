@@ -23,6 +23,7 @@ use goble_core::llm::TokenUsage;
 use goble_core::ssh_command::SshSession;
 
 mod builder;
+mod changed_files_card;
 mod element;
 mod sticky;
 mod surface;
@@ -121,6 +122,10 @@ pub struct ChatView {
     usage_calls: u64,
     /// The model's context window when the host knows it.
     usage_context_window: Option<u64>,
+    /// The changed-files card's fold, app-owned so it survives the rebuild.
+    changed_files_open: Rc<RefCell<bool>>,
+    /// Opens the existing review pane from the turn's changed-files card.
+    on_review_changes: Option<Rc<RefCell<dyn FnMut()>>>,
     /// Whether the usage pill's details panel is open. App-owned so it survives
     /// the per-frame rebuild (the popover element is rebuilt every frame).
     usage_open: Rc<RefCell<bool>>,
@@ -326,6 +331,8 @@ impl ChatView {
             composer_vim: None,
             composer_clipboard: None,
             composer_anchor: Rc::new(RefCell::new(None)),
+            changed_files_open: Rc::new(RefCell::new(false)),
+            on_review_changes: None,
             usage: TokenUsage::default(),
             usage_last_call: None,
             usage_calls: 0,

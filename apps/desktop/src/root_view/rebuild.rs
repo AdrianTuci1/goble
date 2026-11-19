@@ -612,6 +612,7 @@ impl RootView {
                 sidebar_focus_row: s.sidebar_focus_row.clone(),
                 sidebar_menu_open: s.sidebar_menu_open.clone(),
                 sidebar_add_menu_open: s.sidebar_add_menu_open.clone(),
+                changed_files_open: s.changed_files_open.clone(),
                 sidebar_flat_list: s.sidebar_flat_list.clone(),
                 sidebar_recent_first: s.sidebar_recent_first.clone(),
                 sidebar_archived_filter: s.archived_filter(),

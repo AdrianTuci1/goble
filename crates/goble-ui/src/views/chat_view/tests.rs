@@ -105,9 +105,9 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     let rounded: Vec<f32> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::FillRect {
-                corner_radius, ..
-            } if *corner_radius > 0.0 => Some(*corner_radius),
+            RenderCommand::FillRect { corner_radius, .. } if *corner_radius > 0.0 => {
+                Some(*corner_radius)
+            }
             _ => None,
         })
         .collect();
@@ -215,7 +215,11 @@ fn the_cloud_landing_draws_its_mark_over_the_notice() {
         if landing {
             view = view.with_empty_state_icon("cloud");
         }
-        render_element(&mut view.finish(), vec2f(600.0, 800.0), &AppContext::default())
+        render_element(
+            &mut view.finish(),
+            vec2f(600.0, 800.0),
+            &AppContext::default(),
+        )
     };
 
     let cloud = draw(true);
@@ -571,11 +575,7 @@ fn the_work_dock_sits_under_the_header_and_above_the_transcript() {
     )];
     let mut view = ChatView::new()
         .with_messages(messages)
-        .with_header(
-            Empty::new()
-                .with_size(vec2f(0.0, header_height))
-                .finish(),
-        )
+        .with_header(Empty::new().with_size(vec2f(0.0, header_height)).finish())
         .with_work_dock(Some(panel))
         .finish();
     let commands = render_element(&mut view, vec2f(600.0, 480.0), &app);
@@ -663,9 +663,9 @@ fn chat_view_renders_the_queued_prompt_as_a_borderless_band() {
     let rounded: Vec<f32> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::FillRect {
-                corner_radius, ..
-            } if *corner_radius > 0.0 => Some(*corner_radius),
+            RenderCommand::FillRect { corner_radius, .. } if *corner_radius > 0.0 => {
+                Some(*corner_radius)
+            }
             _ => None,
         })
         .collect();
@@ -1024,21 +1024,14 @@ fn the_agent_transcript_paints_no_pill() {
 
     // The user's rounded bubble is the deliberate exception to the no-pill
     // rule; this test is about every agent row around it.
-    let messages = vec![
-        ChatMessage::new(
-            ChatRole::Assistant,
-            vec![
-                ChatFragment::reasoning(
-                    "step-0",
-                    "Thinking",
-                    "the build fails on the parser",
-                    true,
-                ),
-                ChatFragment::text("Reading the parser's own row, then running the tests."),
-            ],
-        )
-        .with_tool_calls(calls),
-    ];
+    let messages = vec![ChatMessage::new(
+        ChatRole::Assistant,
+        vec![
+            ChatFragment::reasoning("step-0", "Thinking", "the build fails on the parser", true),
+            ChatFragment::text("Reading the parser's own row, then running the tests."),
+        ],
+    )
+    .with_tool_calls(calls)];
 
     let record = SubAgentRow {
         child_id: "conv-child-1".to_string(),
@@ -1214,7 +1207,9 @@ fn the_pending_ask_closes_the_transcript_as_the_agent_questions_band() {
         );
     }
     assert!(
-        !drawn.iter().any(|text| text == "Agent asks" || text == "Send answer"),
+        !drawn
+            .iter()
+            .any(|text| text == "Agent asks" || text == "Send answer"),
         "the old ask surface is gone: {drawn:?}"
     );
 }
@@ -1427,12 +1422,18 @@ fn the_transcript_draws_the_tool_rows_the_lock_covers() {
             _ => None,
         })
         .collect();
-    for expected in ["◈", "Reading 1 file, Editing 1 file +1/-1"] {
+    for expected in ["Reading 1 file, Editing 1 file +1/-1"] {
         assert!(
             texts.iter().any(|text| text == expected),
             "the transcript draws {expected:?}, got {texts:?}"
         );
     }
+    assert!(
+        !texts
+            .iter()
+            .any(|text| text.contains('◈') || text.contains('◆') || text.contains('❯')),
+        "the transcript's tool rows draw no glyph, got {texts:?}"
+    );
 }
 
 /// The still-running footer is information without a cue: it states the work in
@@ -1717,7 +1718,9 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
         "the old accent readout is gone: {drawn:?}"
     );
     assert!(
-        !drawn.iter().any(|t| t.contains("cached") || t.contains("Input")),
+        !drawn
+            .iter()
+            .any(|t| t.contains("cached") || t.contains("Input")),
         "the details panel stays closed until asked for: {drawn:?}"
     );
     assert!(
@@ -1853,7 +1856,9 @@ fn the_transcript_footer_shows_fork_and_the_reported_token_usage() {
     let usage_origin = text_origin(&rest, "no usage yet");
     let over_usage = paint_with(&mut bare, Some(probe(usage_origin)), &app);
     assert_eq!(
-        bands(&over_usage).into_iter().find(|band| contains(*band, probe(usage_origin))),
+        bands(&over_usage)
+            .into_iter()
+            .find(|band| contains(*band, probe(usage_origin))),
         None,
         "the empty slot is a reading, not a control: no hover band"
     );
@@ -2120,7 +2125,10 @@ fn the_usage_area_follows_the_light_theme_too() {
     );
     let mut ctx = PaintContext::new(Renderer::new());
     view.paint(vec2f(0.0, 0.0), &mut ctx, &app);
-    let _ = ctx.renderer.take().map(|renderer| renderer.commands().to_vec());
+    let _ = ctx
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec());
 
     let mut layer_ctx = PaintContext::new(Renderer::new());
     HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut layer_ctx, &app);
@@ -2136,7 +2144,10 @@ fn the_usage_area_follows_the_light_theme_too() {
             _ => None,
         })
         .collect();
-    assert!(drawn.iter().any(|text| text == "Session usage"), "{drawn:?}");
+    assert!(
+        drawn.iter().any(|text| text == "Session usage"),
+        "{drawn:?}"
+    );
     assert!(drawn.iter().any(|text| text == "64.8%"), "{drawn:?}");
     assert!(
         layer.iter().any(|command| matches!(
@@ -2181,7 +2192,11 @@ fn the_usage_popover_closes_without_a_second_click() {
         .with_on_fork(|| {})
         .finish();
     let size = vec2f(600.0, 800.0);
-    let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+    let _ = view.layout(
+        SizeConstraint::loose(size),
+        &mut LayoutContext::default(),
+        &app,
+    );
     let mut paint_ctx = PaintContext::new(Renderer::new());
     view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
     let mut ctx = EventContext;
@@ -2199,7 +2214,11 @@ fn the_usage_popover_closes_without_a_second_click() {
     assert!(!*open.borrow(), "an outside press closes the panel");
 
     *open.borrow_mut() = true;
-    let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+    let _ = view.layout(
+        SizeConstraint::loose(size),
+        &mut LayoutContext::default(),
+        &app,
+    );
     let mut paint_ctx = PaintContext::new(Renderer::new());
     view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
     let handled = view.dispatch_event(
@@ -2214,7 +2233,11 @@ fn the_usage_popover_closes_without_a_second_click() {
     assert!(!*open.borrow(), "and closes itself");
 
     *open.borrow_mut() = true;
-    let _ = view.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), &app);
+    let _ = view.layout(
+        SizeConstraint::loose(size),
+        &mut LayoutContext::default(),
+        &app,
+    );
     let mut paint_ctx = PaintContext::new(Renderer::new());
     view.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
     let handled = view.dispatch_event(
@@ -2529,7 +2552,10 @@ fn the_hint_row_sits_under_the_card_on_the_right() {
             _ => None,
         })
         .collect();
-    assert!(!caps.is_empty(), "the strip draws its key caps: {commands:?}");
+    assert!(
+        !caps.is_empty(),
+        "the strip draws its key caps: {commands:?}"
+    );
     let caps_top = caps
         .iter()
         .map(|rect| rect.min_y())
@@ -2648,9 +2674,9 @@ fn the_input_card_is_the_bottom_block_with_no_rule_over_it() {
     // There is no context band any more: the retired directory control never
     // draws, and the input segment fills the card's content under its casing.
     assert!(
-        !commands
-            .iter()
-            .any(|command| matches!(command, RenderCommand::DrawIcon { name, .. } if name == "folder")),
+        !commands.iter().any(
+            |command| matches!(command, RenderCommand::DrawIcon { name, .. } if name == "folder")
+        ),
         "the retired directory band never draws: {commands:?}"
     );
     let segment = commands
@@ -3540,7 +3566,10 @@ mod drag_to_copy {
                     RenderCommand::DrawText { text, .. } if text == "• "
                 )
             });
-            assert!(marker, "the reply is drawn as a list in a {width}-wide pane");
+            assert!(
+                marker,
+                "the reply is drawn as a list in a {width}-wide pane"
+            );
             let ink = widest(&commands);
             assert!(
                 ink <= width + 0.5,
@@ -3667,8 +3696,8 @@ mod sticky_turn {
     }
 
     fn user_row(text: &str, width: f32, app: &AppContext) -> Row {
-        let mut bubble = ChatMessageBubble::new(ChatRole::User, vec![ChatFragment::text(text)])
-            .finish();
+        let mut bubble =
+            ChatMessageBubble::new(ChatRole::User, vec![ChatFragment::text(text)]).finish();
         let commands = render_element(&mut bubble, vec2f(width, 200.0), app);
         let band = commands
             .iter()
@@ -3767,7 +3796,9 @@ mod sticky_turn {
         let size = vec2f(width, 480.0);
         let messages = conversation("Fix the login bug", 40);
         let (scroll, bands) = at_top(&messages, size, &app);
-        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) / 2.0);
+        scroll
+            .borrow_mut()
+            .scroll_by(reply_top(&app, bands[0]) / 2.0);
 
         let commands = frame(&messages, &scroll, size, &app);
         let band = strip(&commands, &app, width).expect("the turn pins");
@@ -3810,7 +3841,9 @@ mod sticky_turn {
         let size = vec2f(width, 480.0);
         let messages = conversation("Fix the login bug", 40);
         let (scroll, bands) = at_top(&messages, size, &app);
-        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) / 2.0);
+        scroll
+            .borrow_mut()
+            .scroll_by(reply_top(&app, bands[0]) / 2.0);
 
         let commands = frame(&messages, &scroll, size, &app);
         let band = strip(&commands, &app, width).expect("the turn pins");
@@ -3839,10 +3872,7 @@ mod sticky_turn {
             line.font_size, row.font_size,
             "the pinned line is the size of the message it pins"
         );
-        assert_eq!(
-            line.line_height, row.line_height,
-            "and the same line box"
-        );
+        assert_eq!(line.line_height, row.line_height, "and the same line box");
         assert_eq!(line.font_size, 14.0, "the transcript's paragraph size");
     }
 
@@ -3855,7 +3885,9 @@ mod sticky_turn {
         let size = vec2f(width, 480.0);
         let messages = conversation("Fix the login bug", 40);
         let (scroll, bands) = at_top(&messages, size, &app);
-        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) / 2.0);
+        scroll
+            .borrow_mut()
+            .scroll_by(reply_top(&app, bands[0]) / 2.0);
 
         let commands = frame(&messages, &scroll, size, &app);
         let band = strip(&commands, &app, width).expect("the turn pins");
@@ -3868,7 +3900,7 @@ mod sticky_turn {
             (band.height()
                 - (14.0 * crate::elements::chat_typography::USER_LH
                     + 2.0 * crate::elements::chat_typography::BAND_PADDING_Y))
-            .abs()
+                .abs()
                 < 0.01,
             "the band is DSH's padded 14 / 22 user line, got {}",
             band.height()
@@ -4007,7 +4039,9 @@ mod sticky_turn {
         // The first turn's rows are at the top edge, and the next prompt is
         // still below it: the pin has no turn to name yet, because the latest
         // prompt is the one it names.
-        scroll.borrow_mut().scroll_by(reply_top(&app, bands[0]) + 5.0);
+        scroll
+            .borrow_mut()
+            .scroll_by(reply_top(&app, bands[0]) + 5.0);
         let commands = frame(&messages, &scroll, size, &app);
         assert!(
             strip(&commands, &app, width).is_none(),
@@ -4183,13 +4217,9 @@ fn the_notice_surfaces_draw_dsh_type() {
                     font_weight,
                     font_family,
                     ..
-                } if text.starts_with(prefix) => Some((
-                    *font_size,
-                    *line_height,
-                    *color,
-                    *font_weight,
-                    *font_family,
-                )),
+                } if text.starts_with(prefix) => {
+                    Some((*font_size, *line_height, *color, *font_weight, *font_family))
+                }
                 _ => None,
             })
             .unwrap_or_else(|| panic!("the run {prefix:?} is drawn"))
@@ -4267,7 +4297,10 @@ impl Element for ProbeHeader {
         ctx: &mut crate::elements::PaintContext,
         _app: &AppContext,
     ) {
-        self.origin = Some(crate::elements::Point::from_vec2f(origin, Default::default()));
+        self.origin = Some(crate::elements::Point::from_vec2f(
+            origin,
+            Default::default(),
+        ));
         let size = self.size.unwrap_or(Vector2F::zero());
         if let Some(renderer) = ctx.renderer.as_mut() {
             renderer.fill_rect(
@@ -4334,10 +4367,7 @@ fn laned_view(
 
 /// The view's content column: the widest `Bg` fill the lane paints the content
 /// in. (The view's other backgrounds are `Surface`/raised.)
-fn view_content_column(
-    commands: &[crate::render::RenderCommand],
-    app: &AppContext,
-) -> RectF {
+fn view_content_column(commands: &[crate::render::RenderCommand], app: &AppContext) -> RectF {
     use crate::render::RenderCommand;
     let bg = app.theme.color(ColorToken::Bg);
     commands
@@ -4547,7 +4577,11 @@ fn the_work_dock_band_spans_the_pane_while_its_cards_are_lane_bounded() {
             _ => None,
         })
         .expect("the dock paints its full-width band");
-    assert_eq!(band.min_x(), 0.0, "the band reaches the pane's edge: {band:?}");
+    assert_eq!(
+        band.min_x(),
+        0.0,
+        "the band reaches the pane's edge: {band:?}"
+    );
     assert_eq!(band.max_x(), width, "and its other edge: {band:?}");
     assert_eq!(band.width(), width);
     assert!(
@@ -4633,5 +4667,116 @@ fn the_lane_column_paints_the_darker_background() {
     assert!(
         luminance(bg) < luminance(app.theme.color(ColorToken::Surface)),
         "the column reads darker than the pane's surface"
+    );
+}
+
+/// The completed turn's changed-files card: real per-call diff counts, a
+/// disclosure that reveals the file rows, a Review action that reaches the app,
+/// and no card at all for a turn that changed nothing.
+#[test]
+fn a_completed_turn_shows_its_changed_files_and_review_action() {
+    use crate::elements::chat_content::ToolCall;
+    use crate::event::DispatchedEvent;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+    use goble_core::harness::ToolCallStatus;
+
+    let app = AppContext::default();
+    let diff = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,4 @@\n one\n-two\n+two\n+three\n+four\n";
+    let message = ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("done")])
+        .with_tool_calls(vec![ToolCall {
+            id: "c1".to_string(),
+            name: "edit_file".to_string(),
+            arguments: r#"{"path":"src/a.rs"}"#.to_string(),
+            status: ToolCallStatus::Finished,
+            result: None,
+            diff: Some(diff.to_string()),
+        }]);
+    let summary = crate::elements::chat_content::changed_files_for_message(&message)
+        .expect("the diff makes a summary");
+    assert_eq!((summary.added(), summary.removed()), (3, 1), "{summary:?}");
+    let open = Rc::new(RefCell::new(false));
+    let reviewed = Rc::new(RefCell::new(0usize));
+    let reviewed_cb = reviewed.clone();
+    let mut view = ChatView::new()
+        .with_messages(vec![message])
+        .with_changed_files_open(open.clone())
+        .with_on_review_changes(move || *reviewed_cb.borrow_mut() += 1)
+        .finish();
+    let commands = render_element(&mut view, vec2f(700.0, 800.0), &app);
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    for needle in ["1 file changed", "+3", "-1", "Review"] {
+        assert!(
+            texts.iter().any(|text| *text == needle),
+            "the card shows {needle:?}: {texts:?}"
+        );
+    }
+    assert!(
+        !texts.iter().any(|text| *text == "src/a.rs"),
+        "the rows stay folded until the disclosure is opened: {texts:?}"
+    );
+
+    let review = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == "Review" => Some(*origin),
+            _ => None,
+        })
+        .expect("the Review action is drawn");
+    let mut ctx = crate::elements::EventContext::default();
+    for event in [
+        DispatchedEvent::MouseDown {
+            position: review + vec2f(6.0, 6.0),
+            button: 0,
+        },
+        DispatchedEvent::MouseUp {
+            position: review + vec2f(6.0, 6.0),
+            button: 0,
+        },
+    ] {
+        view.dispatch_event(&event, &mut ctx, &app);
+    }
+    assert_eq!(*reviewed.borrow(), 1, "Review opens the diff pane");
+
+    *open.borrow_mut() = true;
+    let commands = render_element(&mut view, vec2f(700.0, 800.0), &app);
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|text| *text == "src/a.rs"),
+        "opening the card reveals the file row: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| *text == "+3") && texts.iter().any(|text| *text == "-1"),
+        "the row carries its own counts: {texts:?}"
+    );
+
+    // A turn with no recorded diff draws no card.
+    let clean = ChatMessage::new(
+        ChatRole::Assistant,
+        vec![ChatFragment::text("nothing changed")],
+    );
+    let mut clean_view = ChatView::new()
+        .with_messages(vec![clean])
+        .with_on_review_changes(|| {})
+        .finish();
+    let commands = render_element(&mut clean_view, vec2f(700.0, 500.0), &app);
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, .. } if text.contains("file changed")
+        )),
+        "a clean turn has no changed-files card"
     );
 }

@@ -1,23 +1,25 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::chat_content::{changed_files_for_message, ChatRole};
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind, ToolDisplayMode};
 use crate::elements::chat_message_bubble::{tool_fold_targets, ToolFoldTarget};
 use crate::elements::chat_typography;
-use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::popup_menu::POPUP_PANEL_RADIUS;
+use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
-    Container, ContentLane, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
-    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
-    Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
-    TurnStatusFooter,
+    Container, ContentLane, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
+    Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
+    QuickActionButton, Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
+    TurnStatus, TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
+use super::changed_files_card::build_changed_files_card;
 use super::sticky::StickyTurn;
 use super::usage_popover::UsagePopover;
 use super::ChatView;
@@ -125,11 +127,22 @@ fn usage_row_mono(
         )
         .with_child(
             Text::new(value)
-                .with_theme_color(if emphasis { ColorToken::Text } else { ColorToken::Muted }, app)
+                .with_theme_color(
+                    if emphasis {
+                        ColorToken::Text
+                    } else {
+                        ColorToken::Muted
+                    },
+                    app,
+                )
                 .with_font_family(FontFamily::Mono)
                 .with_font_size(12.0)
                 .with_line_height(18.0 / 12.0)
-                .with_weight(if emphasis { FontWeight::Medium } else { FontWeight::Regular })
+                .with_weight(if emphasis {
+                    FontWeight::Medium
+                } else {
+                    FontWeight::Regular
+                })
                 .finish(),
         )
         .finish()
@@ -1030,6 +1043,30 @@ impl ChatView {
                 let bubble = bubble.finish();
                 message_column = message_column.with_child(sticky.probe(index, bubble));
             }
+            // DSH closes a completed assistant turn with its changed-files
+            // card. The counts come from the turn's own recorded tool diffs, so
+            // a turn that changed nothing draws no card; a running turn has no
+            // closing card yet.
+            if !matches!(self.turn_status, TurnStatus::Busy { .. }) {
+                let last_assistant = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == ChatRole::Assistant);
+                if let Some(summary) = last_assistant
+                    .and_then(changed_files_for_message)
+                    .filter(|summary| !summary.is_empty())
+                {
+                    if let Some(on_review) = self.on_review_changes.clone() {
+                        message_column = message_column.with_child(build_changed_files_card(
+                            app,
+                            &summary,
+                            self.changed_files_open.clone(),
+                            on_review,
+                        ));
+                    }
+                }
+            }
             // A failed turn says why under the messages it belongs to. The
             // inbox names the conversation; the transcript carries the reason,
             // where the user is already looking when the agent goes quiet.
@@ -1385,8 +1422,7 @@ impl ChatView {
                 move |idx| (cb.borrow_mut())(idx),
             );
             composer = composer.with_dir_menu_scroll(self.composer_dir_menu_scroll.clone());
-            composer =
-                composer.with_dir_menu_highlight(self.composer_dir_menu_highlight.clone());
+            composer = composer.with_dir_menu_highlight(self.composer_dir_menu_highlight.clone());
         }
         if let Some(cb) = self.on_select_branch_item.clone() {
             composer = composer

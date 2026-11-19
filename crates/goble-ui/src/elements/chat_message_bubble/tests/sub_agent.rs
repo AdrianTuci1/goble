@@ -93,17 +93,15 @@ fn each_sub_agent_status_draws_its_own_line() {
             .iter()
             .find(|row| row.contains("Agent "))
             .unwrap_or_else(|| panic!("status {status:?} draws its row, got {rows:?}"));
-        // One ruler row: the mark, the verb, the child and what it is doing,
-        // with no body and no card.
-        let expected_mark = if status == SubAgentRowStatus::Running {
-            // The first spinner frame at phase 0.
-            "◐"
-        } else {
-            "◆"
-        };
+        // One plain ruler row: the verb, the child and what it is doing, with
+        // no mark, status glyph, body or card.
         assert!(
-            row.starts_with(&format!("{expected_mark} Agent ")),
-            "status {status:?} names the spawned child behind its mark, got {row:?}"
+            row.starts_with("Agent "),
+            "status {status:?} names the spawned child with no leading mark, got {row:?}"
+        );
+        assert!(
+            !row.contains('◆') && !row.contains('◈') && !row.contains('❯'),
+            "status {status:?} draws no status glyph, got {row:?}"
         );
         assert!(
             row.contains("“audit the migration”"),
@@ -115,10 +113,10 @@ fn each_sub_agent_status_draws_its_own_line() {
         );
         assert_eq!(
             rows.iter()
-                .filter(|row| row.starts_with(&format!("{expected_mark} Agent ")))
+                .filter(|row| row.starts_with("Agent "))
                 .count(),
             1,
-            "the call draws one marked row, got {rows:?}"
+            "the call draws one plain row, got {rows:?}"
         );
     }
 }
@@ -381,7 +379,7 @@ fn a_resting_row_carries_its_diamond() {
         let (commands, _) = paint_tool_calls(vec![call("ls", "{}", status, None)]);
         assert_eq!(
             drawn_row_texts(&commands),
-            vec!["◆ ls".to_string()],
+            vec!["ls".to_string()],
             "status {status:?} draws its diamond and the tool's own words"
         );
         let runs = text_runs(&commands);
@@ -405,10 +403,10 @@ fn a_resting_row_carries_its_diamond() {
         "a finished command folds into its chain header"
     );
     assert!(
-        text_runs(&commands)
+        !text_runs(&commands)
             .iter()
-            .any(|(text, _, _, _)| text == "◈"),
-        "a command's folded header wears the dotted diamond"
+            .any(|(text, _, _, _)| text == "◈" || text == "◆" || text == "❯"),
+        "a command's folded header carries no glyph"
     );
 }
 

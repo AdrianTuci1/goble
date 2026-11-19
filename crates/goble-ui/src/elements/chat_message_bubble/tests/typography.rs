@@ -156,9 +156,8 @@ fn every_chat_surface_draws_dsh_type() {
     assert_eq!(weight, FontWeight::Regular);
     assert_eq!(run_family, family);
 
-    // A tool row: 13 / 24, regular, quiet ink, prose family, Goble's `◆` kept.
-    // A tool no family folds (here `credentials`) stands on its own, so the row
-    // wears the single-call diamond.
+    // A tool row: 13 / 24, regular, quiet ink, prose family, and no leading
+    // glyph at all — DSH's plain nested text row.
     let (commands, _) = paint_tool_calls(vec![call(
         "credentials",
         r#"{"agent_id":"researcher"}"#,
@@ -166,11 +165,12 @@ fn every_chat_surface_draws_dsh_type() {
         Some("none"),
     )]);
     assert!(
-        commands.iter().any(|command| matches!(
+        !commands.iter().any(|command| matches!(
             command,
-            RenderCommand::DrawText { text, .. } if text == "◆"
+            RenderCommand::DrawText { text, .. }
+                if text.contains('◆') || text.contains('◈') || text.contains('❯')
         )),
-        "the tool row keeps Goble's diamond, got {commands:?}"
+        "the tool row draws no glyph, got {commands:?}"
     );
     let (size, line, color, weight, run_family) = runmatching(&commands, "credentials");
     approx("tool row size", size, 13.0);
@@ -533,11 +533,10 @@ fn run_containing(commands: &[RenderCommand], needle: &str) -> (Vector2F, f32, f
         .unwrap_or_else(|| panic!("the run {needle:?} is drawn, got {commands:?}"))
 }
 
-/// A row's words' baseline equals its leading mark's baseline: the mark is a
-/// text run in the same 16 px cell painted at the row's top, so it must not be
-/// shifted by a padding. A tool row is DSH's 24 px high.
+/// A tool row is DSH's 24 px high and its words begin in the prose column:
+/// no leading mark, cell or gap shifts them.
 #[test]
-fn a_tool_row_is_twenty_four_high_and_its_mark_shares_the_baseline() {
+fn a_tool_row_is_twenty_four_high_with_no_leading_mark() {
     let app = AppContext::default();
     let call = call(
         "credentials",
@@ -562,20 +561,13 @@ fn a_tool_row_is_twenty_four_high_and_its_mark_shares_the_baseline() {
         24.0,
     );
 
-    let (mark_origin, mark_size, mark_lh) = run_containing(&commands, "◆");
     let (words_origin, words_size, words_lh) = run_containing(&commands, "credentials");
-    approx("the mark's font size", mark_size, 13.0);
     approx("the words' font size", words_size, 13.0);
-    approx(
-        "the mark's line box is the 16 px cell",
-        mark_size * mark_lh,
-        chat_typography::LEADING_BOX,
-    );
     approx("the words' line box is DSH's 24 px", words_size * words_lh, 24.0);
     approx(
-        "the mark and the words share a baseline (same top, same size)",
-        mark_origin.y,
-        words_origin.y,
+        "the words start at the band's text origin",
+        words_origin.x,
+        chat_typography::BAND_PADDING_X,
     );
 }
 

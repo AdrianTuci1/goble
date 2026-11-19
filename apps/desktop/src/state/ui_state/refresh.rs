@@ -218,6 +218,7 @@ impl UiState {
             ssh_config_hosts: Vec::new(),
             ssh_target_error: None,
             sidebar_add_menu_open: Rc::new(RefCell::new(false)),
+            changed_files_open: Rc::new(RefCell::new(false)),
             ssh_reconnect_prompt: None,
             floating_drag: Rc::new(RefCell::new(None)),
             live_executions: HashMap::new(),

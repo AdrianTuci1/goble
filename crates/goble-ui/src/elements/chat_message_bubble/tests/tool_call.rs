@@ -115,7 +115,7 @@ fn collapsed_tool_call_renders_in_one_row() {
     );
     assert_eq!(
         drawn_row_texts(&commands),
-        vec!["◆ ls".to_string()],
+        vec!["ls".to_string()],
         "the diamond and the tool name are drawn"
     );
     assert_eq!(
@@ -151,7 +151,7 @@ fn expanded_generic_tool_call_draws_its_result_and_never_prints_json() {
     );
     assert_eq!(
         drawn_row_texts(&commands),
-        vec!["❯ List Entities agent".to_string(), "2 entities".to_string()],
+        vec!["List Entities agent".to_string(), "2 entities".to_string()],
         "the row and its result are the whole body, got {texts:?}"
     );
     assert!(
@@ -384,7 +384,7 @@ fn a_users_command_is_still_the_terminal_block() {
     assert!(
         transcript_rows
             .iter()
-            .any(|row| row == "❯ Run cargo test -p goble-ui"),
+            .any(|row| row == "Run cargo test -p goble-ui"),
         "an agent's call draws its own tool row, got {transcript_rows:?}"
     );
     assert_eq!(
@@ -453,7 +453,7 @@ fn folded_read_draws_one_line() {
     );
     assert_eq!(
         drawn_texts(&commands),
-        vec!["◈".to_string(), "Read 1 file".to_string()],
+        vec!["Read 1 file".to_string()],
         "the folded run draws only its aggregated label behind the dotted diamond"
     );
 
@@ -620,7 +620,7 @@ fn expanded_read_draws_a_gutter_and_highlighted_lines_on_a_band() {
 
     // The body is highlighted, not one muted blob: drop the gutter and the
     // header's own runs and require more than one code colour.
-    let header = ["◆", "Read src/lib.rs"];
+    let header = ["Read src/lib.rs"];
     let body_colours: std::collections::HashSet<ColorU> = commands
         .iter()
         .filter_map(|c| match c {
@@ -1253,7 +1253,7 @@ fn a_tool_block_draws_no_rail_and_keeps_its_words_in_place() {
         .with_tool_fold(Rc::new(RefCell::new(fold)))
         .with_tool_hover(Rc::new(RefCell::new(None)));
         let commands = if pointer {
-            paint_with_pointer_over(&mut bubble, &app, "◈")
+            paint_with_pointer_over(&mut bubble, &app, "Read")
         } else {
             bubble.layout(
                 SizeConstraint::loose(vec2f(400.0, 400.0)),
@@ -1278,25 +1278,24 @@ fn a_tool_block_draws_no_rail_and_keeps_its_words_in_place() {
             })
         };
         let prose = origin_x("Prose starts here.").expect("the prose is drawn");
-        // DSH's row geometry: the 16 px leading box starts where prose starts
-        // and the words begin one box and one 6 px gap past it.
-        let leading = origin_x("❯")
-            .or_else(|| origin_x("◈"))
-            .or_else(|| origin_x("◆"))
-            .unwrap_or_else(|| {
-                panic!("{label}: the run's own header is drawn: {:?}", drawn_texts(&commands))
-            });
+        // DSH's nested tool row starts in the prose column with no leading
+        // box, marker or glyph at all.
+        let row_start = origin_x("Read").unwrap_or_else(|| {
+            panic!(
+                "{label}: the run's own header is drawn: {:?}",
+                drawn_texts(&commands)
+            )
+        });
         assert!(
-            (leading - prose).abs() < 0.5,
-            "{label}: the leading box starts in the prose column, got {leading} against {prose}"
+            (row_start - prose).abs() < 0.5,
+            "{label}: the nested words start in the prose column, got {row_start} against {prose}"
         );
-        let row_start = origin_x("Read").unwrap_or(leading);
-        let expected = prose
-            + crate::elements::chat_typography::LEADING_BOX
-            + crate::elements::chat_typography::GLYPH_GAP;
         assert!(
-            (row_start - expected).abs() < 0.5,
-            "{label}: the words start past the leading box, got {row_start} against {expected}"
+            !drawn_texts(&commands)
+                .iter()
+                .any(|text| text.contains('❯') || text.contains('◈') || text.contains('◆')),
+            "{label}: no leading glyph is drawn, got {:?}",
+            drawn_texts(&commands)
         );
 
         let strokes = rail_strokes(&commands, &app);
@@ -1346,7 +1345,7 @@ fn a_standalone_row_draws_no_rail_while_open_or_under_the_pointer() {
     );
     for (label, pointer) in [("away", false), ("under the pointer", true)] {
         let mut open = bubble(read.clone(), ToolDisplayMode::Expanded);
-        let commands = paint(&mut open, pointer, "❯");
+        let commands = paint(&mut open, pointer, "Read");
         let strokes = rail_strokes(&commands, &app);
         assert!(
             strokes.is_empty(),
@@ -1363,7 +1362,7 @@ fn a_standalone_row_draws_no_rail_while_open_or_under_the_pointer() {
     );
     for (label, pointer) in [("away", false), ("under the pointer", true)] {
         let mut collapsed = bubble(spawn.clone(), ToolDisplayMode::Collapsed);
-        let commands = paint(&mut collapsed, pointer, "◆");
+        let commands = paint(&mut collapsed, pointer, "Run agent");
         let strokes = rail_strokes(&commands, &app);
         assert!(
             strokes.is_empty(),
@@ -1388,16 +1387,16 @@ fn an_open_row_keeps_the_arrow_in_place_of_the_diamond() {
             Some(mode),
         );
         let runs = text_runs(&commands);
-        let mark = runs
-            .iter()
-            .find(|(text, ..)| text == "❯" || text == "◆")
-            .expect("the row draws its mark");
-        assert_eq!(
-            mark.0, "❯",
-            "an opened row swaps the diamond for the arrow ({mode:?})"
+        assert!(
+            !runs.iter().any(|(text, ..)| text == "❯" || text == "◆" || text == "◈"),
+            "an opened row draws no mark or arrow ({mode:?}), got {runs:?}"
         );
+        let words = runs
+            .iter()
+            .find(|(text, ..)| text.starts_with("Read"))
+            .expect("the opened row draws its words");
         assert_eq!(
-            mark.1,
+            words.1,
             app.theme.color(ColorToken::Text),
             "an opened row reads white ({mode:?})"
         );
@@ -1436,19 +1435,18 @@ fn a_tool_row_under_the_pointer_shows_the_arrow() {
         .map(|renderer| renderer.commands().to_vec())
         .unwrap_or_default();
     let runs = text_runs(&commands);
-    let mark = runs
+    assert!(
+        !runs.iter().any(|(text, ..)| text == "❯" || text == "◆" || text == "◈"),
+        "the pointer adds no mark or arrow, got {runs:?}"
+    );
+    let words = runs
         .iter()
-        .find(|(text, _, _, _)| text == "❯" || text == "◆")
-        .expect("the row draws its mark");
-    assert_eq!(mark.0, "❯", "the pointer swaps the diamond for the arrow");
+        .find(|(text, ..)| text.starts_with("Read"))
+        .expect("the row still draws its words");
     assert_eq!(
-        mark.1,
+        words.1,
         app.theme.color(ColorToken::Text),
         "the row under the pointer reads white"
-    );
-    assert!(
-        runs.iter().any(|(text, ..)| text.starts_with("Read")),
-        "the words are still drawn beside the arrow, got {runs:?}"
     );
 }
 
@@ -1490,12 +1488,14 @@ fn the_chain_label_reads_quiet_until_selected() {
     );
     let resting_texts = drawn_texts(&resting);
     assert!(
-        resting_texts.iter().any(|text| text == "◈"),
-        "a resting chain wears the dotted diamond, got {resting_texts:?}"
+        !resting_texts
+            .iter()
+            .any(|text| text == "◈" || text == "❯" || text == "◆"),
+        "a resting chain wears no glyph, got {resting_texts:?}"
     );
     assert!(
-        !resting_texts.iter().any(|text| text.contains('❯')),
-        "the arrow appears only once the row is selected, got {resting_texts:?}"
+        resting_texts.iter().any(|text| text.contains("Read")),
+        "the chain still names its run, got {resting_texts:?}"
     );
     assert_eq!(hover_bands(&resting), 0, "a chain row paints no band");
 
@@ -1507,8 +1507,10 @@ fn the_chain_label_reads_quiet_until_selected() {
     );
     let open_texts = drawn_texts(&open);
     assert!(
-        open_texts.iter().any(|text| text == "❯"),
-        "an open chain swaps its mark for the arrow, got {open_texts:?}"
+        !open_texts
+            .iter()
+            .any(|text| text == "❯" || text == "◈" || text == "◆"),
+        "an open chain draws no glyph either, got {open_texts:?}"
     );
 
     // The pointer brightens a closed chain the same way, through the app's
@@ -1537,10 +1539,10 @@ fn the_chain_label_reads_quiet_until_selected() {
         "the chain under the pointer reads white while closed"
     );
     assert!(
-        drawn_texts(&hovered_commands)
+        !drawn_texts(&hovered_commands)
             .iter()
-            .any(|text| text == "❯"),
-        "the chain under the pointer draws its arrow"
+            .any(|text| text == "❯" || text == "◈" || text == "◆"),
+        "the chain under the pointer still draws no glyph"
     );
     assert!(
         !drawn_texts(&hovered_commands)
@@ -1634,7 +1636,7 @@ fn consecutive_groupable_calls_stack_into_one_run_header() {
     // the wrapped rows reads the whole header.
     assert_eq!(
         rows.join(" "),
-        "◈ Read 2 files, Searched 1 pattern, Listed 1 dir, Ran 1 command",
+        "Read 2 files, Searched 1 pattern, Listed 1 dir, Ran 1 command",
         "the run folds every family in first-appearance order, got {rows:?}"
     );
     assert!(
@@ -1672,7 +1674,7 @@ fn a_running_run_uses_the_present_tense_and_counts_failures() {
     let rows = drawn_row_texts(&commands);
     assert_eq!(
         rows,
-        vec!["◈ Reading 3 files · 1 failed".to_string()],
+        vec!["Reading 3 files · 1 failed".to_string()],
         "one header states the run's tense and failures"
     );
     let failed = text_runs(&commands)
@@ -1731,8 +1733,8 @@ fn an_opened_member_keeps_its_body_inside_the_folded_run() {
         .find(|row| row.contains("src/b.rs"))
         .unwrap_or_else(|| panic!("the opened member draws its row, got {rows:?}"));
     assert!(
-        member.starts_with("❯ Read "),
-        "the opened member draws its own marked row inside the folded chain, got {member:?}"
+        member.starts_with("Read "),
+        "the opened member draws a plain nested row inside the folded chain, got {member:?}"
     );
     assert!(
         rows.iter().any(|row| row.contains("fn b()")),
@@ -2078,14 +2080,14 @@ fn a_double_click_on_a_closed_row_leaves_it_closed() {
     let row = commands
         .iter()
         .find_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if text.starts_with('◆') => {
+            RenderCommand::DrawText { origin, text, .. } if text.starts_with("Run agent") => {
                 Some(*origin)
             }
             _ => None,
         })
         .unwrap_or_else(|| {
             panic!(
-                "the closed row draws its diamond: {:?}",
+                "the closed row draws its own words: {:?}",
                 drawn_texts(&commands)
             )
         });
@@ -2164,4 +2166,52 @@ fn a_double_click_inside_an_opened_member_closes_that_member() {
         Some(&ToolDisplayMode::Expanded),
         "and leaves the run it sits in open"
     );
+}
+
+/// The owner's row rule: a tool call draws no icon and no glyph, in any fold,
+/// status or nesting level. The words are the whole row.
+#[test]
+fn tool_rows_draw_neither_icon_nor_glyph() {
+    let app = AppContext::default();
+    for mode in [
+        ToolDisplayMode::Collapsed,
+        ToolDisplayMode::Truncated,
+        ToolDisplayMode::Expanded,
+    ] {
+        let (commands, _) = paint_tool_calls_with_fold(
+            vec![
+                call(
+                    "read_file",
+                    r#"{"path":"src/lib.rs"}"#,
+                    ToolCallStatus::Finished,
+                    Some("fn main() {}"),
+                ),
+                call(
+                    "run_command",
+                    r#"{"command":"ls"}"#,
+                    ToolCallStatus::Finished,
+                    Some("a.txt"),
+                ),
+            ],
+            Some(mode),
+        );
+        let glyph = commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text, .. }
+                if text.contains('◆') || text.contains('◈') || text.contains('❯') =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
+        });
+        assert!(glyph.is_none(), "a {mode:?} tool row draws {glyph:?}");
+        let icon = commands.iter().find_map(|command| match command {
+            RenderCommand::DrawIcon { name, .. }
+                if !name.starts_with("chevron-") =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        });
+        assert!(icon.is_none(), "a {mode:?} tool row draws the icon {icon:?}");
+    }
 }

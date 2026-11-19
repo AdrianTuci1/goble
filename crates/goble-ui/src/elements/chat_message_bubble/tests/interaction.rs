@@ -92,8 +92,8 @@ fn link_fragment_becomes_interactive_action() {
     );
 }
 
-/// A file written as inline code is a mention: the run leads with its file
-/// type's icon, and a click asks the app to open that path.
+/// A file written as inline code is a mention: it keeps DSH's plain code pill
+/// (no leading file icon) and a click asks the app to open that path.
 #[test]
 fn a_file_mention_opens_the_file() {
     let app = AppContext::default();
@@ -108,11 +108,11 @@ fn a_file_mention_opens_the_file() {
 
     let commands = paint_bubble_at(&mut bubble, &app, 600.0);
     assert!(
-        commands.iter().any(|command| matches!(
+        !commands.iter().any(|command| matches!(
             command,
-            RenderCommand::DrawIcon { name, .. } if name == "file-rust"
+            RenderCommand::DrawIcon { name, .. } if name.starts_with("file-")
         )),
-        "the mention leads with its file type's icon, got {commands:?}"
+        "the mention keeps a plain code pill with no file icon, got {commands:?}"
     );
 
     let run = run_origin(&commands, "crates/goble-ui/src/lib.rs:42");

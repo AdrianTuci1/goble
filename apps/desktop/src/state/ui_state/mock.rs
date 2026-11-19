@@ -87,11 +87,7 @@ impl UiState {
                     "Start a fresh conversation",
                     "new",
                 ),
-                goble_harness_types::HarnessCommand::slash(
-                    "settings",
-                    "Open settings",
-                    "settings",
-                ),
+                goble_harness_types::HarnessCommand::slash("settings", "Open settings", "settings"),
             ]),
             model_groups: vec![goble_desktop_service::ModelGroup {
                 harness: "goble".to_string(),
@@ -99,8 +95,11 @@ impl UiState {
                 models: vec![
                     goble_harness_types::HarnessModel::new("goble-agent", "goble-agent")
                         .with_thinking(vec!["off".to_string(), "on".to_string()]),
-                    goble_harness_types::HarnessModel::new("goble-agent-fast", "goble-agent (fast)")
-                        .with_thinking(vec!["off".to_string(), "on".to_string()]),
+                    goble_harness_types::HarnessModel::new(
+                        "goble-agent-fast",
+                        "goble-agent (fast)",
+                    )
+                    .with_thinking(vec!["off".to_string(), "on".to_string()]),
                     goble_harness_types::HarnessModel::new(
                         "goble-agent-reasoning",
                         "goble-agent (reasoning)",
@@ -230,9 +229,7 @@ impl UiState {
             sidebar_menu_open: Rc::new(RefCell::new(false)),
             sidebar_flat_list: Rc::new(RefCell::new(false)),
             sidebar_recent_first: Rc::new(RefCell::new(true)),
-            sidebar_archived_filter: Rc::new(RefCell::new(
-                crate::ui::ArchivedFilter::Default,
-            )),
+            sidebar_archived_filter: Rc::new(RefCell::new(crate::ui::ArchivedFilter::Default)),
             sidebar_rename: None,
             sidebar_workspaces: Vec::new(),
             sidebar_workspace_rename: None,
@@ -310,6 +307,13 @@ impl UiState {
             ssh_host_entries: Vec::new(),
             ssh_host_picker_open: false,
             ssh_host_picker_index: 0,
+            ssh_target_open: false,
+            ssh_target_draft: String::new(),
+            ssh_target_focused: false,
+            ssh_config_path: String::new(),
+            ssh_config_hosts: Vec::new(),
+            ssh_target_error: None,
+            sidebar_add_menu_open: Rc::new(RefCell::new(false)),
             ssh_reconnect_prompt: None,
             floating_drag: Rc::new(RefCell::new(None)),
             pane_chat_scroll: HashMap::new(),

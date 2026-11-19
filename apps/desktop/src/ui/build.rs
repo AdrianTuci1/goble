@@ -228,6 +228,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // session ends. Both are dialogs over the workspace; the picker is modal
     // while it is up, the reconnect offer only takes the click it is given.
     let host_picker_dialog = hosts::build_host_picker(app, state, actions);
+    let ssh_target_dialog = hosts::build_ssh_target_overlay(app, state, actions);
     let ssh_reconnect_dialog = hosts::build_reconnect_prompt(app, state, actions);
     // Closing a file pane with unsaved edits asks here, above the workspace.
     let close_prompt_dialog = super::file_view::build_close_prompt(app, state, actions);
@@ -244,6 +245,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         vault_sheet,
         chat_panel_sheet,
         host_picker_dialog,
+        ssh_target_dialog,
         ssh_reconnect_dialog,
         close_prompt_dialog,
         // The shortcuts panel goes last: Ctrl+. is a global chord, so wherever

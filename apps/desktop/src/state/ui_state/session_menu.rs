@@ -39,6 +39,10 @@ pub enum ToastKind {
     /// Show in Finder reports the same failure instead of pretending the
     /// folder opened).
     RevealFailed,
+    /// A remote workspace's SSH target could not be resolved, so its session
+    /// cannot be opened here. The notice says so rather than opening a local
+    /// shell and pretending it is remote.
+    RemoteUnavailable,
 }
 
 impl ToastKind {
@@ -54,6 +58,10 @@ impl ToastKind {
             }
             Self::ArchiveFailed => "Couldn’t archive the conversation.".to_string(),
             Self::RevealFailed => "Couldn’t show the folder in Finder.".to_string(),
+            Self::RemoteUnavailable => {
+                "This remote workspace is not available: its SSH target could not be resolved."
+                    .to_string()
+            }
         }
     }
 
@@ -66,6 +74,7 @@ impl ToastKind {
                 | Self::ArchivedNotOpenable
                 | Self::ArchiveFailed
                 | Self::RevealFailed
+                | Self::RemoteUnavailable
         )
     }
 
@@ -81,9 +90,10 @@ impl ToastKind {
         match self {
             Self::ConversationIdCopied | Self::ConversationIdCopyFailed => SHORT_TOAST,
             Self::Archived { .. } | Self::StoppedAndArchived { .. } => ARCHIVE_TOAST,
-            Self::ArchivedNotOpenable | Self::ArchiveFailed | Self::RevealFailed => {
-                BLOCKED_TOAST
-            }
+            Self::ArchivedNotOpenable
+            | Self::ArchiveFailed
+            | Self::RevealFailed
+            | Self::RemoteUnavailable => BLOCKED_TOAST,
         }
     }
 }
@@ -439,11 +449,7 @@ impl UiState {
     }
 
     /// The click guard for an archived row: refuse to open it and say why.
-    pub fn open_conversation_from_sidebar(
-        &mut self,
-        id: String,
-        desktop: Option<&DesktopState>,
-    ) {
+    pub fn open_conversation_from_sidebar(&mut self, id: String, desktop: Option<&DesktopState>) {
         if self.conversation_is_archived(&id) {
             self.show_toast(ToastKind::ArchivedNotOpenable);
             return;

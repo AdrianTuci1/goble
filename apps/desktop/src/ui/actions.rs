@@ -330,7 +330,7 @@ pub struct UiActions {
     pub on_add_workspace: Rc<RefCell<dyn FnMut()>>,
     /// A workspace row's New-session control: start a conversation inside that
     /// workspace's directory (DSH's `ProjectRow` create action).
-    pub on_sidebar_workspace_new_session: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_sidebar_workspace_new_session: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Open the "Rename workspace" dialog for the workspace over this path,
     /// with the title it currently shows.
     pub on_sidebar_workspace_rename_start: Rc<RefCell<dyn FnMut(String, String)>>,
@@ -515,6 +515,14 @@ pub struct UiActions {
     pub on_float_restore: Rc<RefCell<dyn FnMut(u64)>>,
     /// Open the saved-host picker (Cmd+Shift+N).
     pub on_open_ssh_host_picker: Rc<RefCell<dyn FnMut()>>,
+    /// The Workspaces "+" menu's SSH row: open the "Open SSH Host" overlay.
+    pub on_open_ssh_target: Rc<RefCell<dyn FnMut()>>,
+    pub on_close_ssh_target: Rc<RefCell<dyn FnMut()>>,
+    pub on_ssh_target_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_ssh_target_focus: Rc<RefCell<dyn FnMut(bool)>>,
+    pub on_ssh_choose_config: Rc<RefCell<dyn FnMut()>>,
+    pub on_ssh_target_connect: Rc<RefCell<dyn FnMut()>>,
+    pub on_ssh_pick_config_host: Rc<RefCell<dyn FnMut(usize)>>,
     /// Close the saved-host picker without opening anything.
     pub on_close_ssh_host_picker: Rc<RefCell<dyn FnMut()>>,
     /// Move the host picker's selection.

@@ -25,8 +25,8 @@ use super::pane::Space;
 use super::types::{
     AgentDashboardState, AppTab, ArchivedFilter, CostEntry, CronEntry, ExecutionEntry, ExplorerRow,
     HarnessEntry, LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow,
-    SettingsCategory, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
-    WorkflowEntry, WorkflowRunEntry, WorkspaceRouting,
+    SettingsCategory, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry,
+    WorkflowRunEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -503,6 +503,8 @@ pub struct UiSnapshot {
     pub sidebar_focus_row: Rc<RefCell<Option<String>>>,
     /// Whether the Workspaces header menu (sliders) is open.
     pub sidebar_menu_open: Rc<RefCell<bool>>,
+    /// The Workspaces header's add menu (New Project / SSH Host…).
+    pub sidebar_add_menu_open: Rc<RefCell<bool>>,
     /// The list's grouping: one flat list or one block per project.
     pub sidebar_flat_list: Rc<RefCell<bool>>,
     /// The list's order: most recent first, or the user's manual drag order.
@@ -510,8 +512,7 @@ pub struct UiSnapshot {
     /// The sidebar's drag-reorder gesture, shared with the rows.
     pub sidebar_drag: Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarDrag>>,
     /// The user's manual order of conversations inside each group.
-    pub sidebar_session_order:
-        Rc<RefCell<std::collections::HashMap<String, Vec<String>>>>,
+    pub sidebar_session_order: Rc<RefCell<std::collections::HashMap<String, Vec<String>>>>,
     /// Global search: the query, its rows and whether it has run.
     pub global_search_query: String,
     pub global_search_rows: Vec<SearchRow>,
@@ -580,6 +581,13 @@ pub struct UiSnapshot {
     pub ssh_host_entries: Vec<goble_core::hosts::HostEntry>,
     pub ssh_host_picker_open: bool,
     pub ssh_host_picker_index: usize,
+    /// The "Open SSH Host" overlay's live state.
+    pub ssh_target_open: bool,
+    pub ssh_target_draft: String,
+    pub ssh_target_focused: bool,
+    pub ssh_config_path: String,
+    pub ssh_config_hosts: Vec<goble_core::ssh_hosts::SshHost>,
+    pub ssh_target_error: Option<String>,
     /// A saved host whose session ended, with the pane it ran in.
     pub ssh_reconnect_prompt: Option<(u64, String)>,
     /// The focused leaf pane (target for splits/closes, highlighted).
@@ -669,7 +677,12 @@ pub struct UiSnapshot {
     /// Per-workspace-group tray state, shared with the rows (the same contract
     /// as `agent_cards` for the session rows' trays).
     pub sidebar_group_ui: Rc<
-        RefCell<HashMap<String, Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarGroupUi>>>>,
+        RefCell<
+            HashMap<
+                String,
+                Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarGroupUi>>,
+            >,
+        >,
     >,
     /// The open stop-and-archive confirmation, if any.
     pub archive_confirm: Option<ArchiveConfirm>,

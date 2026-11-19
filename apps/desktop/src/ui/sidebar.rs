@@ -12,19 +12,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::conversation_list_item::{
-    sidebar_relative_time, SidebarActionRow, SidebarGroupRow, SidebarIconButton,
-    SidebarList, SidebarMenuItem, SidebarSessionRow, SIDEBAR_GROUP_GAP, SIDEBAR_HEADER_BUTTON, SIDEBAR_HEADER_HEIGHT,
-    SIDEBAR_HEADER_ICON, SIDEBAR_HEADER_PADDING_START, SIDEBAR_ICON_FOLDER_OPEN,
-    SIDEBAR_ICON_NEW_CHAT, SIDEBAR_ICON_PIN_FILL, SIDEBAR_ICON_PROJECT_ADD,
-    SIDEBAR_ICON_SLIDERS,
-    SIDEBAR_LIST_BOTTOM_PAD, SIDEBAR_SECTION_TITLE, SIDEBAR_SECTION_TOP_INSET, SIDEBAR_TITLE_LINE,
-    SIDEBAR_TITLE_SIZE,
+    sidebar_relative_time, SidebarActionRow, SidebarGroupRow, SidebarIconButton, SidebarList,
+    SidebarMenuItem, SidebarSessionRow, SIDEBAR_GROUP_GAP, SIDEBAR_HEADER_BUTTON,
+    SIDEBAR_HEADER_HEIGHT, SIDEBAR_HEADER_ICON, SIDEBAR_HEADER_PADDING_START,
+    SIDEBAR_ICON_FOLDER_OPEN, SIDEBAR_ICON_NEW_CHAT, SIDEBAR_ICON_PIN_FILL,
+    SIDEBAR_ICON_PROJECT_ADD, SIDEBAR_ICON_SLIDERS, SIDEBAR_LIST_BOTTOM_PAD, SIDEBAR_SECTION_TITLE,
+    SIDEBAR_SECTION_TOP_INSET, SIDEBAR_TITLE_LINE, SIDEBAR_TITLE_SIZE,
 };
 use goble_ui::elements::{
     AgentCardUi, AppContext, Axis, Container, ConversationEntry, CrossAxisAlignment, EdgeInsets,
-    Element, Expanded, Fill, Flex, HoverRow, MainAxisSize, Padding, PopupMenu,
-    PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput, Spacer, Text, Tooltip,
-    TooltipPosition,
+    Element, Expanded, Fill, Flex, HoverRow, MainAxisSize, Padding, PopupMenu, PopupMenuItem,
+    PopupMenuPosition, Scrollable, SearchInput, Spacer, Text, Tooltip, TooltipPosition,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 
@@ -269,7 +267,11 @@ fn new_conversation_row(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Elem
 
 /// The section header: "Workspaces" and its two controls (settings and new
 /// conversation). 36pt tall, 12pt inset, no magnifier.
-fn workspaces_header(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+fn workspaces_header(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
     let xs = app.theme.spacing_px(SpacingToken::Xs);
     let vertical = (SIDEBAR_HEADER_HEIGHT - SIDEBAR_HEADER_BUTTON) / 2.0;
 
@@ -378,14 +380,40 @@ fn workspaces_header(app: &AppContext, state: &UiSnapshot, actions: &UiActions) 
     // picked folder becomes a row under this header. The separate "New
     // conversation" row above the header is what starts a conversation.
     let on_add_workspace = actions.on_add_workspace.clone();
+    let on_open_ssh_target = actions.on_open_ssh_target.clone();
     let add = SidebarIconButton::new(SIDEBAR_ICON_PROJECT_ADD)
         .with_button_size(SIDEBAR_HEADER_BUTTON)
         .with_icon_size(SIDEBAR_HEADER_ICON)
         .with_radius(12.0)
         .with_hovered(is_hovered(state, KEY_HEADER_NEW))
         .with_hover_cell(state.sidebar_hover_row.clone(), KEY_HEADER_NEW)
-        .with_on_click(move || (on_add_workspace.borrow_mut())())
         .finish();
+    // DSH/T3's add-workspace menu: a small anchored casing with the local
+    // directory flow and the SSH host flow. The popup owns the press on the
+    // trigger, so the button itself takes no click.
+    let add_menu = PopupMenu::new(
+        Tooltip::new(add, "Add workspace")
+            .with_position(TooltipPosition::Below)
+            .finish(),
+        vec![
+            PopupMenuItem::new("New Project").with_icon("folder"),
+            PopupMenuItem::new("SSH Host…").with_icon("terminal-input"),
+        ],
+    )
+    .with_open(state.sidebar_add_menu_open.clone())
+    .with_corner_radius(12.0)
+    .with_max_width(220.0)
+    .with_row_height(34.0)
+    .with_icon_size(14.0)
+    .with_position(PopupMenuPosition::BelowEnd)
+    .with_menu_id("sidebar.add-workspace")
+    .with_on_select(move |index| match index {
+        0 => (on_add_workspace.borrow_mut())(),
+        1 => (on_open_ssh_target.borrow_mut())(),
+        _ => {}
+    })
+    .finish();
+    let add_menu = DeferredOverlay::new(add_menu, state.sidebar_add_menu_open.clone()).finish();
 
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
@@ -398,11 +426,7 @@ fn workspaces_header(app: &AppContext, state: &UiSnapshot, actions: &UiActions) 
                 .with_position(TooltipPosition::Below)
                 .finish(),
         )
-        .with_child(
-            Tooltip::new(add, "Add workspace")
-                .with_position(TooltipPosition::Below)
-                .finish(),
-        )
+        .with_child(add_menu)
         .finish();
     Container::new(row)
         .with_padding(EdgeInsets::new(
@@ -493,9 +517,7 @@ fn session_row(
             .map(|position| if after { position + 1 } else { position })
             .unwrap_or(ids.len());
         ids.insert(at.min(ids.len()), source.to_string());
-        order_cell
-            .borrow_mut()
-            .insert(section_key.clone(), ids);
+        order_cell.borrow_mut().insert(section_key.clone(), ids);
         // A drag is an explicit order choice: the list switches to Manual so the
         // move is visible instead of being overridden by recency.
         *recent_cell.borrow_mut() = false;
@@ -548,7 +570,11 @@ fn session_menu_items(
         let id = entry.id.clone();
         let on_star = actions.on_toggle_star.clone();
         items.push(SidebarMenuItem::new(
-            if starred { "Unpin session" } else { "Pin session" },
+            if starred {
+                "Unpin session"
+            } else {
+                "Pin session"
+            },
             if starred {
                 SIDEBAR_ICON_PIN_FILL
             } else {
@@ -559,18 +585,14 @@ fn session_menu_items(
     }
     let id = entry.id.clone();
     let rename = actions.on_session_rename_start.clone();
-    items.push(SidebarMenuItem::new(
-        "Rename",
-        "edit",
-        move || (rename.borrow_mut())(id.clone()),
-    ));
+    items.push(SidebarMenuItem::new("Rename", "edit", move || {
+        (rename.borrow_mut())(id.clone())
+    }));
     let id = entry.id.clone();
     let fork = actions.on_fork_conversation_by_id.clone();
-    items.push(SidebarMenuItem::new(
-        "Fork session",
-        "branch",
-        move || (fork.borrow_mut())(id.clone()),
-    ));
+    items.push(SidebarMenuItem::new("Fork session", "branch", move || {
+        (fork.borrow_mut())(id.clone())
+    }));
     let id = entry.id.clone();
     let copy = actions.on_copy_conversation_id.clone();
     items.push(
@@ -621,6 +643,14 @@ struct WorkspaceSection {
     path: String,
     title: String,
     stored: bool,
+    /// `local` (empty) or `ssh:<alias|user@host:port>`.
+    target: String,
+}
+
+impl WorkspaceSection {
+    fn is_remote(&self) -> bool {
+        self.target.starts_with("ssh:")
+    }
 }
 
 /// The DSH workspace menu for one row, in DSH's registered order: Rename
@@ -628,17 +658,14 @@ struct WorkspaceSection {
 /// then — for a stored Workspace — Delete workspace (order 300, danger, behind
 /// a separator). The labels are DSH's own: "Rename", "Show in Finder", "Delete
 /// workspace".
-fn workspace_menu_items(
-    actions: &UiActions,
-    workspace: &WorkspaceSection,
-) -> Vec<SidebarMenuItem> {
+fn workspace_menu_items(actions: &UiActions, workspace: &WorkspaceSection) -> Vec<SidebarMenuItem> {
     let rename = actions.on_sidebar_workspace_rename_start.clone();
     let path = workspace.path.clone();
     let title = workspace.title.clone();
     let mut items = vec![SidebarMenuItem::new("Rename", "edit", move || {
         (rename.borrow_mut())(path.clone(), title.clone())
     })];
-    if !workspace.path.trim().is_empty() {
+    if !workspace.path.trim().is_empty() && !workspace.is_remote() {
         let reveal = actions.on_sidebar_workspace_show_in_finder.clone();
         let path = workspace.path.clone();
         items.push(SidebarMenuItem::new(
@@ -691,10 +718,7 @@ fn group_block(
     contains_selected: bool,
     workspace: Option<&WorkspaceSection>,
 ) -> Box<dyn Element> {
-    let collapsed = state
-        .collapsed_sections
-        .iter()
-        .any(|key| key == section);
+    let collapsed = state.collapsed_sections.iter().any(|key| key == section);
     let key = group_hover_key(section);
     let on_toggle = actions.on_toggle_section.clone();
     let toggle_key = section.to_string();
@@ -705,17 +729,24 @@ fn group_block(
         .with_on_click(move || (on_toggle.borrow_mut())(toggle_key.clone()));
     if let Some(icon) = fixed_glyph {
         header = header.with_leading_icon(icon);
+    } else if workspace.is_some_and(WorkspaceSection::is_remote) {
+        // The remote target is a badge, not a second line: the row's leading
+        // glyph becomes the cloud/terminal mark and the title stays the label.
+        header = header.with_leading_icon("environment-cloud");
     }
     if let Some(workspace) = workspace {
         let menu = actions.on_sidebar_workspace_menu.clone();
         let menu_section = section.to_string();
         let create = actions.on_sidebar_workspace_new_session.clone();
         let create_path = workspace.path.clone();
+        let create_target = workspace.target.clone();
         header = header
             .with_ui(state.group_ui(section))
             .with_viewport_height(state.window_size.y)
             .with_menu_items(workspace_menu_items(actions, workspace))
-            .with_on_create_session(move || (create.borrow_mut())(create_path.clone()))
+            .with_on_create_session(move || {
+                (create.borrow_mut())(create_path.clone(), create_target.clone())
+            })
             .with_on_menu_open(move || (menu.borrow_mut())(Some(menu_section.clone())));
     }
     let mut block = Flex::column()
@@ -728,14 +759,7 @@ fn group_block(
             if !shown_ids.contains(entry.id.as_str()) {
                 continue;
             }
-            block = block.with_child(session_row(
-                app,
-                state,
-                actions,
-                entry,
-                section,
-                &group_ids,
-            ));
+            block = block.with_child(session_row(app, state, actions, entry, section, &group_ids));
         }
     }
     block.finish()
@@ -780,10 +804,7 @@ impl Element for DeferredOverlay {
         ctx: &mut goble_ui::elements::LayoutContext,
         app: &AppContext,
     ) -> goble_ui::geometry::Vector2F {
-        let size = self
-            .inner
-            .borrow_mut()
-            .layout(constraint, ctx, app);
+        let size = self.inner.borrow_mut().layout(constraint, ctx, app);
         self.size = Some(size);
         size
     }
@@ -794,7 +815,10 @@ impl Element for DeferredOverlay {
         ctx: &mut goble_ui::elements::PaintContext,
         app: &AppContext,
     ) {
-        self.origin = Some(goble_ui::elements::Point::from_vec2f(origin, Default::default()));
+        self.origin = Some(goble_ui::elements::Point::from_vec2f(
+            origin,
+            Default::default(),
+        ));
         self.inner.borrow_mut().paint(origin, ctx, app);
         if *self.open.borrow() {
             app.hover_chips
@@ -913,11 +937,13 @@ fn workspaces_list(
     if !starred.is_empty() {
         let entries = ordered_entries(
             &starred,
-            recent_first.then(|| order_cell.get(STARRED_SECTION)).flatten(),
+            recent_first
+                .then(|| order_cell.get(STARRED_SECTION))
+                .flatten(),
         );
-        let contains_selected = entries.iter().any(|entry| {
-            state.selected_id.as_deref() == Some(entry.id.as_str())
-        });
+        let contains_selected = entries
+            .iter()
+            .any(|entry| state.selected_id.as_deref() == Some(entry.id.as_str()));
         let all_shown: std::collections::HashSet<&str> =
             entries.iter().map(|entry| entry.id.as_str()).collect();
         blocks.push(group_block(
@@ -959,6 +985,9 @@ fn workspaces_list(
             path,
             title,
             stored: stored.is_some(),
+            target: stored
+                .map(|workspace| workspace.target.clone())
+                .unwrap_or_default(),
         });
     }
     for workspace in &state.sidebar_workspaces {
@@ -971,6 +1000,7 @@ fn workspaces_list(
             path: workspace.path.clone(),
             title: workspace.display_title(),
             stored: true,
+            target: workspace.target.clone(),
         });
     }
     sections.sort_by(|left, right| left.folder.cmp(&right.folder));
@@ -978,10 +1008,7 @@ fn workspaces_list(
         // One flat run of sessions instead of the project blocks; the manual
         // order keys off the flat section, and recency otherwise.
         let flat_order = order_cell.get("flat");
-        let entries = ordered_entries(
-            &by_recency,
-            if recent_first { None } else { flat_order },
-        );
+        let entries = ordered_entries(&by_recency, if recent_first { None } else { flat_order });
         let all_shown: std::collections::HashSet<&str> =
             entries.iter().map(|entry| entry.id.as_str()).collect();
         let flat_shown: std::collections::HashSet<&str> = if state.conversations_expanded {
@@ -1001,14 +1028,8 @@ fn workspaces_list(
             if !flat_shown.contains(entry.id.as_str()) {
                 continue;
             }
-            flat_block = flat_block.with_child(session_row(
-                app,
-                state,
-                actions,
-                entry,
-                "flat",
-                &group_ids,
-            ));
+            flat_block =
+                flat_block.with_child(session_row(app, state, actions, entry, "flat", &group_ids));
         }
         blocks.push(flat_block.finish());
     }
@@ -1037,9 +1058,9 @@ fn workspaces_list(
                 order_cell.get(&section)
             },
         );
-        let contains_selected = entries.iter().any(|entry| {
-            state.selected_id.as_deref() == Some(entry.id.as_str())
-        });
+        let contains_selected = entries
+            .iter()
+            .any(|entry| state.selected_id.as_deref() == Some(entry.id.as_str()));
         blocks.push(group_block(
             app,
             state,
@@ -1066,16 +1087,15 @@ fn workspaces_list(
         .conversations
         .iter()
         .any(|entry| entry.has_agent_reply && entry.archived);
-    let empty_label = if filter == ArchivedFilter::Only
-        || (filter == ArchivedFilter::Show && !any_archived)
-    {
-        // DSH's archived empty state, under the filter that asks for them.
-        "No archived conversations yet."
-    } else if any_listable {
-        "No conversations for this environment."
-    } else {
-        "No conversations yet. Create one to begin."
-    };
+    let empty_label =
+        if filter == ArchivedFilter::Only || (filter == ArchivedFilter::Show && !any_archived) {
+            // DSH's archived empty state, under the filter that asks for them.
+            "No archived conversations yet."
+        } else if any_listable {
+            "No conversations for this environment."
+        } else {
+            "No conversations yet. Create one to begin."
+        };
 
     let mut column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -1119,8 +1139,8 @@ fn overflow_row(
     } else {
         format!("View all ({total})")
     };
-    let vertical = (goble_ui::elements::conversation_list_item::SIDEBAR_OVERFLOW_HEIGHT - 16.0)
-        / 2.0;
+    let vertical =
+        (goble_ui::elements::conversation_list_item::SIDEBAR_OVERFLOW_HEIGHT - 16.0) / 2.0;
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -1155,7 +1175,6 @@ mod sidebar_surface_tests {
     use goble_ui::render::{RenderCommand, Renderer};
     use goble_ui::test_util::render_element;
     use std::sync::Arc;
-
 
     fn conversation(id: &str, name: &str, folder: &str) -> ConversationEntry {
         ConversationEntry::new(id, name, "Let's ship hot reload today", "10:42")
@@ -1247,8 +1266,7 @@ mod sidebar_surface_tests {
         let state = view.state_rc();
         // Hover comes from the shared sidebar hover cell, so the next build
         // paints the row's fill the way the live app does.
-        *state.borrow().sidebar_hover_row.borrow_mut() =
-            Some(KEY_NEW_CONVERSATION.to_string());
+        *state.borrow().sidebar_hover_row.borrow_mut() = Some(KEY_NEW_CONVERSATION.to_string());
 
         let mut root: Box<dyn Element> = Box::new(view);
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
@@ -1294,7 +1312,7 @@ mod sidebar_surface_tests {
                 - (pad
                     + goble_ui::elements::conversation_list_item::SIDEBAR_PAINT_INSET
                     + goble_ui::elements::conversation_list_item::SIDEBAR_ROW_PADDING_START))
-            .abs()
+                .abs()
                 < 0.5,
             "the glyph sits in the list rows' leading column: {glyph:?}"
         );
@@ -1369,9 +1387,6 @@ mod sidebar_surface_tests {
         }
         view
     }
-
-
-
 
     /// The wheel over the sidebar follows the platform's sign, the way the
     /// transcript and the terminal do: winit reports how far the *content*
@@ -1628,7 +1643,6 @@ mod sidebar_surface_tests {
         assert_eq!(app.scroll_moves(), moves, "so no frame is owed");
     }
 
-
     /// A collapsed folder section keeps its header — which says how much is
     /// hidden — and drops its cards, so a long list can be folded away without
     /// leaving the sidebar.
@@ -1665,7 +1679,6 @@ mod sidebar_surface_tests {
             "another section is untouched"
         );
     }
-
 
     /// A starred conversation is listed in the Starred section, which sits above
     /// the folders — whatever folder the conversation itself belongs to.
@@ -1957,7 +1970,10 @@ mod sidebar_surface_tests {
             "and stays inside the band: {close_origin:?}"
         );
 
-        let at = vec2f(close_origin.x + close_size / 2.0, close_origin.y + close_size / 2.0);
+        let at = vec2f(
+            close_origin.x + close_size / 2.0,
+            close_origin.y + close_size / 2.0,
+        );
         let mut ctx = goble_ui::elements::EventContext;
         for event in [
             DispatchedEvent::MouseDown {
@@ -2080,7 +2096,6 @@ mod sidebar_surface_tests {
             );
         }
     }
-
 
     /// A pinned conversation is listed once, under Starred: the folder groups
     /// below hold what is left. A list that is entirely pinned is not empty, so
@@ -2243,7 +2258,8 @@ mod sidebar_surface_tests {
             "the subject is written to the store"
         );
         assert_ne!(
-            desktop.list_chats()[0].title, prompt,
+            desktop.list_chats()[0].title,
+            prompt,
             "the title is the topic, not the message"
         );
 
@@ -2313,7 +2329,11 @@ mod sidebar_surface_tests {
         }
 
         desktop
-            .add_chat_message(&chat, "user", "Now make the sidebar show conversation titles")
+            .add_chat_message(
+                &chat,
+                "user",
+                "Now make the sidebar show conversation titles",
+            )
             .expect("the follow-up prompt");
         desktop
             .add_chat_message(&chat, "assistant", "Sure, the card reads it now.")
@@ -2327,7 +2347,8 @@ mod sidebar_surface_tests {
             );
         }
         assert_eq!(
-            desktop.list_chats()[0].title, "Text colorat in chat",
+            desktop.list_chats()[0].title,
+            "Text colorat in chat",
             "the store keeps the first prompt's subject"
         );
         assert_eq!(
@@ -2394,10 +2415,8 @@ mod sidebar_surface_tests {
                 Some(prompt.to_string()),
                 "the fallback is a topic, not the message"
             );
-            let provider = MockProvider::new(
-                "title-test",
-                CompletionResponse::new(subject, Vec::new()),
-            );
+            let provider =
+                MockProvider::new("title-test", CompletionResponse::new(subject, Vec::new()));
             let runtime = tokio::runtime::Runtime::new().expect("build runtime");
             runtime
                 .block_on(crate::state::generate_and_store_title(
@@ -2451,7 +2470,10 @@ mod sidebar_surface_tests {
         });
         assert!(in_sidebar, "the sidebar row reads the subject: {drawn:?}");
         assert!(in_topbar, "the topbar tab reads the subject: {drawn:?}");
-        assert!(in_pane_bar, "the pane's own bar reads the subject: {drawn:?}");
+        assert!(
+            in_pane_bar,
+            "the pane's own bar reads the subject: {drawn:?}"
+        );
         assert!(
             !drawn
                 .iter()
@@ -2539,7 +2561,6 @@ mod sidebar_surface_tests {
             "and the list is not untouched: {drawn:?}"
         );
     }
-
 }
 
 /// What the sidebar's new controls do to app state: the actions are the only
@@ -2807,10 +2828,13 @@ mod workspace_row_tests {
         commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { name: drawn, origin, .. }
-                    if drawn == name
-                        && origin.x < crate::ui::SIDEBAR_WIDTH
-                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                RenderCommand::DrawIcon {
+                    name: drawn,
+                    origin,
+                    ..
+                } if drawn == name
+                    && origin.x < crate::ui::SIDEBAR_WIDTH
+                    && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
                 {
                     Some(*origin)
                 }
@@ -2825,10 +2849,13 @@ mod workspace_row_tests {
         commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text: drawn, origin, .. }
-                    if drawn == text
-                        && origin.x < crate::ui::SIDEBAR_WIDTH
-                        && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                RenderCommand::DrawText {
+                    text: drawn,
+                    origin,
+                    ..
+                } if drawn == text
+                    && origin.x < crate::ui::SIDEBAR_WIDTH
+                    && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
                 {
                     Some(*origin)
                 }
@@ -2857,7 +2884,11 @@ mod workspace_row_tests {
 
         let commands = render(&mut root, &app);
         assert!(
-            state.borrow().conversations.iter().all(|entry| entry.folder != "gamma"),
+            state
+                .borrow()
+                .conversations
+                .iter()
+                .all(|entry| entry.folder != "gamma"),
             "the workspace row exists with no conversations in it"
         );
         hovered_row(&commands, "gamma");
@@ -2883,7 +2914,7 @@ mod workspace_row_tests {
         click(&mut root, &app, dots + vec2f(8.0, 8.0));
         let commands = render(&mut root, &app);
         let rename = sidebar_text(&commands, "Rename");
-        let reveal = sidebar_text(&commands, "Show in Finder");
+        let reveal = sidebar_text(&commands, show_in_file_manager_label());
         sidebar_text(&commands, "Delete workspace");
         assert!(
             rename.y < reveal.y,
@@ -2912,7 +2943,7 @@ mod workspace_row_tests {
         let dots = sidebar_icon(&commands, "dots-horizontal");
         click(&mut root, &app, dots + vec2f(8.0, 8.0));
         let commands = render(&mut root, &app);
-        let reveal = sidebar_text(&commands, "Show in Finder");
+        let reveal = sidebar_text(&commands, show_in_file_manager_label());
         click(&mut root, &app, reveal + vec2f(6.0, 6.0));
         assert!(
             matches!(
@@ -2921,6 +2952,38 @@ mod workspace_row_tests {
             ),
             "the reveal row ran the real platform helper and reported its failure: {:?}",
             state.borrow().toast
+        );
+    }
+
+    /// The header's "+" opens the two-row add menu: New Project (the local
+    /// picker flow) and SSH Host… (the remote overlay). A remote workspace's
+    /// row carries the cloud badge without growing a second line.
+    #[test]
+    fn the_add_menu_offers_project_and_ssh_and_remote_rows_wear_a_badge() {
+        let app = AppContext::default();
+        let (mut root, state, desktop, _dir) = seeded();
+        state
+            .borrow_mut()
+            .add_ssh_workspace("controlpanel", "controlpanel", Some(&desktop));
+        *state.borrow().sidebar_add_menu_open.borrow_mut() = true;
+        let commands = render(&mut root, &app);
+        let project = sidebar_text(&commands, "New Project");
+        let ssh = sidebar_text(&commands, "SSH Host…");
+        assert!(
+            project.y < ssh.y,
+            "New Project is the first row, SSH Host… the second: {project:?} / {ssh:?}"
+        );
+        let _badge = sidebar_icon(&commands, "environment-cloud");
+
+        // The SSH row opens the overlay on its config and focused field.
+        click(&mut root, &app, ssh + vec2f(8.0, 8.0));
+        let open = state.borrow();
+        assert!(open.ssh_target_open, "the SSH Host… row opens the overlay");
+        assert!(open.ssh_target_focused, "the target field starts focused");
+        assert!(
+            open.ssh_config_path.ends_with("/.ssh/config"),
+            "the overlay starts on the default config: {:?}",
+            open.ssh_config_path
         );
     }
 
@@ -2941,6 +3004,13 @@ mod workspace_row_tests {
         let commands = render(&mut root, &app);
         let plus = sidebar_icon(&commands, "project-add");
         click(&mut root, &app, plus + vec2f(8.0, 8.0));
+        assert!(
+            *state.borrow().sidebar_add_menu_open.borrow(),
+            "the plus opens the add-workspace menu"
+        );
+        let menu = render(&mut root, &app);
+        sidebar_text(&menu, "New Project");
+        sidebar_text(&menu, "SSH Host…");
         assert_eq!(
             state.borrow().spaces.len(),
             before_spaces,
@@ -3040,6 +3110,7 @@ mod workspace_row_tests {
         );
         (actions.on_sidebar_workspace_new_session.borrow_mut())(
             "/tmp/goble-work/gamma".to_string(),
+            String::new(),
         );
         let opened = desktop
             .list_chats()
@@ -3047,8 +3118,11 @@ mod workspace_row_tests {
             .find(|chat| chat.working_dir.as_deref() == Some("/tmp/goble-work/gamma"))
             .expect("the new conversation works in the workspace's directory");
         assert!(
-            state.borrow().conversations.iter().any(|entry| entry.id == opened.id
-                && entry.folder == "gamma"),
+            state
+                .borrow()
+                .conversations
+                .iter()
+                .any(|entry| entry.id == opened.id && entry.folder == "gamma"),
             "the conversation is listed under the workspace's folder group"
         );
         assert_eq!(
@@ -3099,7 +3173,10 @@ mod workspace_row_tests {
         let archive = sidebar_icon(&commands, "archive");
         click(&mut root, &app, archive + vec2f(8.0, 8.0));
         assert!(
-            desktop.chat_archived(&id).expect("the archived column").is_some(),
+            desktop
+                .chat_archived(&id)
+                .expect("the archived column")
+                .is_some(),
             "the hover Archive writes the durable archive stamp"
         );
 
@@ -3125,7 +3202,10 @@ mod workspace_row_tests {
         );
         click(&mut root, &app, unarchive + vec2f(8.0, 8.0));
         assert!(
-            desktop.chat_archived(&id).expect("the archived column").is_none(),
+            desktop
+                .chat_archived(&id)
+                .expect("the archived column")
+                .is_none(),
             "the restore clears the archive stamp"
         );
         let _ = name;

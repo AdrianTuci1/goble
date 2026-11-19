@@ -444,6 +444,13 @@ pub fn make_actions(
     let on_float_minimize = Rc::clone(&state);
     let on_float_restore = Rc::clone(&state);
     let on_open_ssh_host_picker = Rc::clone(&state);
+    let on_open_ssh_target = Rc::clone(&state);
+    let on_close_ssh_target = Rc::clone(&state);
+    let on_ssh_target_change = Rc::clone(&state);
+    let on_ssh_target_focus = Rc::clone(&state);
+    let on_ssh_choose_config = Rc::clone(&state);
+    let on_ssh_target_connect = Rc::clone(&state);
+    let on_ssh_pick_config_host = Rc::clone(&state);
     let on_close_ssh_host_picker = Rc::clone(&state);
     let on_ssh_host_move = Rc::clone(&state);
     let on_ssh_host_pick = Rc::clone(&state);
@@ -574,6 +581,7 @@ pub fn make_actions(
     let desktop_float_minimize = desktop.clone();
     let desktop_float_restore = desktop.clone();
     let desktop_ssh_host = desktop.clone();
+    let desktop_ssh_target = desktop.clone();
     let desktop_ssh_reconnect = desktop.clone();
     let desktop_file_view = desktop.clone();
     let desktop_open_config = desktop.clone();
@@ -661,6 +669,7 @@ pub fn make_actions(
     let media_split_right = Rc::clone(&media);
     let media_split_down = Rc::clone(&media);
     let media_ssh_host = Rc::clone(&media);
+    let media_ssh_target = Rc::clone(&media);
     let media_new_terminal = Rc::clone(&media);
     let media_term_cmd = Rc::clone(&media);
     let media_add_space = Rc::clone(&media);
@@ -2322,8 +2331,22 @@ pub fn make_actions(
         // A workspace row's New-session control: a conversation in that
         // workspace's directory, so its card lands under the workspace's folder
         // group (which is the directory's last segment).
-        on_sidebar_workspace_new_session: Rc::new(RefCell::new(move |path: String| {
+        on_sidebar_workspace_new_session: Rc::new(RefCell::new(move |path: String, target: String| {
             let mut state = on_sidebar_workspace_new_session.borrow_mut();
+            if target.starts_with("ssh:") {
+                let Some(host) = state.ssh_workspace_host(&target) else {
+                    state.show_toast(crate::state::ToastKind::RemoteUnavailable);
+                    return;
+                };
+                let media = media_sidebar_workspace_new_session.borrow();
+                open_ssh_host_pane(
+                    &mut state,
+                    desktop_sidebar_workspace_new_session.as_ref(),
+                    &media,
+                    &host,
+                );
+                return;
+            }
             create_conversation_space(
                 &mut state,
                 &media_sidebar_workspace_new_session,
@@ -3014,6 +3037,46 @@ pub fn make_actions(
         })),
         // Cmd+Shift+N: read the saved hosts, then show the picker. The read
         // happens on open so an edit to hosts.toml is seen without a restart.
+        on_open_ssh_target: Rc::new(RefCell::new(move || {
+            on_open_ssh_target.borrow_mut().open_ssh_target();
+        })),
+        on_close_ssh_target: Rc::new(RefCell::new(move || {
+            on_close_ssh_target.borrow_mut().close_ssh_target();
+        })),
+        on_ssh_target_change: Rc::new(RefCell::new(move |draft: String| {
+            on_ssh_target_change.borrow_mut().set_ssh_target_draft(draft);
+        })),
+        on_ssh_target_focus: Rc::new(RefCell::new(move |focused: bool| {
+            on_ssh_target_focus.borrow_mut().set_ssh_target_focus(focused);
+        })),
+        on_ssh_choose_config: Rc::new(RefCell::new(move || {
+            let Some(path) = goble_ui::platform::current::pick_file() else {
+                return;
+            };
+            on_ssh_choose_config.borrow_mut().choose_ssh_config(path);
+        })),
+        on_ssh_target_connect: {
+            let desktop = desktop_ssh_target.clone();
+            let media = Rc::clone(&media_ssh_target);
+            Rc::new(RefCell::new(move || {
+                let mut state = on_ssh_target_connect.borrow_mut();
+                if let Some(host) = state.connect_ssh_target(desktop.as_deref()) {
+                    let media = media.borrow();
+                    open_ssh_host_pane(&mut state, desktop.as_ref(), &media, &host);
+                }
+            }))
+        },
+        on_ssh_pick_config_host: {
+            let desktop = desktop_ssh_target.clone();
+            let media = Rc::clone(&media_ssh_target);
+            Rc::new(RefCell::new(move |index: usize| {
+                let mut state = on_ssh_pick_config_host.borrow_mut();
+                if let Some(host) = state.pick_ssh_config_host(index, desktop.as_deref()) {
+                    let media = media.borrow();
+                    open_ssh_host_pane(&mut state, desktop.as_ref(), &media, &host);
+                }
+            }))
+        },
         on_open_ssh_host_picker: Rc::new(RefCell::new(move || {
             let mut state = on_open_ssh_host_picker.borrow_mut();
             state.reload_saved_hosts();

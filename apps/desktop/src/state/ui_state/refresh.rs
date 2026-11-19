@@ -159,9 +159,7 @@ impl UiState {
             sidebar_menu_open: Rc::new(RefCell::new(false)),
             sidebar_flat_list: Rc::new(RefCell::new(false)),
             sidebar_recent_first: Rc::new(RefCell::new(true)),
-            sidebar_archived_filter: Rc::new(RefCell::new(
-                crate::ui::ArchivedFilter::Default,
-            )),
+            sidebar_archived_filter: Rc::new(RefCell::new(crate::ui::ArchivedFilter::Default)),
             sidebar_rename: None,
             sidebar_workspaces: Vec::new(),
             sidebar_workspace_rename: None,
@@ -213,6 +211,13 @@ impl UiState {
             ssh_host_entries: Vec::new(),
             ssh_host_picker_open: false,
             ssh_host_picker_index: 0,
+            ssh_target_open: false,
+            ssh_target_draft: String::new(),
+            ssh_target_focused: false,
+            ssh_config_path: String::new(),
+            ssh_config_hosts: Vec::new(),
+            ssh_target_error: None,
+            sidebar_add_menu_open: Rc::new(RefCell::new(false)),
             ssh_reconnect_prompt: None,
             floating_drag: Rc::new(RefCell::new(None)),
             live_executions: HashMap::new(),
@@ -562,8 +567,7 @@ impl UiState {
             // DSH separates "running" (the spinner ring) from "stopped on the
             // user" (the amber dot): a pending approval/question is the latter,
             // and it outranks the turn's own busy flag.
-            let waiting_on_user =
-                rt.pending_command.is_some() || rt.pending_ask.is_some();
+            let waiting_on_user = rt.pending_command.is_some() || rt.pending_ask.is_some();
             if waiting_on_user || rt.agent_state == PaneAgentState::NeedsInput {
                 return ConversationStatus::Waiting;
             }
@@ -769,8 +773,8 @@ impl UiState {
                     .unwrap_or_default()
                     .is_empty()
             {
-                if let Err(e) = desktop
-                    .set_chat_working_dir(&chat.id, &crate::state::display_path(&directory))
+                if let Err(e) =
+                    desktop.set_chat_working_dir(&chat.id, &crate::state::display_path(&directory))
                 {
                     log::warn!("set_chat_working_dir for {} failed: {e}", chat.id);
                 }
@@ -1358,11 +1362,13 @@ mod tests {
         );
         let fallback = "Text colorat in chat";
         assert_eq!(
-            desktop.list_chats()[0].title, fallback,
+            desktop.list_chats()[0].title,
+            fallback,
             "the deterministic subject is written to the store"
         );
         assert_ne!(
-            desktop.list_chats()[0].title, prompt,
+            desktop.list_chats()[0].title,
+            prompt,
             "the title is the topic, not the user's message"
         );
 
@@ -1376,7 +1382,8 @@ mod tests {
             "the topbar tab reads the conversation subject"
         );
         assert_eq!(
-            state.pane_subject(pane_id), fallback,
+            state.pane_subject(pane_id),
+            fallback,
             "the pane header reads the conversation subject"
         );
 
@@ -1400,7 +1407,8 @@ mod tests {
             .expect("the generated subject");
         assert_eq!(generated, "Colorful chat text");
         assert_eq!(
-            desktop.list_chats()[0].title, "Colorful chat text",
+            desktop.list_chats()[0].title,
+            "Colorful chat text",
             "the generated subject is durable"
         );
         state.refresh_conversations(&desktop);
@@ -1448,7 +1456,8 @@ mod tests {
         );
         state.refresh_conversations(&desktop);
         assert_eq!(
-            desktop.list_chats()[0].title, "Planul de lansare",
+            desktop.list_chats()[0].title,
+            "Planul de lansare",
             "the conversation's own words do not take a user's name back"
         );
 

@@ -258,10 +258,12 @@ pub fn build_reconnect_prompt(
                 .finish(),
         )
         .with_child(
-            Text::new(format!("The connection to {host} ended. Reconnect this pane?"))
-                .with_font_size(12.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
+            Text::new(format!(
+                "The connection to {host} ended. Reconnect this pane?"
+            ))
+            .with_font_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
         )
         .with_child(
             Flex::row()
@@ -341,5 +343,217 @@ impl Element for EscapeToClose {
             }
         }
         self.child.dispatch_event(event, ctx, app)
+    }
+}
+
+/// The Workspaces "+" menu's "SSH Host…" overlay, in the reference's anatomy:
+/// title, description, target field + Connect, the config path with its chooser,
+/// and the parsed concrete hosts of that config. Every host row is a real
+/// `Host` block; wildcard/match rules are already excluded by the parser.
+pub fn build_ssh_target_overlay(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let open = state.ssh_target_open;
+    let on_close = actions.on_close_ssh_target.clone();
+    let dialog = Dialog::new(ssh_target_content(app, state, actions))
+        .with_open(open)
+        .with_width(720.0)
+        .with_close_on_escape(true)
+        .with_on_close(move || (on_close.borrow_mut())());
+    dialog.finish()
+}
+
+fn ssh_target_content(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    use goble_ui::elements::{HoverRow, Icon, TextInput};
+
+    let md = app.theme.spacing_px(SpacingToken::Md);
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let close = actions.on_close_ssh_target.clone();
+    let title = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(
+            Text::new("Open SSH Host")
+                .with_font_size(24.0)
+                .with_line_height(30.0 / 24.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish())
+        .with_child(
+            HoverRow::new(
+                Icon::new("x")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::uniform(6.0))
+            .with_corner_radius(8.0)
+            .with_on_click(move || (close.borrow_mut())())
+            .finish(),
+        )
+        .finish();
+
+    let description = Text::new(
+        "Enter [user@]host[:port], or pick a host from your SSH config. Then create the project in its window.",
+    )
+    .with_font_size(13.0)
+    .with_line_height(20.0 / 13.0)
+    .with_theme_color(ColorToken::Muted, app)
+    .finish();
+
+    let on_change = actions.on_ssh_target_change.clone();
+    let on_focus = actions.on_ssh_target_focus.clone();
+    let on_submit = actions.on_ssh_target_connect.clone();
+    let field = TextInput::new()
+        .with_value(state.ssh_target_draft.clone())
+        .with_placeholder("user@host:port")
+        .with_focused(state.ssh_target_focused)
+        .with_full_width(true)
+        .with_on_change(move |text| (on_change.borrow_mut())(text))
+        .with_on_focus_change(move |focused| (on_focus.borrow_mut())(focused))
+        .with_on_submit(move || (on_submit.borrow_mut())())
+        .finish();
+    let can_connect = !state.ssh_target_draft.trim().is_empty();
+    let on_connect = actions.on_ssh_target_connect.clone();
+    let connect = Button::new(
+        Text::new("Connect")
+            .with_font_size(14.0)
+            .with_theme_color(ColorToken::Text, app)
+            .finish(),
+    )
+    .with_variant(ButtonVariant::Primary)
+    .with_corner_radius(10.0)
+    .with_disabled(!can_connect)
+    .with_on_click(move || (on_connect.borrow_mut())())
+    .finish();
+    let input_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.0)
+        .with_child(Expanded::new(field).finish())
+        .with_child(connect)
+        .finish();
+    let error = state.ssh_target_error.clone().map(|error| {
+        Text::new(error)
+            .with_font_size(12.0)
+            .with_theme_color(ColorToken::Error, app)
+            .finish()
+    });
+
+    let config_label = if state.ssh_config_path.ends_with("/.ssh/config") {
+        format!("{} (default)", display_tilde(&state.ssh_config_path))
+    } else {
+        display_tilde(&state.ssh_config_path)
+    };
+    let choose = actions.on_ssh_choose_config.clone();
+    let config_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(
+            Text::new(format!("SSH config: {config_label}"))
+                .with_font_size(13.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_child(
+            HoverRow::new(
+                Text::new("Choose File…")
+                    .with_font_size(13.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(6.0, 2.0, 6.0, 2.0))
+            .with_corner_radius(6.0)
+            .with_on_click(move || (choose.borrow_mut())())
+            .finish(),
+        )
+        .finish();
+
+    let mut list = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(2.0);
+    if state.ssh_config_hosts.is_empty() {
+        list = list.with_child(
+            Text::new("No concrete hosts in this config.")
+                .with_font_size(13.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        );
+    } else {
+        for (index, host) in state.ssh_config_hosts.iter().enumerate() {
+            let pick = actions.on_ssh_pick_config_host.clone();
+            list = list.with_child(
+                HoverRow::new(
+                    Flex::row()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(10.0)
+                        .with_child(
+                            Icon::new("terminal-input")
+                                .with_size(15.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .finish(),
+                        )
+                        .with_child(
+                            Text::new(host.alias.clone())
+                                .with_font_size(15.0)
+                                .with_line_height(20.0 / 15.0)
+                                .with_theme_color(ColorToken::Text, app)
+                                .finish(),
+                        )
+                        .finish(),
+                )
+                .with_padding(EdgeInsets::new(8.0, 6.0, 8.0, 6.0))
+                .with_corner_radius(8.0)
+                .with_on_click(move || (pick.borrow_mut())(index))
+                .finish(),
+            );
+        }
+    }
+
+    let mut content = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(md)
+        .with_child(title)
+        .with_child(description)
+        .with_child(input_row);
+    if let Some(error) = error {
+        content = content.with_child(error);
+    }
+    content = content
+        .with_child(config_row)
+        .with_child(
+            Text::new("SSH Config")
+                .with_font_size(13.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_child(list.finish());
+    let _ = sm;
+    Container::new(content.finish())
+        .with_padding(EdgeInsets::uniform(24.0))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .with_border(
+            goble_ui::elements::Border::all(1.0)
+                .with_border_color(app.theme.color(ColorToken::Border)),
+        )
+        .with_corner_radius(16.0)
+        .finish()
+}
+
+/// `~/.ssh/config` for the home directory, else the path itself.
+fn display_tilde(path: &str) -> String {
+    match crate::state::home_directory() {
+        Some(home) if path.starts_with(&home) => path.replacen(&home, "~", 1),
+        _ => path.to_string(),
     }
 }

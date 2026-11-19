@@ -32,8 +32,8 @@ mod settings;
 mod spaces;
 mod title;
 mod work_dock;
-mod workspace_rows;
 mod worker;
+mod workspace_rows;
 
 pub use agents::{PaneAgentState, TurnOutcome};
 pub use inbox::{InboxItem, InboxKind};
@@ -591,6 +591,16 @@ pub struct UiState {
     /// Whether the Cmd+Shift+N host picker is up and the row it highlights.
     pub ssh_host_picker_open: bool,
     pub ssh_host_picker_index: usize,
+    /// The "Open SSH Host" overlay opened from the Workspaces "+" menu: its
+    /// draft target, focus, chosen config, parsed hosts and honest error.
+    pub ssh_target_open: bool,
+    pub ssh_target_draft: String,
+    pub ssh_target_focused: bool,
+    pub ssh_config_path: String,
+    pub ssh_config_hosts: Vec<goble_core::ssh_hosts::SshHost>,
+    pub ssh_target_error: Option<String>,
+    /// Whether the Workspaces header's add menu is up.
+    pub sidebar_add_menu_open: Rc<RefCell<bool>>,
     /// A saved host whose session just ended, offered for reconnect: the pane
     /// it ran in and the entry's name. Cleared by reconnecting or dismissing.
     pub ssh_reconnect_prompt: Option<(u64, String)>,

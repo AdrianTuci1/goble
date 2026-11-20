@@ -294,6 +294,16 @@ pub fn make_actions(
     let on_toast_dismiss = Rc::clone(&state);
     let on_toggle_explorer_dir = Rc::clone(&state);
     let on_explorer_file_click = Rc::clone(&state);
+    let on_open_file_floating = Rc::clone(&state);
+    let desktop_open_file_floating = desktop.clone();
+    let on_toggle_float_layout = Rc::clone(&state);
+    let desktop_toggle_float_layout = desktop.clone();
+    // The review pane's own view choices are app-owned cells shared with the
+    // UI; clone the handle once, before any action closure borrows the state.
+    let review_views = {
+        let state = state.borrow();
+        Rc::clone(&state.diff_reviews)
+    };
     let on_global_search_change = Rc::clone(&state);
     let on_global_search_focus_change = Rc::clone(&state);
     let on_workspace_click = Rc::clone(&state);
@@ -951,6 +961,7 @@ pub fn make_actions(
     // font, the shared zoom cell; the rest belongs to the state.
 
     UiActions {
+        review_views,
         on_search_change: Rc::new(RefCell::new(move |value: String| {
             on_search_change.borrow_mut().search_query = value;
         })),
@@ -2068,10 +2079,7 @@ pub fn make_actions(
                         open_diff_pane(&mut state, pane_id, file, desktop_diff_panel.as_ref());
                     }
                     DiffPanelAction::Select(file) => {
-                        let controls = state.pane_controls_mut(pane_id);
-                        *controls.diff_selected.borrow_mut() = file;
-                        *controls.diff_edit_focus.borrow_mut() = None;
-                        controls.diff_scroll.borrow_mut().reset();
+                        state.select_diff_file(pane_id, file);
                     }
                     DiffPanelAction::SetFileOpen(path, open) => {
                         let controls = state.pane_controls_mut(pane_id);
@@ -2105,6 +2113,32 @@ pub fn make_actions(
                         let sidebar = controls.diff_sidebar.clone();
                         let open = *sidebar.borrow();
                         *sidebar.borrow_mut() = !open;
+                    }
+                    DiffPanelAction::ToggleView => {
+                        state.toggle_diff_view(pane_id);
+                    }
+                    DiffPanelAction::ToggleWrap => {
+                        state.toggle_diff_wrap(pane_id);
+                    }
+                    DiffPanelAction::ToggleDir(path) => {
+                        state.toggle_diff_dir(pane_id, &path);
+                    }
+                    DiffPanelAction::CopyContent(path) => {
+                        // The comparison is a snapshot of the working tree, so
+                        // copying the file reads it now rather than copying the
+                        // selected diff's text: "Copy content" means the file,
+                        // the way DSH's review copy does.
+                        let controls = state.pane_controls_mut(pane_id);
+                        match std::fs::read_to_string(&path) {
+                            Ok(text) => crate::clipboard::copy_text(&text),
+                            Err(error) => {
+                                *controls.diff_git_status.borrow_mut() =
+                                    Some((format!("Cannot copy {path}: {error}"), false));
+                            }
+                        }
+                    }
+                    DiffPanelAction::OpenFloating(path) => {
+                        state.open_file_in_floating(path, desktop_diff_panel.as_deref());
                     }
                     DiffPanelAction::ToggleCommit => {
                         state.focus_pane(pane_id);
@@ -2435,6 +2469,20 @@ pub fn make_actions(
         on_explorer_file_click: Rc::new(RefCell::new(move |path: String| {
             let mut state = on_explorer_file_click.borrow_mut();
             open_file_pane(&mut state, path, desktop_file_view.as_ref());
+        })),
+        // DSH's "Open in floating panel": the file pane opens first (beside the
+        // active pane, or as a chip in the file pane already in front), then the
+        // active space arranges every leaf as a floating window.
+        on_open_file_floating: Rc::new(RefCell::new(move |path: String| {
+            let mut state = on_open_file_floating.borrow_mut();
+            state.open_file_in_floating(path, desktop_open_file_floating.as_deref());
+        })),
+        // The docked side of the same choice: a floating space returns to its
+        // BSP tree with every pane still in it.
+        on_toggle_float_layout: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_float_layout.borrow_mut();
+            state.toggle_floating_layout(desktop_toggle_float_layout.as_deref());
+            state.sync_active_view();
         })),
         on_global_search_change: Rc::new(RefCell::new(move |value: String| {
             let mut state = on_global_search_change.borrow_mut();

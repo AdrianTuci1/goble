@@ -301,6 +301,7 @@ impl UiState {
             )]),
             live_executions: HashMap::new(),
             pane_controls: HashMap::new(),
+            diff_reviews: Rc::new(RefCell::new(HashMap::new())),
             pane_workers: HashMap::new(),
             pane_ssh: HashMap::new(),
             harness_chats: HashMap::new(),

@@ -26,6 +26,7 @@ mod pane_move;
 mod panes;
 mod refresh;
 mod responsive;
+mod reviewer;
 mod session;
 mod session_menu;
 mod settings;
@@ -43,6 +44,7 @@ pub use responsive::{
     pane_slot_min_width, Responsive, PANE_MIN_WIDTH, RESPONSIVE_HYSTERESIS,
     SECONDARY_PANEL_BREAKPOINT, SIDEBAR_AUTO_COLLAPSE,
 };
+pub use reviewer::{review_for, DiffReviewState, DiffViewMode};
 pub use session_menu::{ArchiveConfirm, SidebarRename, ToastKind, ToastNotice};
 pub use title::{deterministic_subject, generate_and_store_title, spawn_title_generation};
 pub use workspace_rows::{SidebarWorkspace, SidebarWorkspaceRename};
@@ -718,6 +720,11 @@ pub struct UiState {
     /// dropdown open flags), keyed by pane id so two pty/agent panes in the
     /// same workspace never share them.
     pub pane_controls: HashMap<u64, PaneControls>,
+    /// Per-pane review view choices (unified/split, wrapping, the folded
+    /// directories of the changed-file tree, and the header selector's state),
+    /// keyed by pane id. Shared with the UI so they survive the per-frame
+    /// element rebuild.
+    pub diff_reviews: Rc<RefCell<HashMap<u64, DiffReviewState>>>,
     /// Per-pane transcript scroll offset, keyed by pane id. Owned here (not on
     /// the element, which is rebuilt every frame) so a pane's scrollback
     /// position and its follow-the-stream state survive the rebuild.

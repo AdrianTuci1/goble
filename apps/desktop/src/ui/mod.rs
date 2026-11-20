@@ -33,6 +33,7 @@ pub mod pickers;
 pub mod projects;
 pub mod shell;
 pub mod shortcuts_help;
+pub mod reviewer;
 pub mod sidebar;
 pub mod space_bar;
 pub mod session_menu;

@@ -1465,6 +1465,26 @@ fn file_title(
                 .finish(),
         );
     row = row.with_child(Spacer::new().finish());
+    // The file pane's own route into a floating window: the pane opens first,
+    // then the active space arranges its leaves as floating panes.
+    let on_float = actions.on_open_file_floating.clone();
+    let float_path = path.to_string();
+    row = row.with_child(
+        Tooltip::new(
+            TopbarButton::new(
+                Icon::new("fullscreen-enter")
+                    .with_size(13.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(22.0)
+            .with_on_click(move || (on_float.borrow_mut())(float_path.clone()))
+            .finish(),
+            "Open in floating panel",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish(),
+    );
     if let Some(detail) = detail {
         row = row.with_child(
             Text::new(detail)

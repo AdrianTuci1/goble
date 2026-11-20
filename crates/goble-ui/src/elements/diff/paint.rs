@@ -1,6 +1,11 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::model::{
+    build_rows, build_split_rows, gap_text, header_text, DiffLineKind, DiffRow, DiffStats, Hunk,
+    SplitDiffRow,
+};
 use crate::color::ColorU;
 use crate::elements::{
     AppContext, Element, LayoutContext, PaintContext, Point, ScrollState, SizeConstraint, TextSpan,
@@ -9,7 +14,6 @@ use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::platform::text_atlas::{measure_text_family, FontWeight};
 use crate::syntax::{HighlightedLine, HighlightedSpans};
 use crate::theme::{ColorToken, FontFamily};
-use super::model::{DiffLineKind, DiffRow, DiffStats, Hunk, build_rows, gap_text, header_text};
 
 const FONT_SIZE: f32 = 12.0;
 
@@ -52,6 +56,7 @@ struct Metrics {
 #[derive(Clone, Default)]
 pub struct PreparedDiff {
     rows: Rc<Vec<DiffRow>>,
+    split_rows: Rc<Vec<SplitDiffRow>>,
     /// The widest row's text and the digits its gutter needs, measured once
     /// when the rows are built. A card inside a sideways scroll region reads
     /// these every frame; walking every line of every visible file to measure
@@ -62,7 +67,23 @@ pub struct PreparedDiff {
     /// prepare every diff's rows while only the cards in view pay for syntax.
     /// A review of many hundred changed files would otherwise highlight every
     /// diff on the frame it reads them, freezing the window.
-    highlights: Rc<RefCell<Option<Rc<Vec<Option<HighlightedLine>>>>>>,
+    highlights: Rc<RefCell<Option<Rc<DiffHighlightSets>>>>,
+}
+
+/// Which file version a side-by-side cell shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffSide {
+    Old,
+    New,
+}
+
+/// The coloured runs a prepared diff carries: row-aligned for the unified view,
+/// and keyed by file line number for either side of the split view.
+#[derive(Clone, Default)]
+pub(crate) struct DiffHighlightSets {
+    pub(crate) unified: Rc<Vec<Option<HighlightedLine>>>,
+    pub(crate) old: Rc<HashMap<u32, HighlightedLine>>,
+    pub(crate) new: Rc<HashMap<u32, HighlightedLine>>,
 }
 
 /// The rows past which a diff stays in its flat change colours. A diff this
@@ -96,7 +117,11 @@ impl std::fmt::Debug for PreparedDiff {
             .field("rows", &self.rows.len())
             .field(
                 "highlights",
-                &self.highlights.borrow().as_ref().map(|runs| runs.len()),
+                &self
+                    .highlights
+                    .borrow()
+                    .as_ref()
+                    .map(|sets| sets.unified.len()),
             )
             .finish()
     }
@@ -117,10 +142,12 @@ impl PreparedDiff {
     /// read of a large working tree does not highlight every changed file.
     pub fn rows_only(hunks: &[Hunk]) -> Self {
         let rows = build_rows(hunks);
+        let split_rows = build_split_rows(hunks);
         let text_width = rows_text_width(&rows);
         let gutter_digits = gutter_digits(hunks);
         Self {
             rows: Rc::new(rows),
+            split_rows: Rc::new(split_rows),
             text_width,
             gutter_digits,
             highlights: Rc::new(RefCell::new(None)),
@@ -152,7 +179,7 @@ impl PreparedDiff {
             .iter()
             .map(|answer| answer.as_ref().map(crate::syntax::spans_to_lines))
             .collect();
-        let assembled = assemble_highlights(self.rows.len(), &job.sides, &lines);
+        let assembled = assemble_highlights(&self.rows, &job.sides, &lines);
         *slot = Some(Rc::new(assembled));
     }
 
@@ -167,17 +194,63 @@ impl PreparedDiff {
         let runs = if self.rows.len() <= MAX_HIGHLIGHT_ROWS {
             highlight_changed_rows(&self.rows, language)
         } else {
-            Vec::new()
+            DiffHighlightSets::default()
         };
         *slot = Some(Rc::new(runs));
     }
 
     /// The syntax runs, or an empty set when nobody has asked for them yet.
-    fn highlight_runs(&self) -> Rc<Vec<Option<HighlightedLine>>> {
+    fn highlight_sets(&self) -> Rc<DiffHighlightSets> {
         self.highlights
             .borrow()
             .clone()
-            .unwrap_or_else(|| Rc::new(Vec::new()))
+            .unwrap_or_else(|| Rc::new(DiffHighlightSets::default()))
+    }
+
+    /// The unified view's row-aligned syntax runs, or an empty set when nobody
+    /// has asked for the colour yet.
+    pub fn highlight_runs(&self) -> Rc<Vec<Option<HighlightedLine>>> {
+        Rc::clone(&self.highlight_sets().unified)
+    }
+
+    /// The side-by-side view's rows, prepared with the same pass as the
+    /// unified rows.
+    pub fn split_rows(&self) -> Rc<Vec<SplitDiffRow>> {
+        Rc::clone(&self.split_rows)
+    }
+
+    /// One side of the side-by-side view's syntax runs, keyed by file line.
+    pub(crate) fn side_highlights(&self, side: DiffSide) -> Rc<HashMap<u32, HighlightedLine>> {
+        let sets = self.highlight_sets();
+        match side {
+            DiffSide::Old => Rc::clone(&sets.old),
+            DiffSide::New => Rc::clone(&sets.new),
+        }
+    }
+
+    /// The file lines the split view colours, for a host that wants to draw the
+    /// comparison itself.
+    pub fn highlighted_lines(
+        &self,
+    ) -> (
+        Rc<HashMap<u32, HighlightedLine>>,
+        Rc<HashMap<u32, HighlightedLine>>,
+    ) {
+        (
+            self.side_highlights(DiffSide::Old),
+            self.side_highlights(DiffSide::New),
+        )
+    }
+
+    /// The unified rows the prepared diff draws, gap separators included, kept
+    /// in the shared handle so a per-frame host does not copy them.
+    pub fn rows_shared(&self) -> Rc<Vec<DiffRow>> {
+        Rc::clone(&self.rows)
+    }
+
+    /// The unified rows the prepared diff draws, gap separators included.
+    pub fn display_rows(&self) -> Vec<DiffRow> {
+        (*self.rows).clone()
     }
 
     /// How many rows the prepared diff draws. A host that stacks several diffs
@@ -325,7 +398,7 @@ impl Diff {
     /// rather than drawing nothing.
     pub fn with_language(mut self, language: impl Into<String>) -> Self {
         let language = language.into();
-        self.highlights = Rc::new(highlight_changed_rows(&self.rows, &language));
+        self.highlights = highlight_changed_rows(&self.rows, &language).unified;
         self
     }
 
@@ -402,13 +475,13 @@ impl Diff {
 /// makes the review read as two kinds of text. A row that is not a body line,
 /// or whose language did not resolve, is `None` — the painter reads that as the
 /// flat line colour, the change's own for an added or removed line.
-fn highlight_changed_rows(rows: &[DiffRow], language: &str) -> Vec<Option<HighlightedLine>> {
+pub(crate) fn highlight_changed_rows(rows: &[DiffRow], language: &str) -> DiffHighlightSets {
     let sides = diff_sides(rows);
     let answers: Vec<Option<Vec<HighlightedLine>>> = sides
         .iter()
         .map(|side| crate::syntax::highlight(&side.text, language))
         .collect();
-    assemble_highlights(rows.len(), &sides, &answers)
+    assemble_highlights(rows, &sides, &answers)
 }
 
 /// The two sides of a diff as the texts a highlighter colours. A hunk carries
@@ -453,25 +526,54 @@ fn diff_sides(rows: &[DiffRow]) -> Vec<DiffHighlightSide> {
 /// Put each side's coloured lines on the rows they came from. Context lines are
 /// on both sides, and the first side that coloured them wins.
 fn assemble_highlights(
-    row_count: usize,
+    rows: &[DiffRow],
     sides: &[DiffHighlightSide],
     answers: &[Option<Vec<HighlightedLine>>],
-) -> Vec<Option<HighlightedLine>> {
-    let mut out: Vec<Option<HighlightedLine>> = vec![None; row_count];
+) -> DiffHighlightSets {
+    let mut unified: Vec<Option<HighlightedLine>> = vec![None; rows.len()];
+    let mut old = HashMap::new();
+    let mut new = HashMap::new();
     for (side, answer) in sides.iter().zip(answers) {
         let Some(lines) = answer else {
             continue;
         };
         for (line_index, &row_index) in side.rows.iter().enumerate() {
-            if out[row_index].is_some() {
+            let Some(runs) = lines.get(line_index).filter(|runs| !runs.is_empty()) else {
                 continue;
+            };
+            if unified[row_index].is_none() {
+                unified[row_index] = Some(runs.clone());
             }
-            if let Some(runs) = lines.get(line_index).filter(|runs| !runs.is_empty()) {
-                out[row_index] = Some(runs.clone());
+            let Some(DiffRow::Line(line)) = rows.get(row_index) else {
+                continue;
+            };
+            match line.kind {
+                DiffLineKind::Added => {
+                    if let Some(number) = line.new_line {
+                        new.entry(number).or_insert_with(|| runs.clone());
+                    }
+                }
+                DiffLineKind::Removed => {
+                    if let Some(number) = line.old_line {
+                        old.entry(number).or_insert_with(|| runs.clone());
+                    }
+                }
+                DiffLineKind::Context => {
+                    if let Some(number) = line.old_line {
+                        old.entry(number).or_insert_with(|| runs.clone());
+                    }
+                    if let Some(number) = line.new_line {
+                        new.entry(number).or_insert_with(|| runs.clone());
+                    }
+                }
             }
         }
     }
-    out
+    DiffHighlightSets {
+        unified: Rc::new(unified),
+        old: Rc::new(old),
+        new: Rc::new(new),
+    }
 }
 
 /// Draw one changed line's body: its highlighted runs when the language

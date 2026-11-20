@@ -1,15 +1,22 @@
-//! The changed-files card that closes an assistant turn: DSH's 60pt header and
-//! the full expanded file list, with status letters, names, directories and
-//! per-file counts.
+//! The changed-files card that closes an assistant turn.
+//!
+//! The card follows DSH's `ChangedFiles.module.css`: a 60 pt filled header with
+//! a 40 pt file tile, a 13/20 title, a 10/16 mono stat line and a Review
+//! action; file rows with status glyphs, a 12 pt path and 11/18 mono counts;
+//! and the fold after four rows with an explicit expand control. The counts
+//! come from the turn's own recorded tool diffs ([`ChangedFiles`]), so a turn
+//! that changed nothing draws no card at all.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::chat_content::ChangedFiles;
+use crate::elements::chat_content::{ChangedFile, ChangedFiles};
 use crate::elements::chat_typography;
+use crate::elements::diff::DiffSpec;
+use crate::elements::file_icon_name;
 use crate::elements::{
     AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Expanded, Fill, Flex, HoverRow, Icon, MainAxisSize, Text,
+    Element, Expanded, Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, Text,
 };
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily};
@@ -22,111 +29,191 @@ pub(super) fn build_changed_files_card(
 ) -> Box<dyn Element> {
     let open = *expanded.borrow();
     let files = summary.files_changed();
-    let title = if files == 1 {
+    let single = files == 1;
+    let foldable = files > DiffSpec::CHANGED_FILES_FOLD;
+    let title = if single {
         "1 file changed".to_string()
     } else {
         format!("{files} files changed")
     };
-    let counts = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.0)
-        .with_child(count_span(format!("+{}", summary.added()), ColorToken::Success, app))
-        .with_child(count_span(format!("-{}", summary.removed()), ColorToken::Error, app))
-        .finish();
-    let chevron = Icon::new(if open {
-        "chevron-down"
-    } else {
-        "chevron-right"
-    })
-    .with_size(12.0)
-    .with_theme_color(ColorToken::Muted, app)
-    .finish();
-    let title = Text::new(title)
-        .with_font_family(chat_typography::chat_font(app))
-        .with_font_size(13.0)
-        .with_line_height(20.0 / 13.0)
-        .with_weight(FontWeight::Medium)
-        .with_theme_color(ColorToken::Text, app)
-        .finish();
-    let header_left = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(8.0)
-        .with_child(title)
-        .with_child(counts)
-        .with_child(chevron)
-        .finish();
-    let on_toggle = {
-        let expanded = expanded.clone();
-        move || *expanded.borrow_mut() = !*expanded.borrow()
-    };
-    let left = HoverRow::new(header_left)
-        .with_quiet_hover()
-        .with_padding(EdgeInsets::new(7.0, 0.0, 7.0, 14.0))
-        .with_on_click(on_toggle)
-        .finish();
+    let header = build_header(app, &title, summary, on_review.clone());
 
-    let on_review_click = on_review.clone();
-    let review = HoverRow::new(
+    let mut card = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(header);
+
+    // A single changed file stays a one-line card until it is opened; two to
+    // four files show every row; more than four fold at DSH's fourth row.
+    let visible = if single && !open {
+        0
+    } else if foldable && !open {
+        DiffSpec::CHANGED_FILES_FOLD
+    } else {
+        summary.files.len()
+    };
+    if visible > 0 {
+        card = card.with_child(
+            Divider::horizontal()
+                .with_thickness(DiffSpec::CHANGED_FILES_HAIRLINE)
+                .finish(),
+        );
+        for file in summary.files.iter().take(visible) {
+            card = card.with_child(file_row(app, file, on_review.clone()));
+        }
+    }
+    if foldable {
+        card = card.with_child(fold_toggle(app, expanded.clone(), files, open));
+    }
+
+    Container::new(card.finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_border(
+            Border::all(DiffSpec::CHANGED_FILES_HAIRLINE)
+                .with_border_color(app.theme.color(ColorToken::Border)),
+        )
+        .with_corner_radius(DiffSpec::CHANGED_FILES_RADIUS)
+        .finish()
+}
+
+fn build_header(
+    app: &AppContext,
+    title: &str,
+    summary: &ChangedFiles,
+    on_review: Rc<RefCell<dyn FnMut()>>,
+) -> Box<dyn Element> {
+    let single = summary.files_changed() == 1;
+    let icon = if single {
+        file_icon_name(&summary.files[0].path)
+    } else {
+        "code"
+    };
+    let tile = Container::new(
         Flex::row()
+            .with_main_axis_alignment(MainAxisAlignment::Center)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(6.0)
             .with_child(
-                Icon::new("file")
-                    .with_size(14.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_child(
-                Text::new("Review")
-                    .with_font_family(chat_typography::chat_font(app))
-                    .with_font_size(12.0)
-                    .with_line_height(20.0 / 12.0)
+                Icon::new(icon)
+                    .with_size(DiffSpec::CHANGED_FILES_TILE_GLYPH)
                     .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
             .finish(),
     )
-    .with_padding(EdgeInsets::new(6.0, 2.0, 6.0, 2.0))
-    .with_corner_radius(8.0)
-    .with_on_click(move || (on_review_click.borrow_mut())())
+    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+    .with_border(
+        Border::all(DiffSpec::CHANGED_FILES_HAIRLINE)
+            .with_border_color(app.theme.color(ColorToken::Border)),
+    )
+    .with_padding(EdgeInsets::uniform(
+        (DiffSpec::CHANGED_FILES_TILE - DiffSpec::CHANGED_FILES_TILE_GLYPH) * 0.5,
+    ))
+    .with_corner_radius(DiffSpec::CHANGED_FILES_TILE_RADIUS)
     .finish();
+    let tile = ConstrainedBox::new(tile)
+        .with_width(DiffSpec::CHANGED_FILES_TILE)
+        .with_height(DiffSpec::CHANGED_FILES_TILE)
+        .finish();
 
-    let header = ConstrainedBox::new(
-        Container::new(
-            Flex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(Expanded::new(left).finish())
-                .with_child(review)
+    let title = Text::new(title)
+        .with_font_family(chat_typography::chat_font(app))
+        .with_font_size(DiffSpec::CHANGED_FILES_TITLE_SIZE)
+        .with_line_height(
+            DiffSpec::CHANGED_FILES_TITLE_LINE_HEIGHT / DiffSpec::CHANGED_FILES_TITLE_SIZE,
+        )
+        .with_weight(FontWeight::Medium)
+        .with_theme_color(ColorToken::Text, app)
+        .with_max_lines(1)
+        .finish();
+    let stat = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(DiffSpec::CHANGED_FILES_STAT_GAP)
+        .with_child(stat_count(
+            format!("+{}", grouped(summary.added())),
+            ColorToken::Success,
+            app,
+        ))
+        .with_child(stat_count(
+            format!("-{}", grouped(summary.removed())),
+            ColorToken::Error,
+            app,
+        ))
+        .finish();
+    let titles = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_child(title)
+        .with_child(stat)
+        .finish();
+
+    let identity = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(DiffSpec::CHANGED_FILES_HEADER_GAP)
+        .with_child(tile)
+        .with_child(Expanded::new(titles).finish())
+        .finish();
+    let identity = {
+        let on_review = on_review.clone();
+        HoverRow::new(identity)
+            .with_quiet_hover()
+            .with_on_click(move || (on_review.borrow_mut())())
+            .finish()
+    };
+
+    let content = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(DiffSpec::CHANGED_FILES_HEADER_GAP)
+        .with_child(Expanded::new(identity).finish())
+        .with_child(review_button(app, on_review))
+        .finish();
+
+    ConstrainedBox::new(
+        Container::new(content)
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_padding(EdgeInsets::new(
+                // The tile is 40 pt inside the 60 pt header: the extra 2 pt
+                // above and below DSH's 8 pt padding keeps the fill 60 tall.
+                (DiffSpec::CHANGED_FILES_HEADER_HEIGHT - DiffSpec::CHANGED_FILES_TILE) * 0.5,
+                DiffSpec::CHANGED_FILES_HEADER_PAD_X,
+                (DiffSpec::CHANGED_FILES_HEADER_HEIGHT - DiffSpec::CHANGED_FILES_TILE) * 0.5,
+                DiffSpec::CHANGED_FILES_HEADER_PAD_X,
+            ))
+            .finish(),
+    )
+    .with_height(DiffSpec::CHANGED_FILES_HEADER_HEIGHT)
+    .finish()
+}
+
+fn review_button(app: &AppContext, on_review: Rc<RefCell<dyn FnMut()>>) -> Box<dyn Element> {
+    let content = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(
+            Icon::new("file")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
                 .finish(),
         )
-        .with_padding(EdgeInsets::new(0.0, 8.0, 0.0, 8.0))
-        .finish(),
-    )
-    .with_height(60.0)
-    .finish();
-
-    let mut card = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(header);
-    if open {
-        for (index, file) in summary.files.iter().enumerate() {
-            if index > 0 {
-                card = card.with_child(Divider::horizontal().finish());
-            }
-            card = card.with_child(file_row(app, file));
-        }
-    }
-    Container::new(card.finish())
-        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-        .with_corner_radius(12.0)
+        .with_child(
+            Text::new("Review")
+                .with_font_family(chat_typography::chat_font(app))
+                .with_font_size(12.0)
+                .with_line_height(18.0 / 12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .finish();
+    HoverRow::new(content)
+        .with_padding(EdgeInsets::new(5.0, 10.0, 5.0, 10.0))
+        .with_corner_radius(8.0)
+        .with_hover_token(ColorToken::Selected)
+        .with_on_click(move || (on_review.borrow_mut())())
         .finish()
 }
 
 fn file_row(
     app: &AppContext,
-    file: &crate::elements::chat_content::ChangedFile,
+    file: &ChangedFile,
+    on_review: Rc<RefCell<dyn FnMut()>>,
 ) -> Box<dyn Element> {
     let (name, dir) = match file.path.rsplit_once('/') {
         Some((dir, name)) => (name.to_string(), dir.to_string()),
@@ -137,77 +224,192 @@ fn file_row(
         'D' => (ColorToken::Error, "D"),
         _ => (ColorToken::Muted, "M"),
     };
-    let identity = Flex::row()
+    let status = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(8.0)
+        .with_spacing(4.0)
         .with_child(
-            Icon::new("file")
-                .with_size(14.0)
+            Icon::new(file_icon_name(&file.path))
+                .with_size(DiffSpec::CHANGED_FILES_STATUS_GLYPH)
                 .with_theme_color(status_color, app)
                 .finish(),
         )
         .with_child(
             Text::new(status_ink)
                 .with_font_family(FontFamily::Mono)
-                .with_font_size(10.0)
+                .with_font_size(9.0)
+                .with_line_height(14.0 / 9.0)
                 .with_theme_color(status_color, app)
                 .finish(),
         )
+        .finish();
+
+    let mut path = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
         .with_child(
             Text::new(name)
                 .with_font_family(chat_typography::chat_font(app))
-                .with_font_size(13.0)
+                .with_font_size(DiffSpec::CHANGED_FILES_PATH_SIZE)
+                .with_line_height(
+                    DiffSpec::CHANGED_FILES_PATH_LINE_HEIGHT / DiffSpec::CHANGED_FILES_PATH_SIZE,
+                )
                 .with_weight(FontWeight::Medium)
                 .with_theme_color(ColorToken::Text, app)
                 .with_max_lines(1)
                 .finish(),
         );
-    let identity = if dir.is_empty() {
-        identity.finish()
-    } else {
-        identity
-            .with_child(
-                Text::new(dir)
-                    .with_font_family(chat_typography::chat_font(app))
-                    .with_font_size(12.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_max_lines(1)
-                    .finish(),
-            )
-            .finish()
-    };
+    if !dir.is_empty() {
+        path = path.with_child(
+            Text::new(dir)
+                .with_font_family(chat_typography::chat_font(app))
+                .with_font_size(DiffSpec::CHANGED_FILES_PATH_SIZE)
+                .with_line_height(
+                    DiffSpec::CHANGED_FILES_PATH_LINE_HEIGHT / DiffSpec::CHANGED_FILES_PATH_SIZE,
+                )
+                .with_theme_color(ColorToken::Muted, app)
+                .with_max_lines(1)
+                .finish(),
+        );
+    }
+    let identity = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.0)
+        .with_child(status)
+        .with_child(Expanded::new(path.finish()).finish())
+        .finish();
     let counts = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(6.0)
-        .with_child(row_count_span(format!("+{}", file.added), ColorToken::Success, app))
-        .with_child(row_count_span(format!("-{}", file.removed), ColorToken::Error, app))
+        .with_child(row_count(
+            format!("+{}", grouped(file.added)),
+            ColorToken::Success,
+            app,
+        ))
+        .with_child(row_count(
+            format!("-{}", grouped(file.removed)),
+            ColorToken::Error,
+            app,
+        ))
         .finish();
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(12.0)
+        .with_spacing(DiffSpec::CHANGED_FILES_ROW_GAP)
         .with_child(Expanded::new(identity).finish())
         .with_child(counts)
         .finish();
-    Container::new(row)
-        .with_padding(EdgeInsets::new(9.0, 14.0, 9.0, 14.0))
-        .finish()
+    HoverRow::new(
+        Container::new(row)
+            .with_padding(EdgeInsets::new(
+                DiffSpec::CHANGED_FILES_ROW_PAD_TOP,
+                DiffSpec::CHANGED_FILES_ROW_PAD_RIGHT,
+                DiffSpec::CHANGED_FILES_ROW_PAD_BOTTOM,
+                DiffSpec::CHANGED_FILES_ROW_PAD_LEFT,
+            ))
+            .finish(),
+    )
+    .with_padding(EdgeInsets::default())
+    .with_on_click(move || (on_review.borrow_mut())())
+    .finish()
 }
 
-fn count_span(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Element> {
+fn fold_toggle(
+    app: &AppContext,
+    expanded: Rc<RefCell<bool>>,
+    files: usize,
+    open: bool,
+) -> Box<dyn Element> {
+    let label = if open {
+        "Show fewer".to_string()
+    } else {
+        format!("Show all {files} files")
+    };
+    let chevron = if open { "chevron-up" } else { "chevron-down" };
+    let content = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0)
+        .with_child(
+            Text::new(label)
+                .with_font_family(chat_typography::chat_font(app))
+                .with_font_size(DiffSpec::CHANGED_FILES_FOLD_SIZE)
+                .with_line_height(
+                    DiffSpec::CHANGED_FILES_FOLD_LINE_HEIGHT / DiffSpec::CHANGED_FILES_FOLD_SIZE,
+                )
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_child(
+            Icon::new(chevron)
+                .with_size(DiffSpec::CHANGED_FILES_FOLD_CHEVRON)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .finish();
+    let toggle = {
+        let expanded = expanded.clone();
+        move || {
+            let next = !*expanded.borrow();
+            *expanded.borrow_mut() = next;
+        }
+    };
+    HoverRow::new(
+        Container::new(content)
+            .with_padding(EdgeInsets::new(
+                DiffSpec::CHANGED_FILES_FOLD_PAD_TOP,
+                DiffSpec::CHANGED_FILES_FOLD_PAD_RIGHT,
+                DiffSpec::CHANGED_FILES_FOLD_PAD_BOTTOM,
+                DiffSpec::CHANGED_FILES_FOLD_PAD_LEFT,
+            ))
+            .finish(),
+    )
+    .with_padding(EdgeInsets::default())
+    .with_on_click(toggle)
+    .finish()
+}
+
+fn stat_count(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Element> {
     Text::new(text)
         .with_font_family(FontFamily::Mono)
-        .with_font_size(10.0)
-        .with_line_height(16.0 / 10.0)
+        .with_font_size(DiffSpec::CHANGED_FILES_STAT_SIZE)
+        .with_line_height(
+            DiffSpec::CHANGED_FILES_STAT_LINE_HEIGHT / DiffSpec::CHANGED_FILES_STAT_SIZE,
+        )
         .with_theme_color(token, app)
         .finish()
 }
 
-fn row_count_span(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Element> {
+fn row_count(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Element> {
     Text::new(text)
         .with_font_family(FontFamily::Mono)
-        .with_font_size(11.0)
-        .with_line_height(18.0 / 11.0)
+        .with_font_size(DiffSpec::CHANGED_FILES_COUNT_SIZE)
+        .with_line_height(
+            DiffSpec::CHANGED_FILES_COUNT_LINE_HEIGHT / DiffSpec::CHANGED_FILES_COUNT_SIZE,
+        )
         .with_theme_color(token, app)
         .finish()
+}
+
+fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_are_grouped_like_dsh() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1_234), "1,234");
+        assert_eq!(grouped(1_234_567), "1,234,567");
+    }
 }

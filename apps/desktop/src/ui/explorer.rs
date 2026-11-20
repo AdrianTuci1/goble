@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 
 use goble_ui::elements::{
     file_icon_name, AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
-    Element, Empty, Expanded, Flex, HoverRow, Icon, MainAxisSize, Scrollable, Text, Tooltip,
-    TooltipPosition,
+    Element, Empty, Expanded, Flex, HoverRow, Icon, IconButton, MainAxisSize, Scrollable, Text,
+    Tooltip, TooltipPosition,
 };
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::vec2f;
@@ -243,9 +243,38 @@ pub(crate) fn build_explorer(
 
         let on_toggle_dir = on_toggle_dir.clone();
         let on_open_file = on_open_file.clone();
+        let on_open_floating = actions.on_open_file_floating.clone();
         let is_dir = row.is_dir;
         let file_hint = crate::state::display_path(&path);
-        let mut row = HoverRow::new(line.finish())
+        // A file row's trailing control opens the same file as a floating
+        // window; the row's own press still opens it docked. HoverRow gives the
+        // control the press first, so the two never fire together.
+        let mut content = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Expanded::new(line.finish()).finish());
+        if !is_dir {
+            let float_path = path.clone();
+            content = content.with_child(
+                Tooltip::new(
+                    IconButton::new(
+                        Icon::new("fullscreen-enter")
+                            .with_size(12.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_size(vec2f(20.0, 20.0))
+                    .with_on_click(move || {
+                        (on_open_floating.borrow_mut())(float_path.clone())
+                    })
+                    .finish(),
+                    "Open in floating panel",
+                )
+                .with_position(TooltipPosition::Below)
+                .finish(),
+            );
+        }
+        let mut row = HoverRow::new(content.finish())
             .with_padding(EdgeInsets::new(8.0, ITEM_PADDING, 8.0, ITEM_PADDING))
             .with_corner_radius(ROW_RADIUS)
             .with_hover_key(state.explorer_hover.clone(), path.clone())

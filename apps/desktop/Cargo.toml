@@ -6,9 +6,16 @@ license.workspace = true
 publish.workspace = true
 
 [features]
+# The landed goble-ui `FileDiffView` is the default comparison painter. The
+# app's fallback (`ReviewDiff`) stays behind the feature's absence for a
+# checkout where goble-ui's diff element is not yet present.
+default = ["file-diff-view"]
 # Composes the remote WebSocket daemon-client codec. The daemon seam (local
 # embedded) is always available; this feature readies the remote transport.
 daemon = ["goble-daemon-client/remote"]
+# Draw review comparisons with goble-ui's FileDiffView (unified/split/wrap
+# prepared at read time) instead of the app's fallback painter.
+file-diff-view = []
 
 [dependencies]
 goble-ui = { path = "../../crates/goble-ui" }

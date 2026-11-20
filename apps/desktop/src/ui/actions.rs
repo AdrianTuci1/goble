@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use goble_ui::elements::LaneEdge;
@@ -11,6 +12,7 @@ use super::tab_menu::TabMenuAction;
 use super::types::{
     AppTab, ArchivedFilter, OnboardingAction, SettingsCategory, SidebarView, WorkspaceRouting,
 };
+use crate::state::DiffReviewState;
 use crate::state::SideTabAction;
 
 /// Start a floating pane drag: the pane, the mode, the pointer where the press
@@ -55,6 +57,18 @@ pub enum DiffPanelAction {
     Focus,
     /// Show or hide the file list.
     ToggleSidebar,
+    /// Switch the comparison between one column and side by side.
+    ToggleView,
+    /// Turn long-line wrapping on or off.
+    ToggleWrap,
+    /// Fold or unfold one directory of the changed-file tree.
+    ToggleDir(String),
+    /// Copy the current contents of one changed file to the clipboard. The
+    /// path is absolute; a file the platform cannot read leaves the clipboard
+    /// untouched and reports why in the pane's status line.
+    CopyContent(String),
+    /// Open a changed file in a file pane that floats over the space.
+    OpenFloating(String),
     /// Open or close the commit bar under the topbar.
     ToggleCommit,
     /// Hold the commit bar's message as it is typed.
@@ -365,6 +379,17 @@ pub struct UiActions {
     /// Hand a file path to the active pane's input, from a click in the project
     /// explorer or on a global-search result.
     pub on_explorer_file_click: Rc<RefCell<dyn FnMut(String)>>,
+    /// Open a file in a file pane and arrange the active space as floating
+    /// windows (DSH's "Open in floating panel"). The file pane opens first, so
+    /// the window the gesture is about is the one on top.
+    pub on_open_file_floating: Rc<RefCell<dyn FnMut(String)>>,
+    /// Toggle the active space between its docked BSP layout and the floating
+    /// one, without touching the panes it holds.
+    pub on_toggle_float_layout: Rc<RefCell<dyn FnMut()>>,
+    /// Per-pane review view choices, shared with the element tree so unified /
+    /// split, wrapping, folded directories and the selector survive the
+    /// per-frame rebuild.
+    pub review_views: Rc<RefCell<HashMap<u64, DiffReviewState>>>,
     /// Update the global search query and run it.
     pub on_global_search_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Track focus of the global search field.

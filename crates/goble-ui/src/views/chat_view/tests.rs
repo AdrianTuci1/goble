@@ -4780,3 +4780,136 @@ fn a_completed_turn_shows_its_changed_files_and_review_action() {
         "a clean turn has no changed-files card"
     );
 }
+
+/// The rebuilt changed-files card: DSH's 60 pt header and 40 pt tile, four
+/// folded rows, status glyphs, per-row counts and an expand control that
+/// reveals the rest.
+#[test]
+fn the_changed_files_card_folds_after_four_rows_and_expands() {
+    use crate::elements::chat_content::{ChangedFile, ChangedFiles};
+    use crate::elements::diff::DiffSpec;
+    use crate::event::DispatchedEvent;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let files = (0..6)
+        .map(|index| ChangedFile {
+            path: format!("src/file_{index}.rs"),
+            added: (index + 1) as u64,
+            removed: index as u64,
+            status: if index == 0 {
+                'A'
+            } else if index == 5 {
+                'D'
+            } else {
+                'M'
+            },
+        })
+        .collect();
+    let summary = ChangedFiles { files };
+    let open = Rc::new(RefCell::new(false));
+    let mut card = super::changed_files_card::build_changed_files_card(
+        &app,
+        &summary,
+        open.clone(),
+        Rc::new(RefCell::new(|| {})),
+    );
+    let commands = render_element(&mut card, vec2f(700.0, 800.0), &app);
+    let texts: Vec<String> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    for needle in ["6 files changed", "+21", "-15", "Show all 6 files"] {
+        assert!(
+            texts.iter().any(|text| text == needle),
+            "the closed card shows {needle:?}: {texts:?}"
+        );
+    }
+    assert!(
+        texts.iter().any(|text| text == "file_3.rs"),
+        "the fourth row is shown"
+    );
+    assert!(
+        !texts.iter().any(|text| text == "file_4.rs"),
+        "the fifth row stays folded: {texts:?}"
+    );
+    assert!(
+        texts.iter().filter(|text| **text == "M").count() >= 3,
+        "modified rows carry their status letter: {texts:?}"
+    );
+
+    // The header is 60 pt and the leading tile is 40 pt with a 10 pt radius.
+    let tile = commands.iter().any(|command| match command {
+        RenderCommand::FillRect {
+            rect,
+            corner_radius,
+            ..
+        } => {
+            (rect.width() - DiffSpec::CHANGED_FILES_TILE).abs() < f32::EPSILON
+                && (rect.height() - DiffSpec::CHANGED_FILES_TILE).abs() < f32::EPSILON
+                && (*corner_radius - DiffSpec::CHANGED_FILES_TILE_RADIUS).abs() < f32::EPSILON
+        }
+        _ => false,
+    });
+    assert!(tile, "the header draws DSH's 40 pt, radius-10 tile");
+    let header_fill = commands.iter().any(|command| match command {
+        RenderCommand::FillRect { rect, .. } => {
+            (rect.width() - 700.0).abs() < f32::EPSILON
+                && (rect.height() - DiffSpec::CHANGED_FILES_HEADER_HEIGHT).abs() < f32::EPSILON
+        }
+        _ => false,
+    });
+    assert!(header_fill, "the header fills DSH's 60 pt box");
+    assert_eq!(card.size().expect("laid out").x, 700.0);
+
+    let toggle = commands
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if text == "Show all 6 files" => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+        .expect("the fold control is drawn");
+    let mut ctx = crate::elements::EventContext::default();
+    for event in [
+        DispatchedEvent::MouseDown {
+            position: toggle + vec2f(4.0, 4.0),
+            button: 0,
+        },
+        DispatchedEvent::MouseUp {
+            position: toggle + vec2f(4.0, 4.0),
+            button: 0,
+        },
+    ] {
+        card.dispatch_event(&event, &mut ctx, &app);
+    }
+    assert!(*open.borrow(), "the fold control opens the list");
+
+    // The app rebuilds the card from its state on the next frame.
+    let mut card = super::changed_files_card::build_changed_files_card(
+        &app,
+        &summary,
+        open.clone(),
+        Rc::new(RefCell::new(|| {})),
+    );
+    let commands = render_element(&mut card, vec2f(700.0, 800.0), &app);
+    let texts: Vec<String> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|text| text == "file_5.rs"),
+        "the sixth row is revealed"
+    );
+    assert!(texts.iter().any(|text| text == "Show fewer"));
+    assert!(texts.iter().any(|text| text == "A"));
+    assert!(texts.iter().any(|text| text == "D"));
+}

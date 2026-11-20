@@ -1,14 +1,23 @@
-//! Unified-diff transcript row: the parsed model and the element that draws it.
+//! Unified-diff transcript row: the parsed model and the elements that draw it.
 //!
-//! One module per surface: the unified-diff data and its parser ([`model`]) and
-//! the [`paint::Diff`] element that measures, highlights and draws it. The
-//! re-exports here keep every public path this module had before the split
-//! (`elements::diff::Diff`, `elements::diff::parse_unified_diff`, ...).
+//! One module per surface: the unified-diff data and its parser ([`model`]),
+//! the inline transcript [`paint::Diff`], the reusable comparison
+//! [`file_diff::FileDiffView`], and the DSH measurements both draw from
+//! ([`spec`]). The re-exports here keep every public path this module had
+//! before the split (`elements::diff::Diff`, `elements::diff::parse_unified_diff`,
+//! ...).
 
+mod file_diff;
 mod model;
 mod paint;
+mod spec;
 #[cfg(test)]
 mod tests;
 
-pub use model::{parse_unified_diff, DiffLine, DiffLineKind, DiffRow, DiffStats, Hunk};
-pub use paint::{Diff, DiffHighlightJob, DiffHighlightSide, PreparedDiff};
+pub use file_diff::{DiffLayout, FileDiffView};
+pub use model::{
+    build_split_rows, parse_unified_diff, split_rows, DiffLine, DiffLineKind, DiffRow, DiffStats,
+    Hunk, SplitDiffRow, SplitRow,
+};
+pub use paint::{Diff, DiffHighlightJob, DiffHighlightSide, DiffSide, PreparedDiff};
+pub use spec::DiffSpec;

@@ -1,6 +1,8 @@
 use crate::color::ColorU;
 use crate::elements::AppContext;
 use crate::elements::Element;
+use crate::elements::LayoutContext;
+use crate::elements::SizeConstraint;
 use crate::geometry::Vector2F;
 use crate::geometry::vec2f;
 use crate::render::RenderCommand;
@@ -356,4 +358,222 @@ fn hiding_line_numbers_drops_the_gutters() {
         "the gutter numbers must not be drawn, got {runs:?}"
     );
     assert!(runs.iter().any(|run| run == "    let x = 2;"));
+}
+
+// ---------------------------------------------------------------------------
+// DiffSpec: DSH's measurements are declared once, in public constants.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn diff_spec_carries_dshs_review_changed_files_and_line_tokens() {
+    use crate::elements::diff::DiffSpec;
+
+    assert_eq!(DiffSpec::REVIEW_HEADER_HEIGHT, 38.0);
+    assert_eq!(DiffSpec::REVIEW_SELECTOR_HEIGHT, 28.0);
+    assert_eq!(DiffSpec::REVIEW_TOOL_SIZE, 28.0);
+
+    assert_eq!(DiffSpec::CHANGED_FILES_HEADER_HEIGHT, 60.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_TILE, 40.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_TILE_RADIUS, 10.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_TITLE_SIZE, 13.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_TITLE_LINE_HEIGHT, 20.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_STAT_SIZE, 10.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_STAT_LINE_HEIGHT, 16.0);
+    assert_eq!(
+        (
+            DiffSpec::CHANGED_FILES_ROW_PAD_TOP,
+            DiffSpec::CHANGED_FILES_ROW_PAD_RIGHT,
+            DiffSpec::CHANGED_FILES_ROW_PAD_BOTTOM,
+            DiffSpec::CHANGED_FILES_ROW_PAD_LEFT,
+        ),
+        (7.0, 18.0, 7.0, 14.0)
+    );
+    assert_eq!(DiffSpec::CHANGED_FILES_PATH_SIZE, 12.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_COUNT_SIZE, 11.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_COUNT_LINE_HEIGHT, 18.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_FOLD, 4);
+
+    assert_eq!(DiffSpec::DIFF_LINE_HEIGHT, 22.0);
+    assert_eq!(DiffSpec::gutter_width(DiffSpec::DIFF_FONT_SIZE), 42.0);
+    assert_eq!(DiffSpec::DIFF_MARKER_WIDTH, 3.0);
+    assert!((DiffSpec::sign_width(DiffSpec::DIFF_FONT_SIZE) - 14.4).abs() < 0.001);
+}
+
+// ---------------------------------------------------------------------------
+// FileDiffView: the reusable unified/split comparison.
+// ---------------------------------------------------------------------------
+
+fn commands_for(element: &mut Box<dyn Element>, width: f32) -> Vec<RenderCommand> {
+    let app = AppContext::default();
+    crate::test_util::render_element(element, vec2f(width, 2_000.0), &app)
+}
+
+fn text_runs(commands: &[RenderCommand]) -> Vec<(String, ColorU, f32)> {
+    commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                color,
+                origin,
+                ..
+            } => Some((text.clone(), *color, origin.y)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn file_diff_view_draws_the_unified_gutters_markers_and_bands() {
+    let app = AppContext::default();
+    let hunks = parse_unified_diff(&sample_text());
+    let mut element: Box<dyn Element> = FileDiffView::new(hunks)
+        .with_layout(DiffLayout::Unified)
+        .with_language("src/lib.rs")
+        .finish();
+    let commands = commands_for(&mut element, 600.0);
+    let size = element.size().expect("a laid out comparison has a size");
+
+    // Two hunks: 2 headers (22 + 4 + 4), 8 body rows at 22, one 8 px hunk gap
+    // and the body's 8 + 16 vertical padding.
+    assert_eq!(
+        size.y,
+        8.0 + (30.0 * 2.0) + (22.0 * 8.0) + (8.0 * 2.0) + 16.0
+    );
+
+    let insert = app.theme.color(ColorToken::DiffInsertBg);
+    let delete = app.theme.color(ColorToken::DiffDeleteBg);
+    let bands: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == insert || *color == delete => {
+                Some(rect.width())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        bands.iter().any(|width| *width == size.x),
+        "changed rows paint the full comparison width, got {bands:?}"
+    );
+
+    let markers: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Success)
+                    || *color == app.theme.color(ColorToken::Error) =>
+            {
+                Some(rect.width())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        markers
+            .iter()
+            .any(|width| *width == DiffSpec::DIFF_MARKER_WIDTH),
+        "a changed row paints DSH's 3 px marker, got {markers:?}"
+    );
+
+    let texts = text_runs(&commands);
+    assert!(texts
+        .iter()
+        .any(|(text, _, _)| text == "@@ -1,3 +1,4 @@ fn main() {"));
+    assert!(texts.iter().any(|(text, _, _)| text == "+"));
+    assert!(texts.iter().any(|(text, _, _)| text == "-"));
+    assert!(texts.iter().any(|(text, _, _)| text == "1"));
+}
+
+#[test]
+fn file_diff_view_splits_into_two_cells_and_fills_empty_sides() {
+    let app = AppContext::default();
+    let hunks = parse_unified_diff(&sample_text());
+    let mut element: Box<dyn Element> = FileDiffView::new(hunks)
+        .with_layout(DiffLayout::Split)
+        .finish();
+    let commands = commands_for(&mut element, 600.0);
+
+    let text = |needle: &str| {
+        commands.iter().any(
+            |command| matches!(command, RenderCommand::DrawText { text, .. } if text == needle),
+        )
+    };
+    // The removed line has an old number and an empty new side; the added line
+    // the reverse. Context appears on both sides.
+    assert!(text("    let x = 1;"), "the removed line draws on the left");
+    assert!(text("    let x = 2;"), "the added line draws on the right");
+    assert!(text("fn main() {"));
+
+    let empty = ColorU::new(
+        app.theme.color(ColorToken::Hover).r,
+        app.theme.color(ColorToken::Hover).g,
+        app.theme.color(ColorToken::Hover).b,
+        128,
+    );
+    let empty_fills = commands
+        .iter()
+        .filter(
+            |command| matches!(command, RenderCommand::FillRect { color, .. } if *color == empty),
+        )
+        .count();
+    assert!(empty_fills > 0, "paired rows paint an empty side fill");
+}
+
+#[test]
+fn file_diff_view_wraps_and_doubles_the_row_height() {
+    let mut long = String::from("+");
+    for _ in 0..60 {
+        long.push_str("word ");
+    }
+    let diff = format!("--- a/long.txt\n+++ b/long.txt\n@@ -1 +1 @@\n-old\n{long}\n");
+    let hunks = parse_unified_diff(&diff);
+    let mut plain: Box<dyn Element> = FileDiffView::new(hunks.clone()).finish();
+    plain.layout(
+        SizeConstraint::loose(vec2f(320.0, 2_000.0)),
+        &mut LayoutContext::default(),
+        &AppContext::default(),
+    );
+    let plain_height = plain.size().expect("laid out").y;
+
+    let mut wrapped: Box<dyn Element> = FileDiffView::new(hunks).with_wrap(true).finish();
+    let commands = commands_for(&mut wrapped, 320.0);
+    let wrapped_height = wrapped.size().expect("laid out").y;
+    assert!(
+        wrapped_height > plain_height,
+        "wrapping a long line makes its row taller: plain {plain_height}, wrapped {wrapped_height}"
+    );
+    let drawn = text_runs(&commands).len();
+    assert!(
+        drawn > 5,
+        "the wrapped line is drawn as several visual lines, got {drawn} runs"
+    );
+}
+
+#[test]
+fn prepared_diff_prepares_split_rows_and_side_colours() {
+    let hunks = parse_unified_diff(&sample_text());
+    let prepared = PreparedDiff::new(&hunks, "src/lib.rs");
+    let split = prepared.split_rows();
+    assert!(
+        split.iter().any(|row| matches!(row, super::SplitDiffRow::Row(row) if row.left.is_some() && row.right.is_none())),
+        "a deletion pairs with an empty new side"
+    );
+    assert!(
+        split.iter().any(|row| matches!(row, super::SplitDiffRow::Row(row) if row.left.is_none() && row.right.is_some())),
+        "an addition pairs with an empty old side"
+    );
+    let (old, new) = prepared.highlighted_lines();
+    assert!(
+        !old.is_empty() || !new.is_empty(),
+        "the prepared sides carry coloured lines"
+    );
+}
+
+#[test]
+fn file_diff_view_paints_nothing_for_an_empty_comparison() {
+    let mut element: Box<dyn Element> = FileDiffView::new(Vec::new()).finish();
+    let commands = commands_for(&mut element, 400.0);
+    assert!(commands.is_empty());
+    assert_eq!(element.size(), Some(Vector2F::zero()));
 }

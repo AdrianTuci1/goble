@@ -327,6 +327,7 @@ impl UiState {
             floating_drag: Rc::new(RefCell::new(None)),
             live_executions: HashMap::new(),
             pane_controls: HashMap::new(),
+            diff_reviews: Rc::new(RefCell::new(HashMap::new())),
             pane_chat_scroll: HashMap::new(),
             pane_transcript_selection: HashMap::new(),
             pane_usage_open: HashMap::new(),

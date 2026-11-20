@@ -609,6 +609,11 @@ pub struct UiState {
     pub settings_overlay_hamburger: Rc<RefCell<bool>>,
     /// Whether the settings sheet floats (wide) or fills the window (narrow).
     pub settings_overlay_wide: bool,
+    /// The chrome row's Overview popover.
+    pub chrome_overview_open: Rc<RefCell<bool>>,
+    pub chrome_more_open: Rc<RefCell<bool>>,
+    /// Whether the right overview panel is maximized over the main pane.
+    pub side_panel_maximized: bool,
     /// A saved host whose session just ended, offered for reconnect: the pane
     /// it ran in and the entry's name. Cleared by reconnecting or dismissing.
     pub ssh_reconnect_prompt: Option<(u64, String)>,

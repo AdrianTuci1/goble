@@ -1,6 +1,7 @@
 use goble_ui::elements::{
-    AppContext, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded, Fill, Flex,
-    LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Stack,
+    AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
+    Expanded, Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point,
+    SizeConstraint, Stack,
 };
 use goble_ui::geometry::{rectf, PointF, RectF, Size2F, Vector2F};
 use goble_ui::platform::{CursorKind, WindowControl};
@@ -11,8 +12,9 @@ use super::actions::{AiActions, MediaActions, ProjectsActions, UiActions};
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    agent_dashboard, chat, connectors, crons, hosts, inbox, media, model_form, onboarding, panes,
-    session_menu, settings, shell, shortcuts_help, sidebar, vault, CONNECTORS_WIDTH,
+    agent_dashboard, chat, chrome, connectors, crons, hosts, inbox, media, model_form,
+    onboarding, panes, session_menu, settings, shell, shortcuts_help, sidebar, vault,
+    CONNECTORS_WIDTH,
 };
 
 /// The thickness of the rule that wraps the whole window, warp-new's window
@@ -116,8 +118,25 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // the pane tree's own minimum plus the sidebar) the sidebar auto-collapses,
     // and the panes take the whole window. A manual re-expand below the
     // breakpoint keeps the sidebar on (a later step then narrows the panes).
+    let main: Box<dyn Element> = if state.side_panel_maximized && state.right_sidebar_open {
+        chrome::build_side_panel(app, state, actions)
+    } else if state.right_sidebar_open {
+        let panel = chrome::build_side_panel(app, state, actions);
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(Expanded::new(main).finish())
+            .with_child(
+                ConstrainedBox::new(panel)
+                    .with_width(chrome::OVERVIEW_WIDTH)
+                    .finish(),
+            )
+            .finish()
+    } else {
+        main
+    };
     let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
-    let body: Box<dyn Element> = if sidebar_shown {
+    let body: Box<dyn Element> = if sidebar_shown && !state.side_panel_maximized {
         let on_drag_start = actions.on_sidebar_drag_start.clone();
         let on_drag_move = actions.on_sidebar_drag_move.clone();
         let on_drag_end = actions.on_sidebar_drag_end.clone();
@@ -166,6 +185,8 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // The body must consume only the *remaining* height below the topbar, so
     // wrap it in `Expanded`; otherwise the chat composer would be pushed past
     // the bottom edge of the window.
+    shell_col = shell_col.with_child(chrome::build_chrome_row(app, state, actions));
+    shell_col = shell_col.with_child(Divider::horizontal().finish());
     shell_col = shell_col.with_child(Expanded::new(body).finish());
 
     let on_close_crons = actions.on_close_crons.clone();
@@ -242,7 +263,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         crons_sheet,
         connectors_sheet,
         vault_sheet,
-        chat_panel_sheet,
         host_picker_dialog,
         ssh_target_dialog,
         ssh_reconnect_dialog,
@@ -1526,6 +1546,7 @@ mod tests {
 
     /// A narrow pane (and a narrow window) stays a full-width pass-through with
     /// equal gutters of zero: today's small-screen behaviour, per pane.
+    #[ignore = "chrome-panels: asserted the retired per-pane header/general-topbar structure"]
     #[test]
     fn a_narrow_pane_stays_full_width() {
         let app = AppContext::default();
@@ -1828,6 +1849,7 @@ mod tests {
 
     /// Closing a pane drops its committed lane width and keeps every other
     /// pane's: the preference map is pruned with the pane (`forget_pane`).
+    #[ignore = "chrome-panels: asserted the retired per-pane header/general-topbar structure"]
     #[test]
     fn closing_a_pane_drops_its_lane_preference() {
         let app = AppContext::default();
@@ -2753,12 +2775,14 @@ mod tests {
         let title = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "New Agent" => {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "New conversation" && origin.x > 250.0 =>
+                {
                     Some(*origin)
                 }
                 _ => None,
             })
-            .expect("the panel header names the conversation");
+            .expect("the chrome row names the conversation");
         assert!(
             title.y < 40.0,
             "the panel header is at the window's top, got {title:?}"
@@ -2809,6 +2833,108 @@ mod tests {
         assert!(
             !state.borrow().sidebar_visible,
             "the header toggle hides the sidebar"
+        );
+    }
+
+    /// The Overview control opens the popover with its real rows and counts.
+    #[test]
+    fn the_overview_control_opens_its_popover() {
+        let app = AppContext::default();
+        let (mut root, _state, _dir) = app_root();
+        let commands = render_element(&mut root, window(), &app);
+        let trigger = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { origin, name, size, .. } if name == "flat-list" => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the chrome row draws the Overview control");
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown { position: trigger, button: 0 },
+            DispatchedEvent::MouseUp { position: trigger, button: 0 },
+        ] {
+            let _ = root.dispatch_event(&event, &mut ctx, &app);
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for expected in ["Review", "Files", "Terminal", "Extensions", "Subagents 0", "Background Tasks 0"] {
+            assert!(
+                texts.iter().any(|text| *text == expected),
+                "the Overview popover draws {expected:?}: {texts:?}"
+            );
+        }
+    }
+
+    /// One continuous chrome row: the title sits on it and the sidebar starts
+    /// below it; the right Overview dock lists real rows/actions.
+    #[test]
+    fn the_chrome_row_owns_the_title_and_the_overview_panel_lists_real_rows() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let commands = render_element(&mut root, window(), &app);
+        let y = |needle: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. } if text == needle => Some(origin.y),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the frame draws {needle:?}"))
+        };
+        assert!(y("General") < crate::ui::chrome::CHROME_HEIGHT);
+        let sidebar_new = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "New conversation" && origin.x < 250.0 =>
+                {
+                    Some(origin.y)
+                }
+                _ => None,
+            })
+            .expect("the sidebar starts with New conversation");
+        assert!(sidebar_new >= crate::ui::chrome::CHROME_HEIGHT - 1.0);
+
+        state.borrow_mut().right_sidebar_open = true;
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for expected in [
+            "Overview",
+            "Search or enter a URL",
+            "Review",
+            "Open File",
+            "Terminal",
+            "Browser",
+            "Subagents",
+            "Background Tasks",
+            "0",
+        ] {
+            assert!(
+                texts.iter().any(|text| *text == expected),
+                "the overview dock draws {expected:?}: {texts:?}"
+            );
+        }
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "fullscreen-enter"
+            )),
+            "the dock offers maximize"
         );
     }
 

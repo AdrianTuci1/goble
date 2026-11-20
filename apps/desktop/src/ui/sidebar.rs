@@ -102,7 +102,6 @@ pub fn build_sidebar(
     // it starts with the traffic lights (native on macOS, drawn elsewhere) and
     // then the conversation rows. The old view toolbelt lived on the general
     // bar; the panel header's sidebar toggle replaces it.
-    column = column.with_child(traffic_lights(app));
     column = column.with_child(Expanded::new(view).finish());
 
     // The Surface fill is the sidebar's backdrop, and it must reach the window's

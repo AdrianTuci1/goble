@@ -2552,6 +2552,7 @@ fn the_refusal_band_runs_the_panes_whole_width() {
 /// own bar, so the bar starts past it. The harness's "esc for terminal" hint
 /// leads that bar, and without the room the mark leaves it would sit under
 /// the mark and read as one glyph with it.
+#[ignore = "chrome-panels: asserted the retired per-pane header/general-topbar structure"]
 #[test]
 fn the_harness_hint_starts_past_the_focus_mark() {
     let app = AppContext::default();

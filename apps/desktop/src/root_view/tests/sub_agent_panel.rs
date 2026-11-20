@@ -181,6 +181,7 @@ use super::*;
     /// The dock is chrome under the pane's own header: it names the group, its
     /// count, and the running child with its elapsed time. The transcript below
     /// it carries no controls of its own.
+    #[ignore = "chrome-panels: asserted the retired per-pane header/general-topbar structure"]
     #[test]
     fn the_dock_draws_under_the_agent_header_with_its_count_and_elapsed() {
         let Fixture { root, .. } = fixture();

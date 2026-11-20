@@ -28,8 +28,8 @@ use super::{pages, render};
 
 /// The widest the floating sheet grows, and the margin it keeps from the window
 /// when it can float.
-const OVERLAY_MAX_WIDTH: f32 = 1180.0;
-const OVERLAY_MARGIN: f32 = 72.0;
+const OVERLAY_MAX_WIDTH: f32 = 1060.0;
+const OVERLAY_MARGIN: f32 = 96.0;
 /// Below this window width the rail gives way to the hamburger.
 const OVERLAY_NARROW: f32 = 740.0;
 
@@ -96,7 +96,14 @@ fn overlay_content(
         row = row.with_child(Divider::vertical().finish());
     }
     row = row.with_child(Expanded::new(page_column).finish());
-    Container::new(row.finish())
+    let row = if narrow {
+        row.finish()
+    } else {
+        ConstrainedBox::new(row.finish())
+            .with_height((state.window_size.y * 0.82).max(480.0))
+            .finish()
+    };
+    Container::new(row)
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .with_border(goble_ui::elements::Border::all(1.0)
             .with_border_color(app.theme.color(ColorToken::Border)))

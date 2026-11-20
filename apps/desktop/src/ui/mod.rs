@@ -13,6 +13,7 @@
 
 pub mod agent_dashboard;
 pub mod chat;
+pub mod chrome;
 pub mod color_picker;
 pub mod connectors;
 pub mod crons;

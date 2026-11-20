@@ -359,6 +359,7 @@ pub fn make_actions(
     let on_dismiss_queued = Rc::clone(&state);
     let on_settings = Rc::clone(&state);
     let on_close_settings_overlay = Rc::clone(&state);
+    let on_toggle_side_panel_maximized = Rc::clone(&state);
     let on_inbox = Rc::clone(&state);
     let on_close_inbox = Rc::clone(&state);
     let on_inbox_move = Rc::clone(&state);
@@ -2585,6 +2586,10 @@ pub fn make_actions(
         })),
         on_close_settings_overlay: Rc::new(RefCell::new(move || {
             on_close_settings_overlay.borrow_mut().settings_overlay_open = false;
+        })),
+        on_toggle_side_panel_maximized: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_side_panel_maximized.borrow_mut();
+            state.side_panel_maximized = !state.side_panel_maximized;
         })),
         on_onboarding: action_onboarding.clone(),
         // The settings tab's one dispatch. Every page row, field commit, dialog

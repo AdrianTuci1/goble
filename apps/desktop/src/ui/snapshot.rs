@@ -513,6 +513,10 @@ pub struct UiSnapshot {
     pub settings_overlay_open: bool,
     pub settings_overlay_hamburger: Rc<RefCell<bool>>,
     pub settings_overlay_wide: bool,
+    /// The chrome row's Overview popover and side-panel maximize state.
+    pub chrome_overview_open: Rc<RefCell<bool>>,
+    pub chrome_more_open: Rc<RefCell<bool>>,
+    pub side_panel_maximized: bool,
     /// The list's grouping: one flat list or one block per project.
     pub sidebar_flat_list: Rc<RefCell<bool>>,
     /// The list's order: most recent first, or the user's manual drag order.

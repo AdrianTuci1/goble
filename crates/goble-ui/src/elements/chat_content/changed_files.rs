@@ -16,6 +16,8 @@ pub struct ChangedFile {
     pub path: String,
     pub added: u64,
     pub removed: u64,
+    /// Git's status letter: `A` added, `D` deleted, `M` modified.
+    pub status: char,
 }
 
 /// The turn's changed files, deduplicated by path (a file edited twice keeps the
@@ -68,6 +70,7 @@ pub fn changed_files_for_message(message: &ChatMessage) -> Option<ChangedFiles> 
         by_path.insert(
             path.clone(),
             ChangedFile {
+                status: diff_status(diff),
                 path,
                 added,
                 removed,
@@ -80,6 +83,16 @@ pub fn changed_files_for_message(message: &ChatMessage) -> Option<ChangedFiles> 
     Some(ChangedFiles {
         files: by_path.into_values().collect(),
     })
+}
+
+fn diff_status(diff: &str) -> char {
+    if diff.lines().any(|line| line.starts_with("--- /dev/null")) {
+        'A'
+    } else if diff.lines().any(|line| line.starts_with("+++ /dev/null")) {
+        'D'
+    } else {
+        'M'
+    }
 }
 
 /// The changed path a unified diff's own headers name. `+++ b/path` is the

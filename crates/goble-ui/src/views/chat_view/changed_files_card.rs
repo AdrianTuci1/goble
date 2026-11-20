@@ -1,6 +1,6 @@
-//! The changed-files card that closes an assistant turn, in DSH's shape: one
-//! 60pt header line with the file count, added/deleted totals, a disclosure and
-//! the Review action, and — opened — the per-file rows with their own counts.
+//! The changed-files card that closes an assistant turn: DSH's 60pt header and
+//! the full expanded file list, with status letters, names, directories and
+//! per-file counts.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,19 +8,12 @@ use std::rc::Rc;
 use crate::elements::chat_content::ChangedFiles;
 use crate::elements::chat_typography;
 use crate::elements::{
-    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Expanded, Fill, Flex, HoverRow, Icon, MainAxisSize, Text,
+    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
+    Element, Expanded, Fill, Flex, HoverRow, Icon, MainAxisSize, Text,
 };
-use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily};
 
-/// DSH's `ChangedFiles` rows shown before the card folds the rest away.
-const COLLAPSED_ROWS: usize = 4;
-
-/// Build the turn's changed-files card. `expanded` is app-owned so the fold
-/// survives the per-frame rebuild; `on_toggle` flips it and `on_review` opens
-/// the existing review pane.
 pub(super) fn build_changed_files_card(
     app: &AppContext,
     summary: &ChangedFiles,
@@ -37,16 +30,8 @@ pub(super) fn build_changed_files_card(
     let counts = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(6.0)
-        .with_child(count_span(
-            format!("+{}", summary.added()),
-            ColorToken::Success,
-            app,
-        ))
-        .with_child(count_span(
-            format!("-{}", summary.removed()),
-            ColorToken::Error,
-            app,
-        ))
+        .with_child(count_span(format!("+{}", summary.added()), ColorToken::Success, app))
+        .with_child(count_span(format!("-{}", summary.removed()), ColorToken::Error, app))
         .finish();
     let chevron = Icon::new(if open {
         "chevron-down"
@@ -70,7 +55,6 @@ pub(super) fn build_changed_files_card(
         .with_child(counts)
         .with_child(chevron)
         .finish();
-
     let on_toggle = {
         let expanded = expanded.clone();
         move || *expanded.borrow_mut() = !*expanded.borrow()
@@ -107,105 +91,106 @@ pub(super) fn build_changed_files_card(
     .with_on_click(move || (on_review_click.borrow_mut())())
     .finish();
 
-    let header = Container::new(
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(Expanded::new(left).finish())
-            .with_child(review)
-            .finish(),
+    let header = ConstrainedBox::new(
+        Container::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(Expanded::new(left).finish())
+                .with_child(review)
+                .finish(),
+        )
+        .with_padding(EdgeInsets::new(0.0, 8.0, 0.0, 8.0))
+        .finish(),
     )
-    .with_padding(EdgeInsets::new(0.0, 8.0, 0.0, 8.0))
-    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-    .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-    .with_corner_radius(12.0)
+    .with_height(60.0)
     .finish();
-    let header = ConstrainedBox::new(header).with_height(60.0).finish();
 
     let mut card = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(header);
     if open {
-        let mut rows = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(0.0);
-        let shown = summary.files.iter().take(COLLAPSED_ROWS);
-        for file in shown {
-            rows = rows.with_child(file_row(app, file));
+        for (index, file) in summary.files.iter().enumerate() {
+            if index > 0 {
+                card = card.with_child(Divider::horizontal().finish());
+            }
+            card = card.with_child(file_row(app, file));
         }
-        if summary.files.len() > COLLAPSED_ROWS {
-            rows = rows.with_child(
-                Container::new(
-                    Text::new(format!(
-                        "{} more files",
-                        summary.files.len() - COLLAPSED_ROWS
-                    ))
-                    .with_font_family(chat_typography::chat_font(app))
-                    .with_font_size(12.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-                )
-                .with_padding(EdgeInsets::new(7.0, 14.0, 7.0, 14.0))
-                .finish(),
-            );
-        }
-        card = card.with_child(
-            Container::new(rows.finish())
-                .with_padding(EdgeInsets::new(0.0, 8.0, 6.0, 8.0))
-                .finish(),
-        );
     }
-    card.finish()
+    Container::new(card.finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+        .with_corner_radius(12.0)
+        .finish()
 }
 
-/// DSH's file row: `7px 18px 7px 14px`, path at 12 and counts at 11/18 mono.
 fn file_row(
     app: &AppContext,
     file: &crate::elements::chat_content::ChangedFile,
 ) -> Box<dyn Element> {
+    let (name, dir) = match file.path.rsplit_once('/') {
+        Some((dir, name)) => (name.to_string(), dir.to_string()),
+        None => (file.path.clone(), String::new()),
+    };
+    let (status_color, status_ink) = match file.status {
+        'A' => (ColorToken::Success, "A"),
+        'D' => (ColorToken::Error, "D"),
+        _ => (ColorToken::Muted, "M"),
+    };
+    let identity = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.0)
+        .with_child(
+            Icon::new("file")
+                .with_size(14.0)
+                .with_theme_color(status_color, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(status_ink)
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(10.0)
+                .with_theme_color(status_color, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(name)
+                .with_font_family(chat_typography::chat_font(app))
+                .with_font_size(13.0)
+                .with_weight(FontWeight::Medium)
+                .with_theme_color(ColorToken::Text, app)
+                .with_max_lines(1)
+                .finish(),
+        );
+    let identity = if dir.is_empty() {
+        identity.finish()
+    } else {
+        identity
+            .with_child(
+                Text::new(dir)
+                    .with_font_family(chat_typography::chat_font(app))
+                    .with_font_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_max_lines(1)
+                    .finish(),
+            )
+            .finish()
+    };
     let counts = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(6.0)
-        .with_child(row_count_span(
-            format!("+{}", file.added),
-            ColorToken::Success,
-            app,
-        ))
-        .with_child(row_count_span(
-            format!("-{}", file.removed),
-            ColorToken::Error,
-            app,
-        ))
+        .with_child(row_count_span(format!("+{}", file.added), ColorToken::Success, app))
+        .with_child(row_count_span(format!("-{}", file.removed), ColorToken::Error, app))
         .finish();
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(12.0)
-        .with_child(
-            Expanded::new(
-                Text::new(file.path.clone())
-                    .with_font_family(chat_typography::chat_font(app))
-                    .with_font_size(12.0)
-                    .with_line_height(20.0 / 12.0)
-                    .with_theme_color(ColorToken::Text, app)
-                    .with_max_lines(1)
-                    .finish(),
-            )
-            .finish(),
-        )
+        .with_child(Expanded::new(identity).finish())
         .with_child(counts)
         .finish();
     Container::new(row)
-        .with_padding(EdgeInsets::new(7.0, 18.0, 7.0, 14.0))
-        .finish()
-}
-
-fn row_count_span(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Element> {
-    Text::new(text)
-        .with_font_family(FontFamily::Mono)
-        .with_font_size(11.0)
-        .with_line_height(18.0 / 11.0)
-        .with_theme_color(token, app)
+        .with_padding(EdgeInsets::new(9.0, 14.0, 9.0, 14.0))
         .finish()
 }
 
@@ -214,6 +199,15 @@ fn count_span(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Elem
         .with_font_family(FontFamily::Mono)
         .with_font_size(10.0)
         .with_line_height(16.0 / 10.0)
+        .with_theme_color(token, app)
+        .finish()
+}
+
+fn row_count_span(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Element> {
+    Text::new(text)
+        .with_font_family(FontFamily::Mono)
+        .with_font_size(11.0)
+        .with_line_height(18.0 / 11.0)
         .with_theme_color(token, app)
         .finish()
 }

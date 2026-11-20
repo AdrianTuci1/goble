@@ -54,6 +54,18 @@ fn messages() -> Vec<ChatMessage> {
             "--- a/src/panes.rs\n+++ b/src/panes.rs\n@@ -40,6 +40,8 @@\n let panes = build_panes(state);\n for pane in panes {\n-    draw_old(pane);\n+    draw_new(pane);\n+    mark_visible(pane);\n }\n-old_footer();\n+new_footer();\n",
         ),
     );
+    let mut extra = Vec::new();
+    for index in 2..7 {
+        extra.push(call(
+            &format!("c{index}x"),
+            "edit_file",
+            &format!(r#"{{"path":"docs/file-{index}.md"}}"#),
+            "ok",
+            Some(&format!(
+                "--- a/docs/file-{index}.md\n+++ b/docs/file-{index}.md\n@@ -1 +1,2 @@\n-old\n+new\n+more\n"
+            )),
+        ));
+    }
     let run = call(
         "c3",
         "run_command",
@@ -67,7 +79,11 @@ fn messages() -> Vec<ChatMessage> {
             ChatRole::Assistant,
             "## What changed\n\nThe pane rows now follow DSH's nested text model:\n\n- **Tool calls** are plain rows, with no icon or glyph.\n- The diff closes the turn in a card, and `Review` opens it.\n\n```rust\nlet rows = plain_rows(&calls);\n```\n\nSee [the pane guide](https://example.com/panes) for the token map.",
         )
-        .with_tool_calls(vec![read, read2, edit, run]),
+        .with_tool_calls({
+            let mut calls = vec![read, read2, edit, run];
+            calls.extend(extra);
+            calls
+        }),
     ]
 }
 
@@ -103,6 +119,21 @@ fn main() -> anyhow::Result<()> {
             .finish();
         let path = dir.join(format!("chat-parity-{label}.png"));
         raster::render_element_to_png(&assets, &app, &mut view, 920.0, 980.0, 2.0, None, &path)?;
+        println!("wrote {}", path.display());
+
+        let open = std::rc::Rc::new(std::cell::RefCell::new(true));
+        let mut expanded = ChatView::new()
+            .without_composer()
+            .with_messages(messages())
+            .with_tool_fold(Rc::new(RefCell::new(HashMap::new())))
+            .with_tool_hover(Rc::new(RefCell::new(None)))
+            .with_changed_files_open(open)
+            .with_on_review_changes(|| {})
+            .finish();
+        let path = dir.join(format!("chat-parity-card-open-{label}.png"));
+        raster::render_element_to_png(
+            &assets, &app, &mut expanded, 920.0, 1100.0, 2.0, None, &path,
+        )?;
         println!("wrote {}", path.display());
     }
     Ok(())

@@ -12,8 +12,8 @@ use std::rc::Rc;
 
 use goble_ui::elements::settings::{SettingsNav, SettingsNavGroup, SettingsNavItem};
 use goble_ui::elements::{
-    AppContext, ConstrainedBox, Container, CrossAxisAlignment, Dialog, Divider, EdgeInsets,
-    Element, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, PopupMenu,
+    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, Dialog, Divider,
+    EdgeInsets, Element, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, PopupMenu,
     PopupMenuItem, PopupMenuPosition, Scrollable, Spacer, Text, Tooltip, TooltipPosition,
     TopbarButton,
 };
@@ -76,6 +76,19 @@ fn overlay_content(
     let page = settings.page;
     let model = pages::page_model(page, settings);
     let body = render::render_page(app, &model, settings, &actions.settings);
+    let body = if page == SettingsCategory::General {
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(
+                Container::new(layout_cards(app))
+                    .with_padding(EdgeInsets::new(24.0, 20.0, 24.0, 0.0))
+                    .finish(),
+            )
+            .with_child(body)
+            .finish()
+    } else {
+        body
+    };
     let scroll = Scrollable::new(body, goble_ui::elements::Axis::Vertical)
         .with_state(settings.scroll.clone())
         .finish();
@@ -250,6 +263,94 @@ fn photo_nav(app: &AppContext, settings: &super::SettingsUiState, actions: &UiAc
         .finish();
     let _ = app;
     ConstrainedBox::new(nav).with_width(196.0).finish()
+}
+
+/// The photo's two Interface Layout tiles: a 2-up card pair with a selected
+/// tint on Software Engineering. The preference has no file-backed backend in
+/// this build, so the selected state is presented as the product default rather
+/// than hidden behind a dead toggle.
+fn layout_cards(app: &AppContext) -> Box<dyn Element> {
+    let card = |title: &str, body: &str, icon: &'static str, selected: bool| -> Box<dyn Element> {
+        let content = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_spacing(6.0)
+            .with_child(
+                Container::new(
+                    Icon::new(icon)
+                        .with_size(18.0)
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_padding(EdgeInsets::uniform(8.0))
+                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+                .with_corner_radius(10.0)
+                .finish(),
+            )
+            .with_child(
+                Text::new(title)
+                    .with_font_size(14.0)
+                    .with_weight(FontWeight::Medium)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(body)
+                    .with_font_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .finish();
+        Container::new(content)
+            .with_padding(EdgeInsets::uniform(14.0))
+            .with_background(Fill::Solid(app.theme.color(if selected {
+                ColorToken::Selected
+            } else {
+                ColorToken::SurfaceRaised
+            })))
+            .with_border(Border::all(1.0).with_border_color(app.theme.color(if selected {
+                ColorToken::Accent
+            } else {
+                ColorToken::Border
+            })))
+            .with_corner_radius(12.0)
+            .finish()
+    };
+    let cards = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(16.0)
+        .with_child(
+            Expanded::new(card(
+                "Knowledge Work",
+                "Simplified interface for research, writing, and everyday tasks.",
+                "folder",
+                false,
+            ))
+            .finish(),
+        )
+        .with_child(
+            Expanded::new(card(
+                "Software Engineering",
+                "Full interface for coding, developer tools, and managing agents.",
+                "code",
+                true,
+            ))
+            .finish(),
+        )
+        .finish();
+    Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(12.0)
+        .with_child(
+            Text::new("Interface Layout")
+                .with_font_size(16.0)
+                .with_weight(FontWeight::SemiBold)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_child(cards)
+        .finish()
 }
 
 fn overlay_header(

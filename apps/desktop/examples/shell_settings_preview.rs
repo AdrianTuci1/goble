@@ -55,6 +55,7 @@ fn main() -> anyhow::Result<()> {
             ("panel-more", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-panel", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("overview", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("terminal-dock", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("settings-wide", vec2f(1600.0, 1000.0), true, SettingsCategory::General),
             ("settings-wide-shortcuts", vec2f(1600.0, 1000.0), true, SettingsCategory::Shortcuts),
             ("settings-narrow", vec2f(700.0, 900.0), true, SettingsCategory::General),
@@ -83,6 +84,18 @@ fn main() -> anyhow::Result<()> {
                 }
                 if name == "overview" {
                     *s.chrome_overview_open.borrow_mut() = true;
+                }
+                if name == "terminal-dock" {
+                    let pane = s.active_pane_id;
+                    if s.toggle_terminal_dock(pane) {
+                        s.set_terminal_dock_height(pane, 260.0);
+                        s.terminal.borrow_mut().sessions.insert(
+                            pane,
+                            goble_app::terminal::TerminalSession::preview_screen(
+                                "$ echo tty-ok\r\ntty-ok\r\n$ ",
+                            ),
+                        );
+                    }
                 }
             }
             let mut root: Box<dyn Element> = Box::new(view);

@@ -1,6 +1,6 @@
 use goble_ui::elements::{
-    AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    Expanded, Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point,
+    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
+    Element, Expanded, Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point,
     SizeConstraint, Stack,
 };
 use goble_ui::geometry::{rectf, PointF, RectF, Size2F, Vector2F};
@@ -135,6 +135,10 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     } else {
         main
     };
+    let main = Container::new(main)
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+        .with_corner_radius(12.0)
+        .finish();
     let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
     let body: Box<dyn Element> = if sidebar_shown && !state.side_panel_maximized {
         let on_drag_start = actions.on_sidebar_drag_start.clone();

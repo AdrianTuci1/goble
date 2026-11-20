@@ -13,25 +13,6 @@ pub fn page(state: &SettingsUiState) -> PageModel {
     // The reference General page: layout cards, permissions, execution and
     // voice. Controls with a real backend use it; the rest say so honestly.
     sections.push(
-        SectionModel::new("interface-layout", "Interface Layout")
-            .with_row(
-                RowModel::new(
-                    "layout.knowledge",
-                    "Knowledge Work",
-                    "Simplified interface for research, writing, and everyday tasks.",
-                )
-                .read_only("Available"),
-            )
-            .with_row(
-                RowModel::new(
-                    "layout.engineering",
-                    "Software Engineering",
-                    "Full interface for coding, developer tools, and managing agents.",
-                )
-                .read_only("Selected"),
-            ),
-    );
-    sections.push(
         SectionModel::new("permissions", "Permissions")
             .with_description(
                 "Configure what the agent can do in local and remote conversations. Learn more.",
@@ -71,7 +52,7 @@ pub fn page(state: &SettingsUiState) -> PageModel {
                 )
                 .select(
                     "remote.mode",
-                    vec!["Platform".to_string(), "Gateway".to_string()],
+                    vec!["Default".to_string(), "Turbo".to_string()],
                     fields::remote_mode_index(state),
                 ),
             )

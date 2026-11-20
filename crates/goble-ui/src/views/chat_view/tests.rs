@@ -4754,8 +4754,8 @@ fn a_completed_turn_shows_its_changed_files_and_review_action() {
         })
         .collect();
     assert!(
-        texts.iter().any(|text| *text == "src/a.rs"),
-        "opening the card reveals the file row: {texts:?}"
+        texts.iter().any(|text| *text == "a.rs") && texts.iter().any(|text| *text == "src"),
+        "opening the card reveals the file row's name and directory: {texts:?}"
     );
     assert!(
         texts.iter().any(|text| *text == "+3") && texts.iter().any(|text| *text == "-1"),

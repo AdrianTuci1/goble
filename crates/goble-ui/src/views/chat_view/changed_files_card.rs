@@ -31,8 +31,16 @@ pub(super) fn build_changed_files_card(
     let files = summary.files_changed();
     let single = files == 1;
     let foldable = files > DiffSpec::CHANGED_FILES_FOLD;
+    // A one-file turn is titled by the file itself, not by a count: DSH's
+    // card names the change the reader is about to open. Multi-file turns
+    // keep the summary count.
     let title = if single {
-        "1 file changed".to_string()
+        summary.files[0]
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&summary.files[0].path)
+            .to_string()
     } else {
         format!("{files} files changed")
     };
@@ -124,20 +132,14 @@ fn build_header(
         .with_theme_color(ColorToken::Text, app)
         .with_max_lines(1)
         .finish();
-    let stat = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(DiffSpec::CHANGED_FILES_STAT_GAP)
-        .with_child(stat_count(
-            format!("+{}", grouped(summary.added())),
-            ColorToken::Success,
-            app,
-        ))
-        .with_child(stat_count(
-            format!("-{}", grouped(summary.removed())),
-            ColorToken::Error,
-            app,
-        ))
-        .finish();
+    let stat = counts(
+        summary.added(),
+        summary.removed(),
+        DiffSpec::CHANGED_FILES_STAT_SIZE,
+        DiffSpec::CHANGED_FILES_STAT_LINE_HEIGHT,
+        DiffSpec::CHANGED_FILES_STAT_GAP,
+        app,
+    );
     let titles = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
         .with_child(title)
@@ -277,20 +279,14 @@ fn file_row(
         .with_child(status)
         .with_child(Expanded::new(path.finish()).finish())
         .finish();
-    let counts = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.0)
-        .with_child(row_count(
-            format!("+{}", grouped(file.added)),
-            ColorToken::Success,
-            app,
-        ))
-        .with_child(row_count(
-            format!("-{}", grouped(file.removed)),
-            ColorToken::Error,
-            app,
-        ))
-        .finish();
+    let counts = counts(
+        file.added,
+        file.removed,
+        DiffSpec::CHANGED_FILES_COUNT_SIZE,
+        DiffSpec::CHANGED_FILES_COUNT_LINE_HEIGHT,
+        DiffSpec::CHANGED_FILES_ROW_GAP,
+        app,
+    );
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -367,24 +363,61 @@ fn fold_toggle(
     .finish()
 }
 
-fn stat_count(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Element> {
-    Text::new(text)
-        .with_font_family(FontFamily::Mono)
-        .with_font_size(DiffSpec::CHANGED_FILES_STAT_SIZE)
-        .with_line_height(
-            DiffSpec::CHANGED_FILES_STAT_LINE_HEIGHT / DiffSpec::CHANGED_FILES_STAT_SIZE,
-        )
-        .with_theme_color(token, app)
-        .finish()
+/// A one-line `+A -D` pair at the size a surface asks for. A category with no
+/// lines is left out — the card never prints `+0` or `-0` — and a change with
+/// neither side prints a muted `0` so the line keeps its height.
+fn counts(
+    added: u64,
+    removed: u64,
+    font_size: f32,
+    line_height: f32,
+    gap: f32,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let mut row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(gap);
+    if added > 0 {
+        row = row.with_child(count_text(
+            format!("+{}", grouped(added)),
+            ColorToken::Success,
+            font_size,
+            line_height,
+            app,
+        ));
+    }
+    if removed > 0 {
+        row = row.with_child(count_text(
+            format!("-{}", grouped(removed)),
+            ColorToken::Error,
+            font_size,
+            line_height,
+            app,
+        ));
+    }
+    if added == 0 && removed == 0 {
+        row = row.with_child(count_text(
+            "0".to_string(),
+            ColorToken::Muted,
+            font_size,
+            line_height,
+            app,
+        ));
+    }
+    row.finish()
 }
 
-fn row_count(text: String, token: ColorToken, app: &AppContext) -> Box<dyn Element> {
+fn count_text(
+    text: String,
+    token: ColorToken,
+    font_size: f32,
+    line_height: f32,
+    app: &AppContext,
+) -> Box<dyn Element> {
     Text::new(text)
         .with_font_family(FontFamily::Mono)
-        .with_font_size(DiffSpec::CHANGED_FILES_COUNT_SIZE)
-        .with_line_height(
-            DiffSpec::CHANGED_FILES_COUNT_LINE_HEIGHT / DiffSpec::CHANGED_FILES_COUNT_SIZE,
-        )
+        .with_font_size(font_size)
+        .with_line_height(line_height / font_size)
         .with_theme_color(token, app)
         .finish()
 }

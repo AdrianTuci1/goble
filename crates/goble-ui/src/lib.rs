@@ -29,7 +29,8 @@ pub use elements::{
     AgentCardUi, Code, ConnectorCard, Container, ConversationEntry, ConversationListItem,
     ConversationSidebar,
     ConversationStatus, CrossAxisAlignment, Dialog, Diff, DiffLayout, DiffLine, DiffLineKind,
-    DiffRow, DiffSpec, DiffStats, FileDiffView, Hunk, PreparedDiff, SplitDiffRow, SplitRow,
+    DiffRow, DiffSpec, DiffStats, FileDiffView, Hunk, PreparedDiff, ReviewHeader, ReviewTab,
+    ReviewTabFile, ReviewTabHeader, ReviewTabState, SplitDiffRow, SplitRow,
     Divider, Drawer, DrawerAnchor, DropdownItem,
     DropdownMenu, EdgeInsets, Element, EventContext, Expanded, Fill, Flex,
     Header as UiHeader,
@@ -54,6 +55,7 @@ pub use geometry::{rectf, size2f, vec2f, PointF, RectF, Size2F, Vector2F};
 /// opens it: a host builds the provider groups and hands the composer the same
 /// state the DSH-style card above the model chip draws from.
 pub use elements::{ModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayState};
+pub use elements::diff::{ReviewTab as ReviewTabElement, ReviewTabState as ReviewTabOptions};
 pub use syntax::highlight;
 pub use views::chat_view::ChatView;
 pub use views::chat_view::ComposerModelTray;

@@ -5,7 +5,9 @@
 //! is opened and remembered until it is closed again. Nothing is read per frame,
 //! so a tree left open costs no disk at all.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use goble_ui::elements::{
     file_icon_name, AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
@@ -15,6 +17,7 @@ use goble_ui::elements::{
 use goble_ui::theme::{ColorToken, SpacingToken};
 use goble_ui::vec2f;
 
+use super::file_menu;
 use super::{ExplorerRow, UiActions, UiSnapshot};
 
 /// How far one level of the tree indents its rows, in pixels. The same 16pt per
@@ -244,7 +247,9 @@ pub(crate) fn build_explorer(
         let on_toggle_dir = on_toggle_dir.clone();
         let on_open_file = on_open_file.clone();
         let on_open_floating = actions.on_open_file_floating.clone();
+        let on_file_menu = actions.on_file_menu.clone();
         let is_dir = row.is_dir;
+        let menu_path = path.clone();
         let file_hint = crate::state::display_path(&path);
         // A file row's trailing control opens the same file as a floating
         // window; the row's own press still opens it docked. HoverRow gives the
@@ -293,6 +298,15 @@ pub(crate) fn build_explorer(
             row = Tooltip::new(row, file_hint)
                 .with_position(TooltipPosition::Below)
                 .finish();
+            // A right press on the file row opens the shared context menu at
+            // the pointer; the row's own press still opens the file docked.
+            let menu_path = menu_path.clone();
+            row = file_menu::context_click(
+                row,
+                Rc::new(RefCell::new(move |at| {
+                    (on_file_menu.borrow_mut())(menu_path.clone(), menu_path.clone(), at);
+                })),
+            );
         }
         list = list.with_child(row);
     }

@@ -129,6 +129,14 @@ pub struct FloatingPane {
     /// ordinary windows.
     #[serde(default)]
     pub minimized: bool,
+    /// Whether this entry is a single window floated *over* the space's own
+    /// layout (DSH's "Open in floating panel") rather than one of the windows
+    /// the whole [`LayoutKind::Floating`] layout arranges. An overlay survives
+    /// a switch back to a tiled layout; the layout's own entries do not.
+    /// `#[serde(default)]` reads a layout saved before the distinction as the
+    /// floating layout's own window.
+    #[serde(default)]
+    pub overlay: bool,
 }
 
 impl FloatingPane {
@@ -137,6 +145,17 @@ impl FloatingPane {
             pane_id,
             rect,
             minimized: false,
+            overlay: false,
+        }
+    }
+
+    /// A single window floated over whatever layout the space already draws.
+    pub fn overlay(pane_id: u64, rect: PaneRect) -> Self {
+        Self {
+            pane_id,
+            rect,
+            minimized: false,
+            overlay: true,
         }
     }
 }
@@ -866,24 +885,56 @@ impl Space {
     /// panes get a rect if they have none and stale entries are dropped, while
     /// the BSP and master-stack layouts derive their regions from the tree and
     /// need no stored geometry.
+    ///
+    /// A single window floated over the layout ([`FloatingPane::overlay`])
+    /// lives in the same list as the floating layout's own windows, so it
+    /// survives a switch back to a tiled layout; the entries that belonged to
+    /// the whole floating layout are dropped then. Switching *into* the
+    /// floating layout gives every leaf a rect, keeping the overlays where
+    /// they are.
     pub fn recompute_layout(&mut self) {
-        if self.layout != LayoutKind::Floating {
-            let mut ids = Vec::new();
-            self.root.leaves(&mut ids);
-            self.floating
-                .retain(|pane| ids.iter().any(|(id, _)| *id == pane.pane_id));
-            return;
-        }
         let mut leaves = Vec::new();
         self.root.leaves(&mut leaves);
         self.floating
             .retain(|pane| leaves.iter().any(|(id, _)| *id == pane.pane_id));
+        if self.layout != LayoutKind::Floating {
+            self.floating.retain(|pane| pane.overlay);
+            return;
+        }
         for (index, (id, _)) in leaves.iter().enumerate() {
             if self.floating.iter().any(|pane| pane.pane_id == *id) {
                 continue;
             }
             self.floating.push(FloatingPane::new(*id, default_floating_rect(index)));
         }
+    }
+
+    /// Float one pane over the space's current layout without changing that
+    /// layout. The entry is raised to the top, so the window the gesture just
+    /// opened is the one in front.
+    pub fn add_floating_overlay(&mut self, pane_id: u64, rect: PaneRect) {
+        self.floating.retain(|pane| pane.pane_id != pane_id);
+        self.floating
+            .push(FloatingPane::overlay(pane_id, rect.clamped()));
+    }
+
+    /// Remove `pane_id`'s window from the float, leaving the pane where the
+    /// space's own layout puts it (the docked toggle). Returns whether there
+    /// was a float to remove.
+    pub fn remove_floating(&mut self, pane_id: u64) -> bool {
+        let before = self.floating.len();
+        self.floating.retain(|pane| pane.pane_id != pane_id);
+        self.floating.len() != before
+    }
+
+    /// Whether `pane_id` is floated *over* the space's tiled layout, rather
+    /// than being one of the floating layout's own windows.
+    pub fn is_floating_overlay(&self, pane_id: u64) -> bool {
+        self.layout != LayoutKind::Floating
+            && self
+                .floating
+                .iter()
+                .any(|pane| pane.pane_id == pane_id && pane.overlay)
     }
 
     /// The rect of the floating pane `pane_id`, if it is floating.
@@ -973,7 +1024,7 @@ impl Space {
     /// navigation reads this, and it is the one place the layouts' geometry is
     /// defined.
     pub fn layout_regions(&self) -> Vec<(u64, goble_ui::RectF)> {
-        match self.layout {
+        let mut regions = match self.layout {
             LayoutKind::Bsp => self.root.leaf_regions(),
             LayoutKind::MasterStack => {
                 let mut leaves = Vec::new();
@@ -984,11 +1035,12 @@ impl Space {
                 // The stored order is the z-order, so the returned order is
                 // what the layer draws: bottom first. A docked window is not
                 // on the pane area, so focus navigation must skip it.
-                self.floating
+                return self
+                    .floating
                     .iter()
                     .filter(|pane| !pane.minimized && self.root.contains_leaf(pane.pane_id))
                     .map(|pane| (pane.pane_id, pane.rect.to_rect()))
-                    .collect()
+                    .collect();
             }
             LayoutKind::Carousel => {
                 let mut leaves = Vec::new();
@@ -996,7 +1048,16 @@ impl Space {
                 let focused = leaves.first().map(|(id, _)| *id).unwrap_or_default();
                 carousel_regions(&leaves, focused)
             }
-        }
+        };
+        // A window floated over the layout sits above it: focus navigation and
+        // the drop ghost read the same geometry the layer draws.
+        regions.extend(
+            self.floating
+                .iter()
+                .filter(|pane| !pane.minimized && self.root.contains_leaf(pane.pane_id))
+                .map(|pane| (pane.pane_id, pane.rect.to_rect())),
+        );
+        regions
     }
 
     /// The kind of the leaf `target` (see [`Pane::leaf_kind`]).

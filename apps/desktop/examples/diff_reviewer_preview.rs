@@ -715,7 +715,7 @@ fn hunk_scene(app: &AppContext, split: bool) -> Box<dyn Element> {
         Some(2),
         split,
         false,
-        diff_body(app, vec![review_hunk()], split, false, None, None),
+        diff_body(app, vec![review_hunk()], split, false, None, Some("rust")),
         false,
     )
 }
@@ -725,12 +725,12 @@ fn one_sided_scene(app: &AppContext, add: bool, split: bool) -> Box<dyn Element>
     let selected = if add { 1 } else { 3 };
     let note = if add {
         if split {
-            "New file · split requested; the current comparison leaves the old half empty."
+            "New file · split requested; the comparison collapses to one full-width column."
         } else {
             "New file"
         }
     } else if split {
-        "Deleted file · split requested; the current comparison leaves the new half empty."
+        "Deleted file · split requested; the comparison collapses to one full-width column."
     } else {
         "Deleted file"
     };
@@ -740,7 +740,7 @@ fn one_sided_scene(app: &AppContext, add: bool, split: bool) -> Box<dyn Element>
         Some(selected),
         split,
         false,
-        diff_body(app, hunks, split, false, Some(note), None),
+        diff_body(app, hunks, split, false, Some(note), Some("rust")),
         false,
     )
 }
@@ -809,7 +809,7 @@ fn wrap_scene(app: &AppContext, wrap: bool) -> Box<dyn Element> {
         Some(2),
         false,
         wrap,
-        diff_body(app, vec![long_hunk()], false, wrap, None, None),
+        diff_body(app, vec![long_hunk()], false, wrap, None, Some("rust")),
         false,
     )
 }

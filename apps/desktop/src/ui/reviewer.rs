@@ -9,9 +9,10 @@
 //! app-owned (see [`crate::state::DiffReviewState`]), because the element tree
 //! is rebuilt every frame.
 //!
-//! [`FileDiffView`] is the goble-ui element the pane will draw once it lands;
-//! until then the app keeps its own [`ReviewDiff`] behind the
-//! `file-diff-view` Cargo feature, so the current public API is unchanged.
+//! Comparisons are drawn by the goble-ui [`FileDiffView`]. The app's own
+//! [`ReviewDiff`] survives only as the fallback for a checkout built without
+//! the `file-diff-view` feature (on by default), so the main review path has a
+//! single painter for unified, split and wrapped bodies.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -459,21 +460,22 @@ fn fixed(width: f32) -> Box<dyn Element> {
     Empty::new().with_size(vec2f(width, 0.0)).finish()
 }
 
-/// A comparison body for one file: the goble-ui [`FileDiffView`] when the
-/// `file-diff-view` feature is on, otherwise the app's own unified/split
-/// painter.
+/// A comparison body for one file: the goble-ui [`FileDiffView`], with rows
+/// and syntax runs prepared once at read time.
+///
+/// Every layout goes through the same painter — unified is the default, split
+/// and wrap are the same view's choices — so the review cannot drift into two
+/// different comparisons. [`FileDiffView`] paints the change bands from the
+/// same [`ColorToken::DiffInsertBg`]/[`ColorToken::DiffDeleteBg`] pair the
+/// app's fallback used, which is what keeps the colours continuous.
 pub(crate) fn comparison(
     file: &DiffFileDetail,
     split: bool,
     wrap: bool,
     scroll: Rc<RefCell<ScrollState>>,
 ) -> Box<dyn Element> {
-    // The landed goble-ui view draws the two surfaces this pane was missing —
-    // side-by-side and wrapped comparisons — with rows and highlights prepared
-    // once at read time. The plain unified view keeps the app's existing
-    // painter, whose change bands the rest of the review's tests pin.
     #[cfg(feature = "file-diff-view")]
-    if split || wrap {
+    {
         let view = FileDiffView::from_prepared(Rc::clone(&file.hunks), file.prepared.clone())
             .with_layout(if split {
                 DiffLayout::Split
@@ -485,15 +487,18 @@ pub(crate) fn comparison(
             .with_fill_width(true);
         return Box::new(view);
     }
-    let (old, new) = file.prepared.highlighted_lines();
-    Box::new(ReviewDiff::new(
-        Rc::clone(&file.hunks),
-        split,
-        wrap,
-        scroll,
-        old,
-        new,
-    ))
+    #[cfg(not(feature = "file-diff-view"))]
+    {
+        let (old, new) = file.prepared.highlighted_lines();
+        Box::new(ReviewDiff::new(
+            Rc::clone(&file.hunks),
+            split,
+            wrap,
+            scroll,
+            old,
+            new,
+        ))
+    }
 }
 
 /// The status letter a file shows in the pane's topbar.
@@ -1316,13 +1321,19 @@ mod ui_tests {
         assert!(state.borrow().diff_review(7).wrap);
         let drawn = texts(&frame(&mut root, &app));
         assert!(
-            drawn.iter().any(|text| text == "No wrap"),
-            "the wrap control says what the press will undo: {drawn:?}"
+            drawn.iter().any(|text| text == "Wrap"),
+            "the shared ReviewTab keeps its wrap control on the bar: {drawn:?}"
+        );
+        click_text(&mut root, &app, "Wrap");
+        assert!(
+            !state.borrow().diff_review(7).wrap,
+            "a second press switches wrapping back off"
         );
     }
 
-    /// The file pane header's floating control runs the wired action: the pane
-    /// stays, and the active space becomes the floating layout.
+    /// The file pane header's floating control runs the wired action: one file
+    /// window is floated over the pane's own layout, without moving the space
+    /// to the floating layout.
     #[test]
     fn the_file_pane_header_opens_the_space_as_floating() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1348,8 +1359,17 @@ mod ui_tests {
         let s = state.borrow();
         assert_eq!(
             s.spaces[s.active_space].layout,
-            LayoutKind::Floating,
-            "the wired action arranges the space as floating windows"
+            LayoutKind::Bsp,
+            "the wired action floats one window; it does not move the whole space"
+        );
+        assert_eq!(
+            s.spaces[s.active_space].floating.len(),
+            1,
+            "exactly one file window is floated over the layout"
+        );
+        assert!(
+            s.spaces[s.active_space].floating[0].overlay,
+            "the entry is the single-window overlay"
         );
         assert_eq!(
             s.spaces[s.active_space].leaf_kind(s.active_pane_id),

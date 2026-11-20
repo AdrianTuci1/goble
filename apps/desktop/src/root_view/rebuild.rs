@@ -654,6 +654,7 @@ impl RootView {
                 space_rename_draft: s.space_rename_draft.clone(),
                 space_rename_focused: s.space_rename_focused,
                 space_menu: s.space_menu.clone(),
+                file_menu: s.file_menu.clone(),
                 agent_cards: s.agent_cards.clone(),
                 new_agent_hover: s.new_agent_hover.clone(),
                 command_palette_open: s.command_palette_open,

@@ -4711,12 +4711,17 @@ fn a_completed_turn_shows_its_changed_files_and_review_action() {
             _ => None,
         })
         .collect();
-    for needle in ["1 file changed", "+3", "-1", "Review"] {
+    // A one-file turn is titled by the file's basename, not by a count.
+    for needle in ["a.rs", "+3", "-1", "Review"] {
         assert!(
             texts.iter().any(|text| *text == needle),
             "the card shows {needle:?}: {texts:?}"
         );
     }
+    assert!(
+        !texts.iter().any(|text| *text == "1 file changed"),
+        "a single-file card names the file: {texts:?}"
+    );
     assert!(
         !texts.iter().any(|text| *text == "src/a.rs"),
         "the rows stay folded until the disclosure is opened: {texts:?}"
@@ -4912,4 +4917,53 @@ fn the_changed_files_card_folds_after_four_rows_and_expands() {
     assert!(texts.iter().any(|text| text == "Show fewer"));
     assert!(texts.iter().any(|text| text == "A"));
     assert!(texts.iter().any(|text| text == "D"));
+}
+
+/// A one-file card uses the file's basename as its title and never prints the
+/// empty side of the change's counts (`+0` / `-0`).
+#[test]
+fn a_single_file_card_titles_the_basename_and_skips_zero_counts() {
+    use crate::elements::chat_content::{ChangedFile, ChangedFiles};
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    let app = AppContext::default();
+    let summary = ChangedFiles {
+        files: vec![ChangedFile {
+            path: "src/deep/panes.rs".to_string(),
+            added: 12,
+            removed: 0,
+            status: 'M',
+        }],
+    };
+    let mut card = super::changed_files_card::build_changed_files_card(
+        &app,
+        &summary,
+        Rc::new(RefCell::new(true)),
+        Rc::new(RefCell::new(|| {})),
+    );
+    let commands = render_element(&mut card, vec2f(700.0, 800.0), &app);
+    let texts: Vec<String> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|text| text == "panes.rs"),
+        "the title is the file's basename: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text == "1 file changed"),
+        "the single-file title is not a count: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "+12"),
+        "the header shows the added count: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text == "-0"),
+        "the empty side is omitted: {texts:?}"
+    );
 }

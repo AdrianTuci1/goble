@@ -271,6 +271,7 @@ impl UiState {
             space_rename_draft: String::new(),
             space_rename_focused: false,
             space_menu: Rc::new(RefCell::new(None)),
+            file_menu: Rc::new(RefCell::new(None)),
             agent_cards: HashMap::new(),
             new_agent_hover: Rc::new(RefCell::new(false)),
             spaces: default_spaces(),

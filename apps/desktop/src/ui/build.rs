@@ -619,6 +619,14 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             vec2f(0.0, 0.0),
         );
     }
+    // A file row/card context menu is a window-level surface: it hangs from the
+    // pointer over the sidebar or a review card and paints above both.
+    if let Some(target) = state.file_menu.borrow().clone() {
+        stack = stack.with_overlay(
+            super::file_menu::build_file_menu(&target, actions),
+            vec2f(0.0, 0.0),
+        );
+    }
     // The window's own edge: a neutral 1 px rule around the whole window, drawn
     // above every page. The panel does not outline its tabs — the focused pane
     // wears its accent corner marker instead — so the window edge stays

@@ -566,6 +566,8 @@ pub struct UiSnapshot {
     /// The workspace tab whose right-click menu is open and the point the
     /// pointer was at when it opened, so the bar can hang the panel from it.
     pub space_menu: Rc<RefCell<Option<SpaceMenu>>>,
+    /// The open file row/card context menu, if any.
+    pub file_menu: Rc<RefCell<Option<crate::state::FileMenu>>>,
     /// Per-card interaction state (hover / delete menu), shared with the
     /// card elements so selections and menus persist across frames.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,

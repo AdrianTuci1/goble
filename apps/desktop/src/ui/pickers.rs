@@ -491,7 +491,7 @@ fn untracked_detail(root: &Path, path: &str) -> GitDiffFile {
 }
 
 /// The repository root `cwd` sits in, or `None` outside a work tree.
-fn repo_root(cwd: &str) -> Option<PathBuf> {
+pub(crate) fn repo_root(cwd: &str) -> Option<PathBuf> {
     if cwd.trim().is_empty() {
         return None;
     }

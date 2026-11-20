@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 
 use super::model::{header_text, DiffLine, DiffLineKind, DiffRow, Hunk, SplitDiffRow, SplitRow};
@@ -26,7 +27,7 @@ use crate::elements::{
     AppContext, Element, LayoutContext, PaintContext, Point, ScrollState, SizeConstraint, TextSpan,
 };
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{measure_text_family, wrapped_lines, FontWeight};
+use crate::platform::text_atlas::{advance_width, measure_text_family, wrapped_lines, FontWeight};
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 
@@ -73,6 +74,11 @@ pub struct FileDiffView {
     fill_width: bool,
     rows: Rc<Vec<DiffRow>>,
     split_rows: Rc<Vec<SplitDiffRow>>,
+    /// Whether the comparison has only additions or only deletions. Such a
+    /// file is drawn as one full-width column even when the caller asked for
+    /// the side-by-side layout: the absent version would otherwise be an empty
+    /// half of the pane (DSH falls back the same way).
+    one_sided: bool,
     highlights: Rc<Vec<Option<HighlightedLine>>>,
     old_highlights: Rc<HashMap<u32, HighlightedLine>>,
     new_highlights: Rc<HashMap<u32, HighlightedLine>>,
@@ -137,6 +143,7 @@ impl FileDiffView {
             wrap: false,
             show_line_numbers: true,
             fill_width: true,
+            one_sided: rows_are_one_sided(&rows),
             rows,
             split_rows,
             highlights: highlights.unified,
@@ -155,6 +162,7 @@ impl FileDiffView {
     pub fn with_prepared(mut self, prepared: PreparedDiff) -> Self {
         self.rows = prepared.rows_shared();
         self.split_rows = prepared.split_rows();
+        self.one_sided = rows_are_one_sided(&self.rows);
         self.highlights = prepared.highlight_runs();
         let (old, new) = prepared.highlighted_lines();
         self.old_highlights = old;
@@ -217,8 +225,26 @@ impl FileDiffView {
         self.hunks.as_slice()
     }
 
+    /// The layout the caller asked for, before a one-sided comparison falls
+    /// back to a single column.
     pub fn layout_mode(&self) -> DiffLayout {
         self.layout
+    }
+
+    /// The layout actually drawn. A one-sided split collapses to
+    /// [`DiffLayout::Unified`]; every two-sided comparison keeps its request.
+    pub fn resolved_layout(&self) -> DiffLayout {
+        if self.layout == DiffLayout::Split && self.one_sided {
+            DiffLayout::Unified
+        } else {
+            self.layout
+        }
+    }
+
+    /// Whether the comparison has additions on only one version (or deletions
+    /// on only one), which is what collapses a requested split to one column.
+    pub fn is_one_sided(&self) -> bool {
+        self.one_sided
     }
 
     pub fn wraps(&self) -> bool {
@@ -243,7 +269,8 @@ impl FileDiffView {
         });
         let mut top = DiffSpec::DIFF_BODY_PAD_TOP;
         let mut first_hunk = true;
-        match self.layout {
+        let layout = self.resolved_layout();
+        match layout {
             DiffLayout::Unified => {
                 let wrap_width = self.unified_wrap_width(width);
                 for row in self.rows.iter() {
@@ -356,7 +383,7 @@ impl FileDiffView {
 
     /// The widest comparison line, used when the view may not fill its parent.
     fn measure_content_width(&self) -> f32 {
-        match self.layout {
+        match self.resolved_layout() {
             DiffLayout::Unified => {
                 let text = self
                     .rows
@@ -489,6 +516,13 @@ impl FileDiffView {
 
     /// Paint one line's body: highlighted runs when they exist, otherwise the
     /// flat kind colour. `wrap_width` is infinite for the clipping layout.
+    ///
+    /// The visual rows are byte ranges that partition the source exactly:
+    /// whitespace the renderer folds at a soft break belongs to the preceding
+    /// row, and the last row carries any trailing whitespace the wrap pass
+    /// trimmed. Drawing a row as a range, rather than searching the line for
+    /// the wrapped text, is what keeps highlighted runs and the source in
+    /// step at a run boundary.
     #[allow(clippy::too_many_arguments)]
     fn draw_text(
         renderer: &mut crate::render::Renderer,
@@ -504,30 +538,17 @@ impl FileDiffView {
             draw_runs(renderer, x, y, text, runs, fallback);
             return;
         }
-        let visual = wrapped_lines(
-            text,
-            FONT_SIZE,
-            LINE_FACTOR,
-            wrap_width,
-            FontWeight::Regular,
-            FontFamily::Mono,
-            false,
-        );
-        let mut cursor = 0usize;
-        for (index, line) in visual.iter().enumerate() {
-            let Some(offset) = text[cursor..].find(&line.text) else {
+        for (index, range) in wrapped_ranges(text, wrap_width).iter().enumerate() {
+            if range.is_empty() {
                 continue;
-            };
-            let start = cursor + offset;
-            let end = start + line.text.len();
-            cursor = end;
+            }
             let line_y = y + index as f32 * line_height;
             match runs {
-                Some(runs) => draw_sliced_runs(renderer, x, line_y, runs, start, end),
+                Some(runs) => draw_sliced_runs(renderer, x, line_y, runs, range.start, range.end, text),
                 None => {
                     renderer.draw_text_with_font(
                         vec2f(x, line_y),
-                        line.text.clone(),
+                        text[range.clone()].to_string(),
                         FONT_SIZE,
                         fallback,
                         f32::INFINITY,
@@ -755,7 +776,7 @@ impl Element for FileDiffView {
         };
         let (first, last) = self.row_window(origin);
         let mut box_index = 0usize;
-        match self.layout {
+        match self.resolved_layout() {
             DiffLayout::Unified => {
                 let wrap_width = self.unified_wrap_width(size.x);
                 for (index, row) in self.rows.iter().enumerate() {
@@ -894,7 +915,7 @@ fn draw_runs(
     fallback: ColorU,
 ) {
     match runs {
-        Some(runs) if !runs.is_empty() => draw_sliced_runs(renderer, x, y, runs, 0, text.len()),
+        Some(runs) if !runs.is_empty() => draw_sliced_runs(renderer, x, y, runs, 0, text.len(), text),
         _ => {
             renderer.draw_text_with_font(
                 vec2f(x, y),
@@ -911,8 +932,75 @@ fn draw_runs(
     }
 }
 
+/// The exact source byte ranges one line wraps into at `wrap_width`.
+///
+/// [`wrapped_lines`] reports where each visual row starts and ends, but it
+/// trims a row's trailing whitespace and consumes the whitespace it folds on.
+/// A styled line cannot be drawn from those strings alone: a run boundary on
+/// the fold would either lose the space or draw it twice. These ranges instead
+/// partition `text` with no gap, so concatenating what each row draws is the
+/// source line byte for byte.
+fn wrapped_ranges(text: &str, wrap_width: f32) -> Vec<Range<usize>> {
+    let visual = wrapped_lines(
+        text,
+        FONT_SIZE,
+        LINE_FACTOR,
+        wrap_width,
+        FontWeight::Regular,
+        FontFamily::Mono,
+        false,
+    );
+    if visual.is_empty() {
+        return vec![0..text.len()];
+    }
+    let mut ranges: Vec<Range<usize>> = Vec::with_capacity(visual.len());
+    let mut cursor = 0usize;
+    for line in &visual {
+        let (start, end) = if line.text.is_empty() {
+            (cursor, cursor)
+        } else if let Some(offset) = text[cursor..].find(&line.text) {
+            let start = cursor + offset;
+            (start, start + line.text.len())
+        } else {
+            // The visual text normally comes straight out of the source. Keep
+            // the row partition intact even if a font fallback reports a row
+            // the source does not spell verbatim.
+            (cursor, advance_boundary(text, cursor, line.text.len()))
+        };
+        let start = start.max(cursor).min(text.len());
+        let end = end.max(start).min(text.len());
+        // Whitespace at a soft break is not on either visual row. It stays in
+        // the range set, at the end of the row before it, so a highlighter run
+        // that begins the next row never gains a leading space on screen.
+        if let Some(previous) = ranges.last_mut() {
+            previous.end = previous.end.max(start);
+        }
+        ranges.push(start..end);
+        cursor = end.max(cursor);
+    }
+    if let Some(last) = ranges.last_mut() {
+        last.end = text.len();
+    } else {
+        ranges.push(0..text.len());
+    }
+    ranges
+}
+
+/// The first character boundary at or after `cursor + len`, clamped to `text`.
+fn advance_boundary(text: &str, cursor: usize, len: usize) -> usize {
+    let mut end = (cursor + len).min(text.len());
+    while end < text.len() && !text.is_char_boundary(end) {
+        end += 1;
+    }
+    end
+}
+
 /// Draw the intersection of `runs` with the byte range `start..end`, advancing
-/// `x` by each run's measured width.
+/// `x` by each run's advance width.
+///
+/// The advance, not the ink extent, is what places the next run: a run that
+/// ends in a space paints no ink for it, but the space still occupies a cell,
+/// so measuring only its ink would pull the following token one column left.
 fn draw_sliced_runs(
     renderer: &mut crate::render::Renderer,
     x: f32,
@@ -920,8 +1008,8 @@ fn draw_sliced_runs(
     runs: &[TextSpan],
     start: usize,
     end: usize,
+    full_text: &str,
 ) {
-    let mut x = x;
     let mut offset = 0usize;
     for run in runs {
         let run_start = offset;
@@ -947,18 +1035,18 @@ fn draw_sliced_runs(
         if text.is_empty() {
             continue;
         }
-        let width = measure_text_family(
-            &text,
+        // Place the run from the exact source prefix. Accumulating per-run
+        // widths drifts when fontdue rounds each glyph, and trailing spaces in
+        // a run would either collapse or double at the next boundary.
+        let run_x = x + advance_width(
+            &full_text[..lo],
             FONT_SIZE,
-            LINE_FACTOR,
-            f32::INFINITY,
-            run.weight,
+            FontWeight::Regular,
             FontFamily::Mono,
-            run.italic,
-        )
-        .x;
+            false,
+        );
         renderer.draw_text_with_font(
-            vec2f(x, y),
+            vec2f(run_x, y),
             text,
             FONT_SIZE,
             run.color,
@@ -968,8 +1056,28 @@ fn draw_sliced_runs(
             FontFamily::Mono,
             run.italic,
         );
-        x += width;
     }
+}
+
+/// Whether `rows` carry only additions or only deletions (or neither). A
+/// comparison with both kinds keeps the side-by-side layout; a comparison with
+/// one kind is drawn as a single full-width column.
+fn rows_are_one_sided(rows: &[DiffRow]) -> bool {
+    let mut added = false;
+    let mut removed = false;
+    for row in rows {
+        if let DiffRow::Line(line) = row {
+            match line.kind {
+                DiffLineKind::Added => added = true,
+                DiffLineKind::Removed => removed = true,
+                DiffLineKind::Context => {}
+            }
+        }
+        if added && removed {
+            return false;
+        }
+    }
+    added != removed
 }
 
 fn line_width(text: &str) -> f32 {

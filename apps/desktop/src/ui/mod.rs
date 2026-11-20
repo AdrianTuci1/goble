@@ -19,6 +19,7 @@ pub mod connectors;
 pub mod crons;
 pub mod diff_panel;
 pub mod explorer;
+pub mod file_menu;
 pub mod file_view;
 pub mod global_search;
 pub mod harness;
@@ -57,14 +58,15 @@ pub use actions::{
 };
 pub use build::{build_ui, BuildContext};
 pub use pane::{
-    DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind, NavDir, Pane,
-    PaneDropTarget, PaneKind, PaneRect, Space, SplitDir,
+    default_floating_rect, DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind,
+    NavDir, Pane, PaneDropTarget, PaneKind, PaneRect, Space, SplitDir,
 };
 pub use snapshot::{
     AiSnapshot, ComposerContext, MediaNode, MediaProject, MediaSession, MediaSnapshot,
     PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, SubAgentViewSnapshot,
     UiSnapshot, WorkerPaneSnapshot, WorkflowViewSnapshot,
 };
+pub use file_menu::FileMenuAction;
 pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use types::{
     AgentDashboardGrouping, AgentDashboardState, AppTab, ArchivedFilter, CostEntry, CronEntry,

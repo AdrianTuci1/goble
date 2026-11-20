@@ -11,7 +11,7 @@ use crate::elements::{
     AppContext, Element, LayoutContext, PaintContext, Point, ScrollState, SizeConstraint, TextSpan,
 };
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
 use crate::syntax::{HighlightedLine, HighlightedSpans};
 use crate::theme::{ColorToken, FontFamily};
 
@@ -592,16 +592,18 @@ fn draw_line_text(
         Some(runs) if !runs.is_empty() => {
             let mut x = x;
             for run in runs {
-                let width = measure_text_family(
+                // The advance, not the ink extent: a run that ends in a space
+                // paints no ink for it, but the next token still starts after
+                // the space. Measuring the ink alone would close that gap and
+                // make `draw_new(pane)` read as `draw_new(pane)` one column
+                // early at every style boundary.
+                let width = advance_width(
                     &run.text,
                     FONT_SIZE,
-                    LINE_HEIGHT,
-                    f32::INFINITY,
                     run.weight,
                     FontFamily::Mono,
                     run.italic,
-                )
-                .x;
+                );
                 renderer.draw_text_with_font(
                     vec2f(x, y),
                     run.text.clone(),

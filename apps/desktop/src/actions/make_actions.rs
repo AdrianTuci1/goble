@@ -22,9 +22,9 @@ use crate::state::{
 use crate::terminal::{classify_input, InputClass};
 use crate::ui::color_picker::ColorTarget;
 use crate::ui::{
-    AgentDashboardAction, AppTab, ArchivedFilter, CronEntry, DiffPanelAction, FloatingDrag,
-    FloatingDragMode, LayoutKind, NavDir, OnboardingAction, Pane, PaneKind, SettingsCategory,
-    SidebarView, Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
+    AgentDashboardAction, AppTab, ArchivedFilter, CronEntry, DiffPanelAction, FileMenuAction,
+    FloatingDrag, FloatingDragMode, LayoutKind, NavDir, OnboardingAction, Pane, PaneKind,
+    SettingsCategory, SidebarView, Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
 };
 
 use super::pane_ops::{
@@ -256,6 +256,10 @@ pub fn make_actions(
     let on_toggle_sidebar = Rc::clone(&state);
     let on_diff_panel = Rc::clone(&state);
     let desktop_diff_panel = desktop.clone();
+    let on_file_menu = Rc::clone(&state);
+    let on_file_menu_action = Rc::clone(&state);
+    let on_file_menu_close = Rc::clone(&state);
+    let desktop_file_menu = desktop.clone();
     let on_toggle_conversations_expanded = Rc::clone(&state);
     let on_select_sidebar_view = Rc::clone(&state);
     let on_toggle_section = Rc::clone(&state);
@@ -296,8 +300,8 @@ pub fn make_actions(
     let on_explorer_file_click = Rc::clone(&state);
     let on_open_file_floating = Rc::clone(&state);
     let desktop_open_file_floating = desktop.clone();
-    let on_toggle_float_layout = Rc::clone(&state);
-    let desktop_toggle_float_layout = desktop.clone();
+    let on_dock_float = Rc::clone(&state);
+    let desktop_dock_float = desktop.clone();
     // The review pane's own view choices are app-owned cells shared with the
     // UI; clone the handle once, before any action closure borrows the state.
     let review_views = {
@@ -2256,6 +2260,59 @@ pub fn make_actions(
                 }
             },
         )),
+        // The file row/card context menu. Opening stores the one target; the
+        // tree rebuilds the panel from it, and every row comes back here.
+        on_file_menu: Rc::new(RefCell::new(
+            move |path: String, copy_path: String, at: Vector2F| {
+                on_file_menu.borrow_mut().open_file_menu(path, copy_path, at);
+            },
+        )),
+        on_file_menu_close: Rc::new(RefCell::new(move || {
+            on_file_menu_close.borrow_mut().dismiss_file_menu();
+        })),
+        on_file_menu_action: Rc::new(RefCell::new(move |action: FileMenuAction| {
+            let mut state = on_file_menu_action.borrow_mut();
+            let Some(target) = state.file_menu.borrow().clone() else {
+                return;
+            };
+            state.dismiss_file_menu();
+            match action {
+                FileMenuAction::Open => {
+                    open_file_pane(&mut state, target.path, desktop_file_menu.as_ref());
+                }
+                FileMenuAction::OpenFloating => {
+                    state.open_file_in_floating(target.path, desktop_file_menu.as_deref());
+                }
+                FileMenuAction::CopyPath => {
+                    crate::clipboard::copy_text(&target.copy_path);
+                }
+                FileMenuAction::Revert => {
+                    let Some(revert) = target.revert else {
+                        return;
+                    };
+                    // The review pane that owns the repository is the one that
+                    // shows the job's outcome; a menu opened over the explorer
+                    // still reverts, it just has no card to update.
+                    let result = state
+                        .spaces
+                        .iter()
+                        .find_map(|space| space.diff_leaf_for(&revert.repo))
+                        .map(|pane_id| {
+                            let controls = state.pane_controls(pane_id);
+                            *controls.diff_git_status.borrow_mut() =
+                                Some((format!("Reverting {}…", revert.git_path), true));
+                            controls.diff_git_result.clone()
+                        })
+                        .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(None)));
+                    spawn_git_job(revert.repo, GitJob::Revert(revert.git_path), result);
+                }
+                FileMenuAction::OpenEditor => {
+                    if let Err(error) = crate::state::open_local_path(&target.path) {
+                        log::warn!("open {} in the editor: {error}", target.path);
+                    }
+                }
+            }
+        })),
         on_toggle_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_sidebar.borrow_mut();
             // Below the responsive breakpoint the toggle re-expands the
@@ -2477,12 +2534,11 @@ pub fn make_actions(
             let mut state = on_open_file_floating.borrow_mut();
             state.open_file_in_floating(path, desktop_open_file_floating.as_deref());
         })),
-        // The docked side of the same choice: a floating space returns to its
-        // BSP tree with every pane still in it.
-        on_toggle_float_layout: Rc::new(RefCell::new(move || {
-            let mut state = on_toggle_float_layout.borrow_mut();
-            state.toggle_floating_layout(desktop_toggle_float_layout.as_deref());
-            state.sync_active_view();
+        // The docked side of the same choice: the one floated window returns to
+        // the layout it was opened over, still in the pane tree.
+        on_dock_float: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_dock_float.borrow_mut();
+            state.dock_floating_pane(pane_id, desktop_dock_float.as_deref());
         })),
         on_global_search_change: Rc::new(RefCell::new(move |value: String| {
             let mut state = on_global_search_change.borrow_mut();

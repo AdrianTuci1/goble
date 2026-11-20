@@ -19,6 +19,7 @@ use crate::ui::settings::SettingsUiState;
 
 mod agents;
 mod close;
+mod file_menu;
 mod inbox;
 mod mock;
 mod onboarding;
@@ -37,6 +38,7 @@ mod worker;
 mod workspace_rows;
 
 pub use agents::{PaneAgentState, TurnOutcome};
+pub use file_menu::{FileMenu, FileRevertTarget};
 pub use inbox::{InboxItem, InboxKind};
 pub use onboarding::{ONBOARDING_STEPS, ONBOARDING_USAGE};
 pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
@@ -583,6 +585,10 @@ pub struct UiState {
     /// outside its panel clears it (`on_space_menu_close`), because only the app
     /// outlives the frame that press happened in.
     pub space_menu: Rc<RefCell<Option<SpaceMenu>>>,
+    /// The file row/card context menu that is open, if any: the path it acts
+    /// on and the point it hangs from. App-owned because the tree is rebuilt
+    /// every frame.
+    pub file_menu: Rc<RefCell<Option<FileMenu>>>,
     /// Per-card interaction state (hover / delete menu), owned here so it
     /// survives the per-frame element rebuild. Keyed by conversation id.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,

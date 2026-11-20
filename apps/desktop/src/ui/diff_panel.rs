@@ -27,14 +27,15 @@ use goble_ui::elements::{
     AppContext, Axis, Border, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, Icon, IconButton,
     KeyHandler, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu,
-    PopupMenuItem, PopupMenuPosition, Scrollable, SizeConstraint, Stack, Text, TextArea, TextInput,
-    Tooltip, TooltipPosition,
+    PopupMenuItem, PopupMenuPosition, ReviewTab, ReviewTabFile, Scrollable, SizeConstraint, Stack,
+    Text, TextArea, TextInput, Tooltip, TooltipPosition,
 };
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::platform::text_atlas::FontWeight;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
 
 use super::chat;
+use super::file_menu;
 use super::file_view::{DiffEditor, FileKeys};
 use super::pickers::{DiffDetail, DiffFileDetail};
 use super::reviewer;
@@ -397,21 +398,10 @@ fn review_controls(
         compact,
     ));
 
-    // The comparison controls sit beside the rail toggle: the view (unified or
-    // split), wrapping, and one fold for every card. Their labels say what the
-    // press will do, the way DSH's review buttons do.
-    let on_view = actions.on_diff_panel.clone();
-    let view_button = text_button(
-        app,
-        if view.view.is_split() { "Unified" } else { "Split" },
-        move || (on_view.borrow_mut())(pane_id, DiffPanelAction::ToggleView),
-    );
-    let on_wrap = actions.on_diff_panel.clone();
-    let wrap_button = text_button(
-        app,
-        if view.wrap { "No wrap" } else { "Wrap" },
-        move || (on_wrap.borrow_mut())(pane_id, DiffPanelAction::ToggleWrap),
-    );
+    // DSH's own review-tab header: the changed-file selector, the selected
+    // file's counts and the split/unified and wrap choices, composed from the
+    // shared goble-ui element rather than a second ad-hoc copy of the row.
+    let review_tab = review_tab_header(app, actions, pane_id, detail, selected, view);
     let all_open = detail.files.iter().all(|file| file_open(file, expanded));
     let on_fold = actions.on_diff_panel.clone();
     let fold_paths: Vec<String> = detail.files.iter().map(|file| file.path.clone()).collect();
@@ -433,10 +423,8 @@ fn review_controls(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(6.0)
         .with_child(sidebar_button)
-        .with_child(view_button)
-        .with_child(wrap_button)
+        .with_child(Expanded::new(review_tab).finish())
         .with_child(fold_button)
-        .with_child(Expanded::new(Empty::new().with_size(Vector2F::zero()).finish()).finish())
         .with_child(trailing.finish())
         .finish();
     // The row under the pane's topbar belongs to the panel's own surface, so
@@ -449,6 +437,79 @@ fn review_controls(
     )
     .with_height(TOOLBAR_HEIGHT)
     .finish()
+}
+
+/// The review tab's header row, built from the shared goble-ui element: its
+/// selector names the selected changed file, its counts are that file's, and
+/// its split/wrap controls report through the same pane actions the rest of
+/// the review uses.
+fn review_tab_header(
+    app: &AppContext,
+    actions: &UiActions,
+    pane_id: u64,
+    detail: &DiffDetail,
+    selected: Option<&str>,
+    view: &crate::state::DiffReviewState,
+) -> Box<dyn Element> {
+    let files: Vec<ReviewTabFile> = detail
+        .files
+        .iter()
+        .map(|file| ReviewTabFile {
+            path: file.path.clone(),
+            added: u64::from(file.added),
+            removed: u64::from(file.removed),
+            status: reviewer::status_of(file).letter().chars().next().unwrap_or('M'),
+        })
+        .collect();
+    let paths: Vec<String> = detail.files.iter().map(|file| file.path.clone()).collect();
+    let absolute: Vec<String> = detail
+        .files
+        .iter()
+        .map(|file| file.absolute_path.clone())
+        .collect();
+    let current = selected
+        .and_then(|selected| detail.files.iter().position(|file| file.path == selected))
+        .unwrap_or(0);
+    let selected_absolute = absolute.get(current).cloned();
+    let all_absolute = absolute.clone();
+
+    let on_select = actions.on_diff_panel.clone();
+    let select_paths = paths.clone();
+    let on_split = actions.on_diff_panel.clone();
+    let on_wrap = actions.on_diff_panel.clone();
+    let on_open = actions.on_diff_panel.clone();
+    let on_other = actions.on_diff_panel.clone();
+    let open_path = selected_absolute.clone();
+    let copy_paths = selected_absolute
+        .map(|path| vec![path])
+        .unwrap_or_else(|| all_absolute);
+
+    ReviewTab::new(files)
+        .with_selected(current)
+        .with_split(view.view.is_split())
+        .with_wrap(view.wrap)
+        .with_selector_open(view.selector_open.clone())
+        .with_selector_highlight(view.selector_highlight.clone())
+        .with_on_select(move |index| {
+            if let Some(path) = select_paths.get(index) {
+                (on_select.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())));
+            }
+        })
+        .with_on_toggle_split(move || {
+            (on_split.borrow_mut())(pane_id, DiffPanelAction::ToggleView);
+        })
+        .with_on_toggle_wrap(move || {
+            (on_wrap.borrow_mut())(pane_id, DiffPanelAction::ToggleWrap);
+        })
+        .with_on_open_file(move || {
+            if let Some(path) = open_path.clone() {
+                (on_open.borrow_mut())(pane_id, DiffPanelAction::OpenFile(path));
+            }
+        })
+        .with_on_other(move || {
+            (on_other.borrow_mut())(pane_id, DiffPanelAction::CopyPaths(copy_paths.clone()));
+        })
+        .finish()
 }
 
 /// A label cut to at most `max` characters, ending in an ellipsis when it was
@@ -1045,11 +1106,26 @@ fn file_block(
     }
     // Every file is its own box: the border is the file's bounds, and the gap
     // below it is the clear space before the next one.
-    let boxed = Container::new(column.finish())
+    let boxed: Box<dyn Element> = Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .with_border(Border::all(1.0).with_border_fill(app.theme.color(ColorToken::Border)))
         .with_corner_radius(8.0)
         .finish();
+    // The whole card is the file's target: a right press anywhere on it opens
+    // the shared file context menu at the pointer.
+    let on_file_menu = actions.on_file_menu.clone();
+    let menu_path = file.absolute_path.clone();
+    let menu_copy_path = file.path.clone();
+    let boxed = file_menu::context_click(
+        boxed,
+        Rc::new(RefCell::new(move |at| {
+            (on_file_menu.borrow_mut())(
+                menu_path.clone(),
+                menu_copy_path.clone(),
+                at,
+            );
+        })),
+    );
     Container::new(boxed)
         .with_padding(EdgeInsets::new(0.0, 0.0, 0.0, FILE_BOX_GAP))
         .finish()

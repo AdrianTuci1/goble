@@ -31,7 +31,8 @@ pub use conversation_sidebar::{
 pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
 pub use diff::{
     build_split_rows, parse_unified_diff, split_rows, Diff, DiffLayout, DiffLine, DiffLineKind,
-    DiffRow, DiffSpec, DiffStats, FileDiffView, Hunk, PreparedDiff, SplitDiffRow, SplitRow,
+    DiffRow, DiffSpec, DiffStats, FileDiffView, Hunk, PreparedDiff, ReviewHeader, ReviewTab,
+    ReviewTabFile, ReviewTabHeader, ReviewTabState, SplitDiffRow, SplitRow,
 };
 pub mod markdown;
 pub use chat_message_bubble::ChatMessageBubble;

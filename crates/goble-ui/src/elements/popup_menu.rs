@@ -1301,8 +1301,10 @@ impl PopupMenuItemView {
             );
         }
         // The item in force is marked with the reference's trailing check: the
-        // label keeps its own colour and the check is the value's stamp.
-        if self.selected && !self.disabled && self.diff.is_none() {
+        // label keeps its own colour and the check is the value's stamp. A
+        // changed-file row still gets it — the counts sit before it — so the
+        // file selector can show which file the comparison is for.
+        if self.selected && !self.disabled {
             line = line.with_child(
                 Icon::new("check")
                     .with_size(14.0)
@@ -2579,5 +2581,52 @@ fn a_pane_separator_divides_two_groups_of_rows() {
         click_at(&mut menu, inside.x, inside.y, &app);
         assert_eq!(*picked.borrow(), Some(0), "the menu ran the row's action");
         assert!(!menu.is_open(), "choosing a row closes the menu");
+    }
+}
+
+#[cfg(test)]
+mod diff_item_tests {
+    use super::*;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    /// A changed-file selector row keeps the selected check even though it
+    /// carries trailing counts, and the counts omit a zero side.
+    #[test]
+    fn a_selected_diff_item_keeps_its_check_and_skips_zero_counts() {
+        let app = AppContext::default();
+        let items = vec![
+            PopupMenuItem::new("src/panes.rs")
+                .with_diff(18, 4)
+                .selected(),
+            PopupMenuItem::new("src/new.rs").with_diff(12, 0),
+            PopupMenuItem::new("src/old.rs").with_diff(0, 9),
+        ];
+        let trigger = Container::new(Text::new("files").finish()).finish();
+        let menu = PopupMenu::new(trigger, items)
+            .with_open(Rc::new(RefCell::new(true)))
+            .with_max_width(360.0);
+        let mut element: Box<dyn Element> = menu.finish();
+        let commands = render_element(&mut element, vec2f(600.0, 400.0), &app);
+
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "check"
+            )),
+            "the selected file row is stamped with a check: {commands:?}"
+        );
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for needle in ["+18", "-4", "+12", "-9"] {
+            assert!(texts.iter().any(|text| *text == needle), "{needle:?}: {texts:?}");
+        }
+        assert!(!texts.iter().any(|text| *text == "+0"), "{texts:?}");
+        assert!(!texts.iter().any(|text| *text == "-0"), "{texts:?}");
     }
 }

@@ -10,6 +10,7 @@
 mod file_diff;
 mod model;
 mod paint;
+mod review_tab;
 mod spec;
 #[cfg(test)]
 mod tests;
@@ -20,4 +21,7 @@ pub use model::{
     Hunk, SplitDiffRow, SplitRow,
 };
 pub use paint::{Diff, DiffHighlightJob, DiffHighlightSide, DiffSide, PreparedDiff};
+pub use review_tab::{
+    ReviewHeader, ReviewTab, ReviewTabFile, ReviewTabHeader, ReviewTabState,
+};
 pub use spec::DiffSpec;

@@ -14,7 +14,7 @@ use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     file_icon_name, AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, HoverButton, Icon,
-    LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Spacer, SplitNode,
+    LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Spacer, SplitNode, Stack,
     Text, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
@@ -51,7 +51,8 @@ pub fn build_active_space(
     state: &UiSnapshot,
     actions: &UiActions,
 ) -> Box<dyn Element> {
-    let content = match state.spaces.get(state.active_space) {
+    let active_space = state.spaces.get(state.active_space);
+    let content = match active_space {
         Some(space) => {
             // The responsive last resort: the window is too narrow for every
             // pane to keep its minimum width, so the active pane is drawn over
@@ -110,6 +111,18 @@ pub fn build_active_space(
             // pane (see [`PaneCard`]).
             PaneCard::new(column.finish(), app, false).finish()
         }
+    };
+    // A window floated over the layout is a second layer above it, not a
+    // change to the layout: the tree below keeps its regions and sessions.
+    let content: Box<dyn Element> = match active_space {
+        Some(space) => match build_floating_overlay(app, state, actions, space) {
+            Some(overlay) => Stack::new()
+                .with_children(vec![content])
+                .with_overlay(overlay, Vector2F::zero())
+                .finish(),
+            None => content,
+        },
+        None => content,
     };
     // The drop ghost is drawn with the pane area but after its panes, so it
     // covers the pane the pointer is over and stays under the bar's floating
@@ -233,7 +246,7 @@ fn build_space(
                 children.push(RegionChild::new(
                     pane.pane_id,
                     pane.rect,
-                    build_window(app, state, actions, pane.pane_id, kind, true),
+                    build_window(app, state, actions, pane.pane_id, kind, true, false),
                 ));
             }
             let mut leaves = Vec::new();
@@ -245,7 +258,7 @@ fn build_space(
                 children.push(RegionChild::new(
                     id,
                     default_floating_rect(index),
-                    build_window(app, state, actions, id, kind, true),
+                    build_window(app, state, actions, id, kind, true, false),
                 ));
             }
             let layer = RegionLayer::new(
@@ -292,7 +305,7 @@ fn build_space(
                     Some(RegionChild::new(
                         id,
                         PaneRect::new(rect.min_x(), rect.min_y(), rect.width(), rect.height()),
-                        build_window(app, state, actions, id, kind, false),
+                        build_window(app, state, actions, id, kind, false, false),
                     ))
                 })
                 .collect();
@@ -307,6 +320,47 @@ fn build_space(
             ))
         }
     }
+}
+
+/// The single windows floated over a tiled space, bottom to top. The layer is
+/// the same one the floating layout uses for its own windows: moving,
+/// resizing, raising and focusing all go through it, and a press that misses
+/// the window falls through to the layout below.
+fn build_floating_overlay(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    space: &Space,
+) -> Option<Box<dyn Element>> {
+    if space.layout == LayoutKind::Floating {
+        return None;
+    }
+    let mut children = Vec::new();
+    for pane in &space.floating {
+        let Some(kind) = leaf_kind_of(&space.root, pane.pane_id) else {
+            continue;
+        };
+        if pane.minimized {
+            continue;
+        }
+        children.push(RegionChild::new(
+            pane.pane_id,
+            pane.rect,
+            build_window(app, state, actions, pane.pane_id, kind, false, true),
+        ));
+    }
+    if children.is_empty() {
+        return None;
+    }
+    Some(Box::new(RegionLayer::new(
+        children,
+        true,
+        true,
+        false,
+        actions,
+        state.floating_drag.clone(),
+        lifted_pane(state),
+    )))
 }
 
 /// The strip of minimized windows under the floating pane area. Each chip names
@@ -1216,10 +1270,11 @@ fn build_window(
     id: u64,
     kind: PaneKind,
     minimize: bool,
+    overlay: bool,
 ) -> Box<dyn Element> {
     let active = state.active_pane_id == id;
     let surface = pane_surface(app);
-    let titlebar = build_window_titlebar(app, actions, id, &kind, active, minimize);
+    let titlebar = build_window_titlebar(app, actions, id, &kind, active, minimize, overlay);
     let body = build_leaf_column(app, state, actions, id, kind, false);
     let column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
@@ -1260,6 +1315,7 @@ fn build_window_titlebar(
     kind: &PaneKind,
     active: bool,
     minimize: bool,
+    overlay: bool,
 ) -> Box<dyn Element> {
     let text_color = if active {
         ColorToken::Text
@@ -1284,8 +1340,10 @@ fn build_window_titlebar(
         )
         .with_child(Spacer::new().finish());
 
-    if minimize {
-        let on_minimize = actions.on_float_minimize.clone();
+    if overlay {
+        // The one-window float docks back into the layout it was opened over:
+        // the entry goes away and the pane stays where the tree puts it.
+        let on_dock = actions.on_dock_float.clone();
         let pane_id = id;
         row = row.with_child(
             TopbarButton::new(
@@ -1295,24 +1353,40 @@ fn build_window_titlebar(
                     .finish(),
             )
             .with_size(WINDOW_CONTROL_SIZE)
-            .with_on_click(move || (on_minimize.borrow_mut())(pane_id))
+            .with_on_click(move || (on_dock.borrow_mut())(pane_id))
+            .finish(),
+        );
+    } else {
+        if minimize {
+            let on_minimize = actions.on_float_minimize.clone();
+            let pane_id = id;
+            row = row.with_child(
+                TopbarButton::new(
+                    Icon::new("minimize")
+                        .with_size(12.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_size(WINDOW_CONTROL_SIZE)
+                .with_on_click(move || (on_minimize.borrow_mut())(pane_id))
+                .finish(),
+            );
+        }
+
+        let on_toggle_maximized = actions.on_toggle_pane_maximized.clone();
+        let pane_id = id;
+        row = row.with_child(
+            TopbarButton::new(
+                Icon::new("maximize")
+                    .with_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(WINDOW_CONTROL_SIZE)
+            .with_on_click(move || (on_toggle_maximized.borrow_mut())(pane_id))
             .finish(),
         );
     }
-
-    let on_toggle_maximized = actions.on_toggle_pane_maximized.clone();
-    let pane_id = id;
-    row = row.with_child(
-        TopbarButton::new(
-            Icon::new("maximize")
-                .with_size(12.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .with_size(WINDOW_CONTROL_SIZE)
-        .with_on_click(move || (on_toggle_maximized.borrow_mut())(pane_id))
-        .finish(),
-    );
 
     // Close is the app's close rule, which names a pane by making it active
     // first: the window clicked and the pane closed are then the same one.

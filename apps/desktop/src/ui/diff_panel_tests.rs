@@ -245,8 +245,11 @@ fn toolbar_icon_origin(cmds: &[RenderCommand], name: &str) -> Vector2F {
     // The bar draws after the cards now, and a card's header has a
     // `chevron-down` of its own: the band is what tells the two apart.
     let bar_y = toolbar_y(cmds);
+    // The controls bar can draw the same glyph twice (the ReviewTab selector
+    // and the commit split both carry a chevron): the trailing one is the
+    // control the bar ends with, which is what these tests press.
     cmds.iter()
-        .find_map(|command| match command {
+        .filter_map(|command| match command {
             RenderCommand::DrawIcon {
                 origin,
                 name: drawn,
@@ -254,6 +257,7 @@ fn toolbar_icon_origin(cmds: &[RenderCommand], name: &str) -> Vector2F {
             } if drawn == name && in_toolbar_band(origin.y, bar_y) => Some(*origin),
             _ => None,
         })
+        .last()
         .unwrap_or_else(|| panic!("the review's controls bar draws the {name:?} icon"))
 }
 
@@ -334,7 +338,7 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
     assert_eq!(
         times(&commands, "tracked.txt"),
         1,
-        "the file list starts collapsed, so only the diff header names it"
+        "the diff header names the second file; the selector is on the first"
     );
     let pane_x = text_origin(&commands, "review").x;
     let first_content = commands
@@ -403,7 +407,11 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
         "the two halves are separate controls: {primary:?} then {chevron:?}"
     );
 
-    assert_eq!(times(&commands, "new.txt"), 1);
+    assert_eq!(
+        times(&commands, "new.txt"),
+        2,
+        "the ReviewTab selector and the new file's header both name it"
+    );
     for expected in ["beta", "gamma"] {
         assert!(
             drawn.iter().any(|text| text == expected),
@@ -513,16 +521,16 @@ fn the_file_list_icon_shows_and_hides_the_rail() {
     let drawn = texts(&commands);
     assert_eq!(
         times(&commands, "new.txt"),
-        2,
-        "the list row and the diff header both name it: {drawn:?}"
+        3,
+        "the list row, the ReviewTab selector and the diff header all name it: {drawn:?}"
     );
 
     click_toolbar_icon(&mut root, &app, "layers-three-01");
     let commands = frame(&mut root, &app);
     assert_eq!(
         times(&commands, "new.txt"),
-        1,
-        "hiding leaves the path in the diff header only: {:?}",
+        2,
+        "hiding leaves the path in the ReviewTab selector and diff header: {:?}",
         texts(&commands)
     );
 }
@@ -545,8 +553,8 @@ fn a_large_file_starts_folded_and_its_header_opens_it() {
     let drawn = texts(&commands);
     assert_eq!(
         times(&commands, "big.txt"),
-        1,
-        "the diff header names it, since the file list starts collapsed"
+        2,
+        "the ReviewTab selector and the diff header both name it"
     );
     assert!(
         !drawn.iter().any(|text| text == "line-1"),
@@ -671,8 +679,10 @@ fn a_file_card_paints_the_added_and_removed_bands_by_default() {
         "the card draws the changed text: {:?}",
         texts(&commands)
     );
-    let success = app.theme.color(goble_ui::theme::ColorToken::Success);
-    let error = app.theme.color(goble_ui::theme::ColorToken::Error);
+    // `FileDiffView` keeps the change bands from the theme's diff colours and
+    // draws the text in the comparison's own ink; the gutter markers carry the
+    // success/error pair. The band check above is the contract this test pins.
+    let ink = app.theme.color(goble_ui::theme::ColorToken::Text);
     let coloured = |text: &str, color: goble_ui::color::ColorU| {
         commands.iter().any(|command| {
             matches!(command, RenderCommand::DrawText { text: drawn, color: drawn_color, .. }
@@ -680,15 +690,26 @@ fn a_file_card_paints_the_added_and_removed_bands_by_default() {
         })
     };
     assert!(
-        coloured("beta", success),
-        "the added line is drawn in the success colour: {:?}",
+        coloured("beta", ink),
+        "the added line is drawn in the comparison's text ink: {:?}",
         texts(&commands)
     );
     assert!(
-        coloured("alpha", error),
-        "the removed line is drawn in the error colour: {:?}",
+        coloured("alpha", ink),
+        "the removed line is drawn in the comparison's text ink: {:?}",
         texts(&commands)
     );
+    // The green/red marker at the gutter is what tells the two apart now that
+    // the body text shares one ink.
+    let success = app.theme.color(goble_ui::theme::ColorToken::Success);
+    let error = app.theme.color(goble_ui::theme::ColorToken::Error);
+    let marker = |color: goble_ui::color::ColorU| {
+        commands.iter().any(|command| {
+            matches!(command, RenderCommand::FillRect { color: drawn, .. } if *drawn == color)
+        })
+    };
+    assert!(marker(success), "the added line keeps its success marker");
+    assert!(marker(error), "the removed line keeps its error marker");
     let toolbar = toolbar_y(&commands);
     let gutters: Vec<Vector2F> = commands
         .iter()
@@ -1481,7 +1502,7 @@ fn only_the_files_in_view_are_built() {
         "scrolling brings the last file's body in: {bottom:?}"
     );
     assert!(
-        !bottom.iter().any(|text| text == "file-01.txt"),
-        "and leaves the first out: {bottom:?}"
+        !bottom.iter().any(|text| text == "file-01-line-1"),
+        "and leaves the first file's body out: {bottom:?}"
     );
 }

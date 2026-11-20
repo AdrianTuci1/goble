@@ -9,6 +9,8 @@
 
 use super::*;
 
+use crate::ui::default_floating_rect;
+
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
@@ -155,51 +157,121 @@ impl UiState {
         next
     }
 
-    /// Open `file_path` in a file pane and arrange the active space's panes as
-    /// floating windows.
+    /// Open `file_path` as its own window floated above the active space's
+    /// current layout.
     ///
-    /// This is DSH's "Open in floating panel": the file pane is opened through
-    /// the same path an explorer click uses — beside the active pane, or as a
-    /// chip when a file pane already has the focus — and the active space then
-    /// switches to [`LayoutKind::Floating`], where every leaf (the file pane
-    /// included) gets a window of its own. Returns whether a pane was opened or
-    /// focused.
+    /// This is DSH's "Open in floating panel": the file pane is opened beside
+    /// the active pane, then a single [`FloatingPane`] entry is added over the
+    /// layout. The space's [`LayoutKind`] does not change — the panes already
+    /// on screen keep their tree, their regions and their sessions; only the
+    /// one window is lifted above them. [`Self::dock_floating_pane`] removes
+    /// the entry and leaves the file in the pane tree, and closing the pane
+    /// removes both.
+    ///
+    /// An already-floating file is raised and focused instead of being opened
+    /// twice. Returns whether a pane was opened or focused.
     pub fn open_file_in_floating(
         &mut self,
         file_path: String,
         desktop: Option<&DesktopState>,
     ) -> bool {
-        if self.active_pane_shows_file() {
-            let active = self.active_pane_id;
-            if !self.show_file_in_pane(active, file_path) {
-                return false;
+        let index = self.active_space;
+        let Some(space) = self.spaces.get(index) else {
+            return false;
+        };
+        // The same file in a window that is already floating: bring that
+        // window to the front rather than stacking a second copy.
+        if let Some(existing) = space.floating.iter().find_map(|pane| {
+            match space.leaf_kind(pane.pane_id) {
+                Some(PaneKind::File { path }) if path == &file_path => Some(pane.pane_id),
+                _ => None,
             }
+        }) {
+            self.focus_pane(existing);
+            let space = &mut self.spaces[index];
+            space.raise_pane(existing);
+            self.sync_active_view();
+            if let Some(desktop) = desktop {
+                self.save_panes(desktop);
+            }
+            return true;
+        }
+
+        let anchor = if space.root.contains_leaf(self.active_pane_id) {
+            self.active_pane_id
         } else {
-            let kind = PaneKind::File {
-                path: file_path.clone(),
-            };
-            let index = self.active_space;
+            space.root.first_leaf_id()
+        };
+        let kind = PaneKind::File {
+            path: file_path.clone(),
+        };
+        // One window above the layout, cascaded after any window already
+        // floating there. The entry is not a change of the space's layout.
+        let float_index = space.floating.iter().filter(|pane| pane.overlay).count();
+        let new_id = {
             let Some(space) = self.spaces.get_mut(index) else {
                 return false;
             };
             let Some(new_id) = space.split_with_kind(
-                self.active_pane_id,
+                anchor,
                 crate::ui::SplitDir::Horizontal,
                 &mut self.next_pane_id,
                 kind,
             ) else {
                 return false;
             };
-            self.pane_open_files.insert(new_id, vec![file_path]);
-            self.focus_pane(new_id);
-            self.pane_hover
-                .entry(new_id)
-                .or_insert_with(|| Rc::new(RefCell::new(false)));
+            new_id
+        };
+        self.pane_open_files.insert(new_id, vec![file_path]);
+        self.focus_pane(new_id);
+        self.pane_hover
+            .entry(new_id)
+            .or_insert_with(|| Rc::new(RefCell::new(false)));
+        let rect = default_floating_rect(float_index);
+        if let Some(space) = self.spaces.get_mut(index) {
+            space.add_floating_overlay(new_id, rect);
         }
         self.sync_active_view();
-        let index = self.active_space;
-        self.set_space_layout(index, LayoutKind::Floating, desktop);
+        if let Some(desktop) = desktop {
+            self.save_panes(desktop);
+        }
         true
+    }
+
+    /// Dock the window floated above the active space's layout: the float
+    /// entry goes away and the file stays in the pane tree, drawn by the
+    /// layout it was opened over. Returns whether a window was docked.
+    pub fn dock_floating_pane(
+        &mut self,
+        pane_id: u64,
+        desktop: Option<&DesktopState>,
+    ) -> bool {
+        let Some(index) = self.space_index_of_pane(pane_id) else {
+            return false;
+        };
+        let space = &mut self.spaces[index];
+        // A whole floating layout has no single window to dock back to; the
+        // docked toggle belongs to the one window floated over a tiled space.
+        if space.layout == LayoutKind::Floating {
+            return false;
+        }
+        if !space.remove_floating(pane_id) {
+            return false;
+        }
+        self.focus_pane(pane_id);
+        self.sync_active_view();
+        if let Some(desktop) = desktop {
+            self.save_panes(desktop);
+        }
+        true
+    }
+
+    /// Whether `pane_id` is the single window floated above its space's
+    /// layout (the file pane's docked toggle reads this).
+    pub fn is_floating_overlay(&self, pane_id: u64) -> bool {
+        self.spaces
+            .iter()
+            .any(|space| space.is_floating_overlay(pane_id))
     }
 }
 
@@ -259,11 +331,11 @@ mod tests {
         assert!(!state.diff_review(7).wrap);
     }
 
-    /// "Open in floating panel" opens the file as a pane and then arranges the
-    /// active space as floating windows; the docked toggle puts the same panes
-    /// back into the BSP tree without losing them.
+    /// "Open in floating panel" adds one window above the layout: the space's
+    /// own layout is untouched, the file pane joins the tree, and exactly one
+    /// floating entry is drawn over it.
     #[test]
-    fn opening_a_file_in_floating_opens_the_pane_and_floats_the_space() {
+    fn opening_a_file_floats_one_window_over_the_layout() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("src").join("main.rs");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
@@ -285,40 +357,86 @@ mod tests {
         );
         assert_eq!(
             state.spaces[0].layout,
-            LayoutKind::Floating,
-            "the active space is arranged as floating windows"
+            LayoutKind::Bsp,
+            "the space keeps its own layout instead of switching to Floating"
         );
+        assert_eq!(
+            state.spaces[0].floating.len(),
+            1,
+            "exactly one file window floats over the layout"
+        );
+        let overlay = state.spaces[0].floating[0].clone();
+        assert!(overlay.overlay, "the entry is a single-window overlay");
         assert!(
-            state.spaces[0].visible_leaf_ids().contains(&7),
-            "the pane that was already there stays in the space"
+            state.spaces[0].root.contains_leaf(overlay.pane_id),
+            "the file pane also belongs to the tree, so docking leaves it docked"
         );
         let active = state.active_pane_id;
+        assert_eq!(overlay.pane_id, active, "the new window is the focused pane");
         assert!(
             matches!(
                 state.spaces[0].leaf_kind(active),
                 Some(PaneKind::File { path: shown }) if *shown == path
             ),
-            "the new window shows the file that was opened"
+            "the window shows the file that was opened"
         );
-
-        assert_eq!(
-            state.toggle_floating_layout(None),
-            LayoutKind::Bsp,
-            "the docked toggle puts the panes back in the tree"
-        );
-        assert_eq!(state.spaces[0].layout, LayoutKind::Bsp);
         assert!(
             state.spaces[0].visible_leaf_ids().contains(&7),
-            "the original pane survives the round trip"
+            "the pane that was already there stays in the space"
+        );
+
+        // The overlay is the last (topmost) region, above every tiled pane.
+        let regions = state.spaces[0].layout_regions();
+        assert_eq!(
+            regions.last().map(|(id, _)| *id),
+            Some(active),
+            "the floating rect is drawn above the layout"
         );
         assert!(
-            state
-                .spaces[0]
-                .visible_leaf_ids()
-                .iter()
-                .any(|id| *id == active),
-            "the file pane survives the round trip"
+            regions.iter().take(regions.len() - 1).any(|(id, _)| *id == 7),
+            "the layout below the float is still there"
         );
+
+        // Docking removes the float and leaves the same pane in the BSP tree.
+        assert!(
+            state.dock_floating_pane(active, None),
+            "the docked toggle removes the window"
+        );
+        assert!(state.spaces[0].floating.is_empty());
+        assert_eq!(state.spaces[0].layout, LayoutKind::Bsp);
+        assert!(
+            state.spaces[0].root.contains_leaf(active),
+            "the file returns to the pane/layout"
+        );
+    }
+
+    /// Closing a floated file removes both the window and its pane, so no
+    /// stale rect is left over the layout.
+    #[test]
+    fn closing_a_floating_file_removes_its_rect_and_pane() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, "pub fn f() {}").expect("file");
+        let path = path.to_string_lossy().to_string();
+
+        let mut state = UiState::mock();
+        state.spaces = vec![Space::unnamed(Pane::Leaf {
+            id: 7,
+            kind: PaneKind::Chat,
+        })];
+        state.active_space = 0;
+        state.active_pane_id = 7;
+        state.next_pane_id = 8;
+        assert!(state.open_file_in_floating(path, None));
+        let active = state.active_pane_id;
+        assert_eq!(state.spaces[0].floating.len(), 1);
+
+        state.spaces[0].close(active);
+        assert!(
+            state.spaces[0].floating.is_empty(),
+            "the closed pane's rect is gone with it"
+        );
+        assert!(!state.spaces[0].root.contains_leaf(active));
     }
 
     /// The changed-file tree groups paths into directories, and folding one

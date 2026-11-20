@@ -8,6 +8,7 @@ use goble_ui::SettingsPage;
 
 use super::color_picker;
 use super::pane::{FloatingDragMode, NavDir, PaneDropTarget, PaneRect};
+use super::file_menu::FileMenuAction;
 use super::tab_menu::TabMenuAction;
 use super::types::{
     AppTab, ArchivedFilter, OnboardingAction, SettingsCategory, SidebarView, WorkspaceRouting,
@@ -312,6 +313,13 @@ pub struct UiActions {
     pub on_toggle_sidebar: Rc<RefCell<dyn FnMut()>>,
     /// One interaction in the diff review pane, naming the pane it happened in.
     pub on_diff_panel: Rc<RefCell<dyn FnMut(u64, DiffPanelAction)>>,
+    /// A file row/card was right-clicked: `(path, copy_path, at)`. The app
+    /// stores the one open target; the next frame hangs the menu from `at`.
+    pub on_file_menu: Rc<RefCell<dyn FnMut(String, String, Vector2F)>>,
+    /// A row of the open file context menu was chosen.
+    pub on_file_menu_action: Rc<RefCell<dyn FnMut(FileMenuAction)>>,
+    /// The file context menu closed itself (outside press, Escape or a row).
+    pub on_file_menu_close: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the sidebar conversation list between "a few cards" and the full,
     /// scrollable list.
     pub on_toggle_conversations_expanded: Rc<RefCell<dyn FnMut()>>,
@@ -383,9 +391,9 @@ pub struct UiActions {
     /// windows (DSH's "Open in floating panel"). The file pane opens first, so
     /// the window the gesture is about is the one on top.
     pub on_open_file_floating: Rc<RefCell<dyn FnMut(String)>>,
-    /// Toggle the active space between its docked BSP layout and the floating
-    /// one, without touching the panes it holds.
-    pub on_toggle_float_layout: Rc<RefCell<dyn FnMut()>>,
+    /// Dock one window floated over the active space's layout: the float goes
+    /// away and the pane returns to the layout it was opened over.
+    pub on_dock_float: Rc<RefCell<dyn FnMut(u64)>>,
     /// Per-pane review view choices, shared with the element tree so unified /
     /// split, wrapping, folded directories and the selector survive the
     /// per-frame rebuild.

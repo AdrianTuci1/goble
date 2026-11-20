@@ -1,9 +1,11 @@
-//! Settings → Hosts: the saved hosts `hosts.toml` records, plus the read-only
-//! view of what `~/.ssh/config` already knows.
+//! Settings → Conversations: the conversation list is the sidebar's job, while
+//! the saved SSH bindings this page edits are in `hosts.toml`.
 //!
 //! A saved host is a name → target binding the app can open a pane on; the SSH
-//! section is read-only because goble never writes the user's `~/.ssh` (the
-//! existing product rule). Nothing on this page reads key material.
+//! config rows are read-only because goble never writes the user's `~/.ssh`
+//! (the existing product rule). Saved hosts and `~/.ssh/config` hosts are
+//! both SSH host bindings, so they live together under one clearly labelled
+//! "SSH hosts" section. Nothing on this page reads key material.
 
 use goble_core::config::{ConfigFile, HostView};
 
@@ -14,25 +16,52 @@ use super::{add_action, problem_section, unavailable_row};
 pub fn page(state: &SettingsUiState) -> PageModel {
     let mut sections = Vec::new();
     sections.push(
-        SectionModel::new("conversations", "Conversations").with_row(
-            RowModel::new(
-                "conversations.source",
-                "Saved conversations",
-                "Conversations are listed in the sidebar; SSH host bindings are managed below.",
+        SectionModel::new("conversations", "Conversations")
+            .with_description(
+                "Conversations open in panes and are listed in the sidebar; this page holds their SSH host bindings below.",
             )
-            .read_only("Sidebar")
-            .with_status(StatusKind::Muted, "Managed from the sidebar"),
-        ),
+            .with_row(
+                RowModel::new(
+                    "conversations.source",
+                    "Conversation list",
+                    "New, open, rename, star and archive conversations from the sidebar.",
+                )
+                .read_only("Sidebar")
+                .with_status(StatusKind::Muted, "Managed from the sidebar"),
+            )
+            .with_row(
+                RowModel::new(
+                    "conversations.organize",
+                    "Conversation organization",
+                    "Groups, starred conversations and archived conversations follow the sidebar's project grouping.",
+                )
+                .read_only("Sidebar")
+                .with_status(StatusKind::Muted, "Managed from the sidebar"),
+            ),
     );
     if let Some(problems) = problem_section(state, ConfigFile::Hosts) {
         sections.push(problems);
     }
+
     let hosts = state.saved_hosts().to_vec();
     let mut rows: Vec<RowModel> = Vec::new();
+    rows.push(
+        RowModel::new(
+            "saved-hosts",
+            "Saved hosts",
+            "Bindings recorded in hosts.toml; the file is the source of truth.",
+        )
+        .read_only(if hosts.is_empty() {
+            "none".to_string()
+        } else {
+            format!("{} saved", hosts.len())
+        })
+        .with_status(StatusKind::Muted, "Add or edit them in this section."),
+    );
     for host in &hosts {
         rows.push(host_row(state, host));
     }
-    if rows.is_empty() {
+    if hosts.is_empty() {
         rows.push(
             RowModel::new(
                 "hosts-empty",
@@ -45,14 +74,17 @@ pub fn page(state: &SettingsUiState) -> PageModel {
             ),
         );
     }
-    sections.push(
-        SectionModel::new("saved-hosts", "Saved hosts")
-            .with_description("Recorded in hosts.toml; the file is the source of truth.")
-            .with_header_action(add_action("Add host", SettingsAction::NewHost))
-            .with_rows(rows),
-    );
 
     // ~/.ssh/config is read, never written.
+    rows.push(
+        RowModel::new(
+            "ssh-config",
+            "SSH config",
+            "Read from ~/.ssh/config; Goble never writes this file.",
+        )
+        .read_only("~/.ssh/config")
+        .with_status(StatusKind::Muted, "Read-only"),
+    );
     let mut ssh_rows: Vec<RowModel> = Vec::new();
     if let Some(ssh) = state.ssh_hosts.as_ref() {
         for host in &ssh.hosts {
@@ -76,13 +108,17 @@ pub fn page(state: &SettingsUiState) -> PageModel {
             .with_status(StatusKind::Muted, "Read-only; Goble never writes ~/.ssh."),
         );
     }
+    rows.extend(ssh_rows);
     sections.push(
-        SectionModel::new("ssh", "SSH config")
-            .with_description("Read from ~/.ssh/config. Read-only: Goble never writes this file.")
-            .with_rows(ssh_rows),
+        SectionModel::new("ssh-hosts", "SSH hosts")
+            .with_description(
+                "Saved host bindings from hosts.toml plus the read-only hosts in ~/.ssh/config. Goble never writes ~/.ssh.",
+            )
+            .with_header_action(add_action("Add host", SettingsAction::NewHost))
+            .with_rows(rows),
     );
     sections.push(
-        SectionModel::new("hosts-unavailable", "Not in this build")
+        SectionModel::new("hosts-unavailable", "SSH options not in this build")
             .with_row(unavailable_row(
                 "ssh-keys",
                 "Manage SSH keys",

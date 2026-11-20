@@ -76,6 +76,9 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // dashboard leaves the view and the active pane stays visible — the
     // DeepSeek Harness rule that the centre column never gives up its minimum.
     let dashboard_shown = state.agent_dashboard.open && !state.responsive.secondary_hidden;
+    let side_split = state.right_sidebar_open
+        && !state.side_panel_maximized
+        && !state.responsive.secondary_hidden;
     let main: Box<dyn Element> = if dashboard_shown {
         agent_dashboard::build_agent_dashboard(app, state, actions)
     } else {
@@ -94,7 +97,25 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             // container, so no dark strip is left anywhere around the panes.
             // The tab slots tile the padded area, so every pane keeps its own
             // gutter geometry relative to its slot.
-            let panels = Padding::new(main, EdgeInsets::uniform(panes::PANE_AREA_INSET)).finish();
+            let insets = if side_split {
+                // The side panel shares this half's right edge, so the pane
+                // area spends no `PANE_AREA_INSET` there. The pane card inside
+                // also spends its own `PANE_INSET` on every side; pulling the
+                // right inset negative by that gutter and one border width
+                // cancels it and carries the card's right border just under the
+                // panel's left border. The two borders are then one shared line
+                // with no gutter, while the card's left gutter
+                // (`PANE_AREA_INSET + PANE_INSET`) stays unchanged.
+                EdgeInsets::new(
+                    panes::PANE_AREA_INSET,
+                    panes::PANE_AREA_INSET,
+                    -(panes::PANE_INSET + 1.0),
+                    panes::PANE_AREA_INSET,
+                )
+            } else {
+                EdgeInsets::uniform(panes::PANE_AREA_INSET)
+            };
+            let panels = Padding::new(main, insets).finish();
             Container::new(panels)
                 .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
                 .finish()
@@ -122,6 +143,9 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // split whatever width the sidebar leaves 50/50. The row has no spacing and
     // no outer padding or casing of its own — the two cards' own bordered,
     // rounded casings meet on the shared boundary with no gutter between them.
+    // While the panel is open the pane area's right inset is canceled (see
+    // above), so the main card's right border is on that same boundary: the
+    // frame shows one shared line, not a main line, a gutter, and a panel line.
     // Maximized, the side panel is the only content card. Below the secondary
     // breakpoint the panel leaves the view (the responsive layout's narrow
     // step) and the main card takes the whole content width. The row itself
@@ -134,7 +158,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
             .with_corner_radius(12.0)
             .finish();
-        if state.right_sidebar_open && !state.responsive.secondary_hidden {
+        if side_split {
             let panel = chrome::build_side_panel(app, state, actions);
             Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
@@ -2363,5 +2387,66 @@ mod tests {
         }
         let after = state.borrow().spaces[state.borrow().active_space].root.leaf_count();
         assert_eq!(after, before + 1, "Split right splits the focused pane");
+    }
+
+    /// The side panel's half and the main half meet on one boundary: the main
+    /// pane card fills its half edge-to-edge on the right, so its border and the
+    /// side panel's left border are the same line instead of two lines with a
+    /// pane-area gutter between them. The sidebar↔content inset on the left is
+    /// untouched, and the two halves stay equal.
+    #[test]
+    fn the_open_side_panel_shares_the_main_cards_right_edge() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let size = vec2f(1024.0, 768.0);
+
+        let _ = render_element(&mut root, size, &app);
+        let closed = pane_frames(&state);
+        assert_eq!(closed.len(), 1, "the chat pane fills the main area");
+
+        state.borrow_mut().right_sidebar_open = true;
+        let commands = render_element(&mut root, size, &app);
+        let open = pane_frames(&state);
+        assert_eq!(
+            open.len(),
+            1,
+            "the chat pane stays visible beside the panel"
+        );
+
+        // The left edge keeps the normal sidebar↔content inset while the right
+        // edge reaches the card's half boundary, where the panel begins.
+        assert!(
+            (open[0].min_x() - closed[0].min_x()).abs() < 0.01,
+            "the left inset is unchanged: {:?} -> {:?}",
+            closed[0],
+            open[0]
+        );
+        // The two rounded casings are the two halves: equal widths, touching on
+        // one boundary, with the pane card's right border on that same line.
+        let mut casings: Vec<RectF> = rules(&commands, &app)
+            .into_iter()
+            .filter(|(rect, _, radius)| {
+                (*radius - 12.0).abs() < 0.01 && rect.height() > size.y / 2.0
+            })
+            .map(|(rect, _, _)| rect)
+            .collect();
+        casings.sort_by(|a, b| a.min_x().total_cmp(&b.min_x()));
+        assert_eq!(casings.len(), 2, "the main and side casings: {casings:?}");
+        assert!(
+            (casings[0].width() - casings[1].width()).abs() < 0.01,
+            "the halves stay equal: {casings:?}"
+        );
+        assert!(
+            (casings[0].max_x() - casings[1].min_x()).abs() < 0.01,
+            "the casings meet without a gutter: {casings:?}"
+        );
+        let overlap = open[0].max_x() - casings[1].min_x();
+        assert!(
+            (0.0..=1.01).contains(&overlap),
+            "the main card reaches just under the panel's left border (one shared \
+             line, no gutter): {:?} vs {:?}",
+            open[0],
+            casings[1]
+        );
     }
 }

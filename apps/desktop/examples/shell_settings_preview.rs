@@ -16,6 +16,7 @@ use goble_core::store::Store;
 use goble_desktop_service::{DesktopState, ThreadStore};
 use goble_ui::elements::{AppContext, Element, EventContext};
 use goble_ui::event::DispatchedEvent;
+use goble_ui::geometry::{rectf, RectF};
 use goble_ui::render::RenderCommand;
 use goble_ui::theme::Theme;
 use goble_ui::{vec2f, ChatFragment, ChatMessage, ChatRole};
@@ -40,6 +41,100 @@ fn seed(state: &mut UiState, desktop: &DesktopState) {
         ),
     ];
     state.refresh_settings(desktop);
+}
+
+/// The painted extent of one command, used to decide which commands a menu's
+/// surface owns. Commands that only change clip state have no extent of their
+/// own and are treated as part of the run they sit in.
+fn command_bounds(command: &RenderCommand) -> Option<RectF> {
+    match command {
+        RenderCommand::FillRect { rect, .. }
+        | RenderCommand::FillRectFadeRight { rect, .. }
+        | RenderCommand::StrokeRect { rect, .. }
+        | RenderCommand::DrawImage { rect, .. }
+        | RenderCommand::ClipRect(rect) => Some(*rect),
+        RenderCommand::PopClip => None,
+        RenderCommand::DrawText {
+            origin,
+            text,
+            font_size,
+            max_width,
+            line_height,
+            ..
+        } => {
+            // `max_width` is the layout budget, not the glyph extent: the
+            // shortcut cells pass a budget wider than the panel, so using it
+            // would end the menu's run inside its first row. Estimate the
+            // painted width instead, capped by the budget when one is set.
+            let budget = if max_width.is_finite() && *max_width > 0.0 {
+                *max_width
+            } else {
+                f32::INFINITY
+            };
+            let width = (font_size * 0.7 * text.chars().count() as f32).min(budget);
+            let height = font_size * line_height.max(1.0);
+            Some(rectf(origin.x, origin.y, width.max(1.0), height.max(1.0)))
+        }
+        RenderCommand::DrawIcon { origin, size, .. } => {
+            Some(rectf(origin.x, origin.y, *size, *size))
+        }
+    }
+}
+
+/// Paints the open More menu above the chrome/body that otherwise cover it.
+///
+/// A popup's panel is painted in tree order, inside the topbar, so later
+/// commands (the pane body, the sidebar, the window border) paint over it. The
+/// open-menu registry already knows the rectangle the menu's own last-layer
+/// paint reported; collect the contiguous run of commands painted inside that
+/// surface, starting after the trigger, and move just that run to the end of
+/// the command list before rasterizing. Everything else keeps its paint order,
+/// so only the menu is lifted.
+fn lift_open_menu_commands(
+    commands: Vec<RenderCommand>,
+    surfaces: &[RectF],
+    trigger: Option<usize>,
+) -> Vec<RenderCommand> {
+    if surfaces.is_empty() {
+        return commands;
+    }
+    let inside = |command: &RenderCommand| match command_bounds(command) {
+        Some(bounds) => surfaces
+            .iter()
+            .any(|surface| surface.contains_rect(&bounds)),
+        None => true,
+    };
+
+    // The menu's commands are a contiguous run; the popup paints its panel
+    // immediately after its trigger. Prefer that run, falling back to the
+    // longest run if the trigger index moved.
+    let mut runs = Vec::new();
+    let mut index = 0;
+    while index < commands.len() {
+        if inside(&commands[index]) {
+            let start = index;
+            while index < commands.len() && inside(&commands[index]) {
+                index += 1;
+            }
+            if index - start >= 2 {
+                runs.push((start, index));
+            }
+        } else {
+            index += 1;
+        }
+    }
+    let run = trigger
+        .and_then(|trigger| runs.iter().copied().find(|(start, _)| *start > trigger))
+        .or_else(|| runs.iter().copied().max_by_key(|(start, end)| end - start));
+    let Some((start, end)) = run else {
+        return commands;
+    };
+
+    let mut lifted = Vec::with_capacity(commands.len());
+    lifted.extend_from_slice(&commands[..start]);
+    lifted.extend_from_slice(&commands[end..]);
+    lifted.extend_from_slice(&commands[start..end]);
+    lifted
 }
 
 fn main() -> anyhow::Result<()> {
@@ -79,9 +174,6 @@ fn main() -> anyhow::Result<()> {
                 s.settings_overlay_open = settings;
                 s.settings.page = page;
                 s.settings_overlay_wide = size.x >= 900.0;
-                if name == "panel-more" {
-                    *s.chrome_more_open.borrow_mut() = true;
-                }
                 if name == "side-panel" {
                     s.right_sidebar_open = true;
                 }
@@ -112,10 +204,16 @@ fn main() -> anyhow::Result<()> {
                 &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
             );
             if name == "panel-more" {
-                let commands = raster::render_commands(&mut root, size, &app);
-                if let Some(trigger) = commands.iter().find_map(|command| match command {
-                    RenderCommand::DrawIcon { origin, name, size, .. } if name == "ellipsis" => {
-                        Some(*origin + goble_ui::geometry::vec2f(*size / 2.0, *size / 2.0))
+                let closed = raster::render_commands(&mut root, size, &app);
+                let trigger = closed.iter().position(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::DrawIcon { name, .. } if name == "ellipsis"
+                    )
+                });
+                if let Some(trigger) = trigger.and_then(|index| match &closed[index] {
+                    RenderCommand::DrawIcon { origin, size, .. } => {
+                        Some(*origin + vec2f(*size / 2.0, *size / 2.0))
                     }
                     _ => None,
                 }) {
@@ -127,10 +225,22 @@ fn main() -> anyhow::Result<()> {
                         let _ = root.dispatch_event(&event, &mut ctx, &app);
                     }
                 }
+                // A failed synthetic click still opens the product menu; the
+                // point is the frame, not the pointer.
+                if !*state.borrow().chrome_more_open.borrow() {
+                    *state.borrow().chrome_more_open.borrow_mut() = true;
+                }
+                let commands = raster::render_commands(&mut root, size, &app);
+                let surfaces = app.open_menus.surfaces();
+                let commands = lift_open_menu_commands(commands, &surfaces, trigger);
+                raster::rasterize_to_png(
+                    &assets, &app, &commands, size, 2.0, None, &path,
+                )?;
+            } else {
+                raster::render_element_to_png(
+                    &assets, &app, &mut root, size.x, size.y, 2.0, None, &path,
+                )?;
             }
-            raster::render_element_to_png(
-                &assets, &app, &mut root, size.x, size.y, 2.0, None, &path,
-            )?;
             println!("wrote {}", path.display());
         }
     }

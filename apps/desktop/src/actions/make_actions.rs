@@ -16,8 +16,8 @@ use goble_ui::{ChatMessage, ChatRole};
 
 use crate::media::MediaState;
 use crate::state::{
-    default_pane_path, routing_to_str, DiffGitResult, InboxKind, SpaceMenu, SpacePressRun, UiState,
-    MULTI_CLICK_INTERVAL_MS, NEW_CONVERSATION_TITLE,
+    default_pane_path, routing_to_str, DiffGitResult, InboxKind, SideTabAction, SpaceMenu,
+    SpacePressRun, UiState, MULTI_CLICK_INTERVAL_MS, NEW_CONVERSATION_TITLE,
 };
 use crate::terminal::{classify_input, InputClass};
 use crate::ui::color_picker::ColorTarget;
@@ -360,6 +360,7 @@ pub fn make_actions(
     let on_settings = Rc::clone(&state);
     let on_close_settings_overlay = Rc::clone(&state);
     let on_toggle_side_panel_maximized = Rc::clone(&state);
+    let on_side_tab = Rc::clone(&state);
     let on_inbox = Rc::clone(&state);
     let on_close_inbox = Rc::clone(&state);
     let on_inbox_move = Rc::clone(&state);
@@ -2601,6 +2602,19 @@ pub fn make_actions(
             let mut state = on_toggle_side_panel_maximized.borrow_mut();
             state.side_panel_maximized = !state.side_panel_maximized;
         })),
+        // The side panel's tab strip. Selecting, closing, adding and the
+        // horizontal swipe all land here; the state machine keeps the strip
+        // non-empty and the selection in range.
+        on_side_tab: Rc::new(RefCell::new(move |action: SideTabAction| {
+            let mut state = on_side_tab.borrow_mut();
+            state.ensure_side_tabs();
+            match action {
+                SideTabAction::Select(index) => state.select_side_tab(index),
+                SideTabAction::Close(index) => state.close_side_tab(index),
+                SideTabAction::Add(kind) => state.add_side_tab(kind),
+                SideTabAction::Cycle(step) => state.cycle_side_tab(step),
+            }
+        })),
         on_onboarding: action_onboarding.clone(),
         // The settings tab's one dispatch. Every page row, field commit, dialog
         // and key gesture goes through it; `settings_actions.rs` is the single
@@ -2733,6 +2747,11 @@ pub fn make_actions(
         on_toggle_right_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_right_sidebar.borrow_mut();
             state.right_sidebar_open = !state.right_sidebar_open;
+            // Opening the panel lands on Overview, the surface the default
+            // opens on, whichever tab was showing when it was collapsed.
+            if state.right_sidebar_open {
+                state.open_side_panel();
+            }
         })),
         // Toggle the agent/window borderless fullscreen. The fullscreen flag is
         // app-owned so it survives the per-frame rebuild; the platform window

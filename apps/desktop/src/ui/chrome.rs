@@ -16,7 +16,11 @@ use goble_ui::geometry::vec2f;
 use goble_ui::platform::text_atlas::FontWeight;
 use goble_ui::theme::ColorToken;
 
-use crate::ui::{DiffPanelAction, SidebarView, UiActions, UiSnapshot};
+use crate::state::{SideTabAction, SideTabKind};
+use crate::ui::{DiffPanelAction, PaneKind, SidebarView, UiActions, UiSnapshot};
+
+#[path = "side_tabs.rs"]
+mod side_tabs;
 
 /// The strip's height: the one row the window's chrome occupies.
 pub const CHROME_HEIGHT: f32 = 48.0;
@@ -51,9 +55,6 @@ const MAIN_SECTION_LEFT_PADDING: f32 = 16.0;
 const MAIN_SECTION_RIGHT_PADDING: f32 = 12.0;
 /// The side-panel section's inset on both sides.
 const SIDE_SECTION_PADDING: f32 = 12.0;
-/// A side-panel tab's glyph and label sizes.
-const TAB_ICON_SIZE: f32 = 14.0;
-const TAB_FONT_SIZE: f32 = 12.5;
 
 /// The room the window controls take at the strip's leading edge. On macOS the
 /// OS draws the real traffic lights over this strip, so the whole band stays
@@ -276,7 +277,7 @@ pub fn build_chrome_row(
         .with_child(Expanded::new(main_section).finish());
     if panel_open {
         let maximized = state.side_panel_maximized;
-        let side_tabs = side_panel_tabs(app, state);
+        let side_tabs = side_tabs::build_tab_strip(app, state, actions);
         let on_max = actions.on_toggle_side_panel_maximized.clone();
         let on_close = actions.on_toggle_right_sidebar.clone();
         let side_section = Flex::row()
@@ -284,7 +285,7 @@ pub fn build_chrome_row(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(CONTROL_SPACING)
             .with_child(Expanded::new(side_tabs).finish())
-            .with_child(button(app, "plus", "Add tab"))
+            .with_child(side_tab_add_menu(app, state, actions))
             .with_child(button_click(
                 app,
                 if maximized {
@@ -425,75 +426,36 @@ fn active_conversation_name(state: &UiSnapshot) -> String {
         .unwrap_or_else(|| "New Agent".to_string())
 }
 
-/// The side-panel section's tabs: DSH's new-side-question chip, at most one real
-/// work tab (the active pane's own unfinished background task), and the shell
-/// tab. No label is invented when the pane has no work item.
-fn side_panel_tabs(app: &AppContext, state: &UiSnapshot) -> Box<dyn Element> {
-    let task = state
-        .pane_live_work
-        .get(&state.active_pane_id)
-        .and_then(|items| {
-            items.iter().find(|item| {
-                item.kind == crate::state::PaneWorkKind::Task
-                    && !item.description.trim().is_empty()
-            })
-        })
-        .map(|item| item.description.clone());
-    let mut tabs = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.0)
-        .with_child(side_panel_tab(
-            app,
-            "message-plus-square",
-            "New Side Question",
-            task.is_none(),
-        ));
-    if let Some(task) = task {
-        tabs = tabs.with_child(side_panel_tab(
-            app,
-            "terminal-input",
-            &truncate_label(&task, 28),
-            true,
-        ));
-    }
-    tabs = tabs.with_child(side_panel_tab(app, "terminal", "zsh", false));
-    tabs.finish()
-}
-
-/// One side-panel tab chip: icon plus a single-line label, selected when it is
-/// the surface the panel currently shows.
-fn side_panel_tab(
+/// The side-panel section's "+": a popup menu that appends one of the active
+/// pane's surfaces to the tab strip. Selecting a kind that is already a tab
+/// shows that tab instead of stacking a duplicate.
+fn side_tab_add_menu(
     app: &AppContext,
-    icon: &'static str,
-    label: &str,
-    selected: bool,
+    state: &UiSnapshot,
+    actions: &UiActions,
 ) -> Box<dyn Element> {
-    let token = if selected {
-        ColorToken::Text
-    } else {
-        ColorToken::Muted
-    };
-    let content = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.0)
-        .with_child(
-            Icon::new(icon)
-                .with_size(TAB_ICON_SIZE)
-                .with_theme_color(token, app)
-                .finish(),
-        )
-        .with_child(
-            Text::new(label)
-                .with_font_size(TAB_FONT_SIZE)
-                .with_theme_color(token, app)
-                .with_max_lines(1)
-                .finish(),
-        )
-        .finish();
-    HoverRow::new(content)
-        .with_selected(selected)
-        .with_padding(EdgeInsets::new(9.0, 6.0, 9.0, 6.0))
-        .with_corner_radius(8.0)
+    let on_add = actions.on_side_tab.clone();
+    let items = vec![
+        PopupMenuItem::new(SideTabKind::Agent.title()).with_icon(SideTabKind::Agent.icon()),
+        PopupMenuItem::new(SideTabKind::Files.title()).with_icon(SideTabKind::Files.icon()),
+        PopupMenuItem::new(SideTabKind::Terminal.title()).with_icon(SideTabKind::Terminal.icon()),
+        PopupMenuItem::new(SideTabKind::TaskOutput.title())
+            .with_icon(SideTabKind::TaskOutput.icon()),
+    ];
+    PopupMenu::new(button(app, "plus", "Add tab"), items)
+        .with_open(state.side_tab_add_menu_open.clone())
+        .with_position(PopupMenuPosition::BelowEnd)
+        .with_max_width(200.0)
+        .with_on_select(move |index| {
+            let kind = match index {
+                0 => SideTabKind::Agent,
+                1 => SideTabKind::Files,
+                2 => SideTabKind::Terminal,
+                3 => SideTabKind::TaskOutput,
+                _ => return,
+            };
+            (on_add.borrow_mut())(SideTabAction::Add(kind));
+        })
         .finish()
 }
 
@@ -515,7 +477,12 @@ pub fn build_side_panel(
     state: &UiSnapshot,
     actions: &UiActions,
 ) -> Box<dyn Element> {
-    let pane = state.pane_chat.get(&state.active_pane_id);
+    let active = state.active_pane_id;
+    let kind = state
+        .side_tabs
+        .get(state.active_side_tab)
+        .copied()
+        .unwrap_or(SideTabKind::Overview);
     let on_max = actions.on_toggle_side_panel_maximized.clone();
     let on_close = actions.on_toggle_right_sidebar.clone();
     let header = Flex::row()
@@ -523,7 +490,7 @@ pub fn build_side_panel(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(4.0)
         .with_child(
-            Text::new("Overview")
+            Text::new(kind.title())
                 .with_font_size(13.0)
                 .with_weight(FontWeight::Medium)
                 .with_theme_color(ColorToken::Text, app)
@@ -551,6 +518,79 @@ pub fn build_side_panel(
         )
         .finish();
 
+    // Every tab draws the active pane's own surface. Overview keeps the
+    // original search/actions/subagent/task body; the others mount the real
+    // pane views rather than a second, static overview.
+    let content: Box<dyn Element> = match kind {
+        SideTabKind::Overview => build_overview_content(app, state, actions),
+        SideTabKind::Agent => crate::ui::chat::build_agent_chat(
+            app, state, actions, active, true, false, None,
+        ),
+        SideTabKind::Terminal => {
+            let cwd = state
+                .pane_chat
+                .get(&active)
+                .map(|pane| pane.composer_path.clone())
+                .filter(|cwd| !cwd.trim().is_empty())
+                .unwrap_or_else(|| state.composer_path.clone());
+            crate::ui::terminal::build_terminal_dock(app, state, actions, active, cwd, true)
+        }
+        SideTabKind::Files => {
+            let path = state
+                .spaces
+                .get(state.active_space)
+                .and_then(|space| space.leaf_kind(active))
+                .and_then(|kind| match kind {
+                    PaneKind::File { path } => Some(path.clone()),
+                    _ => None,
+                });
+            match (state.pane_files.contains_key(&active), path) {
+                (true, Some(path)) => {
+                    crate::ui::file_view::build_file_view(app, state, actions, active, &path)
+                }
+                // No file is open in the active pane: say so instead of
+                // drawing a view of a file that is not there.
+                _ => side_tabs::no_file_message(app),
+            }
+        }
+        SideTabKind::TaskOutput => Scrollable::new(
+            side_tabs::build_task_output(app, state),
+            goble_ui::elements::Axis::Vertical,
+        )
+        .finish(),
+    };
+    // A horizontal swipe on the content steps the strip; vertical travel goes
+    // to the mounted surface unchanged.
+    let content = side_tabs::swipe_content(
+        content,
+        actions.on_side_tab.clone(),
+        state.side_swipe_accum.clone(),
+    );
+
+    let body = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(10.0)
+        .with_child(header)
+        .with_child(Expanded::new(content).finish())
+        .finish();
+    Container::new(body)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+        .with_corner_radius(12.0)
+        .with_padding(EdgeInsets::new(12.0, 12.0, 12.0, 12.0))
+        .finish()
+}
+
+/// The Overview tab's original body: search over conversations, commands and
+/// files, the active pane's real actions, then its sub-agents and background
+/// tasks. Scrolled by its own viewport inside the panel.
+fn build_overview_content(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let pane = state.pane_chat.get(&state.active_pane_id);
     let on_search_change = actions.on_global_search_change.clone();
     let on_search_focus = actions.on_global_search_focus_change.clone();
     let search = SearchInput::new()
@@ -802,7 +842,6 @@ pub fn build_side_panel(
     let body = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(10.0)
-        .with_child(header)
         .with_child(search)
         .with_child(results.finish())
         .with_child(rows.finish())
@@ -812,12 +851,7 @@ pub fn build_side_panel(
                 .finish(),
         )
         .finish();
-    Container::new(Scrollable::new(body, goble_ui::elements::Axis::Vertical).finish())
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-        .with_corner_radius(12.0)
-        .with_padding(EdgeInsets::new(12.0, 12.0, 12.0, 12.0))
-        .finish()
+    Scrollable::new(body, goble_ui::elements::Axis::Vertical).finish()
 }
 
 fn panel_row(

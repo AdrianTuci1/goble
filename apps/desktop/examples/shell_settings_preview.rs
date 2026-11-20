@@ -176,6 +176,13 @@ fn main() -> anyhow::Result<()> {
                 s.settings_overlay_wide = size.x >= 900.0;
                 if name == "side-panel" {
                     s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Overview,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Terminal,
+                        goble_app::state::SideTabKind::Files,
+                    ];
+                    s.active_side_tab = 0;
                 }
                 if name == "overview" {
                     s.right_sidebar_open = true;
@@ -183,6 +190,13 @@ fn main() -> anyhow::Result<()> {
                 if name == "side-panel-max" {
                     s.right_sidebar_open = true;
                     s.side_panel_maximized = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Overview,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Terminal,
+                        goble_app::state::SideTabKind::Files,
+                    ];
+                    s.active_side_tab = 0;
                 }
                 if name == "terminal-dock" {
                     let pane = s.active_pane_id;

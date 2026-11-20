@@ -3,6 +3,97 @@ use super::title::deterministic_subject;
 use super::*;
 
 impl UiState {
+    /// Keep the side panel's tab list and selection usable. The list is never
+    /// empty — closing the last tab brings Overview back — and an active index
+    /// left out of range (a test fixture, a stale layout) falls back to the
+    /// first tab instead of drawing nothing.
+    pub fn ensure_side_tabs(&mut self) {
+        if self.side_tabs.is_empty() {
+            self.side_tabs.push(SideTabKind::Overview);
+        }
+        if self.active_side_tab >= self.side_tabs.len() {
+            self.active_side_tab = 0;
+        }
+    }
+
+    /// The tab the side panel is showing. Overview is the fallback, so the
+    /// panel has a surface even before the first [`Self::ensure_side_tabs`].
+    pub fn active_side_tab_kind(&self) -> SideTabKind {
+        self.side_tabs
+            .get(self.active_side_tab)
+            .copied()
+            .unwrap_or(SideTabKind::Overview)
+    }
+
+    /// The side panel was opened: show Overview. The tab list keeps whatever
+    /// tabs were there, with Overview present and selected, so opening the
+    /// panel always lands on the surface the default opens on.
+    pub fn open_side_panel(&mut self) {
+        match self
+            .side_tabs
+            .iter()
+            .position(|kind| *kind == SideTabKind::Overview)
+        {
+            Some(index) => self.active_side_tab = index,
+            None => {
+                self.side_tabs.insert(0, SideTabKind::Overview);
+                self.active_side_tab = 0;
+            }
+        }
+    }
+
+    /// Make the tab at `index` the panel's surface. An index outside the strip
+    /// is ignored rather than selecting a tab that is not there.
+    pub fn select_side_tab(&mut self, index: usize) {
+        if index < self.side_tabs.len() {
+            self.active_side_tab = index;
+        }
+    }
+
+    /// Add a tab kind, or show it when it is already in the strip: one tab per
+    /// kind, so the "+" menu never stacks duplicates of the same pane view.
+    pub fn add_side_tab(&mut self, kind: SideTabKind) {
+        match self.side_tabs.iter().position(|tab| *tab == kind) {
+            Some(index) => self.active_side_tab = index,
+            None => {
+                self.side_tabs.push(kind);
+                self.active_side_tab = self.side_tabs.len() - 1;
+            }
+        }
+    }
+
+    /// Close the tab at `index`. Closing the active tab selects its neighbour —
+    /// the next one when there is one, the previous one otherwise — and closing
+    /// the last tab brings Overview back, so the panel always has a surface.
+    pub fn close_side_tab(&mut self, index: usize) {
+        if index >= self.side_tabs.len() {
+            return;
+        }
+        self.side_tabs.remove(index);
+        if self.side_tabs.is_empty() {
+            self.side_tabs.push(SideTabKind::Overview);
+            self.active_side_tab = 0;
+            return;
+        }
+        if index < self.active_side_tab {
+            self.active_side_tab -= 1;
+        } else if index == self.active_side_tab {
+            self.active_side_tab = index.min(self.side_tabs.len() - 1);
+        }
+    }
+
+    /// Move the selection by `step` tabs, wrapping at both ends. A horizontal
+    /// swipe on the panel sends one step per completed gesture, so a swipe past
+    /// the last tab returns to the first.
+    pub fn cycle_side_tab(&mut self, step: i32) {
+        self.ensure_side_tabs();
+        let len = self.side_tabs.len();
+        if len <= 1 || step == 0 {
+            return;
+        }
+        self.active_side_tab = (self.active_side_tab as i32 + step).rem_euclid(len as i32) as usize;
+    }
+
     /// Take the search the worker has finished, when it answered the newest
     /// query. Called once per frame, so a result appears as soon as the walk
     /// behind it lands — whichever pane's directory the user has moved to.
@@ -225,6 +316,10 @@ impl UiState {
             chrome_overview_open: Rc::new(RefCell::new(false)),
             chrome_more_open: Rc::new(RefCell::new(false)),
             side_panel_maximized: false,
+            side_tabs: vec![SideTabKind::Overview],
+            active_side_tab: 0,
+            side_tab_add_menu_open: Rc::new(RefCell::new(false)),
+            side_swipe_accum: Rc::new(RefCell::new(0.0)),
             send_immediately: false,
             ssh_reconnect_prompt: None,
             floating_drag: Rc::new(RefCell::new(None)),

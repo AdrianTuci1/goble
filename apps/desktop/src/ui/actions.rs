@@ -11,6 +11,7 @@ use super::tab_menu::TabMenuAction;
 use super::types::{
     AppTab, ArchivedFilter, OnboardingAction, SettingsCategory, SidebarView, WorkspaceRouting,
 };
+use crate::state::SideTabAction;
 
 /// Start a floating pane drag: the pane, the mode, the pointer where the press
 /// landed, and the space's pane area in pixels.
@@ -285,6 +286,9 @@ pub struct UiActions {
     pub on_close_settings_overlay: Rc<RefCell<dyn FnMut()>>,
     /// Maximize the right overview panel over the main pane, or restore it.
     pub on_toggle_side_panel_maximized: Rc<RefCell<dyn FnMut()>>,
+    /// One interaction in the right side panel's tab strip: select, close, add
+    /// or cycle a tab. The app state machine keeps the strip and its selection.
+    pub on_side_tab: Rc<RefCell<dyn FnMut(SideTabAction)>>,
     /// The settings tab's one dispatch: every rail row, control, field commit,
     /// dialog button and keyboard gesture the surface makes. The handler in
     /// `actions/settings_actions.rs` is the single call site for the

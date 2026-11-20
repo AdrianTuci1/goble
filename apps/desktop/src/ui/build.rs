@@ -617,7 +617,8 @@ mod tests {
     use goble_ui::test_util::render_element;
 
     use crate::root_view::RootView;
-    use crate::state::{PaneSession, UiState};
+    use crate::state::{PaneSession, SideTabKind, UiState};
+    use goble_core::harness::ToolCallStatus;
     use crate::ui::{Pane, PaneKind, Space, SplitDir};
     use goble_ui::elements::{lane_column, resolve_content_width, LaneEdge};
 
@@ -2449,4 +2450,124 @@ mod tests {
             casings[1]
         );
     }
+
+    /// The side panel's selected tab chooses the whole content area: Overview
+    /// keeps its search/rows, Task output lists the active pane's real work
+    /// descriptions, Files says honestly that no file is open, and Agent mounts
+    /// the pane chat instead of the overview.
+    #[test]
+    fn the_side_panel_content_follows_the_selected_tab() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![SideTabKind::Overview, SideTabKind::TaskOutput];
+            s.active_side_tab = 1;
+            // A live tool call is the pane's real work: the Task output tab
+            // reads it through `pane_live_work`, not from a fixture list.
+            let pane_id = s.active_pane_id;
+            let runtime = s.pane_runtime.get_mut(&pane_id).expect("the active pane runtime");
+            runtime.in_flight_tools.insert(
+                "call-read".to_string(),
+                goble_ui::ToolCall {
+                    id: "call-read".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"README.md"}"#.to_string(),
+                    status: ToolCallStatus::Running,
+                    result: None,
+                    diff: None,
+                },
+            );
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| *text == "Read README.md"),
+            "Task output lists the pane's real work: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| *text == "Search or enter a URL"),
+            "the overview search is not under Task output: {texts:?}"
+        );
+
+        {
+            let mut s = state.borrow_mut();
+            s.side_tabs.push(SideTabKind::Files);
+            s.active_side_tab = 2;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| *text == "Open a file from Explorer"),
+            "Files with no file says so: {texts:?}"
+        );
+        assert!(!texts.iter().any(|text| *text == "Search or enter a URL"));
+
+        {
+            let mut s = state.borrow_mut();
+            s.side_tabs.push(SideTabKind::Agent);
+            s.active_side_tab = 3;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.iter().any(|text| *text == "Search or enter a URL"),
+            "the Agent tab mounts the chat, not Overview: {texts:?}"
+        );
+        assert!(
+            texts.iter().filter(|text| **text == "Agent").count() >= 2,
+            "the strip chip and the panel header both name Agent: {texts:?}"
+        );
+    }
+
+    /// The side-panel chips are real controls: clicking Overview moves the
+    /// panel off the Agent tab it was showing.
+    #[test]
+    fn a_side_tab_chip_click_selects_that_tab() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.add_side_tab(SideTabKind::Agent);
+            s.add_side_tab(SideTabKind::Files);
+        }
+        assert_eq!(state.borrow().active_side_tab, 2);
+        let commands = render_element(&mut root, window(), &app);
+        let overview = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Overview" => {
+                    Some(*origin + vec2f(2.0, 4.0))
+                }
+                _ => None,
+            })
+            .expect("the Overview chip is drawn");
+        click(&mut root, &app, overview);
+        assert_eq!(
+            state.borrow().active_side_tab,
+            0,
+            "the chip click selects Overview"
+        );
+    }
+
 }

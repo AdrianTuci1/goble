@@ -96,6 +96,65 @@ pub struct SpaceMenu {
     pub at: goble_ui::Vector2F,
 }
 
+/// One tab in the right side panel. The panel opens on [`Overview`]; the "+"
+/// menu adds the other four, and each draws the active pane's own surface.
+///
+/// [`Overview`]: Self::Overview
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideTabKind {
+    /// The original panel: search, the pane's real actions, its sub-agents and
+    /// its background work.
+    Overview,
+    /// The active pane's agent chat, with its transcript and composer.
+    Agent,
+    /// The file the active pane shows, when that pane is a file view.
+    Files,
+    /// The active pane's live shell, in the panel instead of a pane leaf.
+    Terminal,
+    /// The active pane's live work items and their descriptions.
+    TaskOutput,
+}
+
+impl SideTabKind {
+    /// The title the tab chip and the panel header draw.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Agent => "Agent",
+            Self::Files => "Files",
+            Self::Terminal => "Terminal",
+            Self::TaskOutput => "Task output",
+        }
+    }
+
+    /// The tab chip's glyph.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Overview => "message-plus-square",
+            Self::Agent => "message-plus-square",
+            Self::Files => "file",
+            Self::Terminal => "terminal",
+            Self::TaskOutput => "terminal-input",
+        }
+    }
+}
+
+/// One interaction in the right side panel's tab strip. The strip is rebuilt
+/// every frame, so every callback sends a value here and the app state machine
+/// answers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideTabAction {
+    /// Make the tab at this index the panel's surface.
+    Select(usize),
+    /// Close the tab at this index, selecting a neighbour when it was active.
+    Close(usize),
+    /// Add this kind (or show it when it is already a tab).
+    Add(SideTabKind),
+    /// Move by this many tabs, wrapping at both ends. A horizontal swipe sends
+    /// `-1` (next) or `1` (previous).
+    Cycle(i32),
+}
+
 #[derive(Clone)]
 pub struct UiState {
     pub current_tab: AppTab,
@@ -614,6 +673,21 @@ pub struct UiState {
     pub chrome_more_open: Rc<RefCell<bool>>,
     /// Whether the right overview panel is maximized over the main pane.
     pub side_panel_maximized: bool,
+    /// The tabs the right side panel shows, in strip order. It always starts on
+    /// [`SideTabKind::Overview`]; the "+" menu appends the active pane's other
+    /// surfaces. The app machine keeps it non-empty (see
+    /// [`UiState::ensure_side_tabs`]).
+    pub side_tabs: Vec<SideTabKind>,
+    /// The index in [`Self::side_tabs`] the panel is showing. Kept in range by
+    /// the side-tab methods; a stale value falls back to Overview.
+    pub active_side_tab: usize,
+    /// Whether the side panel's "+" menu is open. Shared with the popup so its
+    /// open state survives the per-frame element rebuild.
+    pub side_tab_add_menu_open: Rc<RefCell<bool>>,
+    /// Horizontal swipe travel accumulated by the side panel's content wrapper
+    /// (in logical points). Owned here because the wrapper is rebuilt every
+    /// frame; one thresholded swipe moves exactly one tab.
+    pub side_swipe_accum: Rc<RefCell<f32>>,
     /// Send a prompt immediately while a turn runs instead of queueing it.
     pub send_immediately: bool,
     /// A saved host whose session just ended, offered for reconnect: the pane

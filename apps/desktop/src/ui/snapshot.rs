@@ -13,7 +13,7 @@ use goble_ui::ScrollState;
 
 use crate::state::{
     ArchiveConfirm, InboxItem, PaneAttach, PaneControls, PaneDrag, PaneWorkItem, Responsive,
-    SidebarRename, SidebarWorkspace, SidebarWorkspaceRename, SpaceMenu, ToastNotice,
+    SideTabKind, SidebarRename, SidebarWorkspace, SidebarWorkspaceRename, SpaceMenu, ToastNotice,
     WorkerPaneSession,
 };
 use crate::terminal::TerminalRegistry;
@@ -517,6 +517,13 @@ pub struct UiSnapshot {
     pub chrome_overview_open: Rc<RefCell<bool>>,
     pub chrome_more_open: Rc<RefCell<bool>>,
     pub side_panel_maximized: bool,
+    /// The right side panel's tabs, the selected one and whether its "+" menu
+    /// is open. The panel draws one of these surfaces in its content area.
+    pub side_tabs: Vec<SideTabKind>,
+    pub active_side_tab: usize,
+    pub side_tab_add_menu_open: Rc<RefCell<bool>>,
+    /// Horizontal swipe travel accumulated by the panel's content wrapper.
+    pub side_swipe_accum: Rc<RefCell<f32>>,
     /// The list's grouping: one flat list or one block per project.
     pub sidebar_flat_list: Rc<RefCell<bool>>,
     /// The list's order: most recent first, or the user's manual drag order.

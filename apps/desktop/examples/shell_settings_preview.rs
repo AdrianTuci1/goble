@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
                     s.right_sidebar_open = true;
                 }
                 if name == "overview" {
-                    *s.chrome_overview_open.borrow_mut() = true;
+                    s.right_sidebar_open = true;
                 }
                 if name == "terminal-dock" {
                     let pane = s.active_pane_id;

@@ -190,7 +190,6 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // wrap it in `Expanded`; otherwise the chat composer would be pushed past
     // the bottom edge of the window.
     shell_col = shell_col.with_child(chrome::build_chrome_row(app, state, actions));
-    shell_col = shell_col.with_child(Divider::horizontal().finish());
     shell_col = shell_col.with_child(Expanded::new(body).finish());
 
     let on_close_crons = actions.on_close_crons.clone();
@@ -2842,7 +2841,7 @@ mod tests {
 
     /// The Overview control opens the popover with its real rows and counts.
     #[test]
-    fn the_overview_control_opens_its_popover() {
+    fn the_overview_control_opens_the_side_tab() {
         let app = AppContext::default();
         let (mut root, _state, _dir) = app_root();
         let commands = render_element(&mut root, window(), &app);
@@ -2870,10 +2869,19 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for expected in ["Review", "Files", "Terminal", "Extensions", "Subagents 0", "Background Tasks 0"] {
+        for expected in [
+            "Overview",
+            "Search or enter a URL",
+            "Review",
+            "Open File",
+            "Terminal",
+            "Extensions",
+            "Subagents",
+            "Background Tasks",
+        ] {
             assert!(
                 texts.iter().any(|text| *text == expected),
-                "the Overview popover draws {expected:?}: {texts:?}"
+                "the Overview side tab draws {expected:?}: {texts:?}"
             );
         }
     }
@@ -2894,20 +2902,18 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("the frame draws {needle:?}"))
         };
-        assert!(y("General") < crate::ui::chrome::CHROME_HEIGHT);
-        let sidebar_new = commands
+        let title = commands
             .iter()
             .find_map(|command| match command {
                 RenderCommand::DrawText { text, origin, .. }
-                    if text == "New conversation" && origin.x < 250.0 =>
+                    if text == "New conversation" && origin.x > 250.0 =>
                 {
                     Some(origin.y)
                 }
                 _ => None,
             })
-            .expect("the sidebar starts with New conversation");
-        assert!(sidebar_new >= crate::ui::chrome::CHROME_HEIGHT - 1.0);
-
+            .expect("the chrome row names the conversation");
+        assert!(title < crate::ui::chrome::CHROME_HEIGHT);
         state.borrow_mut().right_sidebar_open = true;
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands

@@ -113,11 +113,6 @@ pub fn build_sidebar(
     // again, not the shell's page background.
     Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .with_border(
-            goble_ui::elements::Border::all(1.0)
-                .with_border_color(app.theme.color(ColorToken::Border)),
-        )
-        .with_corner_radius(12.0)
         .with_padding(EdgeInsets::new(sm, xs, sm, xs))
         .finish()
 }

@@ -3983,8 +3983,15 @@ fn create_conversation_space(
     state.active_pane_id = id;
     state.workspace_routing = Some(WorkspaceRouting::from_routing(routing));
     ensure_pane_hover(state, id);
+    // A new conversation starts unbound: the project is chosen explicitly from
+    // the composer's project pill, so it lands under "Not in project" until
+    // then. A workspace row's New session sets its path immediately after.
     let project_id = media.borrow().default_project_for_medium(&medium_id);
-    let path = default_pane_path(&project_id, desktop_state);
+    let path = if title == NEW_CONVERSATION_TITLE {
+        String::new()
+    } else {
+        default_pane_path(&project_id, desktop_state)
+    };
     state.set_active_pane_path(path.clone());
     state.bind_pane_new_conversation_titled(id, title, desktop_state);
     if let Some(conversation_id) = state.pane_conversation_id(id) {

@@ -159,57 +159,11 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .finish(),
     );
 
-    let on_diff = actions.on_diff_panel.clone();
     let active = state.active_pane_id;
-    let pane_chat = state.pane_chat.get(&active);
-    let diff = pane_chat
-        .and_then(|pane| {
-            pane.messages
-                .iter()
-                .rev()
-                .find(|message| message.role == goble_ui::ChatRole::Assistant)
-                .and_then(changed_files_for_message)
-        })
-        .filter(|summary| !summary.is_empty());
-    let diff_stats = diff
-        .as_ref()
-        .map(|summary| (summary.added(), summary.removed()));
-    let mut review = PopupMenuItem::new("Review").with_icon("file");
-    if let Some((added, removed)) = diff_stats {
-        review = review.with_diff(added.min(u32::MAX as u64) as u32, removed.min(u32::MAX as u64) as u32);
-    }
-    let on_explorer = actions.on_select_sidebar_view.clone();
-    let on_terminal = actions.on_toggle_terminal_dock.clone();
-    let on_connectors = actions.on_settings.clone();
-    let subagents = pane_chat.map(|pane| pane.sub_agents.len()).unwrap_or(0);
-    let tasks = state
-        .pane_live_work
-        .get(&active)
-        .map(|items| items.iter().filter(|item| item.kind == crate::state::PaneWorkKind::Task).count())
-        .unwrap_or(0);
-    let overview_items = vec![
-        review,
-        PopupMenuItem::new("Files").with_icon("folder"),
-        PopupMenuItem::new("Terminal").with_icon("terminal"),
-        PopupMenuItem::new("Extensions").with_icon("layers-three-01"),
-        PopupMenuItem::new(format!("Subagents {subagents}"))
-            .with_separator_before()
-            .disabled(),
-        PopupMenuItem::new(format!("Background Tasks {tasks}")).disabled(),
-    ];
-    let overview = PopupMenu::new(button(app, "flat-list", "Overview"), overview_items)
-        .with_open(state.chrome_overview_open.clone())
-        .with_position(PopupMenuPosition::BelowEnd)
-        .with_max_width(300.0)
-        .with_on_select(move |index| match index {
-            0 => (on_diff.borrow_mut())(active, DiffPanelAction::Open(None)),
-            1 => (on_explorer.borrow_mut())(SidebarView::Explorer),
-            2 => (on_terminal.borrow_mut())(active),
-            3 => (on_connectors.borrow_mut())(),
-            _ => {}
-        })
-        .finish();
-
+    let on_overview = actions.on_toggle_right_sidebar.clone();
+    let overview = button_click(app, "flat-list", "Overview", move || {
+        (on_overview.borrow_mut())()
+    });
     let on_rename = actions.on_session_rename_start.clone();
     let on_archive = actions.on_archive_conversation.clone();
     let on_copy = actions.on_copy_conversation_id.clone();
@@ -267,7 +221,7 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .finish();
     let row = ConstrainedBox::new(row).with_height(CHROME_HEIGHT).finish();
     Container::new(row)
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .finish()
 }
 
@@ -344,7 +298,7 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     )
     .with_padding(EdgeInsets::new(8.0, 8.0, 8.0, 8.0))
     .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-    .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+    .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Focus)))
     .with_corner_radius(10.0)
     .finish();
 
@@ -463,6 +417,8 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .finish();
     Container::new(Scrollable::new(body, goble_ui::elements::Axis::Vertical).finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+        .with_corner_radius(12.0)
         .with_padding(EdgeInsets::new(12.0, 12.0, 12.0, 12.0))
         .finish()
 }

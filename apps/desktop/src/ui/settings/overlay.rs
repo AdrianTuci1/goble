@@ -373,7 +373,7 @@ fn overlay_header(
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_spacing(2.0)
             .with_child(
-                Text::new(page.label())
+                Text::new(page_title(page))
                     .with_font_size(20.0)
                     .with_line_height(26.0 / 20.0)
                     .with_weight(FontWeight::SemiBold)
@@ -452,6 +452,17 @@ fn hamburger(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<d
     .finish()
 }
 
+fn page_title(page: SettingsCategory) -> &'static str {
+    match page {
+        SettingsCategory::Updates => "Notifications",
+        SettingsCategory::Providers => "Models",
+        SettingsCategory::Connectors => "Browser",
+        SettingsCategory::Environments => "Projects",
+        SettingsCategory::Hosts => "Conversations",
+        other => other.label(),
+    }
+}
+
 fn page_description(page: SettingsCategory) -> &'static str {
     match page {
         SettingsCategory::General => {
@@ -460,6 +471,10 @@ fn page_description(page: SettingsCategory) -> &'static str {
         SettingsCategory::Shortcuts => "Keyboard shortcuts for quick navigation and control.",
         SettingsCategory::Appearance => "Theme, colours and text scale.",
         SettingsCategory::Providers => "Models and the agent CLIs this machine runs.",
+        SettingsCategory::Connectors => "Extensions and MCP servers this workspace can use.",
+        SettingsCategory::Environments => "Projects and their environments.",
+        SettingsCategory::Hosts => "Saved SSH hosts and the conversations they carry.",
+        SettingsCategory::Updates => "Notifications and update status.",
         _ => "",
     }
 }

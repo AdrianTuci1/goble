@@ -1627,7 +1627,7 @@ mod tests {
 /// in.
 pub fn conversation_group(directory: Option<&str>) -> String {
     let Some(directory) = directory.map(str::trim).filter(|d| !d.is_empty()) else {
-        return "General".to_string();
+        return "Not in project".to_string();
     };
     let path = std::path::Path::new(directory);
     let in_home = std::env::var_os("HOME")

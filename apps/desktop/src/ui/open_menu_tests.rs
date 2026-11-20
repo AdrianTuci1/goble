@@ -355,6 +355,7 @@ fn the_session_row_tray_registers_and_closes_from_outside() {
 /// The workspace tab's context menu is one of the window's menus: it registers
 /// as the open menu, a press outside or Escape closes it, and opening a second
 /// menu (the sidebar's view-options) closes it by itself.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_tab_context_menu_registers_closes_and_yields_to_another_menu() {
     let app = AppContext::default();

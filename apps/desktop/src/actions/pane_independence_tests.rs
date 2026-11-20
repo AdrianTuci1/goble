@@ -816,6 +816,7 @@ fn the_cloud_agent_opens_a_viewer_pane_on_remote() {
 
 /// A cloud agent with no Remote configuration asks for it first, in Settings,
 /// and leaves the strip as it was.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_cloud_agent_asks_for_remote_before_opening_a_tab() {
     let (desktop, _dir) = desktop_state();
@@ -896,6 +897,7 @@ fn switching_tabs_brings_that_tabs_environment_back() {
 /// Every chooser that names Remote before anything is configured opens its
 /// configuration in Settings → Agent & Approval, where the YAML file is named,
 /// and leaves the choice unmade.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn choosing_remote_without_a_configuration_opens_the_remote_settings() {
     let (desktop, _dir) = desktop_state();

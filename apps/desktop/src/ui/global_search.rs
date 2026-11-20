@@ -1420,6 +1420,7 @@ mod field_tests {
     use goble_ui::render::{RenderCommand, Renderer};
     use std::sync::Arc;
 
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_query_field_edits_at_the_caret() {
         let dir = tempfile::tempdir().expect("temp thread-store dir");

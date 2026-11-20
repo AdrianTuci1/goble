@@ -69,6 +69,8 @@ pub struct PopupMenuItem {
     /// environment menu's "Clones this repo in a cloud environment…". `None`
     /// leaves the row one line tall.
     pub description: Option<String>,
+    /// A right-aligned key chip (DSH menu shortcut), e.g. `⌘ Space`.
+    pub shortcut: Option<String>,
     /// Draw the panel's 1px pane separator above this row. The reference's
     /// branch menu separates the branches from "Work in a New Worktree" with
     /// it; `None` keeps the row in the ordinary flow.
@@ -84,6 +86,7 @@ impl PopupMenuItem {
             disabled: false,
             diff: None,
             description: None,
+            shortcut: None,
             separator_before: false,
         }
     }
@@ -106,6 +109,12 @@ impl PopupMenuItem {
 
     pub fn disabled(mut self) -> Self {
         self.disabled = true;
+        self
+    }
+
+    /// Right-align a key-chip shortcut on the row.
+    pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
         self
     }
 
@@ -799,6 +808,7 @@ impl PopupMenu {
             let cb = on_select.clone();
             let diff = item.diff;
             let description = item.description.clone();
+            let shortcut = item.shortcut.clone();
             let row = PopupMenuItemView::new(
                 index,
                 highlight.clone(),
@@ -808,6 +818,7 @@ impl PopupMenu {
                 disabled,
                 diff,
                 description,
+                shortcut,
                 self.selected_color.unwrap_or(ColorToken::Accent),
                 self.max_width,
                 row_radius,
@@ -1164,6 +1175,7 @@ struct PopupMenuItemView {
     diff: Option<PopupMenuDiff>,
     /// A muted second line under the label, when the item has one.
     description: Option<String>,
+    shortcut: Option<String>,
     /// The ink of the selected label (the menu's own choice).
     selected_color: ColorToken,
     max_width: f32,
@@ -1193,6 +1205,7 @@ impl PopupMenuItemView {
         disabled: bool,
         diff: Option<PopupMenuDiff>,
         description: Option<String>,
+        shortcut: Option<String>,
         selected_color: ColorToken,
         max_width: f32,
         corner_radius: f32,
@@ -1209,6 +1222,7 @@ impl PopupMenuItemView {
             disabled,
             diff,
             description,
+            shortcut,
             selected_color,
             max_width,
             corner_radius,
@@ -1267,6 +1281,24 @@ impl PopupMenuItemView {
             None => {
                 line = line.with_child(Expanded::new(text.finish()).finish());
             }
+        }
+        if let Some(shortcut) = self.shortcut.clone() {
+            line = line.with_child(
+                Container::new(
+                    Text::new(shortcut)
+                        .with_font_family(FontFamily::Mono)
+                        .with_font_size(11.0)
+                        .with_line_height(16.0 / 11.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_padding(EdgeInsets::new(2.0, 5.0, 2.0, 5.0))
+                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                .with_border(crate::elements::Border::all(1.0)
+                    .with_border_color(app.theme.color(ColorToken::Border)))
+                .with_corner_radius(6.0)
+                .finish(),
+            );
         }
         // The item in force is marked with the reference's trailing check: the
         // label keeps its own colour and the check is the value's stamp.

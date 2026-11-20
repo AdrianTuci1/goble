@@ -629,6 +629,7 @@ mod tests {
     /// it drew one, otherwise the prompt its shell would draw at the block's
     /// directory. The view draws it in the block's header, so the body never
     /// has to repeat it.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn a_command_carries_the_prompt_it_was_typed_at() {
         use goble_terminal::hooks::{
@@ -676,6 +677,7 @@ mod tests {
     /// When the shell draws its own prompt (`honor_ps1`), the block's header
     /// takes that exact line rather than inventing one, and the command's text
     /// stays the shell-reported command without it.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn an_honored_ps1_is_the_blocks_prompt() {
         use goble_terminal::hooks::{

@@ -122,7 +122,24 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
     .finish();
     let name = super::fields::app_text(settings, "friendly_name");
     let who = if name.trim().is_empty() { "You".to_string() } else { name };
-    let footer = Flex::column()
+    let initial = who.chars().next().unwrap_or('?').to_uppercase().to_string();
+    let avatar = Container::new(
+        Text::new(initial)
+            .with_font_size(12.0)
+            .with_weight(FontWeight::SemiBold)
+            .with_theme_color(ColorToken::Text, app)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::uniform(10.0))
+    .with_background(Fill::Solid(app.theme.color(ColorToken::Hover)))
+    .with_corner_radius(16.0)
+    .finish();
+    let footer = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.0)
+        .with_child(avatar)
+        .with_child(
+            Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
         .with_spacing(4.0)
         .with_child(
@@ -137,6 +154,8 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
                 .with_font_size(11.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
+        )
+        .finish(),
         )
         .finish();
     let column = Flex::column()
@@ -154,8 +173,7 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
             .with_padding(EdgeInsets::new(12.0, 8.0, 12.0, 4.0))
             .finish(),
         )
-        .with_child(nav)
-        .with_child(Spacer::new().finish())
+        .with_child(ConstrainedBox::new(nav).with_height(520.0).finish())
         .with_child(feedback)
         .with_child(Divider::horizontal().finish())
         .with_child(

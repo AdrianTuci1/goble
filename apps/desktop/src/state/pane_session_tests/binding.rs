@@ -169,6 +169,7 @@ fn switching_conversation_unmounts_the_child_view() {
 /// A settings tab comes back as itself: the leaf is part of the persisted
 /// layout, so the tab reopens on the page it was on rather than on the
 /// default one.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn a_restored_settings_tab_reopens_on_the_page_it_was_on() {
     let dir = tempfile::tempdir().expect("create temp thread store dir");

@@ -52,6 +52,7 @@ fn main() -> anyhow::Result<()> {
         for (name, size, settings, page) in [
             ("shell-wide", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("shell-narrow", vec2f(760.0, 900.0), false, SettingsCategory::General),
+            ("panel-more", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("settings-wide", vec2f(1600.0, 1000.0), true, SettingsCategory::General),
             ("settings-wide-shortcuts", vec2f(1600.0, 1000.0), true, SettingsCategory::Shortcuts),
             ("settings-narrow", vec2f(700.0, 900.0), true, SettingsCategory::General),
@@ -72,6 +73,10 @@ fn main() -> anyhow::Result<()> {
                 s.settings_overlay_open = settings;
                 s.settings.page = page;
                 s.settings_overlay_wide = size.x >= 900.0;
+                if name == "panel-more" {
+                    let pane = s.active_pane_id;
+                    *s.pane_controls_mut(pane).header_menu_open.borrow_mut() = true;
+                }
             }
             let mut root: Box<dyn Element> = Box::new(view);
             let path = dir.join(format!("{name}-{label}.png"));

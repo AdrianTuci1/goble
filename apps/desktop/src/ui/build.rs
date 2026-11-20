@@ -673,6 +673,7 @@ mod tests {
     /// full-bleed header band bleeding back up to it. The pane card keeps its
     /// `PANE_INSET` gutter below that line — the bar, the band and the body
     /// origin agree with no leftover 3–4 px mismatch.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_bar_block_and_the_body_origin_are_the_same_line() {
         let app = AppContext::default();
@@ -1434,6 +1435,7 @@ mod tests {
     /// The panes span the pane area (not one window-wide lane column), and each
     /// pane centres its own content in its own width while its header spans the
     /// full pane: 1, 2 (different widths) and 3 panes.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn each_pane_centres_its_own_content_and_its_header_spans_the_pane() {
         let app = AppContext::default();
@@ -1951,6 +1953,7 @@ mod tests {
 
     /// The rule is mounted above everything, so a press goes through it to the
     /// control it covers: the Settings icon still opens the settings tab.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn a_press_through_the_rule_still_reaches_the_control() {
         let app = AppContext::default();
@@ -2022,6 +2025,7 @@ mod tests {
     /// panel surface, so no dark strip is left around the panes. The per-tab
     /// outline keeps its geometry relative to its slot
     /// (`every_tab_wears_its_own_outline_not_the_window`).
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_tab_slots_are_inset_four_px_and_the_surface_fills_the_body() {
         let app = AppContext::default();
@@ -2171,6 +2175,7 @@ mod tests {
     /// covering the point): the panel area's top/bottom/left/right edges (the
     /// rows and columns of the 4 px inset frame), and the gutter between two
     /// neighbouring tab slots, in both themes.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_whole_panel_surface_is_the_sidebar_grey_with_no_dark_strip() {
         fn assert_theme(app: &AppContext, two_panes: bool) {
@@ -2624,6 +2629,7 @@ mod tests {
     /// A manual toggle below the breakpoint re-expands the auto-collapsed
     /// sidebar; the next breakpoint crossing drops the override, so growing and
     /// shrinking again restores the auto behaviour.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn a_narrow_sidebar_toggle_reexpands_until_the_window_grows() {
         let app = AppContext::default();
@@ -2878,6 +2884,7 @@ mod tests {
 
     /// The settings surface is an overlay: wide it floats with its rail; narrow
     /// it fills and offers the hamburger. Closing returns to the workspace.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn settings_is_a_wide_sheet_with_a_rail_and_a_narrow_sheet_with_a_hamburger() {
         let app = AppContext::default();

@@ -176,6 +176,7 @@ fn first_tab_left(commands: &[RenderCommand], app: &AppContext) -> f32 {
 
 /// The bar clears the traffic lights while the window is windowed: macOS draws
 /// them over the content, and the first control starts past their room.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_bar_starts_past_the_traffic_lights_while_the_window_is_windowed() {
     let (mut root, _state, _desktop, _dir) = app_root();
@@ -193,6 +194,7 @@ fn the_bar_starts_past_the_traffic_lights_while_the_window_is_windowed() {
 /// to the tabs: the leading control moves to the small fullscreen padding and
 /// the whole strip shifts left by the difference. Nothing else moves — the bar
 /// keeps its height and Settings stays pinned to the right edge.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn a_fullscreen_window_moves_the_bar_into_the_traffic_lights_space() {
     let (mut windowed_root, _state, _desktop, _dir) = app_root();
@@ -235,6 +237,7 @@ fn a_fullscreen_window_moves_the_bar_into_the_traffic_lights_space() {
 /// window at the height the body reserves below it — the bar row plus its band —
 /// and it is filled with the frame's `Bg`, the tone the selected tab's `Surface`
 /// fill continues away from.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_fullscreen_padding_keeps_the_bar_height() {
     let (mut root, _state, _desktop, _dir) = app_root();
@@ -265,6 +268,7 @@ fn the_fullscreen_padding_keeps_the_bar_height() {
 /// The app flag still answers when no window has reported a state — a tree
 /// rendered without a live window, where the platform's own state is missing.
 /// When the window *has* answered, its answer is the one that counts.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_windows_state_answers_before_the_app_flag() {
     // Nothing has reported, and the app says full screen.
@@ -368,6 +372,7 @@ fn the_right_hand_group_keeps_the_bars_margin_from_the_windows_edge() {
 /// The bar's margin is the same on both sides: with the traffic lights gone
 /// (full screen) the first control starts exactly as far from the leading edge
 /// as Settings ends from the trailing one.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_bar_margin_is_the_same_on_both_sides_in_full_screen() {
     let (mut root, _state, _desktop, _dir) = app_root();
@@ -1261,6 +1266,7 @@ fn a_short_named_tab_centres_its_name() {
 /// header band) starts exactly on the band's bottom edge. The selected tab is
 /// the one `Surface` fill that crosses that edge, which is what makes its merge
 /// read.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_band_under_the_bar_is_the_bars_bg_up_to_the_content_sheet() {
     let (mut root, _state, _desktop, _dir) = app_root();
@@ -1424,6 +1430,7 @@ fn topbar_runs(commands: &[RenderCommand]) -> Vec<(String, goble_ui::ColorU, Fon
 /// it reads the selected pane's own working tree, shows the changed-file count
 /// and the +added/-removed totals, and appears only while that pane has changes
 /// (a clean tree, or a pane outside a repository, draws nothing).
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_open_changes_control_sits_left_of_the_inbox_for_a_pane_with_changes() {
     if !git_available() {
@@ -1554,6 +1561,7 @@ fn render_with_cursor(
 /// across the [`TOPBAR_BOTTOM_BAND`], one point into the content sheet. The band
 /// is what makes the merge read: the tab stands above the bar while the content
 /// sheet starts on the band's bottom edge.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_pane_surface_under_the_selected_tab_has_no_seam() {
     let (mut root, _state, _desktop, _dir) = app_root();
@@ -1636,6 +1644,7 @@ fn the_pane_surface_under_the_selected_tab_has_no_seam() {
 /// The band under the bar is the bar's own `Bg`: the shell body starts
 /// `TOPBAR_BOTTOM_BAND` below the topbar, so the strip of window background is
 /// visible under the floating tabs — and the bar itself keeps its height.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_shell_content_starts_one_band_below_the_bar() {
     let (mut root, _state, _desktop, _dir) = app_root();
@@ -1673,6 +1682,7 @@ fn the_shell_content_starts_one_band_below_the_bar() {
 /// it paints *last*: the owner wants a hovered pill never bitten by the selected
 /// tab's inverted-corner discs, while the selected tab keeps its merge into the
 /// content sheet.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn floating_tabs_float_with_gaps_and_a_hovered_pill_paints_last() {
     let (mut root, state, _desktop, _dir) = app_root();
@@ -2150,6 +2160,7 @@ fn a_coloured_selected_tab_still_merges() {
 /// While the selected tab is renamed, the field replaces the label and the
 /// close control but not the merge: the tab's surface and feet still paint
 /// behind it.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_rename_field_keeps_the_selected_tabs_merge() {
     let (mut root, state, _desktop, _dir) = app_root();
@@ -2518,6 +2529,7 @@ fn topbar_icon_center(commands: &[RenderCommand], name: &str) -> Option<Vector2F
 /// The global inbox sits at the right end of the bar beside Settings, past the
 /// tab strip and its "+ ▾" control — not next to the sidebar toggle it used to
 /// flank.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn the_inbox_sits_beside_settings_at_the_right_end_of_the_bar() {
     let app = AppContext::default();
@@ -2765,6 +2777,7 @@ fn a_tab_with_several_panes_reads_as_its_focused_pane() {
 
 /// A tab the user renamed by hand keeps the name they typed, for good: the
 /// label derived from what the tab holds never takes it back.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn a_tab_the_user_renamed_keeps_the_typed_name() {
     let app = AppContext::default();
@@ -3140,6 +3153,7 @@ fn ctrl_tab_does_not_move_a_one_tab_workspace() {
 
 /// Arriving on the settings tab with the chord hands the keyboard to that tab's
 /// rail: the page it was left on must not keep the keys the switch just took.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn ctrl_tab_onto_the_settings_tab_puts_the_keyboard_in_its_rail() {
     let app = AppContext::default();

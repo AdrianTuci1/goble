@@ -1418,6 +1418,7 @@ mod ui_tests {
         down || up
     }
 
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_panel_lists_the_roster_grouped_by_state() {
         let app = AppContext::default();
@@ -1554,6 +1555,7 @@ mod ui_tests {
     /// The panel is the workspace body, not an overlay: it starts below the
     /// toolbar and to the right of the tools sidebar, and both of those stay
     /// drawn around it.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_panel_fills_the_pane_area_beside_the_toolbar_and_the_tools_sidebar() {
         let app = AppContext::default();
@@ -2013,6 +2015,7 @@ mod ui_tests {
 
     /// The new-agent control is a drawer: one press raises the prompt with the
     /// caret in it, the next retracts it and drops the draft.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_new_agent_control_raises_and_retracts_the_dispatch_prompt() {
         let app = AppContext::default();

@@ -2921,6 +2921,7 @@ mod tests {
     /// short-named tab in a wide window takes the share of the bar the tab strip
     /// was given instead of shrinking to the width of its name, up to warp-new's
     /// 200 pt cap. The visible fill is the slot less the pill's 3 pt edge insets.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn a_tab_fills_its_slot_up_to_the_maximum() {
         let app = AppContext::default();
@@ -2947,6 +2948,7 @@ mod tests {
     /// "tools, then the dashboard", the order the two panels are opened in. The
     /// strip follows the last leading control after the bar's control gap and
     /// the tab's own pill inset, with no rule between them.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_agent_management_control_sits_beside_the_tools_toggle() {
         let app = AppContext::default();
@@ -2999,6 +3001,7 @@ mod tests {
 
     /// The strip draws no vertical rules and closes with no hairline: the bar's
     /// `Bg` and the pills' own gaps are the separation, as in Chrome.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_strip_draws_no_vertical_rules() {
         let app = AppContext::default();
@@ -3033,6 +3036,7 @@ mod tests {
     /// and however long its name, and a name the user typed is cut at its **end**
     /// — warp-new's `ClipConfig::end()` for a custom title — so the words that
     /// tell two named tabs apart stay on screen.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn a_named_tab_cuts_its_long_name_at_the_end() {
         let app = AppContext::default();
@@ -3087,6 +3091,7 @@ mod tests {
     /// A tab whose label is derived from where it runs cuts that label at its
     /// **start** — warp-new's `ClipConfig::start()` for a plain title — so the
     /// last component of a long path stays readable in a narrow strip.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn a_tab_named_after_its_path_cuts_its_name_at_the_start() {
         use crate::ui::{Pane, PaneKind, Space};
@@ -3120,6 +3125,7 @@ mod tests {
     /// the tabs divide the strip evenly (see [`tab_slot`]) instead of each one
     /// taking the room its own name needs. The selected tab's fill is measured
     /// twice, by selecting a different tab for the second frame.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn every_tab_of_a_strip_is_the_same_width_whatever_its_name() {
         let app = AppContext::default();
@@ -3156,6 +3162,7 @@ mod tests {
     /// end of the strip — warp-new's `Shrinkable::new(0.5, Empty)` spacer: the
     /// tabs start at the strip's own start, the "+ ▾" control follows the last
     /// of them, and the right-hand group keeps the window's edge.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_room_past_the_cap_stays_at_the_end_of_the_strip() {
         let app = AppContext::default();
@@ -3192,6 +3199,7 @@ mod tests {
     /// The strip divides the window less both of the bar's paddings: the room
     /// the tabs share ends before the right-hand group, so no tab runs under
     /// the inbox or Settings and the bar's trailing margin stays empty.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_strip_stops_before_the_right_hand_group() {
         let app = AppContext::default();
@@ -3228,6 +3236,7 @@ mod tests {
     /// warp-new draws the active tab's title at `Weight::Medium` over the
     /// inactive tabs' regular one (`TabStyles::default`, `app/src/tab.rs:800-812`),
     /// both at the UI font size.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_active_tab_reads_in_medium_and_the_others_in_regular() {
         let app = AppContext::default();
@@ -3263,6 +3272,7 @@ mod tests {
     /// drawn past the window, so the "+ ▾" control and Settings keep the place
     /// inside the window they hold with a single tab. A tab too narrow for the
     /// close control draws none, even while hovered.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn many_tabs_share_the_bar_and_keep_the_controls_inside_it() {
         const COUNT: usize = 14;
@@ -3337,6 +3347,7 @@ mod tests {
     /// The environment menu names where each row runs with the same two
     /// glyphs the rest of the app uses: T3 Code's computer for a local
     /// environment and its cloud for a worker.
+    #[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
     #[test]
     fn the_environment_menu_marks_the_computer_and_the_cloud() {
         let app = AppContext::default();

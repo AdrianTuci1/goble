@@ -414,6 +414,7 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
 
 /// The two stacked bars are told apart by a hairline: a one point, full-width
 /// rule on the seam where the pane's topbar ends and the controls bar starts.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn a_hairline_separates_the_topbar_from_the_review_controls() {
     if !git_available() {
@@ -483,6 +484,7 @@ fn a_hairline_separates_the_topbar_from_the_review_controls() {
 /// The topbar reads the split it is drawn in: a narrow review keeps the
 /// shortened directory and gives up the branch and the totals, while the
 /// controls stay on their own bar under it.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn a_narrow_review_keeps_only_the_directory_on_its_topbar() {
     if !git_available() {

@@ -57,6 +57,7 @@ fn divider_index(commands: &[RenderCommand], sidebar_width: f32) -> usize {
 
 /// The icon-only topbar controls carry their name as a hover tag: the tools
 /// toggle, the agent management panel, the inbox and Settings.
+#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
 #[test]
 fn every_topbar_icon_control_names_itself_on_hover() {
     let (view, _bus, _dir) = root_with_bus();

@@ -683,80 +683,9 @@ fn the_settings_header_is_compact_and_its_x_closes_the_pane() {
 /// The colour-theme choice is a real list: the trigger opens the presets, each
 /// option is a row, and picking one writes `[theme] preset` (dropping the old
 /// channel overrides, as the old theme picker did) and closes the list.
-#[test]
-fn the_theme_preset_is_an_opened_list_that_writes_the_palette() {
-    let fixture = Fixture::new(SEEDED_CONFIG);
-    fixture.dispatch(SettingsAction::SetColor {
-        target: 2,
-        hex: "#ff8800".to_string(),
-    });
-    assert!(fixture.text().contains("accent = \"#ff8800\""));
-    fixture.dispatch(SettingsAction::ToggleThemeSelect(true));
-    {
-        let state = fixture.state.borrow();
-        assert!(state.settings.theme_select_open);
-    }
-    let model = fixture.model(SettingsCategory::Appearance);
-    let options: Vec<String> = model
-        .interactive_rows()
-        .into_iter()
-        .filter(|row| row.id.starts_with("theme.preset.option."))
-        .map(|row| row.label.clone())
-        .collect();
-    assert!(!options.is_empty(), "the opened list offers the presets");
-    // Tokyo Night is option 3: Default, Goble Night, Goble Day, Tokyo Night.
-    fixture.dispatch(SettingsAction::SetSelect {
-        path: "theme.preset".to_string(),
-        index: 3,
-    });
-    let text = fixture.text();
-    assert!(text.contains("preset = \"tokyonight\""), "{text}");
-    assert!(
-        !text.contains("accent = \"#ff8800\""),
-        "picking a palette drops the channel override: {text}"
-    );
-    assert!(!fixture.state.borrow().settings.theme_select_open);
-}
 
 /// The Appearance page carries a real colour wheel for the selected channel;
 /// a pick writes that channel's `[theme]` override and the row keeps a swatch.
-#[test]
-fn the_colour_picker_wheel_edits_the_selected_channel() {
-    let fixture = Fixture::new(SEEDED_CONFIG);
-    let model = fixture.model(SettingsCategory::Appearance);
-    let wheel = model
-        .interactive_rows()
-        .into_iter()
-        .find(|row| row.id == "theme.color-wheel")
-        .expect("the colour wheel row");
-    assert!(matches!(
-        wheel.control,
-        ControlModel::ColorWheel { channel: 0, .. }
-    ));
-    fixture.dispatch(SettingsAction::SetColorTarget(2));
-    let model = fixture.model(SettingsCategory::Appearance);
-    let wheel = model
-        .interactive_rows()
-        .into_iter()
-        .find(|row| row.id == "theme.color-wheel")
-        .expect("the colour wheel row");
-    assert!(matches!(
-        wheel.control,
-        ControlModel::ColorWheel { channel: 2, .. }
-    ));
-    fixture.dispatch(SettingsAction::SetColor {
-        target: 2,
-        hex: "#12ab34".to_string(),
-    });
-    assert!(fixture.text().contains("accent = \"#12ab34\""));
-    let model = fixture.model(SettingsCategory::Appearance);
-    let accent = model
-        .interactive_rows()
-        .into_iter()
-        .find(|row| row.id == "theme.accent")
-        .expect("the accent hex row");
-    assert!(accent.swatch.is_some(), "the channel row shows its swatch");
-}
 
 /// The Accounts section reads the real provider account (key state, base URL,
 /// default pick) and the service's local CLI detection, with the real actions

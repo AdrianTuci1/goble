@@ -338,7 +338,12 @@ impl RowModel {
                 selected,
                 ..
             } => {
-                if options.is_empty() {
+                if path == "theme.preset" {
+                    // The theme row is a real dropdown, not a cycle: Enter puts
+                    // its menu up (the renderer's anchored panel); the menu
+                    // itself commits through `SetSelect`.
+                    Some(SettingsAction::ToggleThemeSelect(true))
+                } else if options.is_empty() {
                     None
                 } else {
                     Some(SettingsAction::SetSelect {
@@ -371,7 +376,9 @@ impl RowModel {
                 selected,
                 disabled,
             } => {
-                if *disabled || options.is_empty() {
+                if path == "theme.preset" || *disabled || options.is_empty() {
+                    // The theme menu owns Left/Right while it is open; a closed
+                    // row does not silently cycle the palette.
                     return None;
                 }
                 let count = options.len() as i64;

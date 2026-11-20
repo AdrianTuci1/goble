@@ -46,7 +46,7 @@ pub mod toggle;
 #[cfg(test)]
 mod tests;
 
-pub use fields::{SettingsButton, SettingsPathField, SettingsSelect, SettingsTextField};
+pub use fields::{SettingsButton, SettingsPathField, SettingsSegmented, SettingsSelect, SettingsTextField};
 pub use fold::SettingsFold;
 pub use nav::{SettingsNav, SettingsNavGroup, SettingsNavItem};
 pub use row::{SettingsRow, SettingsRowStatus, SettingsRowStatusKind};

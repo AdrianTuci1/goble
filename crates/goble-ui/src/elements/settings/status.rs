@@ -211,8 +211,8 @@ impl SettingsStatusLine {
             };
             self.built = Some(
                 Text::new(self.text.clone())
-                    .with_font_size(11.0)
-                    .with_line_height(1.45)
+                    .with_font_size(12.0)
+                    .with_line_height(1.5)
                     .with_color(color)
                     .finish(),
             );

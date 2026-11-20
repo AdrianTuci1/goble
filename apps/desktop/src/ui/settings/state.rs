@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use goble_core::config::{ConfigFile, ConfigRevision, ConfigView, HostView, ModelView};
 use goble_ui::elements::ScrollState;
+use goble_ui::geometry::RectF;
 
 use crate::ui::SettingsCategory;
 
@@ -175,6 +176,20 @@ pub struct VaultState {
     pub new_value: String,
 }
 
+/// The page-space rectangles of the Appearance page's two menu triggers.
+///
+/// The menus themselves are drawn by the page-level overlay layer
+/// (`settings::render::color_palette`), not by the row: a panel painted inside a
+/// row is painted over by the rows below it. The trigger records where it
+/// painted here, and the overlay anchors the panel to that rectangle on the
+/// next frame. The cell is app-owned (an `Rc`) because the element tree is
+/// rebuilt every frame.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AppearanceMenuAnchors {
+    pub theme: Option<RectF>,
+    pub palette: Option<RectF>,
+}
+
 /// One page's worth of settings data plus the interaction state of the whole
 /// tab.
 #[derive(Clone)]
@@ -229,6 +244,16 @@ pub struct SettingsUiState {
     pub color_drag: Rc<RefCell<Option<crate::ui::color_picker::ColorPickerDrag>>>,
     /// Whether the Appearance page's theme-preset list is open.
     pub theme_select_open: bool,
+    /// The theme menu's open flag, shared with the element that owns it. The
+    /// element tree is rebuilt every frame, so the flag has to outlive one
+    /// build; the plain `theme_select_open` above remains the state action's
+    /// record (the older page and its tests read it).
+    pub theme_select_menu: Rc<RefCell<bool>>,
+    /// The theme colour channel whose palette popover is open (`None` while no
+    /// channel's popover is up).
+    pub color_palette_menu: Rc<RefCell<Option<usize>>>,
+    /// Where the Appearance page's menu triggers painted last frame.
+    pub appearance_anchors: Rc<RefCell<AppearanceMenuAnchors>>,
     /// The environment page's drafts: the new-group name and the open group.
     pub env_new_group: String,
     pub env_open_group: Option<String>,
@@ -311,6 +336,9 @@ impl Default for SettingsUiState {
             color_target: 0,
             color_drag: Rc::new(RefCell::new(None)),
             theme_select_open: false,
+            theme_select_menu: Rc::new(RefCell::new(false)),
+            color_palette_menu: Rc::new(RefCell::new(None)),
+            appearance_anchors: Rc::new(RefCell::new(AppearanceMenuAnchors::default())),
             env_new_group: String::new(),
             env_open_group: None,
             env_var_name: String::new(),

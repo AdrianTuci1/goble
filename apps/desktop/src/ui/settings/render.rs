@@ -5,6 +5,9 @@
 //! enumerates, and the slot counter is what puts the focus ring on the row the
 //! keyboard model says is focused.
 
+#[path = "color_palette.rs"]
+pub mod color_palette;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -18,9 +21,9 @@ use goble_ui::elements::settings::{
     SETTINGS_SHEET_PADDING, SETTINGS_SHEET_WIDTH,
 };
 use goble_ui::elements::{
-    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, Element, EventContext,
-    Expanded, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment, MainAxisSize,
-    PaintContext, Point, Scrollable, SizeConstraint, Text, Tooltip, TooltipPosition,
+    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, Element,
+    EventContext, Expanded, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment,
+    MainAxisSize, PaintContext, Point, Scrollable, SizeConstraint, Text, Tooltip, TooltipPosition,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
@@ -220,7 +223,13 @@ pub fn render_page(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_children(children)
         .finish();
-    let padded = Container::new(column)
+    // The Appearance menu is painted after every section but receives pointer
+    // and key events before them: a panel anchored under an early row must draw
+    // over the rows below it, and a press inside it must not reach a control
+    // that happens to sit underneath.
+    let overlay = color_palette::appearance_menu_layer(app, settings, actions);
+    let page: Box<dyn Element> = Box::new(color_palette::OverlayLayer::new(column, overlay));
+    let padded = Container::new(page)
         .with_padding(goble_ui::elements::EdgeInsets::uniform(
             SETTINGS_PAGE_PADDING,
         ))
@@ -403,6 +412,20 @@ fn render_control(
             selected,
             disabled,
         } => {
+            // The Appearance page's theme choice is the one select whose real
+            // dropdown lives at page level: its panel has to paint after the
+            // rows it covers. Every other select keeps the shared control.
+            if path == "theme.preset" {
+                let swatch = options.get(*selected).and_then(|label| {
+                    goble_ui::theme::ThemePreset::ALL
+                        .into_iter()
+                        .find(|preset| preset.display_name() == label)
+                        .map(|preset| preset.accent())
+                });
+                return Some(color_palette::theme_select_control(
+                    settings, actions, options, *selected, swatch, *disabled, focused,
+                ));
+            }
             let path = path.clone();
             SettingsSelect::new(options.clone())
                 .with_selected(*selected)
@@ -424,6 +447,21 @@ fn render_control(
             configured,
             disabled,
         } => {
+            if !*secret {
+                if let Some((channel, key)) = color_palette::channel_for_path(id) {
+                    let color = color_palette::channel_color(settings, key);
+                    return Some(color_palette::color_palette_control(
+                        settings,
+                        actions,
+                        id,
+                        channel,
+                        value.clone(),
+                        color,
+                        *disabled,
+                        focused,
+                    ));
+                }
+            }
             let focused_field = settings.focused_field.as_deref() == Some(id.as_str());
             let id_change = id.clone();
             let id_commit = id.clone();
@@ -451,7 +489,10 @@ fn render_control(
                 } else {
                     field.with_width(240.0)
                 };
-                field.with_on_change(on_change).with_on_submit(on_submit).finish()
+                field
+                    .with_on_change(on_change)
+                    .with_on_submit(on_submit)
+                    .finish()
             } else {
                 let field = SettingsTextField::new()
                     .with_value(value.clone())
@@ -463,7 +504,10 @@ fn render_control(
                 } else {
                     field.with_width(240.0)
                 };
-                field.with_on_change(on_change).with_on_submit(on_submit).finish()
+                field
+                    .with_on_change(on_change)
+                    .with_on_submit(on_submit)
+                    .finish()
             }
         }
         ControlModel::Slider {
@@ -532,9 +576,13 @@ fn render_control(
 /// A theme channel's token, so the wheel starts from the colour the live theme
 /// paints with when the file has no override for it.
 fn channel_token(channel: usize) -> ColorToken {
-    use crate::ui::color_picker::COLOR_TARGET_ORDER;
     use crate::ui::color_picker::ColorTarget as T;
-    match COLOR_TARGET_ORDER.get(channel).copied().unwrap_or(T::Accent) {
+    use crate::ui::color_picker::COLOR_TARGET_ORDER;
+    match COLOR_TARGET_ORDER
+        .get(channel)
+        .copied()
+        .unwrap_or(T::Accent)
+    {
         T::Primary => ColorToken::Text,
         T::Secondary => ColorToken::Muted,
         T::Accent => ColorToken::Accent,
@@ -574,8 +622,7 @@ fn color_wheel_body(
     )
     .with_background(Fill::Solid(current))
     .with_border(
-        goble_ui::elements::Border::all(1.0)
-            .with_border_color(app.theme.color(ColorToken::Border)),
+        goble_ui::elements::Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)),
     )
     .with_corner_radius(5.0)
     .finish();
@@ -837,7 +884,6 @@ fn reset_button(
     })
     .finish()
 }
-
 
 /// The sheet's outside-click/dim layer: paints the page dimmed and consumes the
 /// first pointer press as "dismiss the sheet", so the main surface behind a

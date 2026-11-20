@@ -14,10 +14,11 @@
 //!
 //! One module per surface of the pane: the tree it builds (`build`), the keys
 //! and pointer events it routes (`input`), its [`Element`] impl (`element`), the
-//! conversation cards left in its block list (`cards`) and the probe that records
-//! where the grid landed (`grid`). The block a pane's own command draws as
-//! (`blocks`) is the same block the transcript draws. What the surfaces share —
-//! the pane's own view, its callbacks and the grid metrics — stays here.
+//! conversation cards left in its block list (`cards`) and the live cell-grid
+//! surface (`surface`), which paints alacritty runs directly and records where
+//! the grid landed. The block a pane's own command draws as (`blocks`) is the
+//! same block the transcript draws. What the surfaces share — the pane's own
+//! view, its callbacks and the grid metrics — stays here.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -32,14 +33,14 @@ use goble_ui::ScrollState;
 use crate::terminal::TerminalRegistry;
 
 use cards::{CardInfo, CardRect};
-use grid::GridGeometry;
+use surface::GridGeometry;
 
 mod blocks;
 mod build;
 mod cards;
 mod element;
-mod grid;
 mod input;
+mod surface;
 
 #[cfg(test)]
 mod tests;
@@ -78,6 +79,11 @@ struct TerminalView {
     /// the bar instead of encoding them for the shell. While they disagree the
     /// grid keeps the keys, which is what a click on the grid restores.
     composer_focused: bool,
+    /// Whether this pane is only the live cell grid: the bottom dock and the
+    /// side panel's Terminal tab are a full-screen terminal, not a block view.
+    /// The grid paints the alacritty runs and the pane skips the block list,
+    /// the conversation cards and the composer entirely.
+    grid_only: bool,
     on_activate: Rc<RefCell<dyn FnMut(u64)>>,
     on_route: Rc<RefCell<dyn FnMut(u64, String)>>,
     on_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
@@ -132,4 +138,3 @@ fn mouse_button(id: u32) -> Option<MouseButton> {
         _ => None,
     }
 }
-

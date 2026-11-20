@@ -11,6 +11,7 @@ use alacritty_terminal::vte::ansi::{
 };
 
 use crate::image::{ImageCache, ImageChunk, ImageDelete, ImagePlacement, ImageTap};
+use crate::render::{FrameRow, GridFrame};
 
 use super::cell::{CellAttrs, ScreenCell, ScreenColor, ScreenLine, Underline};
 use super::config::ScreenConfig;
@@ -345,6 +346,67 @@ impl Screen {
             column,
             visible: content.cursor.shape != AlacrittyCursorShape::Hidden,
             shape: map_cursor_shape(content.cursor.shape),
+        }
+    }
+
+    /// One viewport as paint runs, read directly from the alacritty grid.
+    ///
+    /// This is the renderer's entry point: the same `RenderableContent` the
+    /// emulator exposes is walked once, and each row is grouped into
+    /// background runs, glyphs and attribute rules (see [`crate::render`]).
+    /// No [`ScreenLine`] snapshot is built on the way, so a full-screen pane
+    /// does not pay for a per-cell widget tree.
+    pub fn frame(&self) -> GridFrame {
+        let content = self.term.renderable_content();
+        // Read the scalar fields before the iterator borrow is consumed.
+        let display_offset = content.display_offset;
+        let cursor_shape = content.cursor.shape;
+        let cursor_point = content.cursor.point;
+
+        let columns = self.size.columns;
+        let mut cells: Vec<Vec<ScreenCell>> = Vec::with_capacity(self.size.screen_lines);
+        let mut current: Option<i32> = None;
+        for indexed in content.display_iter {
+            let line = indexed.point.line.0;
+            if current != Some(line) {
+                cells.push(vec![ScreenCell::default(); columns]);
+                current = Some(line);
+            }
+            if let Some(row) = cells.last_mut() {
+                let column = indexed.point.column.0;
+                if column < row.len() {
+                    row[column] = map_cell(indexed.cell);
+                }
+            }
+        }
+        // A screen that has drawn fewer rows than its viewport still paints
+        // the whole box: the padding rows are default cells.
+        while cells.len() < self.size.screen_lines {
+            cells.push(vec![ScreenCell::default(); columns]);
+        }
+        let rows = cells.iter().map(|row| FrameRow::from_cells(row)).collect();
+
+        // The cursor is reported in viewport coordinates; a point scrolled off
+        // the viewport maps to the top-left cell, exactly as [`Self::cursor`]
+        // reports it.
+        let (line, column) = match point_to_viewport(display_offset, cursor_point) {
+            Some(point) => (point.line, point.column.0),
+            None => (0, 0),
+        };
+        let cursor = CursorState {
+            line,
+            column,
+            visible: cursor_shape != AlacrittyCursorShape::Hidden,
+            shape: map_cursor_shape(cursor_shape),
+        };
+
+        GridFrame {
+            rows,
+            cursor,
+            columns,
+            history_size: self.history_size(),
+            display_offset,
+            alt_screen: self.is_alt_screen(),
         }
     }
 

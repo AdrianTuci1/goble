@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use goble_core::config::{ConfigFile, ConfigRevision, ConfigView, HostView, ModelView};
-use goble_ui::elements::ScrollState;
+use goble_ui::elements::{MenuId, ScrollState, DEFAULT_MENU_ID};
 use goble_ui::geometry::RectF;
 
 use crate::ui::SettingsCategory;
@@ -236,12 +236,6 @@ pub struct SettingsUiState {
     /// (`PATH` resolution, no `--version` probe). The Providers page's Accounts
     /// and Agent CLIs sections render this.
     pub harnesses: Vec<goble_core::harness::HarnessStatus>,
-    /// The theme channel the Appearance page's colour wheel edits (index into
-    /// `color_picker::COLOR_TARGET_ORDER`).
-    pub color_target: usize,
-    /// The colour wheel's in-progress drag. It lives here, not in the element,
-    /// because the settings tree is rebuilt every frame.
-    pub color_drag: Rc<RefCell<Option<crate::ui::color_picker::ColorPickerDrag>>>,
     /// Whether the Appearance page's theme-preset list is open.
     pub theme_select_open: bool,
     /// The theme menu's open flag, shared with the element that owns it. The
@@ -252,6 +246,11 @@ pub struct SettingsUiState {
     /// The theme colour channel whose palette popover is open (`None` while no
     /// channel's popover is up).
     pub color_palette_menu: Rc<RefCell<Option<usize>>>,
+    /// Every plain `SettingsSelect`'s open flag, keyed by the control's settings
+    /// path. The element tree is rebuilt every frame, so the flag has to be
+    /// app-owned for the menu to survive the rebuild (General's Permissions
+    /// select is the visible case).
+    pub select_open: Rc<RefCell<BTreeMap<String, Rc<RefCell<bool>>>>>,
     /// Where the Appearance page's menu triggers painted last frame.
     pub appearance_anchors: Rc<RefCell<AppearanceMenuAnchors>>,
     /// The environment page's drafts: the new-group name and the open group.
@@ -333,11 +332,10 @@ impl Default for SettingsUiState {
             folds: BTreeSet::new(),
             form: None,
             harnesses: Vec::new(),
-            color_target: 0,
-            color_drag: Rc::new(RefCell::new(None)),
             theme_select_open: false,
             theme_select_menu: Rc::new(RefCell::new(false)),
             color_palette_menu: Rc::new(RefCell::new(None)),
+            select_open: Rc::new(RefCell::new(BTreeMap::new())),
             appearance_anchors: Rc::new(RefCell::new(AppearanceMenuAnchors::default())),
             env_new_group: String::new(),
             env_open_group: None,
@@ -553,6 +551,37 @@ impl SettingsUiState {
             .position(|candidate| *candidate == page)
             .unwrap_or(0)
     }
+
+    /// The app-owned open flag and menu id for a plain select, keyed by its
+    /// control path. The cell is created on first use and kept for the life of
+    /// the settings state, so a per-frame element rebuild reads the same flag.
+    pub fn select_menu(&self, path: &str) -> (Rc<RefCell<bool>>, MenuId) {
+        let mut menus = self.select_open.borrow_mut();
+        let open = menus
+            .entry(path.to_string())
+            .or_insert_with(|| Rc::new(RefCell::new(false)));
+        (Rc::clone(open), select_menu_id(path))
+    }
+
+    /// Close every plain select menu. Called when the page changes so a menu
+    /// that belonged to the old page cannot reopen when the page comes back.
+    pub fn close_select_menus(&self) {
+        for open in self.select_open.borrow().values() {
+            *open.borrow_mut() = false;
+        }
+    }
+}
+
+/// A stable window-menu id for a settings select, so the one-menu-at-a-time
+/// registry and the outside-press dismiss can recognise it.
+fn select_menu_id(path: &str) -> MenuId {
+    match path {
+        "app.approval_mode" => "settings.select.app.approval_mode",
+        "remote.mode" => "settings.select.remote.mode",
+        "models.default" => "settings.select.models.default",
+        "connector-form.transport" => "settings.select.connector-form.transport",
+        _ => DEFAULT_MENU_ID,
+    }
 }
 
 /// The actions the settings surface dispatches. Every button, toggle, field
@@ -645,16 +674,8 @@ pub enum SettingsAction {
     OpenSettingsFolder,
 
     // ---- appearance -----------------------------------------------------
-    /// Pick which theme channel the colour wheel edits (index into
-    /// `color_picker::COLOR_TARGET_ORDER`).
-    SetColorTarget(usize),
     /// Open or close the theme-preset list.
     ToggleThemeSelect(bool),
-    /// A colour the wheel picked for `target`, written to `[theme] <channel>`.
-    SetColor {
-        target: usize,
-        hex: String,
-    },
 
     // ---- models ---------------------------------------------------------
     NewModel,
@@ -794,4 +815,33 @@ pub enum HostFormField {
     User,
     Port,
     Identity,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_select_open_cell_is_shared_by_path_across_state_clones() {
+        let state = SettingsUiState::default();
+        let (open, menu_id) = state.select_menu("app.approval_mode");
+        assert!(!*open.borrow());
+        assert_ne!(menu_id, DEFAULT_MENU_ID, "the permissions select is named");
+
+        *open.borrow_mut() = true;
+        let snapshot = state.clone();
+        let (same, same_id) = snapshot.select_menu("app.approval_mode");
+        assert!(Rc::ptr_eq(&open, &same), "the clone shares the same cell");
+        assert_eq!(menu_id, same_id);
+        assert!(*same.borrow(), "the menu is still open on the next frame");
+
+        snapshot.close_select_menus();
+        assert!(!*open.borrow(), "leaving the page closes it");
+
+        let (other, _) = state.select_menu("remote.mode");
+        assert!(
+            !Rc::ptr_eq(&open, &other),
+            "the map has one cell per control path"
+        );
+    }
 }

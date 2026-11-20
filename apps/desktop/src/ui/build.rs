@@ -2979,4 +2979,215 @@ mod tests {
         );
     }
 
+
+    /// Panel 1's trailing controls are exactly the More menu and the Overview
+    /// popover; the maximize/collapse and side-panel controls live in panel 2.
+    #[test]
+    fn panel_one_offers_only_more_and_overview() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        state.borrow_mut().right_sidebar_open = false;
+        let commands = render_element(&mut root, window(), &app);
+
+        let icons: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(icons.contains(&"ellipsis"), "the More control: {icons:?}");
+        assert!(icons.contains(&"flat-list"), "the Overview control: {icons:?}");
+        assert!(
+            !icons.contains(&"fullscreen-enter") && !icons.contains(&"fullscreen-exit"),
+            "panel 1 no longer offers maximize: {icons:?}"
+        );
+        assert_eq!(
+            icons.iter().filter(|name| **name == "left-panel-close").count(),
+            1,
+            "only the sidebar toggle uses the close glyph while panel 2 is closed: {icons:?}"
+        );
+
+        state.borrow_mut().right_sidebar_open = true;
+        let commands = render_element(&mut root, window(), &app);
+        let icons: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            icons.contains(&"fullscreen-enter"),
+            "panel 2 keeps maximize: {icons:?}"
+        );
+    }
+
+    /// The Overview button opens the anchored popover with its real sections,
+    /// and the popover paints after the body (the window's last paint layer).
+    #[test]
+    fn the_overview_popover_lists_its_sections_and_paints_above_the_body() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            *s.chrome_overview_open.borrow_mut() = true;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for expected in [
+            "Overview",
+            "Review",
+            "Files",
+            "Terminal",
+            "Background Tasks",
+            "Subagents",
+            "Workflows",
+        ] {
+            assert!(
+                texts.iter().any(|text| *text == expected),
+                "the Overview popover draws {expected:?}: {texts:?}"
+            );
+        }
+        let review = commands
+            .iter()
+            .position(|command| {
+                matches!(command, RenderCommand::DrawText { text, .. } if text == "Review")
+            })
+            .expect("the Review row");
+        let body = commands
+            .iter()
+            .position(|command| {
+                matches!(command, RenderCommand::DrawText { text, .. } if text == "Search or enter a URL")
+            })
+            .expect("the side-panel body");
+        assert!(
+            review > body,
+            "the popover paints after the shell body (Review {review}, body {body})"
+        );
+    }
+
+    /// Clicking the Overview icon toggles the popover, and its three data
+    /// groups fold through the app-owned section state.
+    #[test]
+    fn the_overview_icon_toggles_and_its_groups_fold() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let commands = render_element(&mut root, window(), &app);
+        let overview = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, size, .. } if name == "flat-list" => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the Overview trigger");
+        click(&mut root, &app, overview);
+        assert!(
+            *state.borrow().chrome_overview_open.borrow(),
+            "the Overview trigger opens the popover"
+        );
+
+        {
+            let mut s = state.borrow_mut();
+            s.collapsed_sections.insert("chrome.overview.subagents".to_string());
+            s.collapsed_sections
+                .insert("chrome.overview.background-tasks".to_string());
+            s.collapsed_sections
+                .insert("chrome.overview.workflows".to_string());
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for header in ["Background Tasks", "Subagents", "Workflows"] {
+            assert!(
+                texts.iter().any(|text| *text == header),
+                "the folded group keeps its header {header:?}: {texts:?}"
+            );
+        }
+        for empty in ["No background tasks", "No subagents", "No workflows"] {
+            assert!(
+                !texts.iter().any(|text| *text == empty),
+                "a folded group hides its body {empty:?}: {texts:?}"
+            );
+        }
+    }
+
+    /// The panel-2 chip strip is measured at its natural width and clipped: a
+    /// horizontal wheel shifts the strip's offset instead of squeezing chips.
+    #[test]
+    fn the_side_tab_strip_clips_and_scrolls_horizontally() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![SideTabKind::Agent; 12];
+            s.active_side_tab = 0;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::ClipRect(_))),
+            "the overflowing chip strip is clipped"
+        );
+        let agent_xs = |commands: &[RenderCommand]| -> Vec<f32> {
+            commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. }
+                        if text == "Agent" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                    {
+                        Some(origin.x)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let before = agent_xs(&commands);
+        assert!(!before.is_empty(), "the strip draws its chips: {before:?}");
+        let mut ctx = EventContext;
+        // The first chip's label is the measured strip's leading edge; aim at
+        // the strip itself, not the main section to its left.
+        let over_strip = vec2f(before[0] + 4.0, 20.0);
+        let _ = root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: over_strip,
+            },
+            &mut ctx,
+            &app,
+        );
+        let consumed = root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(-80.0, 0.0),
+                precise: false,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(consumed, "the horizontal notch belongs to the chip strip");
+        let commands = render_element(&mut root, window(), &app);
+        let after = agent_xs(&commands);
+        // The leading chip can scroll out of the clip, so compare every drawn
+        // chip: at least one previously visible chip must have moved left.
+        assert!(
+            before.iter().any(|old| after.iter().any(|new| old - new >= 40.0)),
+            "the horizontal wheel shifts the strip left ({before:?} -> {after:?})"
+        );
+    }
+
 }

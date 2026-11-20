@@ -4,7 +4,6 @@ use std::time::Instant;
 
 use goble_terminal::{KeyEncoder, MouseAction, TermMode};
 use goble_ui::elements::interactive::contains;
-use goble_ui::elements::TerminalGrid;
 use goble_ui::event::ModifiersState;
 use goble_ui::geometry::Vector2F;
 use goble_ui::Element;
@@ -14,8 +13,8 @@ use crate::terminal::{
     update_input_mirror, CopyAction, FindAction, TerminalKeyAction, TerminalMode,
 };
 
+use super::surface::row_pitch;
 use super::TerminalView;
-use super::{FONT_SIZE, LINE_HEIGHT};
 
 impl TerminalView {
     /// The encoding the running program negotiated, straight from the session.
@@ -177,26 +176,19 @@ impl TerminalView {
 
     /// End a mouse selection drag. Returns whether one was in progress.
     pub(super) fn end_mouse_selection(&mut self) -> bool {
-        self.terminal
-            .borrow_mut()
-            .end_selection(self.pane_id)
+        self.terminal.borrow_mut().end_selection(self.pane_id)
     }
 
     /// End a block-text selection drag. Returns whether one was in progress.
     pub(super) fn end_block_mouse_selection(&mut self) -> bool {
-        self.terminal
-            .borrow_mut()
-            .end_block_selection(self.pane_id)
+        self.terminal.borrow_mut().end_block_selection(self.pane_id)
     }
 
     /// Copy what a finished drag selected, the way grok-build does: the
     /// selection is on the clipboard as soon as the button comes up, with no
     /// Cmd+C. A drag that covers one cell is a click and copies nothing.
     pub(super) fn copy_dragged_selection(&mut self) {
-        let text = self
-            .terminal
-            .borrow()
-            .dragged_selection_text(self.pane_id);
+        let text = self.terminal.borrow().dragged_selection_text(self.pane_id);
         if let Some(text) = text {
             (self.on_copy.borrow_mut())(text);
         }
@@ -213,7 +205,7 @@ impl TerminalView {
         if delta_y == 0.0 {
             return false;
         }
-        let row_pitch = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT).max(1.0);
+        let row_pitch = row_pitch().max(1.0);
         let rows = {
             let mut reg = self.terminal.borrow_mut();
             let ui = reg.pane_ui_mut(self.pane_id);
@@ -299,9 +291,7 @@ impl TerminalView {
         let cmd = modifiers.ctrl || modifiers.command;
 
         if is_copy_mode_chord(key, modifiers) {
-            self.terminal
-                .borrow_mut()
-                .toggle_copy_mode(self.pane_id);
+            self.terminal.borrow_mut().toggle_copy_mode(self.pane_id);
             return true;
         }
 
@@ -330,9 +320,7 @@ impl TerminalView {
                     self.terminal.borrow_mut().find_previous(self.pane_id);
                 }
                 FindAction::ToggleRegex => {
-                    self.terminal
-                        .borrow_mut()
-                        .toggle_find_regex(self.pane_id);
+                    self.terminal.borrow_mut().toggle_find_regex(self.pane_id);
                 }
                 // Typing belongs to the search field, which is in the tree.
                 FindAction::Input => return false,
@@ -349,10 +337,7 @@ impl TerminalView {
             CopyAction::Move(motion) => {
                 self.terminal.borrow_mut().move_copy(self.pane_id, motion);
             }
-            CopyAction::Visual => self
-                .terminal
-                .borrow_mut()
-                .toggle_copy_visual(self.pane_id),
+            CopyAction::Visual => self.terminal.borrow_mut().toggle_copy_visual(self.pane_id),
             CopyAction::Yank => {
                 let text = self.terminal.borrow().copy_mode_yank_text(self.pane_id);
                 self.terminal.borrow_mut().finish_copy_yank(self.pane_id);
@@ -386,6 +371,12 @@ impl TerminalView {
     ///   pointer — warp's per-block filter, the same chord it uses.
     /// * Escape puts the whole-output filter away and restores the output.
     pub(super) fn handle_filter_key(&mut self, key: &str, modifiers: ModifiersState) -> bool {
+        // The dock and the side panel's Terminal tab have no filter or find
+        // chrome of their own: their chords would only put the pane into a
+        // mode with nowhere to type the query.
+        if self.grid_only {
+            return false;
+        }
         if key == "Escape" {
             let Some(filter) = self.plumbing.global_filter() else {
                 return false;

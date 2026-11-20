@@ -15,10 +15,10 @@ use goble_core::config::ConfigFile;
 use goble_ui::color::ColorU;
 use goble_ui::elements::settings::{
     SettingsButton, SettingsNav, SettingsNavGroup, SettingsNavItem, SettingsNotice,
-    SettingsNoticeKind, SettingsRow, SettingsRowStatus, SettingsRowStatusKind, SettingsSecretField,
-    SettingsSection, SettingsSelect, SettingsSlider, SettingsTextField, SettingsToggle,
-    SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING, SETTINGS_RAIL_WIDTH, SETTINGS_SECTION_GAP,
-    SETTINGS_SHEET_PADDING, SETTINGS_SHEET_WIDTH,
+    SettingsNoticeKind, SettingsRow, SettingsRowStatus, SettingsRowStatusKind,
+    SettingsSecretField, SettingsSection, SettingsSegmented, SettingsSelect, SettingsSlider,
+    SettingsTextField, SettingsToggle, SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING,
+    SETTINGS_RAIL_WIDTH, SETTINGS_SECTION_GAP, SETTINGS_SHEET_PADDING, SETTINGS_SHEET_WIDTH,
 };
 use goble_ui::elements::{
     AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, Element,
@@ -329,23 +329,7 @@ fn render_row(
     if let Some(reset) = row.reset.as_ref() {
         element = element.with_reset(reset_button(app, reset, actions));
     }
-    if let ControlModel::ColorWheel {
-        channel,
-        label,
-        stored,
-    } = &row.control
-    {
-        // The wheel is the row's full-width body: a 190pt wheel plus its
-        // swatch/hex readout, aligned under the label.
-        element = element.with_body(color_wheel_body(
-            app,
-            settings,
-            *channel,
-            label,
-            stored.as_deref(),
-            actions,
-        ));
-    } else if let Some(control) = render_control(app, row, settings, actions, focused, false) {
+    if let Some(control) = render_control(app, row, settings, actions, focused, false) {
         element = element.with_control(control);
     }
     if !row.children.is_empty() {
@@ -427,15 +411,53 @@ fn render_control(
                 ));
             }
             let path = path.clone();
+            // The open flag is app-owned, keyed by the control path: the tree is
+            // rebuilt every frame, so an element-local flag would shut the menu
+            // on the frame after it opened. Per-select menu ids keep the window's
+            // one-menu rule and the outside-press dismiss working.
+            let (open, menu_id) = settings.select_menu(&path);
+            let open_changed = Rc::clone(&settings.select_open);
+            let own_path = path.clone();
             SettingsSelect::new(options.clone())
                 .with_selected(*selected)
                 .with_disabled(*disabled)
                 .with_focused(focused)
+                .with_open(open)
+                .with_menu_id(menu_id)
+                .with_on_open_change(move |is_open| {
+                    if !is_open {
+                        return;
+                    }
+                    // Only one plain select menu may be up even if a second one
+                    // was opened from the keyboard before the registry saw it.
+                    for (candidate, cell) in open_changed.borrow().iter() {
+                        if candidate != &own_path {
+                            *cell.borrow_mut() = false;
+                        }
+                    }
+                })
                 .with_on_change(move |index| {
                     (dispatch.clone().borrow_mut())(SettingsAction::SetSelect {
                         path: path.clone(),
                         index,
                     });
+                })
+                .finish()
+        }
+        ControlModel::Segmented {
+            path,
+            options,
+            selected,
+            disabled,
+        } => {
+            let path = path.clone();
+            let dispatch = dispatch.clone();
+            SettingsSegmented::new(options.clone())
+                .with_selected(*selected)
+                .with_disabled(*disabled)
+                .with_focused(focused)
+                .with_on_change(move |index| {
+                    (dispatch.borrow_mut())(super::model::segment_action(&path, index));
                 })
                 .finish()
         }
@@ -566,86 +588,9 @@ fn render_control(
                 .finish()
         }
         ControlModel::Buttons(button_models) => action_buttons(app, button_models, actions),
-        // The wheel is drawn as the row's body (see `render_row`), not here.
-        ControlModel::ColorWheel { .. } => return None,
         ControlModel::None => return None,
     };
     Some(control)
-}
-
-/// A theme channel's token, so the wheel starts from the colour the live theme
-/// paints with when the file has no override for it.
-fn channel_token(channel: usize) -> ColorToken {
-    use crate::ui::color_picker::ColorTarget as T;
-    use crate::ui::color_picker::COLOR_TARGET_ORDER;
-    match COLOR_TARGET_ORDER
-        .get(channel)
-        .copied()
-        .unwrap_or(T::Accent)
-    {
-        T::Primary => ColorToken::Text,
-        T::Secondary => ColorToken::Muted,
-        T::Accent => ColorToken::Accent,
-        T::Background => ColorToken::Bg,
-        T::Surface => ColorToken::Surface,
-    }
-}
-
-/// The colour wheel body: the wheel, the channel's swatch and its exact hex.
-fn color_wheel_body(
-    app: &AppContext,
-    settings: &State,
-    channel: usize,
-    label: &str,
-    stored: Option<&str>,
-    actions: &SettingsActions,
-) -> Box<dyn Element> {
-    let current = stored
-        .and_then(ColorU::from_hex)
-        .unwrap_or_else(|| app.theme.color(channel_token(channel)));
-    let dispatch = actions.dispatch.clone();
-    let hex = current.to_hex_string();
-    let channel_index = channel;
-    let wheel = crate::ui::color_picker::ColorWheel::new(current)
-        .with_drag(Rc::clone(&settings.color_drag))
-        .with_on_change(move |color: ColorU| {
-            (dispatch.borrow_mut())(SettingsAction::SetColor {
-                target: channel_index,
-                hex: color.to_hex_string(),
-            });
-        });
-    let wheel_box: Box<dyn Element> = Box::new(wheel);
-    let swatch = Container::new(
-        goble_ui::elements::Empty::new()
-            .with_size(vec2f(18.0, 18.0))
-            .finish(),
-    )
-    .with_background(Fill::Solid(current))
-    .with_border(
-        goble_ui::elements::Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)),
-    )
-    .with_corner_radius(5.0)
-    .finish();
-    let swatch = ConstrainedBox::new(swatch)
-        .with_width(18.0)
-        .with_height(18.0)
-        .finish();
-    let label = Text::new(format!("{label} · {hex}"))
-        .with_font_size(12.0)
-        .with_color(app.theme.color(ColorToken::Text))
-        .finish();
-    let readout = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(7.0)
-        .with_child(swatch)
-        .with_child(label)
-        .finish();
-    Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(18.0)
-        .with_child(wheel_box)
-        .with_child(readout)
-        .finish()
 }
 
 /// The add/edit side sheet: a docked panel on the settings pane's trailing
@@ -957,5 +902,86 @@ impl Element for DismissLayer {
             | DispatchedEvent::Scroll { .. } => true,
             _ => false,
         }
+    }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goble_ui::test_util::render_element;
+
+    fn press(page: &mut Box<dyn Element>, app: &AppContext, at: Vector2F) -> bool {
+        let mut ctx = EventContext::default();
+        let down = page.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            &mut ctx,
+            app,
+        );
+        let up = page.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
+            &mut ctx,
+            app,
+        );
+        down && up
+    }
+
+    fn text_origin(
+        commands: &[goble_ui::render::RenderCommand],
+        needle: &str,
+    ) -> Option<Vector2F> {
+        commands.iter().find_map(|command| match command {
+            goble_ui::render::RenderCommand::DrawText { origin, text, .. } if text == needle => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_plain_select_stays_open_across_the_next_page_build() {
+        let state = State::default();
+        let actions = SettingsActions::new(|_| {});
+        let app = AppContext::default();
+        let model = super::super::pages::page_model(SettingsCategory::General, &state);
+
+        // The page has to be laid out and painted before an event can hit-test
+        // it, exactly as the root view does each frame.
+        let mut page = render_page(&app, &model, &state, &actions);
+        let commands = render_element(&mut page, vec2f(900.0, 2000.0), &app);
+        let origin = text_origin(&commands, "Default").expect("the Permissions trigger label");
+        assert!(press(
+            &mut page,
+            &app,
+            vec2f(origin.x + 2.0, origin.y + 2.0)
+        ));
+        let (open, _) = state.select_menu("app.approval_mode");
+        assert!(*open.borrow(), "the press opens the Permissions select");
+
+        // The next frame rebuilds the whole page; the app-owned cell keeps the
+        // menu up and the renderer draws its options again.
+        let model = super::super::pages::page_model(SettingsCategory::General, &state);
+        let mut page = render_page(&app, &model, &state, &actions);
+        let commands = render_element(&mut page, vec2f(900.0, 2000.0), &app);
+        assert!(
+            text_origin(&commands, "Plan").is_some(),
+            "the open select still draws its menu"
+        );
+
+        // Choosing a row closes it.
+        let origin = text_origin(&commands, "Plan").expect("the menu row");
+        assert!(press(
+            &mut page,
+            &app,
+            vec2f(origin.x + 2.0, origin.y + 2.0)
+        ));
+        assert!(!*open.borrow(), "choosing a row closes the select");
     }
 }

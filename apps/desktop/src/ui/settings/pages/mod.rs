@@ -282,13 +282,15 @@ pub fn control_text(row: &RowModel) -> String {
         } => options.get(*selected).cloned().unwrap_or_default(),
         ControlModel::Text { value, .. } => value.clone(),
         ControlModel::Slider { value, .. } => format_number(*value),
+        ControlModel::Segmented {
+            options, selected, ..
+        } => options.get(*selected).cloned().unwrap_or_default(),
         ControlModel::ReadOnly { text } => text.clone(),
         ControlModel::Buttons(actions) => actions
             .iter()
             .map(|action| action.label.clone())
             .collect::<Vec<_>>()
             .join(" · "),
-        ControlModel::ColorWheel { label, .. } => label.clone(),
         ControlModel::None => String::new(),
     }
 }

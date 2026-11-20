@@ -5,16 +5,22 @@
 //! the bordered content. The strip owns the top edge for both the sidebar and
 //! the panes; the sidebar and the panel header start below it.
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use goble_ui::color::ColorU;
+use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
-    Expanded, Fill, Flex, HoverRow, Icon, MainAxisSize, PopupMenu, PopupMenuItem,
-    PopupMenuPosition, Scrollable, SearchInput, Spacer, Text, Tooltip, TooltipPosition,
-    TopbarButton,
+    AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
+    Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisSize,
+    MenuId, MenuPointer, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition,
+    Scrollable, ScrollState, SearchInput, SizeConstraint, Spacer, Stack, Text, Tooltip,
+    TooltipPosition, TopbarButton,
 };
-use goble_ui::geometry::vec2f;
-use goble_ui::platform::text_atlas::FontWeight;
-use goble_ui::theme::ColorToken;
+use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY};
+use goble_ui::geometry::{vec2f, PointF, RectF, Size2F, Vector2F};
+use goble_ui::platform::text_atlas::{advance_width, FontWeight};
+use goble_ui::theme::{ColorToken, FontFamily};
 
 use crate::state::{SideTabAction, SideTabKind};
 use crate::ui::{DiffPanelAction, PaneKind, SidebarView, UiActions, UiSnapshot};
@@ -60,6 +66,50 @@ const MAIN_SECTION_LEFT_PADDING: f32 = 16.0;
 const MAIN_SECTION_RIGHT_PADDING: f32 = 12.0;
 /// The side-panel section's inset on both sides.
 const SIDE_SECTION_PADDING: f32 = 12.0;
+
+/// The Overview popover's width, corner radius and the gap under its trigger.
+/// It is a list of the active pane's actions and live work, not a document, so
+/// it stays narrower than the Overview side tab it duplicates.
+const OVERVIEW_POPOVER_WIDTH: f32 = 344.0;
+const OVERVIEW_POPOVER_RADIUS: f32 = 12.0;
+const OVERVIEW_POPOVER_GAP: f32 = 6.0;
+/// The room the floating panel keeps from the window's edges, and the most of
+/// the window's height its scrolled body may take.
+const OVERVIEW_EDGE_MARGIN: f32 = 8.0;
+const OVERVIEW_MAX_HEIGHT_FRACTION: f32 = 0.6;
+/// The popover's label in the window's shared open-menu state: it takes part in
+/// the one-menu-at-a-time rule and the root's outside-press/Escape dismissal.
+const OVERVIEW_MENU_ID: MenuId = "chrome.overview";
+/// The `collapsed_sections` keys the three collapsible Overview groups use.
+/// They live in app state (the same cell the sidebar groups use), so a fold
+/// survives the per-frame rebuild and a closed/reopened popover.
+const OVERVIEW_TASKS_KEY: &str = "chrome.overview.background-tasks";
+const OVERVIEW_SUBAGENTS_KEY: &str = "chrome.overview.subagents";
+const OVERVIEW_WORKFLOWS_KEY: &str = "chrome.overview.workflows";
+
+thread_local! {
+    // Session-only element state the snapshot has no field for: the tab
+    // strip's horizontal scroll offset and the Overview popover's keyboard
+    // highlight. The tree is rebuilt every frame, so a value held in the
+    // element would reset each frame; a `UiActions`/snapshot field would be
+    // the durable home, but that is outside this file's scope. These cells
+    // live for the process's UI thread, so they persist for the session (and
+    // are deliberately not saved to disk).
+    static SIDE_TAB_SCROLL: Rc<RefCell<ScrollState>> =
+        Rc::new(RefCell::new(ScrollState::default()));
+    static OVERVIEW_SCROLL: Rc<RefCell<ScrollState>> =
+        Rc::new(RefCell::new(ScrollState::default()));
+    static OVERVIEW_HIGHLIGHT: Cell<usize> = Cell::new(0);
+    static SIDE_TAB_REVEAL: Cell<Option<(usize, usize, f32)>> = Cell::new(None);
+}
+
+fn side_tab_scroll() -> Rc<RefCell<ScrollState>> {
+    SIDE_TAB_SCROLL.with(Rc::clone)
+}
+
+fn overview_scroll() -> Rc<RefCell<ScrollState>> {
+    OVERVIEW_SCROLL.with(Rc::clone)
+}
 
 /// The room the window controls take at the strip's leading edge. On macOS the
 /// OS draws the real traffic lights over this strip, so the whole band stays
@@ -252,18 +302,30 @@ pub fn build_chrome_row(
             _ => {}
         })
         .finish();
-    let on_panel = actions.on_toggle_right_sidebar.clone();
     let panel_open = state.right_sidebar_open;
-    let panel_button = button_click(
-        app,
-        if panel_open {
-            "left-panel-close"
-        } else {
-            "left-panel-open"
-        },
-        "Toggle side panel",
-        move || (on_panel.borrow_mut())(),
-    );
+
+    // Panel 1's trailing controls are the More menu and the Overview popover
+    // only. Maximize/collapse and the side-panel toggle moved into panel 2's
+    // section below (the panel's own section owns its window controls).
+    let overview_anchor = Rc::new(RefCell::new(None::<RectF>));
+    let overview_open = state.chrome_overview_open.clone();
+    let overview_active = *overview_open.borrow();
+    let toggle_overview = overview_open.clone();
+    let overview_button = Tooltip::new(
+        TopbarButton::new(glyph(app, "flat-list"))
+            .with_size(CONTROL_BUTTON_SIZE)
+            .with_corner_radius(8.0)
+            .with_active(overview_active)
+            .with_on_click(move || {
+                let mut open = toggle_overview.borrow_mut();
+                *open = !*open;
+            })
+            .finish(),
+        "Overview",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    let overview_button = AnchorProbe::new(overview_button, overview_anchor.clone()).finish();
 
     let main_section = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
@@ -271,7 +333,7 @@ pub fn build_chrome_row(
         .with_spacing(CONTROL_SPACING)
         .with_child(Expanded::new(title).finish())
         .with_child(more)
-        .with_child(panel_button)
+        .with_child(overview_button)
         .finish();
     let main_section = Container::new(main_section)
         .with_padding(EdgeInsets::new(
@@ -290,14 +352,18 @@ pub fn build_chrome_row(
         .with_child(Expanded::new(main_section).finish());
     if panel_open {
         let maximized = state.side_panel_maximized;
-        let side_tabs = side_tabs::build_tab_strip(app, state, actions);
+        // The chip strip is measured at its natural width and clipped to the
+        // section's remaining width; horizontal wheel/trackpad travel scrolls
+        // that measured strip instead of squeezing the chips. The `+` and the
+        // window controls stay pinned at the far right.
+        let tab_strip = TabStripScroller::new(app, state, actions).finish();
         let on_max = actions.on_toggle_side_panel_maximized.clone();
         let on_close = actions.on_toggle_right_sidebar.clone();
         let side_section = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(CONTROL_SPACING)
-            .with_child(Expanded::new(side_tabs).finish())
+            .with_child(Expanded::new(tab_strip).finish())
             .with_child(side_tab_add_menu(app, state, actions))
             .with_child(button_click(
                 app,
@@ -316,7 +382,7 @@ pub fn build_chrome_row(
             .with_child(button_click(
                 app,
                 "left-panel-close",
-                "Collapse side panel",
+                "Toggle side panel",
                 move || (on_close.borrow_mut())(),
             ))
             .finish();
@@ -338,8 +404,32 @@ pub fn build_chrome_row(
     let strip = ConstrainedBox::new(strip.finish())
         .with_height(CHROME_HEIGHT)
         .finish();
-    Container::new(strip)
+    let row = Container::new(strip)
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .finish();
+
+    // The Overview panel is a real anchored popover, not a menu bolted onto the
+    // button: the button records its rect and the popover lays itself below it.
+    // It is queued into the window's last-painted hover layer, so it paints
+    // above the body, the sidebar and the side panel rather than being covered
+    // by the next sibling.
+    let close_overview: Rc<RefCell<dyn FnMut()>> = {
+        let open = state.chrome_overview_open.clone();
+        Rc::new(RefCell::new(move || *open.borrow_mut() = false))
+    };
+    let (popover_content, popover_actions) =
+        build_overview_popover_content(app, state, actions, close_overview.clone());
+    let popover = OverviewPopover::new(
+        state.chrome_overview_open.clone(),
+        overview_anchor,
+        popover_content,
+        popover_actions,
+        close_overview,
+    )
+    .finish();
+    Stack::new()
+        .with_children(vec![row])
+        .with_overlay(popover, vec2f(0.0, 0.0))
         .finish()
 }
 
@@ -497,6 +587,853 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
     let mut truncated: String = text.chars().take(max_chars.saturating_sub(1)).collect();
     truncated.push('…');
     truncated
+}
+
+/// The chip strip's width measurements, used to reveal the tab the state says
+/// is selected. These mirror `side_tabs.rs`'s chip geometry: the strip measures
+/// each chip at its natural label width, then clips and offsets the whole row.
+const TAB_STRIP_GAP: f32 = 4.0;
+const TAB_STRIP_ICON: f32 = 13.0;
+const TAB_STRIP_PADDING_X: f32 = 8.0;
+const TAB_STRIP_LABEL_GAP: f32 = 6.0;
+const TAB_STRIP_CLOSE: f32 = 14.0;
+const TAB_STRIP_CLOSE_GAP: f32 = 4.0;
+
+/// The panel-2 tab strip: the measured chip row inside a clipped, horizontally
+/// scrollable viewport. It reveals the selected chip when the selection or the
+/// viewport changes, so choosing an off-screen tab still shows its chip; a
+/// wheel after that moves the offset freely (the reveal does not re-run until
+/// the selection changes again).
+struct TabStripScroller {
+    scrollable: Scrollable,
+    widths: Vec<f32>,
+    active: usize,
+    tabs: usize,
+    scroll: Rc<RefCell<ScrollState>>,
+}
+
+impl TabStripScroller {
+    fn new(
+        app: &AppContext,
+        state: &UiSnapshot,
+        actions: &UiActions,
+    ) -> Self {
+        let widths = state
+            .side_tabs
+            .iter()
+            .map(|kind| {
+                let label = advance_width(
+                    kind.title(),
+                    12.5,
+                    FontWeight::Medium,
+                    FontFamily::System,
+                    false,
+                );
+                TAB_STRIP_PADDING_X * 2.0
+                    + TAB_STRIP_ICON
+                    + TAB_STRIP_LABEL_GAP
+                    + label
+                    + TAB_STRIP_CLOSE_GAP
+                    + TAB_STRIP_CLOSE
+            })
+            .collect();
+        let scroll = side_tab_scroll();
+        let scrollable = Scrollable::new(
+            side_tabs::build_tab_strip(app, state, actions),
+            Axis::Horizontal,
+        )
+        .with_state(Rc::clone(&scroll));
+        Self {
+            scrollable,
+            widths,
+            active: state.active_side_tab,
+            tabs: state.side_tabs.len(),
+            scroll,
+        }
+    }
+
+    fn reveal_selected(&self, viewport: f32) {
+        if viewport <= 0.0 || self.widths.is_empty() {
+            return;
+        }
+        let key = (self.active, self.tabs, viewport);
+        let already = SIDE_TAB_REVEAL.with(|last| last.get() == Some(key));
+        if already {
+            return;
+        }
+        SIDE_TAB_REVEAL.with(|last| last.set(Some(key)));
+
+        let mut state = self.scroll.borrow_mut();
+        let current = state.offset();
+        let max = state.max_offset();
+        let start = self.widths.iter().take(self.active).sum::<f32>()
+            + TAB_STRIP_GAP * self.active as f32;
+        let end = start + self.widths.get(self.active).copied().unwrap_or(0.0);
+        let target = if start < current {
+            start
+        } else if end > current + viewport {
+            end - viewport
+        } else {
+            current
+        }
+        .clamp(0.0, max);
+        if (target - current).abs() > 0.5 {
+            state.scroll_by(target - current);
+        }
+    }
+}
+
+impl Element for TabStripScroller {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.scrollable.layout(constraint, ctx, app);
+        self.reveal_selected(size.x);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.scrollable.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.scrollable.size()
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.scrollable.origin()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.scrollable.dispatch_event(event, ctx, app)
+    }
+}
+
+/// Records the rect the Overview trigger painted at. The popover is anchored
+/// to the control that opens it, and the control paints before the popover in
+/// the same frame.
+struct AnchorProbe {
+    child: Box<dyn Element>,
+    rect: Rc<RefCell<Option<RectF>>>,
+}
+
+impl AnchorProbe {
+    fn new(child: Box<dyn Element>, rect: Rc<RefCell<Option<RectF>>>) -> Self {
+        Self { child, rect }
+    }
+}
+
+impl Element for AnchorProbe {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        self.child.layout(constraint, ctx, app)
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        let size = self.child.size().unwrap_or(Vector2F::zero());
+        *self.rect.borrow_mut() = Some(RectF::new(
+            PointF::new(origin.x, origin.y),
+            Size2F::new(size.x, size.y),
+        ));
+        self.child.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.child.size()
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.child.origin()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, ctx, app)
+    }
+}
+
+/// One row of the Overview popover that the keyboard can land on.
+struct OverviewAction {
+    run: Rc<RefCell<dyn FnMut()>>,
+    /// A section fold stays open; an action row closes the popover after it
+    /// runs, the way choosing a menu item does.
+    closes: bool,
+}
+
+/// The Overview popover's anchored panel.
+///
+/// The panel is queued into `AppContext::hover_chips`, the window's last paint,
+/// so it is drawn above the shell body rather than under the next sibling. The
+/// element itself has the panel's laid-out size so `bounds()` is the panel's
+/// rect, but `Stack` overlays do not grow the strip.
+struct OverviewPopover {
+    open: Rc<RefCell<bool>>,
+    anchor: Rc<RefCell<Option<RectF>>>,
+    content: Rc<RefCell<Box<dyn Element>>>,
+    actions: Vec<OverviewAction>,
+    on_close: Rc<RefCell<dyn FnMut()>>,
+    window: Option<Vector2F>,
+    pointer_inside: bool,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl OverviewPopover {
+    fn new(
+        open: Rc<RefCell<bool>>,
+        anchor: Rc<RefCell<Option<RectF>>>,
+        content: Rc<RefCell<Box<dyn Element>>>,
+        actions: Vec<OverviewAction>,
+        on_close: Rc<RefCell<dyn FnMut()>>,
+    ) -> Self {
+        Self {
+            open,
+            anchor,
+            content,
+            actions,
+            on_close,
+            window: None,
+            pointer_inside: false,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn width(&self) -> f32 {
+        match self.window {
+            Some(window) => {
+                OVERVIEW_POPOVER_WIDTH.min((window.x - OVERVIEW_EDGE_MARGIN * 2.0).max(220.0))
+            }
+            None => OVERVIEW_POPOVER_WIDTH,
+        }
+    }
+
+    fn cap(&self) -> Option<f32> {
+        self.window
+            .map(|window| (window.y * OVERVIEW_MAX_HEIGHT_FRACTION).max(160.0))
+    }
+
+    /// Below the trigger and trailing-aligned with it, then clamped inside the
+    /// window's edges. `None` for the window (an offline tree laid out loose)
+    /// means there is no edge to clamp against.
+    fn place(&self, size: Vector2F) -> Vector2F {
+        let anchor = *self.anchor.borrow();
+        let Some(window) = self.window else {
+            return match anchor {
+                Some(anchor) => {
+                    vec2f(anchor.max_x() - size.x, anchor.max_y() + OVERVIEW_POPOVER_GAP)
+                }
+                None => vec2f(0.0, CHROME_HEIGHT + OVERVIEW_POPOVER_GAP),
+            };
+        };
+        let (x, y) = match anchor {
+            Some(anchor) => {
+                (anchor.max_x() - size.x, anchor.max_y() + OVERVIEW_POPOVER_GAP)
+            }
+            None => (
+                window.x - size.x - OVERVIEW_EDGE_MARGIN,
+                CHROME_HEIGHT + OVERVIEW_POPOVER_GAP,
+            ),
+        };
+        vec2f(
+            x.min(window.x - size.x - OVERVIEW_EDGE_MARGIN)
+                .max(OVERVIEW_EDGE_MARGIN),
+            y.min(window.y - size.y - OVERVIEW_EDGE_MARGIN)
+                .max(OVERVIEW_EDGE_MARGIN),
+        )
+    }
+
+    fn close(&self) {
+        (self.on_close.borrow_mut())();
+        OVERVIEW_HIGHLIGHT.with(|highlight| highlight.set(0));
+        overview_scroll().borrow_mut().reset();
+    }
+
+    fn handle_key(&mut self, event: &DispatchedEvent) -> bool {
+        if !*self.open.borrow() {
+            return false;
+        }
+        let DispatchedEvent::KeyDown { key, modifiers } = event else {
+            return false;
+        };
+        // A chorded key belongs to the workspace behind the popover; only the
+        // popover's own navigation keys are taken.
+        if modifiers.command || modifiers.ctrl || modifiers.alt {
+            return false;
+        }
+        match key.as_str() {
+            "Escape" => {
+                self.close();
+                true
+            }
+            "ArrowDown" | "ArrowUp" => {
+                let len = self.actions.len();
+                if len == 0 {
+                    return true;
+                }
+                let delta = if key == "ArrowDown" { 1 } else { -1 };
+                let current = OVERVIEW_HIGHLIGHT.with(Cell::get).min(len - 1) as isize;
+                let next = (current + delta).rem_euclid(len as isize) as usize;
+                OVERVIEW_HIGHLIGHT.with(|highlight| highlight.set(next));
+                true
+            }
+            "Enter" => {
+                let len = self.actions.len();
+                if len == 0 {
+                    return true;
+                }
+                let index = OVERVIEW_HIGHLIGHT.with(Cell::get).min(len - 1);
+                let action = &self.actions[index];
+                (action.run.borrow_mut())();
+                if action.closes {
+                    self.close();
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Element for OverviewPopover {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        self.window = constraint.max.x.is_finite().then_some(constraint.max);
+        if !*self.open.borrow() {
+            self.pointer_inside = false;
+            OVERVIEW_HIGHLIGHT.with(|highlight| highlight.set(0));
+            overview_scroll().borrow_mut().reset();
+            self.size = None;
+            return Vector2F::zero();
+        }
+        let width = self.width();
+        let cap = self
+            .cap()
+            .filter(|cap| cap.is_finite())
+            .unwrap_or(f32::INFINITY);
+        let size = self.content.borrow_mut().layout(
+            SizeConstraint::new(vec2f(width, 0.0), vec2f(width, cap)),
+            ctx,
+            app,
+        );
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, _origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        if !*self.open.borrow() {
+            self.size = None;
+            return;
+        }
+        let Some(size) = self.size else {
+            return;
+        };
+        let at = self.place(size);
+        self.origin = Some(Point::from_vec2f(at, Default::default()));
+        let panel = RectF::new(PointF::new(at.x, at.y), Size2F::new(size.x, size.y));
+        self.pointer_inside = ctx.cursor_inside && contains(panel, ctx.cursor_position);
+        // The popover is one of the window's menus: it claims the shared open
+        // state, so opening another menu closes it and an outside press or
+        // Escape is handled by the root before the tree.
+        if app.open_menus.id() != Some(OVERVIEW_MENU_ID) {
+            app.open_menus
+                .open(OVERVIEW_MENU_ID, self.on_close.clone());
+        }
+        app.open_menus.report(
+            OVERVIEW_MENU_ID,
+            self.on_close.clone(),
+            vec![panel],
+            MenuPointer::Paint,
+        );
+        if let Some(anchor) = *self.anchor.borrow() {
+            app.open_menus.report_anchor(OVERVIEW_MENU_ID, anchor);
+        }
+        // The layer paints it last, after the whole shell; the owner keeps the
+        // handle for layout and events.
+        app.hover_chips
+            .borrow_mut()
+            .push_shared(at, Rc::clone(&self.content));
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        if !*self.open.borrow() {
+            return false;
+        }
+        if matches!(event, DispatchedEvent::KeyDown { .. }) {
+            return self.handle_key(event);
+        }
+        // Wheel events carry no position: only the panel under the pointer
+        // receives them, so a wheel over the workspace keeps going to the
+        // workspace.
+        if let DispatchedEvent::Scroll { .. } = event {
+            if !self.pointer_inside {
+                return false;
+            }
+            return self.content.borrow_mut().dispatch_event(event, ctx, app);
+        }
+        let Some(position) = event_position(event) else {
+            return false;
+        };
+        let Some(panel) = self.bounds() else {
+            return false;
+        };
+        if contains(panel, position) {
+            let consumed = self.content.borrow_mut().dispatch_event(event, ctx, app);
+            return consumed
+                || matches!(
+                    event,
+                    DispatchedEvent::MouseDown { .. } | DispatchedEvent::MouseUp { .. }
+                );
+        }
+        // The trigger owns its own press: it toggles the popover through the
+        // button instead of being swallowed here.
+        if self
+            .anchor
+            .borrow()
+            .is_some_and(|anchor| contains(anchor, position))
+        {
+            return false;
+        }
+        if matches!(
+            event,
+            DispatchedEvent::MouseDown {
+                button: BUTTON_PRIMARY,
+                ..
+            }
+        ) {
+            self.close();
+        }
+        false
+    }
+}
+
+/// The pointer position a mouse event carries, if any.
+fn event_position(event: &DispatchedEvent) -> Option<Vector2F> {
+    match event {
+        DispatchedEvent::MouseDown { position, .. }
+        | DispatchedEvent::MouseUp { position, .. }
+        | DispatchedEvent::MouseMove { position } => Some(*position),
+        _ => None,
+    }
+}
+
+fn section_collapsed(state: &UiSnapshot, key: &str) -> bool {
+    state.collapsed_sections.iter().any(|section| section == key)
+}
+
+fn overview_popover_header(app: &AppContext, on_close: Rc<RefCell<dyn FnMut()>>) -> Box<dyn Element> {
+    let close = TopbarButton::new(
+        Icon::new("x-close")
+            .with_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(22.0)
+    .with_corner_radius(6.0)
+    .with_on_click(move || (on_close.borrow_mut())())
+    .finish();
+    Container::new(
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(8.0)
+            .with_child(
+                Text::new("Overview")
+                    .with_font_size(13.0)
+                    .with_weight(FontWeight::Medium)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_max_lines(1)
+                    .finish(),
+            )
+            .with_child(Spacer::new().finish())
+            .with_child(close)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(2.0, 0.0, 2.0, 6.0))
+    .finish()
+}
+
+fn overview_row_content(
+    app: &AppContext,
+    icon: &'static str,
+    label: &str,
+    trailing: Option<String>,
+    label_color: ColorToken,
+) -> Box<dyn Element> {
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.0)
+        .with_child(
+            Icon::new(icon)
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_child(
+            Expanded::new(
+                Text::new(label.to_string())
+                    .with_font_size(12.5)
+                    .with_theme_color(label_color, app)
+                    .with_max_lines(1)
+                    .finish(),
+            )
+            .finish(),
+        );
+    if let Some(trailing) = trailing.filter(|value| !value.trim().is_empty()) {
+        row = row.with_child(
+            Text::new(trailing)
+                .with_font_size(10.5)
+                .with_theme_color(ColorToken::Muted, app)
+                .with_max_lines(1)
+                .finish(),
+        );
+    }
+    row.finish()
+}
+
+fn overview_action_row(
+    app: &AppContext,
+    icon: &'static str,
+    label: &str,
+    selected: bool,
+    run: Rc<RefCell<dyn FnMut()>>,
+    closes: bool,
+    on_close: Rc<RefCell<dyn FnMut()>>,
+) -> (Box<dyn Element>, OverviewAction) {
+    let content = overview_row_content(app, icon, label, None, ColorToken::Text);
+    let click_run = Rc::clone(&run);
+    let click_close = Rc::clone(&on_close);
+    let row = HoverRow::new(content)
+        .with_selected(selected)
+        .with_padding(EdgeInsets::new(6.0, 5.0, 6.0, 5.0))
+        .with_corner_radius(6.0)
+        .with_on_click(move || {
+            (click_run.borrow_mut())();
+            if closes {
+                (click_close.borrow_mut())();
+            }
+        })
+        .finish();
+    (row, OverviewAction { run, closes })
+}
+
+fn overview_section_header(
+    app: &AppContext,
+    label: &str,
+    count: usize,
+    collapsed: bool,
+    selected: bool,
+    key: &'static str,
+    on_toggle: Rc<RefCell<dyn FnMut(String)>>,
+) -> (Box<dyn Element>, OverviewAction) {
+    let run: Rc<RefCell<dyn FnMut()>> = {
+        let on_toggle = Rc::clone(&on_toggle);
+        let key = key.to_string();
+        Rc::new(RefCell::new(move || (on_toggle.borrow_mut())(key.clone())))
+    };
+    let click_run = Rc::clone(&run);
+    let content = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(
+            Icon::new(if collapsed {
+                "chevron-right"
+            } else {
+                "chevron-down"
+            })
+            .with_size(11.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+        )
+        .with_child(
+            Text::new(label.to_string())
+                .with_font_size(11.0)
+                .with_weight(FontWeight::Medium)
+                .with_theme_color(ColorToken::Muted, app)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish())
+        .with_child(
+            Text::new(count.to_string())
+                .with_font_size(10.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .finish();
+    let row = HoverRow::new(content)
+        .with_selected(selected)
+        .with_padding(EdgeInsets::new(8.0, 4.0, 6.0, 4.0))
+        .with_corner_radius(6.0)
+        .with_on_click(move || (click_run.borrow_mut())())
+        .finish();
+    (row, OverviewAction { run, closes: false })
+}
+
+fn overview_empty_line(app: &AppContext, text: &str) -> Box<dyn Element> {
+    Container::new(
+        Text::new(text.to_string())
+            .with_font_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .with_max_lines(1)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(24.0, 3.0, 6.0, 5.0))
+    .finish()
+}
+
+fn overview_info_row(app: &AppContext, icon: &'static str, label: &str) -> Box<dyn Element> {
+    Container::new(overview_row_content(
+        app,
+        icon,
+        label,
+        None,
+        ColorToken::Text,
+    ))
+    .with_padding(EdgeInsets::new(24.0, 4.0, 6.0, 4.0))
+    .finish()
+}
+
+/// The Overview popover's body: the active pane's real Review/Files/Terminal
+/// actions, then the live background-task and sub-agent rows and the registered
+/// workflows. The last three groups fold through the same app-owned
+/// `collapsed_sections` cell the sidebar uses.
+fn build_overview_popover_content(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    on_close: Rc<RefCell<dyn FnMut()>>,
+) -> (Rc<RefCell<Box<dyn Element>>>, Vec<OverviewAction>) {
+    let highlight = OVERVIEW_HIGHLIGHT.with(Cell::get);
+    let active = state.active_pane_id;
+    let mut flat: Vec<OverviewAction> = Vec::new();
+    let mut body = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(2.0)
+        .with_child(overview_popover_header(app, Rc::clone(&on_close)));
+
+    let on_diff = actions.on_diff_panel.clone();
+    let review = Rc::new(RefCell::new(move || {
+        (on_diff.borrow_mut())(active, DiffPanelAction::Open(None))
+    }));
+    let (row, action) = overview_action_row(
+        app,
+        "file",
+        "Review",
+        flat.len() == highlight,
+        review,
+        true,
+        Rc::clone(&on_close),
+    );
+    body = body.with_child(row);
+    flat.push(action);
+
+    let on_explorer = actions.on_select_sidebar_view.clone();
+    let files = Rc::new(RefCell::new(move || {
+        (on_explorer.borrow_mut())(SidebarView::Explorer)
+    }));
+    let (row, action) = overview_action_row(
+        app,
+        "folder",
+        "Files",
+        flat.len() == highlight,
+        files,
+        true,
+        Rc::clone(&on_close),
+    );
+    body = body.with_child(row);
+    flat.push(action);
+
+    let on_terminal = actions.on_toggle_terminal_dock.clone();
+    let terminal = Rc::new(RefCell::new(move || (on_terminal.borrow_mut())(active)));
+    let (row, action) = overview_action_row(
+        app,
+        "terminal",
+        "Terminal",
+        flat.len() == highlight,
+        terminal,
+        true,
+        Rc::clone(&on_close),
+    );
+    body = body.with_child(row);
+    flat.push(action);
+
+    let on_toggle_section = actions.on_toggle_section.clone();
+    let tasks: Vec<_> = state
+        .pane_live_work
+        .get(&active)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item.kind == crate::state::PaneWorkKind::Task)
+                .collect()
+        })
+        .unwrap_or_default();
+    let tasks_collapsed = section_collapsed(state, OVERVIEW_TASKS_KEY);
+    let (header, action) = overview_section_header(
+        app,
+        "Background Tasks",
+        tasks.len(),
+        tasks_collapsed,
+        flat.len() == highlight,
+        OVERVIEW_TASKS_KEY,
+        Rc::clone(&on_toggle_section),
+    );
+    body = body.with_child(header);
+    flat.push(action);
+    if !tasks_collapsed {
+        if tasks.is_empty() {
+            body = body.with_child(overview_empty_line(app, "No background tasks"));
+        } else {
+            for task in tasks {
+                let label = if task.description.trim().is_empty() {
+                    "Background task"
+                } else {
+                    task.description.as_str()
+                };
+                body = body.with_child(overview_info_row(app, "terminal-input", label));
+            }
+        }
+    }
+
+    let mut subagents: Vec<_> = state
+        .pane_chat
+        .get(&active)
+        .map(|pane| pane.sub_agents.values().cloned().collect())
+        .unwrap_or_default();
+    subagents.sort_by(|left, right| {
+        left.description
+            .cmp(&right.description)
+            .then_with(|| left.child_id.cmp(&right.child_id))
+    });
+    let subagents_collapsed = section_collapsed(state, OVERVIEW_SUBAGENTS_KEY);
+    let (header, action) = overview_section_header(
+        app,
+        "Subagents",
+        subagents.len(),
+        subagents_collapsed,
+        flat.len() == highlight,
+        OVERVIEW_SUBAGENTS_KEY,
+        Rc::clone(&on_toggle_section),
+    );
+    body = body.with_child(header);
+    flat.push(action);
+    if !subagents_collapsed {
+        if subagents.is_empty() {
+            body = body.with_child(overview_empty_line(app, "No subagents"));
+        } else {
+            for subagent in subagents {
+                let label = if subagent.description.trim().is_empty() {
+                    subagent.subagent_type.clone()
+                } else {
+                    subagent.description.clone()
+                };
+                let on_open = actions.on_open_sub_agent.clone();
+                let child = subagent.child_id.clone();
+                let run: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+                    (on_open.borrow_mut())(active, child.clone())
+                }));
+                let selected = flat.len() == highlight;
+                let (row, action) = overview_action_row(
+                    app,
+                    "message-plus-square",
+                    &label,
+                    selected,
+                    run,
+                    true,
+                    Rc::clone(&on_close),
+                );
+                body = body.with_child(row);
+                flat.push(action);
+            }
+        }
+    }
+
+    let workflows_collapsed = section_collapsed(state, OVERVIEW_WORKFLOWS_KEY);
+    let (header, action) = overview_section_header(
+        app,
+        "Workflows",
+        state.workflows.len(),
+        workflows_collapsed,
+        flat.len() == highlight,
+        OVERVIEW_WORKFLOWS_KEY,
+        Rc::clone(&on_toggle_section),
+    );
+    body = body.with_child(header);
+    flat.push(action);
+    if !workflows_collapsed {
+        if state.workflows.is_empty() {
+            // Honest empty state: this build has no registered workflow source
+            // to show, so the section says so instead of inventing a row.
+            body = body.with_child(overview_empty_line(app, "No workflows"));
+        } else {
+            for workflow in &state.workflows {
+                let on_workflows = actions.on_workflows.clone();
+                let run: Rc<RefCell<dyn FnMut()>> =
+                    Rc::new(RefCell::new(move || (on_workflows.borrow_mut())()));
+                let selected = flat.len() == highlight;
+                let (row, action) = overview_action_row(
+                    app,
+                    "workflow",
+                    &workflow.name,
+                    selected,
+                    run,
+                    true,
+                    Rc::clone(&on_close),
+                );
+                body = body.with_child(row);
+                flat.push(action);
+            }
+        }
+    }
+
+    let scroll = Scrollable::new(body.finish(), Axis::Vertical)
+        .with_state(overview_scroll())
+        .with_fit_content(true)
+        .finish();
+    let panel = Container::new(scroll)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+        .with_corner_radius(OVERVIEW_POPOVER_RADIUS)
+        .with_padding(EdgeInsets::uniform(8.0))
+        .finish();
+    (Rc::new(RefCell::new(panel)), flat)
 }
 
 /// The right Overview panel: real Review/Files/Terminal actions, the live

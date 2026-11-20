@@ -1,6 +1,6 @@
 use goble_terminal::{
-    CursorState, ImagePlacement, Palette, ScreenLine, SearchError, SearchMatch, SearchOptions,
-    TermMode,
+    CursorState, GridFrame, ImagePlacement, Palette, ScreenLine, SearchError, SearchMatch,
+    SearchOptions, TermMode,
 };
 
 use crate::terminal::copy::{selection_text, Cell, Selection};
@@ -11,8 +11,11 @@ use super::TerminalSession;
 /// Everything the pane needs to paint one frame of a session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalViewState {
-    /// The visible rows, top row first.
+    /// The visible rows, top row first. The block view reads these; the live
+    /// grid paints [`Self::frame`] instead.
     pub rows: Vec<ScreenLine>,
+    /// The viewport as paint runs, read straight from the alacritty grid.
+    pub frame: GridFrame,
     /// Image placements in the same viewport, anchored to cells.
     pub images: Vec<ImagePlacement>,
     pub cursor: CursorState,
@@ -81,10 +84,12 @@ impl TerminalSession {
             return TerminalViewState::empty();
         };
         let rows = state.rows();
+        let frame = state.frame();
         let has_content = rows.iter().any(|row| !row.is_blank());
         let bootstrapped = state.bootstrapped();
         TerminalViewState {
             rows,
+            frame,
             images: state.images(),
             cursor: state.cursor(),
             mode: state.input_mode(),
@@ -219,6 +224,7 @@ impl TerminalViewState {
     pub fn empty() -> Self {
         Self {
             rows: Vec::new(),
+            frame: GridFrame::empty(),
             images: Vec::new(),
             cursor: CursorState {
                 line: 0,

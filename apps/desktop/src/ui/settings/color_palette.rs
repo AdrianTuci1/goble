@@ -48,10 +48,38 @@ const SWATCH_TRIGGER: f32 = 24.0;
 const PANEL_WIDTH: f32 = 288.0;
 const PANEL_PADDING: f32 = 10.0;
 const PANEL_GAP: f32 = 6.0;
+const PANEL_EDGE_MARGIN: f32 = 8.0;
 const MENU_ROW_HEIGHT: f32 = 34.0;
 const GRID_COLUMNS: usize = 6;
 const GRID_CELL_HEIGHT: f32 = 32.0;
 const GRID_SWATCH: f32 = 26.0;
+
+/// Place a popover against its measured trigger, inside the page's visible
+/// rectangle. It prefers the space under the trigger, flips above when that
+/// would run past the bottom, and clamps both axes so the panel stays inside
+/// the settings scroll viewport (a panel painted outside it is clipped away).
+fn place_popover(anchor: RectF, panel: Vector2F, viewport: RectF) -> Vector2F {
+    let min_x = viewport.min_x() + PANEL_EDGE_MARGIN;
+    let max_x = (viewport.max_x() - panel.x - PANEL_EDGE_MARGIN).max(min_x);
+    let x = (anchor.max_x() - panel.x).clamp(min_x, max_x);
+
+    let min_y = viewport.min_y() + PANEL_EDGE_MARGIN;
+    let max_y = (viewport.max_y() - panel.y - PANEL_EDGE_MARGIN).max(min_y);
+    let below = anchor.max_y() + PANEL_GAP;
+    let above = anchor.min_y() - PANEL_GAP - panel.y;
+    let y = if below <= max_y {
+        below
+    } else if above >= min_y {
+        above
+    } else if (anchor.min_y() - viewport.min_y()) >= (viewport.max_y() - anchor.max_y()) {
+        // Neither side fits: use the larger half of the viewport and let the
+        // clamp keep the top edge visible.
+        above
+    } else {
+        below
+    };
+    vec2f(x, y.clamp(min_y, max_y))
+}
 
 /// The draft id marking which channel's hex field holds the caret. It is a UI
 /// marker, not a setting: the real value is written to `theme.<channel>`.
@@ -745,9 +773,11 @@ impl Element for OverlayLayer {
         let size = self.content.layout(constraint, ctx, app);
         if let Some(overlay) = self.overlay.as_mut() {
             // The overlay paints at an absolute anchor; its own flow box is
-            // zero-sized so it cannot push the page around.
+            // zero-sized so it cannot push the page around. Hand it the page's
+            // constraint so it has a fallback viewport before the scroll region
+            // has measured one.
             overlay.layout(
-                SizeConstraint::loose(vec2f(PANEL_WIDTH + 80.0, 600.0)),
+                SizeConstraint::loose(vec2f(constraint.max.x, constraint.max.y)),
                 ctx,
                 app,
             );
@@ -1043,7 +1073,7 @@ impl AppearanceMenuLayer {
 impl Element for AppearanceMenuLayer {
     fn layout(
         &mut self,
-        _constraint: SizeConstraint,
+        constraint: SizeConstraint,
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
@@ -1056,9 +1086,30 @@ impl Element for AppearanceMenuLayer {
         };
         let mut panel = self.build_panel(app);
         let size = panel.layout(SizeConstraint::loose(vec2f(PANEL_WIDTH, 600.0)), ctx, app);
-        let x = anchor.max_x() - size.x;
-        let y = anchor.max_y() + PANEL_GAP;
-        self.panel_position = Some(vec2f(x, y));
+        // The scroll region records the viewport it painted through; that is
+        // the rectangle the panel must stay inside or it is clipped. On the
+        // first frame (or in a direct element test) fall back to the layout
+        // constraint, widened to the anchor when an axis is unbounded.
+        let viewport = self
+            .state
+            .scroll
+            .borrow()
+            .painted_viewport()
+            .unwrap_or_else(|| {
+                let width = if constraint.max.x.is_finite() {
+                    constraint.max.x
+                } else {
+                    anchor.max_x() + size.x + PANEL_EDGE_MARGIN
+                };
+                let height = if constraint.max.y.is_finite() {
+                    constraint.max.y
+                } else {
+                    anchor.max_y() + size.y + PANEL_EDGE_MARGIN
+                };
+                rectf(0.0, 0.0, width, height)
+            });
+        let position = place_popover(anchor, size, viewport);
+        self.panel_position = Some(position);
         self.panel_size = Some(size);
         self.panel = Some(panel);
         Vector2F::zero()
@@ -1781,6 +1832,43 @@ mod tests {
             app,
         );
         menu.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), app);
+    }
+
+    #[test]
+    fn the_popover_flips_above_a_trigger_near_the_bottom() {
+        let viewport = rectf(20.0, 40.0, 900.0, 400.0);
+        let anchor = rectf(500.0, 400.0, PALETTE_TRIGGER_WIDTH, TRIGGER_HEIGHT);
+        let panel = vec2f(PANEL_WIDTH, 160.0);
+        let placed = place_popover(anchor, panel, viewport);
+        assert!(
+            placed.y + panel.y <= anchor.min_y() - PANEL_GAP + 0.01,
+            "the panel sits above its trigger: {placed:?}"
+        );
+        assert!(placed.y >= viewport.min_y() + PANEL_EDGE_MARGIN);
+    }
+
+    #[test]
+    fn the_popover_clamps_to_both_sides_of_the_viewport() {
+        let viewport = rectf(20.0, 40.0, 400.0, 300.0);
+        let panel = vec2f(PANEL_WIDTH, 160.0);
+        // A wide trigger whose right edge is past the viewport: the panel is
+        // pulled back inside instead of hanging off the edge and clipping.
+        let right = place_popover(
+            rectf(360.0, 100.0, PALETTE_TRIGGER_WIDTH, TRIGGER_HEIGHT),
+            panel,
+            viewport,
+        );
+        assert!(right.x >= viewport.min_x() + PANEL_EDGE_MARGIN);
+        assert!(
+            right.x + panel.x <= viewport.max_x() - PANEL_EDGE_MARGIN + 0.01,
+            "the panel's right edge stays inside: {right:?}"
+        );
+
+        // A trigger above the visible viewport (the page is scrolled away)
+        // still produces a panel inside the viewport.
+        let top = place_popover(rectf(100.0, -80.0, 196.0, TRIGGER_HEIGHT), panel, viewport);
+        assert!(top.y >= viewport.min_y() + PANEL_EDGE_MARGIN);
+        assert!(top.y + panel.y <= viewport.max_y() - PANEL_EDGE_MARGIN + 0.01);
     }
 
     #[test]

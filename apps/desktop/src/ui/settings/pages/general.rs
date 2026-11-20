@@ -5,7 +5,7 @@ use goble_core::config::ConfigFile;
 
 use super::super::fields;
 use super::super::model::{ActionModel, PageModel, RowModel, SectionModel};
-use super::super::state::{SettingsAction, SettingsUiState, StatusKind};
+use super::super::state::{SettingsAction, SettingsUiState};
 use super::{problem_section, text_row, toggle_row};
 
 pub fn page(state: &SettingsUiState) -> PageModel {
@@ -72,18 +72,11 @@ pub fn page(state: &SettingsUiState) -> PageModel {
                     "Queued Messages",
                     "Configure when follow-up messages are sent. The queue is the built-in behaviour in this build.",
                 )
-                .buttons({
-                    let queue = ActionModel::new("Queue", SettingsAction::SetSendImmediately(false));
-                    let now = ActionModel::new(
-                        "Send Immediately",
-                        SettingsAction::SetSendImmediately(true),
-                    );
-                    if state.send_immediately {
-                        vec![queue, now.primary()]
-                    } else {
-                        vec![queue.primary(), now]
-                    }
-                }),
+                .segmented(
+                    "app.send_immediately",
+                    vec!["Queue".to_string(), "Send Immediately".to_string()],
+                    usize::from(state.send_immediately),
+                ),
             )
             .with_row(
                 RowModel::new(
@@ -199,4 +192,42 @@ pub fn page(state: &SettingsUiState) -> PageModel {
             .with_row(super::file_status_row(state, ConfigFile::Config)),
     );
     PageModel::new(sections)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::settings::model::ControlModel;
+
+    #[test]
+    fn queued_messages_is_the_real_segmented_control() {
+        let mut state = SettingsUiState::default();
+        let row = |state: &SettingsUiState| {
+            page(state)
+                .sections
+                .iter()
+                .flat_map(|section| section.rows.iter())
+                .find(|row| row.id == "execution.queued")
+                .cloned()
+                .expect("the execution row")
+        };
+        match row(&state).control {
+            ControlModel::Segmented {
+                path,
+                options,
+                selected,
+                ..
+            } => {
+                assert_eq!(path, "app.send_immediately");
+                assert_eq!(options, vec!["Queue", "Send Immediately"]);
+                assert_eq!(selected, 0);
+            }
+            other => panic!("Queue/Send Immediately is a Segmented, got {other:?}"),
+        }
+        state.send_immediately = true;
+        match row(&state).control {
+            ControlModel::Segmented { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("the row keeps the selected state: {other:?}"),
+        }
+    }
 }

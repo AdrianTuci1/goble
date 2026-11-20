@@ -15,6 +15,13 @@ pub(crate) struct PersistedPaneState {
     /// `#[serde(default)]` so a layout written before saved hosts still parses.
     #[serde(default)]
     pub(crate) pane_ssh: HashMap<u64, SshPaneBinding>,
+    /// The main/side split ratio, so the panel reopens where it was left.
+    #[serde(default = "default_side_split_ratio")]
+    pub(crate) side_split_ratio: f32,
+}
+
+fn default_side_split_ratio() -> f32 {
+    0.5
 }
 
 /// Collect every pane id (leaves and splits) in a pane tree.

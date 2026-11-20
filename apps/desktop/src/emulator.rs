@@ -15,9 +15,9 @@
 
 use goble_terminal::blocks::BlockView;
 use goble_terminal::{
-    Block, BlockEvent, BlockId, BlockList, BlockOwner, BlockState, CursorState, HookEvent, HookTap,
-    OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine, ScreenQuery,
-    ScreenSize, SearchError, SearchMatch, SearchOptions, TermMode,
+    Block, BlockEvent, BlockId, BlockList, BlockOwner, BlockState, CursorState, GridFrame,
+    HookEvent, HookTap, OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine,
+    ScreenQuery, ScreenSize, SearchError, SearchMatch, SearchOptions, TermMode,
 };
 use std::time::Duration;
 
@@ -224,6 +224,11 @@ impl Emulator {
         self.screen.lines()
     }
 
+    /// The viewport as paint runs, read directly from the alacritty grid.
+    pub fn frame(&self) -> GridFrame {
+        self.screen.frame()
+    }
+
     pub fn cursor(&self) -> CursorState {
         self.screen.cursor()
     }
@@ -295,13 +300,16 @@ impl Emulator {
         self.screen
             .line_at(index)
             .map(|line| {
-                line.cells.iter().enumerate().fold(0, |end, (column, cell)| {
-                    if cell.ch == ' ' && cell.zerowidth.is_empty() {
-                        end
-                    } else {
-                        column + if cell.attrs.wide { 2 } else { 1 }
-                    }
-                })
+                line.cells
+                    .iter()
+                    .enumerate()
+                    .fold(0, |end, (column, cell)| {
+                        if cell.ch == ' ' && cell.zerowidth.is_empty() {
+                            end
+                        } else {
+                            column + if cell.attrs.wide { 2 } else { 1 }
+                        }
+                    })
             })
             .unwrap_or(0)
     }

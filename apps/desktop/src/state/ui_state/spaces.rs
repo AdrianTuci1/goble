@@ -29,6 +29,7 @@ impl UiState {
         // and the shell-tool route read the same registry entry a freshly
         // opened pane fills.
         self.pane_ssh = saved.pane_ssh;
+        self.side_split_ratio = saved.side_split_ratio.clamp(0.25, 0.75);
         for (pane_id, binding) in &self.pane_ssh {
             if let Some(session) = &binding.session {
                 self.terminal
@@ -209,6 +210,7 @@ impl UiState {
             active_pane_id: self.active_pane_id,
             pane_sessions,
             pane_ssh: self.pane_ssh.clone(),
+            side_split_ratio: self.side_split_ratio,
         };
         if let Ok(json) = serde_json::to_string(&persisted) {
             if let Err(e) = desktop.set_ui_panes(&json) {

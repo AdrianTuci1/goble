@@ -86,6 +86,7 @@ fn handle(
             state.settings.row_index = 0;
             state.settings.focused_field = None;
             state.settings.theme_select_open = false;
+            state.settings.close_select_menus();
             state.settings.scroll.borrow_mut().reset();
             // The Providers page's accounts and per-CLI folds read live PATH
             // detection, so opening it re-scans.
@@ -157,33 +158,8 @@ fn handle(
             }
         }
         SettingsAction::RefreshHarnesses => load_harnesses(state, desktop),
-        SettingsAction::SetColorTarget(index) => {
-            state.settings.color_target = index.min(4);
-        }
         SettingsAction::ToggleThemeSelect(open) => {
             state.settings.theme_select_open = open;
-        }
-        SettingsAction::SetColor { target, hex } => {
-            let Some(desktop) = desktop else {
-                no_service(state);
-                return;
-            };
-            let target = crate::ui::color_picker::COLOR_TARGET_ORDER
-                .get(target)
-                .copied()
-                .unwrap_or(crate::ui::color_picker::ColorTarget::Accent);
-            let key = color_key(target);
-            let path = format!("theme.{key}");
-            if fields::theme_text(&state.settings, key).as_deref() == Some(hex.as_str()) {
-                return;
-            }
-            write_ops(
-                state,
-                desktop,
-                ConfigFile::Config,
-                vec![fields::text_op(&path, &hex)],
-            );
-            state.settings.clear_draft(&path);
         }
         SettingsAction::EditHarness(id) => {
             let status = state
@@ -1017,18 +993,6 @@ fn load_harnesses(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
         return;
     };
     state.settings.harnesses = desktop.list_harnesses();
-}
-
-/// The `[theme]` channel a colour target writes.
-fn color_key(target: crate::ui::color_picker::ColorTarget) -> &'static str {
-    use crate::ui::color_picker::ColorTarget as T;
-    match target {
-        T::Primary => "primary",
-        T::Secondary => "secondary",
-        T::Accent => "accent",
-        T::Background => "bg",
-        T::Surface => "surface",
-    }
 }
 
 fn step_focus(state: &mut UiState, delta: i32) {

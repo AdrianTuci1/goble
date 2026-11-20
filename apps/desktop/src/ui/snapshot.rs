@@ -460,6 +460,14 @@ pub struct UiSnapshot {
     pub llm_dialog_focus: Rc<RefCell<Option<LlmFormField>>>,
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
+    /// The right side panel's share of the content width while it is open and
+    /// unmaximized (`0.5` = equal split). The build lays the main card and the
+    /// panel out at `(1 - ratio)` and `ratio` of the measured content width,
+    /// with the same minimum width on each and the ratio clamped to
+    /// `0.25..=0.75`. Session-scoped (see `UiState::side_split_ratio`).
+    pub side_split_ratio: f32,
+    /// Whether the shared main/side-panel boundary is being dragged.
+    pub side_split_dragging: bool,
     /// The user's committed content-lane width PER PANE: a pane with an entry
     /// lays its content out at that width (re-clamped into the pane each
     /// frame); a pane with none keeps the aspect-ratio width. The lane element

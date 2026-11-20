@@ -196,6 +196,8 @@ impl UiState {
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,
             sidebar_drag_start_width: SIDEBAR_WIDTH,
+            side_split_ratio: 0.5,
+            side_split_dragging: false,
             content_lane_prefs: std::collections::HashMap::new(),
             content_lane_drag_pane: None,
             content_lane_dragging: false,

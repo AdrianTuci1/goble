@@ -23,10 +23,10 @@ use crate::ui::{DiffPanelAction, PaneKind, SidebarView, UiActions, UiSnapshot};
 mod side_tabs;
 
 /// The strip's height: the one row the window's chrome occupies.
-pub const CHROME_HEIGHT: f32 = 48.0;
-/// The quiet band above the strip's content. The Surface covers the whole 48 pt,
+pub const CHROME_HEIGHT: f32 = 42.0;
+/// The quiet band above the strip's content. The Surface covers the whole 42 pt,
 /// so the padding reads as one continuous material, not as a second bar.
-const CHROME_TOP_PADDING: f32 = 5.0;
+const CHROME_TOP_PADDING: f32 = 2.0;
 /// The strip's content band, below [`CHROME_TOP_PADDING`]. The section rules
 /// span exactly this height, so every section bottom ends where the content
 /// sheet begins.
@@ -34,18 +34,23 @@ const CHROME_CONTENT_HEIGHT: f32 = CHROME_HEIGHT - CHROME_TOP_PADDING;
 /// The right Overview dock's default width.
 pub const OVERVIEW_WIDTH: f32 = 320.0;
 
-/// A top-row control's glyph. 17 pt reads clearly inside the strip without
+/// A top-row control's glyph. 15.5 pt reads clearly inside the strip without
 /// filling its hit box edge to edge.
-const CONTROL_ICON_SIZE: f32 = 17.0;
-/// A top-row control's square hit box. The 28 pt box is compact enough for the
-/// four leading controls to share a 200 pt sidebar section on macOS.
-const CONTROL_BUTTON_SIZE: f32 = 28.0;
+const CONTROL_ICON_SIZE: f32 = 15.5;
+/// A top-row control's square hit box. The 30 pt box is the compact end of the
+/// 29–30 pt range and still lets the four leading controls share the 200 pt
+/// sidebar section.
+const CONTROL_BUTTON_SIZE: f32 = 30.0;
 /// The gap between two strip controls. It is deliberately tight: DSH's leading
 /// control cluster reads as one group rather than four separate buttons.
 const CONTROL_SPACING: f32 = 2.0;
-/// The vertical padding that centers a 28 pt control row inside the 43 pt
+/// The vertical padding that centers a 30 pt control row inside the 40 pt
 /// content band.
 const SECTION_VERTICAL_PADDING: f32 = (CHROME_CONTENT_HEIGHT - CONTROL_BUTTON_SIZE) / 2.0;
+/// A section's top inset: the quiet band above the content plus the padding that
+/// centers its controls in the rest of the band. The traffic lights are the one
+/// exception: they center on the full bar instead (see [`traffic_lights`]).
+const SECTION_TOP_PADDING: f32 = CHROME_TOP_PADDING + SECTION_VERTICAL_PADDING;
 /// A section rule's width: one physical pixel, painted as a filled Empty.
 const SEPARATOR_WIDTH: f32 = 1.0;
 /// The main section's leading padding: the title starts where the pane area's
@@ -133,15 +138,16 @@ pub fn build_chrome_row(
 
     // `traffic_lights` owns the whole leading band (the reserved inset plus the
     // lights' width), so the sidebar toggle and every nav control after it start
-    // past the lights instead of underneath them.
-    let mut leading = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
+    // past the lights instead of underneath them. The nav controls live in their
+    // own top-padded group: they center in the content band, while the lights
+    // center on the full bar.
+    let mut controls = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(CONTROL_SPACING)
-        .with_child(traffic_lights(app));
+        .with_spacing(CONTROL_SPACING);
     let on_sidebar = actions.on_toggle_sidebar.clone();
     let sidebar_open = state.sidebar_visible;
-    leading = leading.with_child(button_click(
+    controls = controls.with_child(button_click(
         app,
         if sidebar_open {
             "left-panel-close"
@@ -157,10 +163,10 @@ pub fn build_chrome_row(
     ));
     // Back/forward are visual navigation controls until the pane history lands;
     // they render disabled rather than pretending to navigate.
-    leading = leading.with_child(disabled_button(app, "arrow-left", "Back"));
-    leading = leading.with_child(disabled_button(app, "arrow-right", "Forward"));
+    controls = controls.with_child(disabled_button(app, "arrow-left", "Back"));
+    controls = controls.with_child(disabled_button(app, "arrow-right", "Forward"));
     let on_search = actions.on_select_sidebar_view.clone();
-    leading = leading.with_child(
+    controls = controls.with_child(
         Tooltip::new(
             TopbarButton::new(glyph(app, "search"))
                 .with_size(CONTROL_BUTTON_SIZE)
@@ -172,14 +178,21 @@ pub fn build_chrome_row(
         .with_position(TooltipPosition::Below)
         .finish(),
     );
+    let controls = Container::new(controls.finish())
+        .with_padding(EdgeInsets::new(
+            0.0,
+            SECTION_TOP_PADDING,
+            0.0,
+            SECTION_VERTICAL_PADDING,
+        ))
+        .finish();
     let leading = ConstrainedBox::new(
-        Container::new(leading.finish())
-            .with_padding(EdgeInsets::new(
-                0.0,
-                SECTION_VERTICAL_PADDING,
-                0.0,
-                SECTION_VERTICAL_PADDING,
-            ))
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(CONTROL_SPACING)
+            .with_child(traffic_lights(app))
+            .with_child(controls)
             .finish(),
     )
     .with_width(sidebar_width)
@@ -263,7 +276,7 @@ pub fn build_chrome_row(
     let main_section = Container::new(main_section)
         .with_padding(EdgeInsets::new(
             MAIN_SECTION_LEFT_PADDING,
-            SECTION_VERTICAL_PADDING,
+            SECTION_TOP_PADDING,
             MAIN_SECTION_RIGHT_PADDING,
             SECTION_VERTICAL_PADDING,
         ))
@@ -310,7 +323,7 @@ pub fn build_chrome_row(
         let side_section = Container::new(side_section)
             .with_padding(EdgeInsets::new(
                 SIDE_SECTION_PADDING,
-                SECTION_VERTICAL_PADDING,
+                SECTION_TOP_PADDING,
                 SIDE_SECTION_PADDING,
                 SECTION_VERTICAL_PADDING,
             ))
@@ -319,14 +332,13 @@ pub fn build_chrome_row(
             .with_child(vertical_separator(app))
             .with_child(Expanded::new(side_section).finish());
     }
-    // The strip content is exactly 43 pt; the outer container owns the 5 pt
-    // quiet band above it. Both are Surface, so the whole 48 pt reads as one
-    // continuous material.
+    // The strip is the full bar height; each section carries the 2 pt quiet band
+    // as its own top inset, so its controls center in the 40 pt content band.
+    // The traffic lights span the full bar and center on its middle line.
     let strip = ConstrainedBox::new(strip.finish())
-        .with_height(CHROME_CONTENT_HEIGHT)
+        .with_height(CHROME_HEIGHT)
         .finish();
     Container::new(strip)
-        .with_padding(EdgeInsets::new(0.0, CHROME_TOP_PADDING, 0.0, 0.0))
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .finish()
 }
@@ -335,6 +347,15 @@ fn traffic_lights(app: &AppContext) -> Box<dyn Element> {
     let mut row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(TRAFFIC_LIGHT_GAP);
+    // A zero-width sizer fixes the row's height at the dot size on macOS, where
+    // no preview dots are drawn, so the band is always CHROME_HEIGHT tall.
+    if cfg!(target_os = "macos") {
+        row = row.with_child(
+            Empty::new()
+                .with_size(vec2f(0.0, TRAFFIC_LIGHT_SIZE))
+                .finish(),
+        );
+    }
     if !cfg!(target_os = "macos") {
         for color in ["#ff5f57", "#febc2e", "#28c840"] {
             row = row.with_child(
@@ -356,13 +377,17 @@ fn traffic_lights(app: &AppContext) -> Box<dyn Element> {
     // navigation that follow it in the leading flex are always laid out past
     // the lights. macOS keeps the whole inset clear for the OS-drawn lights;
     // elsewhere the preview dots sit after the (smaller) edge inset.
+    //
+    // The vertical padding makes this band exactly CHROME_HEIGHT tall, so the
+    // leading flex centers the 12 pt dots on the full bar's middle line rather
+    // than pinning them to the top or to the controls' content band.
+    let vertical = (CHROME_HEIGHT - TRAFFIC_LIGHT_SIZE) / 2.0;
     ConstrainedBox::new(
         Container::new(row.finish())
-            .with_padding(EdgeInsets::new(TRAFFIC_INSET, 0.0, 0.0, 0.0))
+            .with_padding(EdgeInsets::new(TRAFFIC_INSET, vertical, 0.0, vertical))
             .finish(),
     )
     .with_width(TRAFFIC_INSET + traffic_preview_width())
-    .with_height(16.0)
     .finish()
 }
 
@@ -385,15 +410,19 @@ fn sidebar_controls_width() -> f32 {
 
 /// A 1 px section rule. `Border` only strokes a whole rectangle, so the strip
 /// splits sections with an empty 1 pt column painted in the border token. Its
-/// height is the full content band, so the three partitions meet the content
-/// sheet with one continuous line.
+/// height is the full content band, starting under the 2 pt quiet band, so the
+/// partitions meet the content sheet with one continuous line.
 fn vertical_separator(app: &AppContext) -> Box<dyn Element> {
     Container::new(
-        Empty::new()
-            .with_size(vec2f(SEPARATOR_WIDTH, CHROME_CONTENT_HEIGHT))
-            .finish(),
+        Container::new(
+            Empty::new()
+                .with_size(vec2f(SEPARATOR_WIDTH, CHROME_CONTENT_HEIGHT))
+                .finish(),
+        )
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Border)))
+        .finish(),
     )
-    .with_background(Fill::Solid(app.theme.color(ColorToken::Border)))
+    .with_padding(EdgeInsets::new(0.0, CHROME_TOP_PADDING, 0.0, 0.0))
     .finish()
 }
 

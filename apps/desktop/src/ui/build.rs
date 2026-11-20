@@ -1,7 +1,13 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, Border, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded,
-    Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Stack,
+    AppContext, Border, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, EventContext,
+    Expanded, Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint,
+    Stack,
 };
+use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, PointF, RectF, Size2F, Vector2F};
 use goble_ui::platform::{CursorKind, WindowControl};
 use goble_ui::theme::ColorToken;
@@ -37,6 +43,239 @@ pub fn window_corner_radius(fullscreen: bool) -> f32 {
         0.0
     } else {
         WINDOW_CORNER_RADIUS
+    }
+}
+
+/// The invisible grab band centred on the shared main/side-panel boundary:
+/// four points on each side, like the sidebar's resize band.
+const SIDE_SPLIT_HANDLE_HALF: f32 = 4.0;
+/// Each card keeps at least this width when the content area is wide enough to
+/// give both sides their minimum.
+const SIDE_SPLIT_MIN_CARD_WIDTH: f32 = 320.0;
+/// The ratio range the split can be dragged to, before the per-card minimum is
+/// applied for the current content width.
+const SIDE_SPLIT_MIN_RATIO: f32 = 0.25;
+const SIDE_SPLIT_MAX_RATIO: f32 = 0.75;
+
+/// Resolve the side panel's share of `content_width`, with the width-aware
+/// minimum applied on top of the `0.25..=0.75` ratio range.
+fn resolved_side_split_ratio(ratio: f32, content_width: f32) -> f32 {
+    let ratio = if ratio.is_finite() {
+        ratio
+    } else {
+        0.5
+    }
+    .clamp(SIDE_SPLIT_MIN_RATIO, SIDE_SPLIT_MAX_RATIO);
+    if !content_width.is_finite() || content_width <= 0.0 {
+        return ratio;
+    }
+    // When both cards can keep the minimum, bound the ratio so neither can be
+    // dragged below it. On a content area too narrow for both, the ratio range
+    // above is the only bound.
+    if content_width >= 2.0 * SIDE_SPLIT_MIN_CARD_WIDTH {
+        let min_ratio = SIDE_SPLIT_MIN_CARD_WIDTH / content_width;
+        ratio.clamp(min_ratio, 1.0 - min_ratio)
+    } else {
+        ratio
+    }
+}
+
+type SideSplitMoveHandler = Option<Rc<RefCell<dyn FnMut(f32)>>>;
+type SideSplitEndHandler = Option<Rc<RefCell<dyn FnMut()>>>;
+
+/// The main card and the right side panel side by side, at widths derived from
+/// the measured content width and `ratio` (not two equal `Expanded` halves),
+/// with both cards filling the row's whole height. The shared boundary carries
+/// an invisible resize band; no rule or gutter is painted there, so the two
+/// cards' own casings remain the only edge.
+struct SideSplitLayout {
+    main: Box<dyn Element>,
+    panel: Box<dyn Element>,
+    ratio: f32,
+    dragging: bool,
+    on_drag_start: Option<Rc<RefCell<dyn FnMut()>>>,
+    on_drag_move: SideSplitMoveHandler,
+    on_drag_end: SideSplitEndHandler,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+    main_width: f32,
+}
+
+impl SideSplitLayout {
+    fn new(main: Box<dyn Element>, panel: Box<dyn Element>, ratio: f32) -> Self {
+        Self {
+            main,
+            panel,
+            ratio,
+            dragging: false,
+            on_drag_start: None,
+            on_drag_move: None,
+            on_drag_end: None,
+            size: None,
+            origin: None,
+            main_width: 0.0,
+        }
+    }
+
+    fn with_dragging(mut self, dragging: bool) -> Self {
+        self.dragging = dragging;
+        self
+    }
+
+    fn with_on_drag_start<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_drag_start = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    fn with_on_drag_move<F: FnMut(f32) + 'static>(mut self, callback: F) -> Self {
+        self.on_drag_move = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    fn with_on_drag_end<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_drag_end = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+
+    /// The resize band, in absolute window coordinates, centred on the shared
+    /// boundary so it is four points either side of it.
+    fn handle_bounds(&self) -> Option<RectF> {
+        let origin = self.origin?;
+        let size = self.size?;
+        Some(rectf(
+            origin.x() + self.main_width - SIDE_SPLIT_HANDLE_HALF,
+            origin.y(),
+            SIDE_SPLIT_HANDLE_HALF * 2.0,
+            size.y,
+        ))
+    }
+
+    /// Resolve a pointer x to a side-panel ratio of the measured content
+    /// width, clamped to the ratio range and the two cards' minimum widths.
+    fn ratio_at(&self, pointer_x: f32) -> f32 {
+        let Some(origin) = self.origin else {
+            return self.ratio;
+        };
+        let Some(size) = self.size else {
+            return self.ratio;
+        };
+        if size.x <= 0.0 {
+            return self.ratio;
+        }
+        resolved_side_split_ratio((pointer_x - origin.x()) / size.x, size.x)
+    }
+
+    fn request_cursor(&self, ctx: &PaintContext, app: &AppContext) {
+        let over_handle = ctx.cursor_inside
+            && self
+                .handle_bounds()
+                .is_some_and(|bounds| contains(bounds, ctx.cursor_position));
+        // `CursorKind` has the platform's horizontal resize arrow (`EwResize`,
+        // the col-resize cursor); there is no separate `ColResize` variant.
+        if self.dragging || over_handle {
+            app.window_control.set_cursor(CursorKind::EwResize);
+        }
+    }
+}
+
+impl Element for SideSplitLayout {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let width = constraint.max.x.max(0.0);
+        let height = constraint.max.y.max(0.0);
+        let side_width = width * resolved_side_split_ratio(self.ratio, width);
+        let main_width = (width - side_width).max(0.0);
+        // Tight constraints on both axes: the two cards share one top and one
+        // bottom edge and fill the row, so neither casing has vertical padding
+        // the other lacks.
+        let _ = self.main.layout(
+            SizeConstraint::new(vec2f(main_width, height), vec2f(main_width, height)),
+            ctx,
+            app,
+        );
+        let _ = self.panel.layout(
+            SizeConstraint::new(vec2f(side_width, height), vec2f(side_width, height)),
+            ctx,
+            app,
+        );
+        self.main_width = main_width;
+        let size = vec2f(width, height);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        // No spacing: the main card's right edge and the panel's left edge are
+        // the same coordinate, so the two 1 pt casings meet on one shared line.
+        self.main.paint(origin, ctx, app);
+        self.panel.paint(origin + vec2f(self.main_width, 0.0), ctx, app);
+        // Requested after the children paint, so the resize cursor wins over
+        // any cursor a child asked for inside the band.
+        self.request_cursor(ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        // While dragging, consume move/up even when the pointer is over the
+        // main card or the panel content beyond the band.
+        if self.dragging {
+            match event {
+                DispatchedEvent::MouseMove { position } => {
+                    let ratio = self.ratio_at(position.x);
+                    if let Some(cb) = &self.on_drag_move {
+                        (cb.borrow_mut())(ratio);
+                    }
+                    return true;
+                }
+                DispatchedEvent::MouseUp { .. } => {
+                    if let Some(cb) = &self.on_drag_end {
+                        (cb.borrow_mut())();
+                    }
+                    self.dragging = false;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        // Start a drag when the pointer grabs the shared boundary's band.
+        if let DispatchedEvent::MouseDown { position, .. } = event {
+            if let Some(bounds) = self.handle_bounds() {
+                if contains(bounds, *position) {
+                    if let Some(cb) = &self.on_drag_start {
+                        (cb.borrow_mut())();
+                    }
+                    // Also live in this element, so a release before the next
+                    // rebuild still ends the gesture.
+                    self.dragging = true;
+                    return true;
+                }
+            }
+        }
+        if self.main.dispatch_event(event, ctx, app) {
+            return true;
+        }
+        self.panel.dispatch_event(event, ctx, app)
     }
 }
 
@@ -139,10 +378,13 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // and the panes take the whole window. A manual re-expand below the
     // breakpoint keeps the sidebar on (a later step then narrows the panes).
     // The Overview side panel shares the content area with the main panel as
-    // two equal cards: each half is an `Expanded` child of one row, so they
-    // split whatever width the sidebar leaves 50/50. The row has no spacing and
-    // no outer padding or casing of its own — the two cards' own bordered,
-    // rounded casings meet on the shared boundary with no gutter between them.
+    // two cards sized from `state.side_split_ratio` of the width the sidebar
+    // leaves (default 0.5, the equal split), not two fixed `Expanded` halves.
+    // The split clamps the ratio to 0.25..=0.75 and keeps 320 pt on each card
+    // when the content area allows it. The row has no spacing and no outer
+    // padding or casing of its own — the two cards' own bordered, rounded
+    // casings meet on the shared boundary with no gutter between them, and the
+    // resize band there paints nothing.
     // While the panel is open the pane area's right inset is canceled (see
     // above), so the main card's right border is on that same boundary: the
     // frame shows one shared line, not a main line, a gutter, and a panel line.
@@ -160,11 +402,14 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             .finish();
         if side_split {
             let panel = chrome::build_side_panel(app, state, actions);
-            Flex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_child(Expanded::new(main).finish())
-                .with_child(Expanded::new(panel).finish())
+            let on_drag_start = actions.on_side_split_drag_start.clone();
+            let on_drag_move = actions.on_side_split_drag_move.clone();
+            let on_drag_end = actions.on_side_split_drag_end.clone();
+            SideSplitLayout::new(main, panel, state.side_split_ratio)
+                .with_dragging(state.side_split_dragging)
+                .with_on_drag_start(move || (on_drag_start.borrow_mut())())
+                .with_on_drag_move(move |ratio| (on_drag_move.borrow_mut())(ratio))
+                .with_on_drag_end(move || (on_drag_end.borrow_mut())())
                 .finish()
         } else {
             main
@@ -671,6 +916,24 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The two rounded content-card casings when the side panel is open beside
+    /// the main card, left to right: the main card then the side panel.
+    fn side_split_casings(
+        commands: &[RenderCommand],
+        app: &AppContext,
+        size: Vector2F,
+    ) -> Vec<RectF> {
+        let mut casings: Vec<RectF> = rules(commands, app)
+            .into_iter()
+            .filter(|(rect, _, radius)| {
+                (*radius - 12.0).abs() < 0.01 && rect.height() > size.y / 2.0
+            })
+            .map(|(rect, _, _)| rect)
+            .collect();
+        casings.sort_by(|a, b| a.min_x().total_cmp(&b.min_x()));
+        casings
     }
 
     /// The rule that spans the window, when the frame drew one.
@@ -2448,6 +2711,152 @@ mod tests {
              line, no gutter): {:?} vs {:?}",
             open[0],
             casings[1]
+        );
+    }
+
+    /// Dragging the shared boundary writes the side panel's ratio, clamps it to
+    /// the `0.25..=0.75` range at a wide window, and stops at each card's
+    /// 320 pt minimum when the content area is narrower.
+    #[test]
+    fn dragging_the_side_split_changes_and_clamps_the_ratio() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let size = vec2f(1600.0, 900.0);
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_split_ratio = 0.5;
+        }
+        let commands = render_element(&mut root, size, &app);
+        let casings = side_split_casings(&commands, &app, size);
+        assert_eq!(casings.len(), 2, "the main and side casings: {casings:?}");
+        let boundary = casings[1].min_x();
+        let mid_y = (casings[0].min_y() + casings[0].max_y()) / 2.0;
+        let mut ctx = EventContext::default();
+        assert!(root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(boundary, mid_y),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert!(state.borrow().side_split_dragging);
+        let _ = render_element(&mut root, size, &app);
+
+        // Far right: the ratio stops at 0.75, not at the window edge.
+        assert!(root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(size.x - 1.0, mid_y),
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert!(
+            (state.borrow().side_split_ratio - 0.75).abs() < 0.001,
+            "the drag clamps at 0.75, got {}",
+            state.borrow().side_split_ratio
+        );
+        let _ = render_element(&mut root, size, &app);
+        let commands = render_element(&mut root, size, &app);
+        let casings = side_split_casings(&commands, &app, size);
+        let content = casings[0].width() + casings[1].width();
+        assert!((casings[1].width() - content * 0.75).abs() < 0.5);
+        assert!((casings[0].width() - content * 0.25).abs() < 0.5);
+
+        assert!(root.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: vec2f(size.x - 1.0, mid_y),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert!(!state.borrow().side_split_dragging, "mouse up ends the drag");
+
+        // Narrower content: at 1400 the side panel can be at most
+        // 1100 - 320 = 780 pt, and the main card stops at 320 pt.
+        let narrow = vec2f(1400.0, 900.0);
+        state.borrow_mut().side_split_ratio = 0.75;
+        let _ = render_element(&mut root, narrow, &app);
+        let commands = render_element(&mut root, narrow, &app);
+        let casings = side_split_casings(&commands, &app, narrow);
+        assert!((casings[0].width() - 320.0).abs() < 0.5, "{casings:?}");
+        let boundary = casings[1].min_x();
+        let mid_y = (casings[0].min_y() + casings[0].max_y()) / 2.0;
+        assert!(root.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(boundary, mid_y),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        ));
+        let _ = render_element(&mut root, narrow, &app);
+        assert!(root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(0.0, mid_y),
+            },
+            &mut ctx,
+            &app,
+        ));
+        let expected = 320.0 / (narrow.x - crate::ui::SIDEBAR_WIDTH);
+        assert!(
+            (state.borrow().side_split_ratio - expected).abs() < 0.001,
+            "the drag clamps at the 320 pt side minimum, got {} (wanted {expected})",
+            state.borrow().side_split_ratio
+        );
+        let _ = render_element(&mut root, narrow, &app);
+        let commands = render_element(&mut root, narrow, &app);
+        let casings = side_split_casings(&commands, &app, narrow);
+        assert!((casings[1].width() - 320.0).abs() < 0.5, "{casings:?}");
+        let _ = root.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: vec2f(0.0, mid_y),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+    }
+
+    /// Both cards fill the same row height: one top edge, one bottom edge, no
+    /// vertical padding on either side of the boundary.
+    #[test]
+    fn the_side_split_cards_share_one_top_and_bottom() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let size = vec2f(1024.0, 768.0);
+        state.borrow_mut().right_sidebar_open = true;
+        let commands = render_element(&mut root, size, &app);
+        let casings = side_split_casings(&commands, &app, size);
+        assert_eq!(casings.len(), 2, "the main and side casings: {casings:?}");
+        let (main, panel) = (casings[0], casings[1]);
+        assert!((main.min_y() - panel.min_y()).abs() < 0.01, "{casings:?}");
+        assert!((main.max_y() - panel.max_y()).abs() < 0.01, "{casings:?}");
+        assert!((main.height() - panel.height()).abs() < 0.01, "{casings:?}");
+    }
+
+    /// At the default 0.5 ratio the two cards are equal halves of the content
+    /// width and their casings meet exactly, with no gutter for the handle.
+    #[test]
+    fn the_side_split_cards_meet_with_no_gap_at_the_default_ratio() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let size = vec2f(1024.0, 768.0);
+        state.borrow_mut().right_sidebar_open = true;
+        assert!((state.borrow().side_split_ratio - 0.5).abs() < f32::EPSILON);
+        let commands = render_element(&mut root, size, &app);
+        let casings = side_split_casings(&commands, &app, size);
+        assert_eq!(casings.len(), 2, "the main and side casings: {casings:?}");
+        let (main, panel) = (casings[0], casings[1]);
+        assert!(
+            (main.max_x() - panel.min_x()).abs() < 0.01,
+            "the casings meet with no gutter: {casings:?}"
+        );
+        assert!(
+            (main.width() - panel.width()).abs() < 0.5,
+            "the default is an equal split: {casings:?}"
         );
     }
 

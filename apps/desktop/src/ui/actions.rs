@@ -493,6 +493,14 @@ pub struct UiActions {
     pub on_sidebar_drag_move: Rc<RefCell<dyn FnMut(f32)>>,
     /// Finish a drag; the divider settles at the last width.
     pub on_sidebar_drag_end: Rc<RefCell<dyn FnMut()>>,
+    /// Begin dragging the shared main/side-panel boundary.
+    pub on_side_split_drag_start: Rc<RefCell<dyn FnMut()>>,
+    /// Move the shared boundary: the side panel's new share of the content
+    /// width, already clamped by the layout element to `0.25..=0.75` and to
+    /// the cards' minimum width.
+    pub on_side_split_drag_move: Rc<RefCell<dyn FnMut(f32)>>,
+    /// Finish the shared-boundary drag (mouse up anywhere).
+    pub on_side_split_drag_end: Rc<RefCell<dyn FnMut()>>,
     /// Begin dragging a pane's content-lane invisible edge: the pane, the
     /// pointer x, the edge grabbed, the content width it started at and the
     /// pane's available column width. Only that pane's width is written.

@@ -590,6 +590,8 @@ impl RootView {
                 terminal: s.terminal.clone(),
                 sidebar_width: s.sidebar_width,
                 sidebar_dragging: s.sidebar_dragging,
+                side_split_ratio: s.side_split_ratio,
+                side_split_dragging: s.side_split_dragging,
                 content_lane_prefs: s.content_lane_prefs.clone(),
                 content_lane_drag_pane: s.content_lane_drag_pane,
                 content_lane_dragging: s.content_lane_dragging,

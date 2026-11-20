@@ -396,6 +396,19 @@ pub struct UiState {
     pub sidebar_dragging: bool,
     pub sidebar_drag_origin_x: f32,
     pub sidebar_drag_start_width: f32,
+    /// The right side panel's share of the content width while it is open and
+    /// unmaximized: the panel gets `side_split_ratio` of the width the left
+    /// sidebar leaves, the main card gets the rest. `0.5` is the equal split.
+    ///
+    /// Session-scoped, like `sidebar_width`: the persisted pane blob
+    /// (`PersistedPaneState`) carries no field for it yet, so a restart starts
+    /// back at `0.5`. The value lives in app state (not the frame) so a drag
+    /// survives the per-frame element rebuild, and it is restored across
+    /// per-frame rebuilds and pane/space switches in one run.
+    pub side_split_ratio: f32,
+    /// Whether the shared main/side-panel boundary is being dragged. Carried in
+    /// app state so the per-frame element rebuild keeps the drag alive.
+    pub side_split_dragging: bool,
     /// The user's committed content width, per pane: the pane whose invisible
     /// content-lane edge they dragged lays its content out at that width
     /// (clamped into the pane by the lane's own resolver every frame). A pane

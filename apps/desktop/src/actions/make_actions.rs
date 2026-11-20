@@ -435,6 +435,9 @@ pub fn make_actions(
     let on_sidebar_drag_start = Rc::clone(&state);
     let on_sidebar_drag_move = Rc::clone(&state);
     let on_sidebar_drag_end = Rc::clone(&state);
+    let on_side_split_drag_start = Rc::clone(&state);
+    let on_side_split_drag_move = Rc::clone(&state);
+    let on_side_split_drag_end = Rc::clone(&state);
     let on_content_lane_drag_start = Rc::clone(&state);
     let on_content_lane_drag_move = Rc::clone(&state);
     let on_content_lane_drag_end = Rc::clone(&state);
@@ -2870,6 +2873,21 @@ pub fn make_actions(
         })),
         on_sidebar_drag_end: Rc::new(RefCell::new(move || {
             on_sidebar_drag_end.borrow_mut().sidebar_dragging = false;
+        })),
+        // The shared main/side-panel boundary. The element resolves the
+        // pointer to a ratio of the measured content width and clamps it to
+        // the cards' minimum widths, so the handler only stores the answer.
+        on_side_split_drag_start: Rc::new(RefCell::new(move || {
+            on_side_split_drag_start.borrow_mut().side_split_dragging = true;
+        })),
+        on_side_split_drag_move: Rc::new(RefCell::new(move |ratio: f32| {
+            let mut state = on_side_split_drag_move.borrow_mut();
+            if ratio.is_finite() {
+                state.side_split_ratio = ratio.clamp(0.25, 0.75);
+            }
+        })),
+        on_side_split_drag_end: Rc::new(RefCell::new(move || {
+            on_side_split_drag_end.borrow_mut().side_split_dragging = false;
         })),
         on_content_lane_drag_start: Rc::new(RefCell::new(
             move |pane_id: u64,

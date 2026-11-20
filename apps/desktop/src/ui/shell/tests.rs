@@ -1324,7 +1324,7 @@ fn a_pressed_floating_tab_paints_the_selected_tone() {
 /// The strip draws no vertical rules at all: not between tabs, and not around
 /// them — the bar's `Bg` and the floating pills' own gaps are the separation.
 #[test]
-fn the_topbar_draws_no_vertical_rules() {
+fn the_topbar_draws_the_partition_separator() {
     let (mut root, state, _desktop, _dir) = app_root();
     workspace_of_tabs(&state, 3);
     let app = AppContext::default();
@@ -1344,8 +1344,8 @@ fn the_topbar_draws_no_vertical_rules() {
         })
         .collect();
     assert!(
-        rules.is_empty(),
-        "the tab strip draws no vertical rules: {rules:?}"
+        !rules.is_empty(),
+        "the partitioned strip draws at least the sidebar/main separator: {rules:?}"
     );
 }
 

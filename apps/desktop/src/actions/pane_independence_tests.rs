@@ -814,42 +814,6 @@ fn the_cloud_agent_opens_a_viewer_pane_on_remote() {
     );
 }
 
-/// A cloud agent with no Remote configuration asks for it first, in Settings,
-/// and leaves the strip as it was.
-#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
-#[test]
-fn the_cloud_agent_asks_for_remote_before_opening_a_tab() {
-    let (desktop, _dir) = desktop_state();
-    let (state, actions, media) = build(&desktop);
-    let before = state.borrow().spaces.len();
-
-    (actions.on_new_cloud_agent.borrow_mut())();
-
-    // The settings tab is what opened (the flow lands there); no cloud-agent
-    // tab was started.
-    assert_eq!(
-        state.borrow().spaces.len(),
-        before + 1,
-        "only the settings tab opened"
-    );
-    assert!(state
-        .borrow()
-        .settings_pane()
-        .is_some_and(|(_, id)| state.borrow().spaces
-            .iter()
-            .any(|space| space.root.contains_leaf(id))));
-    assert_eq!(
-        state.borrow().settings_page(),
-        SettingsCategory::Agent,
-        "the page that configures Remote"
-    );
-    assert_eq!(
-        media.borrow().selected_medium_id(),
-        "local",
-        "the environment did not move"
-    );
-}
-
 /// The environment selector belongs to the tab on screen: switching tabs
 /// brings that tab's environment (and so its conversations) back, instead of
 /// leaving the previous tab's selection in the sidebar and the topbar.
@@ -892,59 +856,6 @@ fn switching_tabs_brings_that_tabs_environment_back() {
     // The keyboard walk over the strip reads the same tab medium.
     (actions.on_switch_space.borrow_mut())(-1);
     assert_eq!(media.borrow().selected_medium_id(), "remote");
-}
-
-/// Every chooser that names Remote before anything is configured opens its
-/// configuration in Settings → Agent & Approval, where the YAML file is named,
-/// and leaves the choice unmade.
-#[ignore = "shell-settings-2: retired topbar/settings-pane structure"]
-#[test]
-fn choosing_remote_without_a_configuration_opens_the_remote_settings() {
-    let (desktop, _dir) = desktop_state();
-    let (state, actions, media) = build(&desktop);
-    assert!(!state.borrow().remote_configured());
-
-    let assert_on_remote_section = |state: &Rc<RefCell<UiState>>| {
-        let s = state.borrow();
-        assert_eq!(s.settings_page(), SettingsCategory::Agent);
-        assert_eq!(s.settings.region, crate::ui::settings::SettingsRegion::Page);
-        let focused = crate::ui::settings::pages::page_model(
-            SettingsCategory::Agent,
-            &s.settings,
-        )
-        .row_at(s.settings.row_index)
-        .map(|row| row.id.clone());
-        assert_eq!(
-            focused.as_deref(),
-            Some("remote.mode"),
-            "the keyboard lands on the row that configures Remote"
-        );
-        assert!(
-            s.remote_config_path.ends_with("config.toml"),
-            "the page names the config file: {}",
-            s.remote_config_path
-        );
-    };
-
-    // The composer's environment pill.
-    (actions.on_select_harness.borrow_mut())(1, "remote".to_string());
-    assert_on_remote_section(&state);
-    assert_eq!(
-        media.borrow().selected_medium_id(),
-        "local",
-        "the environment did not move"
-    );
-
-    // The topbar "+" menu.
-    let before = state.borrow().spaces.len();
-    (actions.on_add_space_with_medium.borrow_mut())("remote".to_string());
-    assert_on_remote_section(&state);
-    assert_eq!(state.borrow().spaces.len(), before, "no space opened");
-
-    // The run-route choice in Settings.
-    (actions.on_choose_workspace.borrow_mut())(WorkspaceRouting::Remote);
-    assert_on_remote_section(&state);
-    assert_eq!(state.borrow().workspace_routing, None, "the route did not move");
 }
 
 /// `[remote]` in the config file configures Remote: a gateway URL and token

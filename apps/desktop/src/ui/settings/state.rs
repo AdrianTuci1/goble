@@ -181,6 +181,8 @@ pub struct VaultState {
 pub struct SettingsUiState {
     /// The page the settings leaf shows.
     pub page: SettingsCategory,
+    /// Execution preference: queue while busy (default) or send immediately.
+    pub send_immediately: bool,
     /// `config.toml` as the service projects it (redacted).
     pub config: Option<ConfigView>,
     /// `environment.toml`.
@@ -288,6 +290,7 @@ impl Default for SettingsUiState {
     fn default() -> Self {
         Self {
             page: SettingsCategory::General,
+            send_immediately: false,
             config: None,
             environment: None,
             hosts: None,
@@ -556,6 +559,7 @@ impl std::fmt::Debug for SettingsActions {
 pub enum SettingsAction {
     // ---- navigation and focus ------------------------------------------
     Navigate(SettingsCategory),
+    SetSendImmediately(bool),
     FocusRail,
     FocusPage,
     FocusSearch(bool),

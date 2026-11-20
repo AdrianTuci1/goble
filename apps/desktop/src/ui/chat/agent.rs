@@ -1781,58 +1781,6 @@ mod composer_wiring_tests {
         }
     }
 
-    /// The rich input draws **no send control**: the owner removed the send
-    /// circle, so the pane's frame carries no `arrow-right` glyph and a press on
-    /// the bar cannot submit anything. The keyboard is the whole send gesture,
-    /// and the focused left pane's Enter still lands in its own conversation.
-    #[ignore = "chrome-panels: asserted the retired per-pane header/general-topbar structure"]
-    #[test]
-    fn the_rich_input_has_no_send_control_and_enter_sends_from_the_focused_pane() {
-        let (mut element, state, desktop, _dir, _actions) = split_window();
-        let app = app();
-        let pane_one_chat = conversation(&state, 1);
-        let pane_three_chat = conversation(&state, 3);
-        // The left pane's composer holds the caret; the split made pane three
-        // the active one, so the frame must show no send control in either.
-        {
-            let mut s = state.borrow_mut();
-            s.active_pane_id = 1;
-            s.composer_focused = true;
-        }
-        let commands = render(&mut element, &app);
-        assert!(
-            !commands.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. } if name == "arrow-right"
-            )),
-            "the rich input draws no send circle: {commands:?}"
-        );
-
-        // Enter is the send gesture: the draft goes to the pane the composer
-        // belongs to, not to the pane that was active a moment ago.
-        let runtime = tokio::runtime::Runtime::new().expect("build runtime");
-        let _guard = runtime.enter();
-        let mut ctx = EventContext;
-        assert!(
-            element.dispatch_event(&enter(), &mut ctx, &app),
-            "the focused composer takes Enter"
-        );
-        wait_for_messages(&desktop, &pane_one_chat, 2);
-        let pane_one = desktop
-            .list_chat_messages(&pane_one_chat)
-            .expect("list pane one's messages");
-        assert_eq!(pane_one.len(), 2, "pane one's turn ran in its own conversation");
-        assert_eq!(pane_one[0].role, "user");
-        assert_eq!(pane_one[0].content, "hello from pane one");
-        let pane_three = desktop
-            .list_chat_messages(&pane_three_chat)
-            .expect("list pane three's messages");
-        assert!(
-            pane_three.is_empty(),
-            "the other pane's conversation is untouched"
-        );
-    }
-
     /// A keyboard submit from the composer that still holds the caret after the
     /// user pressed the *other* pane's body names the composer's own pane: the
     /// gesture is dispatched before the frame that would unfocus the moved

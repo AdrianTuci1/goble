@@ -321,6 +321,7 @@ impl UiState {
             chrome_overview_open: Rc::new(RefCell::new(false)),
             chrome_more_open: Rc::new(RefCell::new(false)),
             side_panel_maximized: false,
+            send_immediately: false,
             ssh_reconnect_prompt: None,
             floating_drag: Rc::new(RefCell::new(None)),
             pane_chat_scroll: HashMap::new(),

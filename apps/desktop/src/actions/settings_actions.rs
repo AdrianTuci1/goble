@@ -66,6 +66,10 @@ fn handle(
         state.settings.page = state.settings_page();
     }
     match action {
+        SettingsAction::SetSendImmediately(value) => {
+            state.settings.send_immediately = value;
+            state.send_immediately = value;
+        }
         SettingsAction::Navigate(page) => {
             state.settings_set_page(page);
             state.settings.region = crate::ui::settings::SettingsRegion::Rail;

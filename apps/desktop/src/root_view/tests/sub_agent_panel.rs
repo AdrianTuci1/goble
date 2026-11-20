@@ -178,51 +178,6 @@ use super::*;
         }
     }
 
-    /// The dock is chrome under the pane's own header: it names the group, its
-    /// count, and the running child with its elapsed time. The transcript below
-    /// it carries no controls of its own.
-    #[ignore = "chrome-panels: asserted the retired per-pane header/general-topbar structure"]
-    #[test]
-    fn the_dock_draws_under_the_agent_header_with_its_count_and_elapsed() {
-        let Fixture { root, .. } = fixture();
-        let app = AppContext::default();
-        let mut root: Box<dyn Element> = Box::new(root);
-        let commands = pane_commands(&mut root, &app);
-
-        let header_y = header_origin(
-            &commands,
-            &["Parent conversation", crate::state::NEW_AGENT_TAB_LABEL],
-        )
-        .y;
-        let strip_y = run_origin(&commands, "Subagents").y;
-        let transcript_y = run_origin(&commands, "PARENT TRANSCRIPT MARKER").y;
-        assert!(
-            strip_y > header_y && strip_y < transcript_y,
-            "the dock sits under the header ({header_y}) and above the \
-             transcript ({transcript_y}), got {strip_y}"
-        );
-
-        let texts = pane_texts(&mut root, &app);
-        assert!(
-            texts.iter().any(|text| text == "1"),
-            "the dock states how many children it lists, got {texts:?}"
-        );
-        assert!(
-            texts.iter().any(|text| text == "4.5s"),
-            "the row states the child's elapsed time, got {texts:?}"
-        );
-        assert!(
-            texts
-                .iter()
-                .any(|text| text.contains("audit the migration")),
-            "the row names the child's description, got {texts:?}"
-        );
-        assert!(
-            !texts.iter().any(|text| text == "Stop" || text == "open child"),
-            "the transcript row draws no controls, got {texts:?}"
-        );
-    }
-
     /// A click anywhere on the header row folds the group: the children leave,
     /// the word and the count stay, and the chevron turns to the right.
     #[test]

@@ -1189,6 +1189,16 @@ pub fn make_actions(
                 let rt = state.pane_runtime.entry(pane_id).or_default();
                 rt.queued_prompt = Some(queued_prompt.clone());
                 state.queued_prompt = Some(queued_prompt);
+                if state.send_immediately {
+                    // The Execution preference: the prompt is queued and then
+                    // flushed immediately, cancelling the running turn through
+                    // the same path as the second-Enter "Send now" gesture.
+                    flush_queued_prompt(
+                        &mut state,
+                        desktop_send.as_ref(),
+                        &media_send,
+                    );
+                }
                 state.set_active_pane_draft(String::new());
                 state.pane_attachments.remove(&pane_id);
                 return;

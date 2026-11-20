@@ -614,6 +614,8 @@ pub struct UiState {
     pub chrome_more_open: Rc<RefCell<bool>>,
     /// Whether the right overview panel is maximized over the main pane.
     pub side_panel_maximized: bool,
+    /// Send a prompt immediately while a turn runs instead of queueing it.
+    pub send_immediately: bool,
     /// A saved host whose session just ended, offered for reconnect: the pane
     /// it ran in and the entry's name. Cleared by reconnecting or dismissing.
     pub ssh_reconnect_prompt: Option<(u64, String)>,

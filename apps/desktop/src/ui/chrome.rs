@@ -13,8 +13,8 @@ use goble_ui::elements::chat_content::changed_files_for_message;
 use goble_ui::elements::{
     AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
     Empty, Expanded, Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, PopupMenu,
-    PopupMenuItem, PopupMenuPosition, Scrollable, Spacer, Text, Tooltip, TooltipPosition,
-    TopbarButton,
+    PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput, Spacer, Text, Tooltip,
+    TooltipPosition, TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::platform::text_atlas::FontWeight;
@@ -290,17 +290,64 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         )
         .finish();
 
-    let search = Container::new(
-        Text::new("Search or enter a URL")
-            .with_font_size(12.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_padding(EdgeInsets::new(8.0, 8.0, 8.0, 8.0))
-    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-    .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Focus)))
-    .with_corner_radius(10.0)
-    .finish();
+    let on_search_change = actions.on_global_search_change.clone();
+    let on_search_focus = actions.on_global_search_focus_change.clone();
+    let search = SearchInput::new()
+        .with_value(state.global_search_query.clone())
+        .with_focused(state.global_search_focused)
+        .with_caret(state.global_search_caret.clone())
+        .with_placeholder("Search or enter a URL")
+        .with_text_size(12.0)
+        .with_extra_height(12.0)
+        .with_on_change(move |value| (on_search_change.borrow_mut())(value))
+        .with_on_focus_change(move |focused| (on_search_focus.borrow_mut())(focused))
+        .finish();
+    let mut results = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(1.0);
+    let query = state.global_search_query.trim();
+    if !query.is_empty() {
+        if query.starts_with("http://") || query.starts_with("https://") {
+            results = results.with_child(muted_line(app, "Browser is not available in this build"));
+        } else if state.global_search_rows.is_empty() {
+            results = results.with_child(muted_line(
+                app,
+                if state.global_search_searched {
+                    "No matches"
+                } else {
+                    "Searching…"
+                },
+            ));
+        } else {
+            let open = actions.on_explorer_file_click.clone();
+            for row in state.global_search_rows.iter().take(20) {
+                let label = if row.name.is_empty() {
+                    row.text.clone()
+                } else {
+                    row.name.clone()
+                };
+                let path = row.path.clone();
+                let open = open.clone();
+                results = results.with_child(
+                    HoverRow::new(
+                        Text::new(label)
+                            .with_font_size(12.0)
+                            .with_theme_color(if row.line.is_some() {
+                                ColorToken::Muted
+                            } else {
+                                ColorToken::Text
+                            }, app)
+                            .with_max_lines(1)
+                            .finish(),
+                    )
+                    .with_padding(EdgeInsets::new(3.0, 4.0, 3.0, 4.0))
+                    .with_corner_radius(6.0)
+                    .with_on_click(move || (open.borrow_mut())(path.clone()))
+                    .finish(),
+                );
+            }
+        }
+    }
 
     let on_diff = actions.on_diff_panel.clone();
     let on_explorer = actions.on_select_sidebar_view.clone();
@@ -408,6 +455,7 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .with_spacing(10.0)
         .with_child(header)
         .with_child(search)
+        .with_child(results.finish())
         .with_child(rows.finish())
         .with_child(
             Container::new(sections.finish())

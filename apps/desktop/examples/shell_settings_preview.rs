@@ -14,7 +14,9 @@ use goble_app::state::UiState;
 use goble_app::ui::SettingsCategory;
 use goble_core::store::Store;
 use goble_desktop_service::{DesktopState, ThreadStore};
-use goble_ui::elements::{AppContext, Element};
+use goble_ui::elements::{AppContext, Element, EventContext};
+use goble_ui::event::DispatchedEvent;
+use goble_ui::render::RenderCommand;
 use goble_ui::theme::Theme;
 use goble_ui::{vec2f, ChatFragment, ChatMessage, ChatRole};
 
@@ -104,6 +106,23 @@ fn main() -> anyhow::Result<()> {
             let _ = raster::render_element_to_png(
                 &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
             );
+            if name == "panel-more" {
+                let commands = raster::render_commands(&mut root, size, &app);
+                if let Some(trigger) = commands.iter().find_map(|command| match command {
+                    RenderCommand::DrawIcon { origin, name, size, .. } if name == "ellipsis" => {
+                        Some(*origin + goble_ui::geometry::vec2f(*size / 2.0, *size / 2.0))
+                    }
+                    _ => None,
+                }) {
+                    let mut ctx = EventContext::default();
+                    for event in [
+                        DispatchedEvent::MouseDown { position: trigger, button: 0 },
+                        DispatchedEvent::MouseUp { position: trigger, button: 0 },
+                    ] {
+                        let _ = root.dispatch_event(&event, &mut ctx, &app);
+                    }
+                }
+            }
             raster::render_element_to_png(
                 &assets, &app, &mut root, size.x, size.y, 2.0, None, &path,
             )?;

@@ -744,6 +744,7 @@ pub struct AppView {
     pub approval_mode: Option<String>,
     pub auto_approve: Option<bool>,
     pub vim_mode: Option<bool>,
+    pub send_immediately: Option<bool>,
 }
 
 /// `[theme]` as the UI reads it.

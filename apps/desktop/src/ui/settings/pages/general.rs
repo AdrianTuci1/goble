@@ -72,13 +72,18 @@ pub fn page(state: &SettingsUiState) -> PageModel {
                     "Queued Messages",
                     "Configure when follow-up messages are sent. The queue is the built-in behaviour in this build.",
                 )
-                .buttons(vec![
-                    ActionModel::new("Queue", SettingsAction::SetSendImmediately(false)),
-                    ActionModel::new(
+                .buttons({
+                    let queue = ActionModel::new("Queue", SettingsAction::SetSendImmediately(false));
+                    let now = ActionModel::new(
                         "Send Immediately",
                         SettingsAction::SetSendImmediately(true),
-                    ),
-                ]),
+                    );
+                    if state.send_immediately {
+                        vec![queue, now.primary()]
+                    } else {
+                        vec![queue.primary(), now]
+                    }
+                }),
             )
             .with_row(
                 RowModel::new(

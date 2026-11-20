@@ -72,6 +72,7 @@ pub fn app_bool(state: &SettingsUiState, key: &str, default: bool) -> bool {
         "auto_save_on_close" => app.auto_save_on_close.unwrap_or(default),
         "auto_approve" => app.auto_approve.unwrap_or(default),
         "vim_mode" => app.vim_mode.unwrap_or(default),
+        "send_immediately" => app.send_immediately.unwrap_or(default),
         _ => default,
     }
 }
@@ -162,7 +163,8 @@ pub fn display_value(state: &SettingsUiState, path: &str) -> Option<String> {
             | "invert_scroll"
             | "auto_save_on_close"
             | "auto_approve"
-            | "vim_mode" => {
+            | "vim_mode"
+            | "send_immediately" => {
                 // The fallback is the schema's own default, so an absent key
                 // compares equal to it and offers no reset.
                 let fallback = schema_default(path)

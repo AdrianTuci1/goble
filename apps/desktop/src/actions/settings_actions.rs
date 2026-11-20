@@ -67,8 +67,18 @@ fn handle(
     }
     match action {
         SettingsAction::SetSendImmediately(value) => {
-            state.settings.send_immediately = value;
+            let Some(desktop) = desktop else {
+                no_service(state);
+                return;
+            };
             state.send_immediately = value;
+            state.settings.send_immediately = value;
+            write_ops(
+                state,
+                desktop,
+                ConfigFile::Config,
+                vec![fields::bool_op("app.send_immediately", value)],
+            );
         }
         SettingsAction::Navigate(page) => {
             state.settings_set_page(page);

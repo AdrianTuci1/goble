@@ -134,6 +134,8 @@ impl UiState {
     pub fn refresh_settings(&mut self, desktop: &DesktopState) {
         self.refresh_settings_theme(desktop);
         self.refresh_settings_files(desktop);
+        self.send_immediately =
+            crate::ui::settings::fields::app_bool(&self.settings, "send_immediately", false);
         // The Providers page's Accounts and Agent CLIs sections read the
         // catalog's PATH detection (a stat/resolve pass, no --version probe) so
         // a page opened from a restored layout is already populated. Only on

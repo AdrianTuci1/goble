@@ -13,6 +13,14 @@ use super::{add_action, problem_section};
 
 pub fn page(state: &SettingsUiState) -> PageModel {
     let mut sections = Vec::new();
+    sections.push(
+        SectionModel::new("browser", "Browser").with_row(super::unavailable_row(
+            "browser-surface",
+            "Browser preview",
+            "Open a URL in an embedded preview surface.",
+            "no browser surface is available in this build; Extensions lists the MCP servers that are",
+        )),
+    );
     if let Some(problems) = problem_section(state, ConfigFile::Config) {
         sections.push(problems);
     }

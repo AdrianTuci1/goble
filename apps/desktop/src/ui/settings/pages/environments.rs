@@ -14,6 +14,17 @@ use super::{problem_section, unavailable_row};
 
 pub fn page(state: &SettingsUiState) -> PageModel {
     let mut sections = Vec::new();
+    sections.push(
+        SectionModel::new("projects", "Projects").with_row(
+            RowModel::new(
+                "projects.source",
+                "Projects and environments",
+                "Project folders are managed in the sidebar; environment variables are listed below.",
+            )
+            .read_only("Sidebar")
+            .with_status(StatusKind::Muted, "Managed from the sidebar"),
+        ),
+    );
     if let Some(problems) = problem_section(state, ConfigFile::Environment) {
         sections.push(problems);
     }

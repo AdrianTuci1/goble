@@ -13,6 +13,17 @@ use super::{add_action, problem_section, unavailable_row};
 
 pub fn page(state: &SettingsUiState) -> PageModel {
     let mut sections = Vec::new();
+    sections.push(
+        SectionModel::new("conversations", "Conversations").with_row(
+            RowModel::new(
+                "conversations.source",
+                "Saved conversations",
+                "Conversations are listed in the sidebar; SSH host bindings are managed below.",
+            )
+            .read_only("Sidebar")
+            .with_status(StatusKind::Muted, "Managed from the sidebar"),
+        ),
+    );
     if let Some(problems) = problem_section(state, ConfigFile::Hosts) {
         sections.push(problems);
     }

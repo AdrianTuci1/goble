@@ -57,6 +57,7 @@ fn main() -> anyhow::Result<()> {
             ("panel-more", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-panel", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("overview", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("side-panel-max", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("terminal-dock", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("settings-wide", vec2f(1600.0, 1000.0), true, SettingsCategory::General),
             ("settings-wide-shortcuts", vec2f(1600.0, 1000.0), true, SettingsCategory::Shortcuts),
@@ -86,6 +87,10 @@ fn main() -> anyhow::Result<()> {
                 }
                 if name == "overview" {
                     s.right_sidebar_open = true;
+                }
+                if name == "side-panel-max" {
+                    s.right_sidebar_open = true;
+                    s.side_panel_maximized = true;
                 }
                 if name == "terminal-dock" {
                     let pane = s.active_pane_id;

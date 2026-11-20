@@ -27,9 +27,33 @@ pub const CHROME_HEIGHT: f32 = 48.0;
 /// The right Overview dock's default width.
 pub const OVERVIEW_WIDTH: f32 = 320.0;
 
+/// A top-row control's glyph. 17 pt reads clearly inside the 48 pt strip
+/// without filling its hit box edge to edge.
+const CONTROL_ICON_SIZE: f32 = 17.0;
+/// A top-row control's square hit box. 32 pt leaves 8 pt above and below in the
+/// 48 pt strip, so the hover fill never touches the strip's edges.
+const CONTROL_BUTTON_SIZE: f32 = 32.0;
+
+/// The room the window controls take at the strip's leading edge. On macOS the
+/// OS draws the real traffic lights over this strip, so the whole band stays
+/// clear of the sidebar toggle and navigation. Elsewhere the strip is compact
+/// and the preview dots follow this edge inset; the dots' own width is part of
+/// the reserved region either way, so the toggle always starts after it.
+#[cfg(target_os = "macos")]
+const TRAFFIC_INSET: f32 = 78.0;
+#[cfg(not(target_os = "macos"))]
+const TRAFFIC_INSET: f32 = 20.0;
+
+/// The preview traffic lights: three 12 pt dots with 8 pt gaps (52 pt total).
+/// macOS keeps the same clear spacing inside [`TRAFFIC_INSET`] for the
+/// OS-drawn lights.
+const TRAFFIC_LIGHT_SIZE: f32 = 12.0;
+const TRAFFIC_LIGHT_GAP: f32 = 8.0;
+const TRAFFIC_LIGHTS_WIDTH: f32 = TRAFFIC_LIGHT_SIZE * 3.0 + TRAFFIC_LIGHT_GAP * 2.0;
+
 fn glyph(app: &AppContext, name: &'static str) -> Box<dyn Element> {
     Icon::new(name)
-        .with_size(15.0)
+        .with_size(CONTROL_ICON_SIZE)
         .with_theme_color(ColorToken::Muted, app)
         .finish()
 }
@@ -37,7 +61,7 @@ fn glyph(app: &AppContext, name: &'static str) -> Box<dyn Element> {
 fn button(app: &AppContext, name: &'static str, tip: &'static str) -> Box<dyn Element> {
     Tooltip::new(
         TopbarButton::new(glyph(app, name))
-            .with_size(28.0)
+            .with_size(CONTROL_BUTTON_SIZE)
             .with_corner_radius(8.0)
             .finish(),
         tip,
@@ -54,7 +78,7 @@ fn button_click<F: FnMut() + 'static>(
 ) -> Box<dyn Element> {
     Tooltip::new(
         TopbarButton::new(glyph(app, name))
-            .with_size(28.0)
+            .with_size(CONTROL_BUTTON_SIZE)
             .with_corner_radius(8.0)
             .with_on_click(action)
             .finish(),
@@ -67,10 +91,12 @@ fn button_click<F: FnMut() + 'static>(
 /// The single top row, left to right: lights, sidebar toggle, navigation,
 /// breadcrumb, More, Overview and the right-panel toggle.
 pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    // `traffic_lights` owns the whole leading band (the reserved inset plus the
+    // lights' width), so the sidebar toggle and every nav control after it start
+    // past the lights instead of underneath them.
     let mut leading = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(8.0)
-        .with_child(Empty::new().with_size(vec2f(12.0, 0.0)).finish())
         .with_child(traffic_lights(app));
     let on_sidebar = actions.on_toggle_sidebar.clone();
     let sidebar_open = state.sidebar_visible;
@@ -86,11 +112,11 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         Tooltip::new(
             TopbarButton::new(
                 Icon::new("arrow-left")
-                    .with_size(15.0)
+                    .with_size(CONTROL_ICON_SIZE)
                     .with_theme_color(ColorToken::Border, app)
                     .finish(),
             )
-                .with_size(28.0)
+                .with_size(CONTROL_BUTTON_SIZE)
                 .finish(),
             "Back",
         )
@@ -101,11 +127,11 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         Tooltip::new(
             TopbarButton::new(
                 Icon::new("arrow-right")
-                    .with_size(15.0)
+                    .with_size(CONTROL_ICON_SIZE)
                     .with_theme_color(ColorToken::Border, app)
                     .finish(),
             )
-                .with_size(28.0)
+                .with_size(CONTROL_BUTTON_SIZE)
                 .finish(),
             "Forward",
         )
@@ -116,7 +142,7 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     leading = leading.with_child(
         Tooltip::new(
             TopbarButton::new(glyph(app, "search"))
-                .with_size(28.0)
+                .with_size(CONTROL_BUTTON_SIZE)
                 .with_corner_radius(8.0)
                 .with_on_click(move || (on_search.borrow_mut())(SidebarView::Search))
                 .finish(),
@@ -134,14 +160,15 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         crumb = crumb
             .with_child(
                 Text::new(crumb_a)
-                    .with_font_size(13.0)
+                    .with_font_size(14.5)
+                    .with_weight(FontWeight::Medium)
                     .with_theme_color(ColorToken::Muted, app)
                     .with_max_lines(1)
                     .finish(),
             )
             .with_child(
                 Text::new("/")
-                    .with_font_size(13.0)
+                    .with_font_size(14.5)
                     .with_theme_color(ColorToken::Border, app)
                     .finish(),
             );
@@ -149,7 +176,7 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     crumb = crumb.with_child(
         ConstrainedBox::new(
             Text::new(crumb_b)
-                .with_font_size(13.0)
+                .with_font_size(14.5)
                 .with_weight(FontWeight::Medium)
                 .with_theme_color(ColorToken::Text, app)
                 .with_max_lines(1)
@@ -167,16 +194,23 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     let on_rename = actions.on_session_rename_start.clone();
     let on_archive = actions.on_archive_conversation.clone();
     let on_copy = actions.on_copy_conversation_id.clone();
+    let on_pin = actions.on_toggle_star.clone();
     let on_split_right = actions.on_split_right.clone();
     let on_split_down = actions.on_split_down.clone();
     let on_close = actions.on_close_pane.clone();
     let on_create = actions.on_create_submit.clone();
     let selected = state.selected_id.clone().unwrap_or_default();
+    let pinned = state
+        .conversations
+        .iter()
+        .find(|entry| entry.id == selected)
+        .is_some_and(|entry| entry.starred);
+    let pin_label = if pinned { "Unpin" } else { "Pin" };
     let id = selected.clone();
     let close_id = selected.clone();
     let more_items = vec![
         PopupMenuItem::new("Rename").with_shortcut("⌘ R"),
-        PopupMenuItem::new("Pin").disabled(),
+        PopupMenuItem::new(pin_label),
         PopupMenuItem::new("Archive").with_shortcut("⌘ ⇧ A"),
         PopupMenuItem::new("Split right").with_shortcut("⌘ Space").with_separator_before(),
         PopupMenuItem::new("Split down").with_shortcut("⌘ ⇧ D"),
@@ -190,6 +224,7 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .with_max_width(240.0)
         .with_on_select(move |index| match index {
             0 => (on_rename.borrow_mut())(id.clone()),
+            1 => (on_pin.borrow_mut())(id.clone()),
             2 => (on_archive.borrow_mut())(close_id.clone()),
             3 => (on_split_right.borrow_mut())(),
             4 => (on_split_down.borrow_mut())(),
@@ -228,21 +263,41 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
 fn traffic_lights(app: &AppContext) -> Box<dyn Element> {
     let mut row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(8.0);
+        .with_spacing(TRAFFIC_LIGHT_GAP);
     if !cfg!(target_os = "macos") {
         for color in ["#ff5f57", "#febc2e", "#28c840"] {
             row = row.with_child(
-                Container::new(Empty::new().with_size(vec2f(12.0, 12.0)).finish())
-                    .with_background(Fill::Solid(ColorU::hex(
-                        u32::from_str_radix(color.trim_start_matches('#'), 16).unwrap_or(0),
-                    )))
-                    .with_corner_radius(6.0)
-                    .finish(),
+                Container::new(
+                    Empty::new()
+                        .with_size(vec2f(TRAFFIC_LIGHT_SIZE, TRAFFIC_LIGHT_SIZE))
+                        .finish(),
+                )
+                .with_background(Fill::Solid(ColorU::hex(
+                    u32::from_str_radix(color.trim_start_matches('#'), 16).unwrap_or(0),
+                )))
+                .with_corner_radius(TRAFFIC_LIGHT_SIZE / 2.0)
+                .finish(),
             );
         }
     }
     let _ = app;
-    ConstrainedBox::new(row.finish()).with_height(16.0).finish()
+    // The reserved band is this element's own width, so the sidebar toggle and
+    // navigation that follow it in the leading flex are always laid out past
+    // the lights. macOS keeps the whole inset clear for the OS-drawn lights;
+    // elsewhere the preview dots sit after the (smaller) edge inset.
+    let preview_width = if cfg!(target_os = "macos") {
+        0.0
+    } else {
+        TRAFFIC_LIGHTS_WIDTH
+    };
+    ConstrainedBox::new(
+        Container::new(row.finish())
+            .with_padding(EdgeInsets::new(TRAFFIC_INSET, 0.0, 0.0, 0.0))
+            .finish(),
+    )
+    .with_width(TRAFFIC_INSET + preview_width)
+    .with_height(16.0)
+    .finish()
 }
 
 fn breadcrumb(state: &UiSnapshot) -> (String, String) {
@@ -309,42 +364,114 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     if !query.is_empty() {
         if query.starts_with("http://") || query.starts_with("https://") {
             results = results.with_child(muted_line(app, "Browser is not available in this build"));
-        } else if state.global_search_rows.is_empty() {
-            results = results.with_child(muted_line(
-                app,
-                if state.global_search_searched {
-                    "No matches"
-                } else {
-                    "Searching…"
-                },
-            ));
         } else {
-            let open = actions.on_explorer_file_click.clone();
-            for row in state.global_search_rows.iter().take(20) {
-                let label = if row.name.is_empty() {
-                    row.text.clone()
-                } else {
-                    row.name.clone()
-                };
-                let path = row.path.clone();
-                let open = open.clone();
-                results = results.with_child(
-                    HoverRow::new(
-                        Text::new(label)
-                            .with_font_size(12.0)
-                            .with_theme_color(if row.line.is_some() {
-                                ColorToken::Muted
-                            } else {
-                                ColorToken::Text
-                            }, app)
-                            .with_max_lines(1)
-                            .finish(),
-                    )
-                    .with_padding(EdgeInsets::new(3.0, 4.0, 3.0, 4.0))
-                    .with_corner_radius(6.0)
-                    .with_on_click(move || (open.borrow_mut())(path.clone()))
-                    .finish(),
-                );
+            let lower = query.to_lowercase();
+            let mut found = false;
+            let conversations: Vec<_> = state
+                .conversations
+                .iter()
+                .filter(|entry| entry.name.to_lowercase().contains(&lower))
+                .take(6)
+                .collect();
+            if !conversations.is_empty() {
+                found = true;
+                results = results.with_child(section_header(app, "Conversations", conversations.len()));
+                let select = actions.on_select_conversation.clone();
+                for entry in conversations {
+                    let id = entry.id.clone();
+                    let select = select.clone();
+                    results = results.with_child(
+                        HoverRow::new(
+                            Text::new(entry.name.clone())
+                                .with_font_size(12.0)
+                                .with_theme_color(ColorToken::Text, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .with_padding(EdgeInsets::new(3.0, 4.0, 3.0, 4.0))
+                        .with_corner_radius(6.0)
+                        .with_on_click(move || (select.borrow_mut())(id.clone()))
+                        .finish(),
+                    );
+                }
+            }
+            let commands: Vec<_> = crate::ui::palette::slash_commands(state, actions)
+                .into_iter()
+                .filter(|command| {
+                    command.name.to_lowercase().contains(&lower)
+                        || command.description.to_lowercase().contains(&lower)
+                })
+                .take(6)
+                .collect();
+            if !commands.is_empty() {
+                found = true;
+                results = results.with_child(section_header(app, "Commands", commands.len()));
+                let insert = actions.on_composer_insert.clone();
+                for command in commands {
+                    let token = format!("/{} ", command.name);
+                    let label = format!("/{}  {}", command.name, command.description);
+                    let insert = insert.clone();
+                    results = results.with_child(
+                        HoverRow::new(
+                            Text::new(label)
+                                .with_font_size(12.0)
+                                .with_theme_color(ColorToken::Text, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .with_padding(EdgeInsets::new(3.0, 4.0, 3.0, 4.0))
+                        .with_corner_radius(6.0)
+                        .with_on_click(move || (insert.borrow_mut())(token.clone()))
+                        .finish(),
+                    );
+                }
+            }
+            let files: Vec<_> = state
+                .global_search_rows
+                .iter()
+                .filter(|row| row.name.is_empty() || row.name.to_lowercase().contains(&lower) || row.text.to_lowercase().contains(&lower))
+                .take(12)
+                .collect();
+            if !files.is_empty() {
+                found = true;
+                results = results.with_child(section_header(app, "Files", files.len()));
+                let open = actions.on_explorer_file_click.clone();
+                for row in files {
+                    let label = if row.name.is_empty() {
+                        row.text.clone()
+                    } else {
+                        row.name.clone()
+                    };
+                    let path = row.path.clone();
+                    let open = open.clone();
+                    results = results.with_child(
+                        HoverRow::new(
+                            Text::new(label)
+                                .with_font_size(12.0)
+                                .with_theme_color(if row.line.is_some() {
+                                    ColorToken::Muted
+                                } else {
+                                    ColorToken::Text
+                                }, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .with_padding(EdgeInsets::new(3.0, 4.0, 3.0, 4.0))
+                        .with_corner_radius(6.0)
+                        .with_on_click(move || (open.borrow_mut())(path.clone()))
+                        .finish(),
+                    );
+                }
+            }
+            if !found {
+                results = results.with_child(muted_line(
+                    app,
+                    if state.global_search_searched {
+                        "No matches"
+                    } else {
+                        "Searching…"
+                    },
+                ));
             }
         }
     }

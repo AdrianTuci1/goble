@@ -6,10 +6,20 @@ use crate::update::UpdatePhase;
 
 use super::super::model::{ActionModel, PageModel, RowModel, SectionModel};
 use super::super::state::{SettingsAction, SettingsUiState, StatusKind};
+use super::super::fields;
 
 pub fn page(state: &SettingsUiState) -> PageModel {
     let view = &state.update_view;
     let mut sections = Vec::new();
+    sections.push(
+        SectionModel::new("notifications", "Notifications").with_row(super::toggle_row(
+            state,
+            "app.in_app_notifications",
+            "In-app announcements",
+            "The turn-finished banner inside Goble.",
+            true,
+        )),
+    );
     if let Some(banner) = view.banner.as_ref() {
         sections.push(
             SectionModel::new("updates-banner", "Withdrawn build").with_row(

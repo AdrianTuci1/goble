@@ -1,7 +1,6 @@
 use goble_ui::elements::{
-    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Expanded, Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point,
-    SizeConstraint, Stack,
+    AppContext, Border, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Expanded,
+    Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Stack,
 };
 use goble_ui::geometry::{rectf, PointF, RectF, Size2F, Vector2F};
 use goble_ui::platform::{CursorKind, WindowControl};
@@ -118,27 +117,35 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // the pane tree's own minimum plus the sidebar) the sidebar auto-collapses,
     // and the panes take the whole window. A manual re-expand below the
     // breakpoint keeps the sidebar on (a later step then narrows the panes).
+    // The Overview side panel shares the content area with the main panel as
+    // two equal cards: each half is an `Expanded` child of one row, so they
+    // split whatever width the sidebar leaves 50/50. The row has no spacing and
+    // no outer padding or casing of its own — the two cards' own bordered,
+    // rounded casings meet on the shared boundary with no gutter between them.
+    // Maximized, the side panel is the only content card. Below the secondary
+    // breakpoint the panel leaves the view (the responsive layout's narrow
+    // step) and the main card takes the whole content width. The row itself
+    // only arranges the cards; each branch below owns its casing, so the side
+    // panel's border is not nested inside the main panel's.
     let main: Box<dyn Element> = if state.side_panel_maximized && state.right_sidebar_open {
         chrome::build_side_panel(app, state, actions)
-    } else if state.right_sidebar_open {
-        let panel = chrome::build_side_panel(app, state, actions);
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_child(Expanded::new(main).finish())
-            .with_child(
-                ConstrainedBox::new(panel)
-                    .with_width(chrome::OVERVIEW_WIDTH)
-                    .finish(),
-            )
-            .finish()
     } else {
-        main
+        let main = Container::new(main)
+            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+            .with_corner_radius(12.0)
+            .finish();
+        if state.right_sidebar_open && !state.responsive.secondary_hidden {
+            let panel = chrome::build_side_panel(app, state, actions);
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(Expanded::new(main).finish())
+                .with_child(Expanded::new(panel).finish())
+                .finish()
+        } else {
+            main
+        }
     };
-    let main = Container::new(main)
-        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-        .with_corner_radius(12.0)
-        .finish();
     let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
     let body: Box<dyn Element> = if sidebar_shown && !state.side_panel_maximized {
         let on_drag_start = actions.on_sidebar_drag_start.clone();
@@ -2127,7 +2134,7 @@ mod tests {
             })
             .expect("the sidebar starts with New conversation");
         assert!(
-            new_conversation.y < 60.0,
+            new_conversation.y < 75.0,
             "the sidebar owns the top edge, got {new_conversation:?}"
         );
         let title = commands
@@ -2200,22 +2207,7 @@ mod tests {
         let app = AppContext::default();
         let (mut root, _state, _dir) = app_root();
         let commands = render_element(&mut root, window(), &app);
-        let trigger = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, size, .. } if name == "flat-list" => {
-                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
-                }
-                _ => None,
-            })
-            .expect("the chrome row draws the Overview control");
-        let mut ctx = EventContext;
-        for event in [
-            DispatchedEvent::MouseDown { position: trigger, button: 0 },
-            DispatchedEvent::MouseUp { position: trigger, button: 0 },
-        ] {
-            let _ = root.dispatch_event(&event, &mut ctx, &app);
-        }
+        _state.borrow_mut().right_sidebar_open = true;
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands
             .iter()

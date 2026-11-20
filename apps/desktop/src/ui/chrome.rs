@@ -1,38 +1,59 @@
 //! The window's single top row and the right Overview panel.
 //!
 //! The general topbar is retired: traffic lights, navigation, the conversation
-//! breadcrumb and the panel actions live on one continuous strip above the
-//! bordered content. The strip owns the top edge for both the sidebar and the
-//! panes; the sidebar and the panel header start below it.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! name and the panel actions live on one continuous partitioned strip above
+//! the bordered content. The strip owns the top edge for both the sidebar and
+//! the panes; the sidebar and the panel header start below it.
 
 use goble_ui::color::ColorU;
-use goble_ui::elements::chat_content::changed_files_for_message;
 use goble_ui::elements::{
-    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Empty, Expanded, Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, PopupMenu,
-    PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput, Spacer, Text, Tooltip,
-    TooltipPosition, TopbarButton,
+    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
+    Expanded, Fill, Flex, HoverRow, Icon, MainAxisSize, PopupMenu, PopupMenuItem,
+    PopupMenuPosition, Scrollable, SearchInput, Spacer, Text, Tooltip, TooltipPosition,
+    TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::platform::text_atlas::FontWeight;
-use goble_ui::theme::{ColorToken, SpacingToken};
+use goble_ui::theme::ColorToken;
 
 use crate::ui::{DiffPanelAction, SidebarView, UiActions, UiSnapshot};
 
 /// The strip's height: the one row the window's chrome occupies.
 pub const CHROME_HEIGHT: f32 = 48.0;
+/// The quiet band above the strip's content. The Surface covers the whole 48 pt,
+/// so the padding reads as one continuous material, not as a second bar.
+const CHROME_TOP_PADDING: f32 = 5.0;
+/// The strip's content band, below [`CHROME_TOP_PADDING`]. The section rules
+/// span exactly this height, so every section bottom ends where the content
+/// sheet begins.
+const CHROME_CONTENT_HEIGHT: f32 = CHROME_HEIGHT - CHROME_TOP_PADDING;
 /// The right Overview dock's default width.
 pub const OVERVIEW_WIDTH: f32 = 320.0;
 
-/// A top-row control's glyph. 17 pt reads clearly inside the 48 pt strip
-/// without filling its hit box edge to edge.
+/// A top-row control's glyph. 17 pt reads clearly inside the strip without
+/// filling its hit box edge to edge.
 const CONTROL_ICON_SIZE: f32 = 17.0;
-/// A top-row control's square hit box. 32 pt leaves 8 pt above and below in the
-/// 48 pt strip, so the hover fill never touches the strip's edges.
-const CONTROL_BUTTON_SIZE: f32 = 32.0;
+/// A top-row control's square hit box. The 28 pt box is compact enough for the
+/// four leading controls to share a 200 pt sidebar section on macOS.
+const CONTROL_BUTTON_SIZE: f32 = 28.0;
+/// The gap between two strip controls. It is deliberately tight: DSH's leading
+/// control cluster reads as one group rather than four separate buttons.
+const CONTROL_SPACING: f32 = 2.0;
+/// The vertical padding that centers a 28 pt control row inside the 43 pt
+/// content band.
+const SECTION_VERTICAL_PADDING: f32 = (CHROME_CONTENT_HEIGHT - CONTROL_BUTTON_SIZE) / 2.0;
+/// A section rule's width: one physical pixel, painted as a filled Empty.
+const SEPARATOR_WIDTH: f32 = 1.0;
+/// The main section's leading padding: the title starts where the pane area's
+/// own left edge does, not at the rule.
+const MAIN_SECTION_LEFT_PADDING: f32 = 16.0;
+/// The main section's trailing padding, before the More control.
+const MAIN_SECTION_RIGHT_PADDING: f32 = 12.0;
+/// The side-panel section's inset on both sides.
+const SIDE_SECTION_PADDING: f32 = 12.0;
+/// A side-panel tab's glyph and label sizes.
+const TAB_ICON_SIZE: f32 = 14.0;
+const TAB_FONT_SIZE: f32 = 12.5;
 
 /// The room the window controls take at the strip's leading edge. On macOS the
 /// OS draws the real traffic lights over this strip, so the whole band stays
@@ -88,56 +109,55 @@ fn button_click<F: FnMut() + 'static>(
     .finish()
 }
 
-/// The single top row, left to right: lights, sidebar toggle, navigation,
-/// breadcrumb, More, Overview and the right-panel toggle.
-pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+/// The single top row, partitioned left to right: the sidebar section (lights,
+/// sidebar toggle and navigation), the main section (the active conversation
+/// name, More and the side-panel toggle), and — while the side panel is open —
+/// the side-panel section (its tab chips, add-tab and window controls).
+pub fn build_chrome_row(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    // The body's first column is the sidebar when it is shown; the strip's first
+    // section takes exactly that width so the rule falls on the same boundary.
+    // With the sidebar retracted the section shrinks to its controls, and the
+    // main section starts immediately after them.
+    let sidebar_shown =
+        state.responsive.sidebar_shown(state.sidebar_visible) && !state.side_panel_maximized;
+    let sidebar_width = if sidebar_shown {
+        state.sidebar_width
+    } else {
+        sidebar_controls_width()
+    };
+
     // `traffic_lights` owns the whole leading band (the reserved inset plus the
     // lights' width), so the sidebar toggle and every nav control after it start
     // past the lights instead of underneath them.
     let mut leading = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(8.0)
+        .with_spacing(CONTROL_SPACING)
         .with_child(traffic_lights(app));
     let on_sidebar = actions.on_toggle_sidebar.clone();
     let sidebar_open = state.sidebar_visible;
     leading = leading.with_child(button_click(
         app,
-        if sidebar_open { "left-panel-close" } else { "left-panel-open" },
-        if sidebar_open { "Hide sidebar" } else { "Show sidebar" },
+        if sidebar_open {
+            "left-panel-close"
+        } else {
+            "left-panel-open"
+        },
+        if sidebar_open {
+            "Hide sidebar"
+        } else {
+            "Show sidebar"
+        },
         move || (on_sidebar.borrow_mut())(),
     ));
     // Back/forward are visual navigation controls until the pane history lands;
     // they render disabled rather than pretending to navigate.
-    leading = leading.with_child(
-        Tooltip::new(
-            TopbarButton::new(
-                Icon::new("arrow-left")
-                    .with_size(CONTROL_ICON_SIZE)
-                    .with_theme_color(ColorToken::Border, app)
-                    .finish(),
-            )
-                .with_size(CONTROL_BUTTON_SIZE)
-                .finish(),
-            "Back",
-        )
-        .with_position(TooltipPosition::Below)
-        .finish(),
-    );
-    leading = leading.with_child(
-        Tooltip::new(
-            TopbarButton::new(
-                Icon::new("arrow-right")
-                    .with_size(CONTROL_ICON_SIZE)
-                    .with_theme_color(ColorToken::Border, app)
-                    .finish(),
-            )
-                .with_size(CONTROL_BUTTON_SIZE)
-                .finish(),
-            "Forward",
-        )
-        .with_position(TooltipPosition::Below)
-        .finish(),
-    );
+    leading = leading.with_child(disabled_button(app, "arrow-left", "Back"));
+    leading = leading.with_child(disabled_button(app, "arrow-right", "Forward"));
     let on_search = actions.on_select_sidebar_view.clone();
     leading = leading.with_child(
         Tooltip::new(
@@ -151,46 +171,28 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .with_position(TooltipPosition::Below)
         .finish(),
     );
+    let leading = ConstrainedBox::new(
+        Container::new(leading.finish())
+            .with_padding(EdgeInsets::new(
+                0.0,
+                SECTION_VERTICAL_PADDING,
+                0.0,
+                SECTION_VERTICAL_PADDING,
+            ))
+            .finish(),
+    )
+    .with_width(sidebar_width)
+    .finish();
 
-    let (crumb_a, crumb_b) = breadcrumb(state);
-    let mut crumb = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(8.0);
-    if !crumb_a.is_empty() {
-        crumb = crumb
-            .with_child(
-                Text::new(crumb_a)
-                    .with_font_size(14.5)
-                    .with_weight(FontWeight::Medium)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .with_max_lines(1)
-                    .finish(),
-            )
-            .with_child(
-                Text::new("/")
-                    .with_font_size(14.5)
-                    .with_theme_color(ColorToken::Border, app)
-                    .finish(),
-            );
-    }
-    crumb = crumb.with_child(
-        ConstrainedBox::new(
-            Text::new(crumb_b)
-                .with_font_size(14.5)
-                .with_weight(FontWeight::Medium)
-                .with_theme_color(ColorToken::Text, app)
-                .with_max_lines(1)
-                .finish(),
-        )
-        .with_max_width(520.0)
-        .finish(),
-    );
-
-    let active = state.active_pane_id;
-    let on_overview = actions.on_toggle_right_sidebar.clone();
-    let overview = button_click(app, "flat-list", "Overview", move || {
-        (on_overview.borrow_mut())()
-    });
+    // The main section names the active conversation and nothing else: DSH's
+    // partitioned strip retired the folder crumb, so there is no "Not in
+    // project /" run before the name.
+    let title = Text::new(truncate_label(&active_conversation_name(state), 64))
+        .with_font_size(14.5)
+        .with_weight(FontWeight::Medium)
+        .with_theme_color(ColorToken::Text, app)
+        .with_max_lines(1)
+        .finish();
     let on_rename = actions.on_session_rename_start.clone();
     let on_archive = actions.on_archive_conversation.clone();
     let on_copy = actions.on_copy_conversation_id.clone();
@@ -212,7 +214,9 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         PopupMenuItem::new("Rename").with_shortcut("⌘ R"),
         PopupMenuItem::new(pin_label),
         PopupMenuItem::new("Archive").with_shortcut("⌘ ⇧ A"),
-        PopupMenuItem::new("Split right").with_shortcut("⌘ Space").with_separator_before(),
+        PopupMenuItem::new("Split right")
+            .with_shortcut("⌘ Space")
+            .with_separator_before(),
         PopupMenuItem::new("Split down").with_shortcut("⌘ ⇧ D"),
         PopupMenuItem::new("Replace with new"),
         PopupMenuItem::new("Copy ID").with_shortcut("⌘ ⇧ C"),
@@ -238,24 +242,90 @@ pub fn build_chrome_row(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     let panel_open = state.right_sidebar_open;
     let panel_button = button_click(
         app,
-        if panel_open { "left-panel-close" } else { "left-panel-open" },
-        if panel_open { "Hide overview" } else { "Show overview" },
+        if panel_open {
+            "left-panel-close"
+        } else {
+            "left-panel-open"
+        },
+        "Toggle side panel",
         move || (on_panel.borrow_mut())(),
     );
 
-    let row = Flex::row()
+    let main_section = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(10.0)
-        .with_child(leading.finish())
-        .with_child(Expanded::new(crumb.finish()).finish())
+        .with_spacing(CONTROL_SPACING)
+        .with_child(Expanded::new(title).finish())
         .with_child(more)
-        .with_child(overview)
         .with_child(panel_button)
-        .with_child(Empty::new().with_size(vec2f(10.0, 0.0)).finish())
         .finish();
-    let row = ConstrainedBox::new(row).with_height(CHROME_HEIGHT).finish();
-    Container::new(row)
+    let main_section = Container::new(main_section)
+        .with_padding(EdgeInsets::new(
+            MAIN_SECTION_LEFT_PADDING,
+            SECTION_VERTICAL_PADDING,
+            MAIN_SECTION_RIGHT_PADDING,
+            SECTION_VERTICAL_PADDING,
+        ))
+        .finish();
+
+    let mut strip = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(leading)
+        .with_child(vertical_separator(app))
+        .with_child(Expanded::new(main_section).finish());
+    if panel_open {
+        let maximized = state.side_panel_maximized;
+        let side_tabs = side_panel_tabs(app, state);
+        let on_max = actions.on_toggle_side_panel_maximized.clone();
+        let on_close = actions.on_toggle_right_sidebar.clone();
+        let side_section = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(CONTROL_SPACING)
+            .with_child(Expanded::new(side_tabs).finish())
+            .with_child(button(app, "plus", "Add tab"))
+            .with_child(button_click(
+                app,
+                if maximized {
+                    "fullscreen-exit"
+                } else {
+                    "fullscreen-enter"
+                },
+                if maximized {
+                    "Restore side panel"
+                } else {
+                    "Maximize side panel"
+                },
+                move || (on_max.borrow_mut())(),
+            ))
+            .with_child(button_click(
+                app,
+                "left-panel-close",
+                "Collapse side panel",
+                move || (on_close.borrow_mut())(),
+            ))
+            .finish();
+        let side_section = Container::new(side_section)
+            .with_padding(EdgeInsets::new(
+                SIDE_SECTION_PADDING,
+                SECTION_VERTICAL_PADDING,
+                SIDE_SECTION_PADDING,
+                SECTION_VERTICAL_PADDING,
+            ))
+            .finish();
+        strip = strip
+            .with_child(vertical_separator(app))
+            .with_child(Expanded::new(side_section).finish());
+    }
+    // The strip content is exactly 43 pt; the outer container owns the 5 pt
+    // quiet band above it. Both are Surface, so the whole 48 pt reads as one
+    // continuous material.
+    let strip = ConstrainedBox::new(strip.finish())
+        .with_height(CHROME_CONTENT_HEIGHT)
+        .finish();
+    Container::new(strip)
+        .with_padding(EdgeInsets::new(0.0, CHROME_TOP_PADDING, 0.0, 0.0))
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .finish()
 }
@@ -285,33 +355,166 @@ fn traffic_lights(app: &AppContext) -> Box<dyn Element> {
     // navigation that follow it in the leading flex are always laid out past
     // the lights. macOS keeps the whole inset clear for the OS-drawn lights;
     // elsewhere the preview dots sit after the (smaller) edge inset.
-    let preview_width = if cfg!(target_os = "macos") {
-        0.0
-    } else {
-        TRAFFIC_LIGHTS_WIDTH
-    };
     ConstrainedBox::new(
         Container::new(row.finish())
             .with_padding(EdgeInsets::new(TRAFFIC_INSET, 0.0, 0.0, 0.0))
             .finish(),
     )
-    .with_width(TRAFFIC_INSET + preview_width)
+    .with_width(TRAFFIC_INSET + traffic_preview_width())
     .with_height(16.0)
     .finish()
 }
 
-fn breadcrumb(state: &UiSnapshot) -> (String, String) {
-    let id = state.selected_id.as_deref();
-    let entry = id.and_then(|id| state.conversations.iter().find(|entry| entry.id == id));
-    match entry {
-        Some(entry) => (entry.folder.clone(), entry.name.clone()),
-        None => (String::new(), "New Agent".to_string()),
+/// The preview dots' width on platforms where the app draws them. macOS keeps
+/// the same space inside [`TRAFFIC_INSET`] for the OS-drawn lights, so it adds
+/// nothing after the inset.
+fn traffic_preview_width() -> f32 {
+    if cfg!(target_os = "macos") {
+        0.0
+    } else {
+        TRAFFIC_LIGHTS_WIDTH
     }
+}
+
+/// The width the leading section needs when the sidebar is hidden: the reserved
+/// traffic band, the four controls, and the gaps between all five children.
+fn sidebar_controls_width() -> f32 {
+    TRAFFIC_INSET + traffic_preview_width() + CONTROL_SPACING * 4.0 + CONTROL_BUTTON_SIZE * 4.0
+}
+
+/// A 1 px section rule. `Border` only strokes a whole rectangle, so the strip
+/// splits sections with an empty 1 pt column painted in the border token. Its
+/// height is the full content band, so the three partitions meet the content
+/// sheet with one continuous line.
+fn vertical_separator(app: &AppContext) -> Box<dyn Element> {
+    Container::new(
+        Empty::new()
+            .with_size(vec2f(SEPARATOR_WIDTH, CHROME_CONTENT_HEIGHT))
+            .finish(),
+    )
+    .with_background(Fill::Solid(app.theme.color(ColorToken::Border)))
+    .finish()
+}
+
+/// A nav control whose action is not available yet: the muted glyph reads as
+/// disabled, while the tooltip still names the eventual control.
+fn disabled_button(app: &AppContext, name: &'static str, tip: &'static str) -> Box<dyn Element> {
+    Tooltip::new(
+        TopbarButton::new(
+            Icon::new(name)
+                .with_size(CONTROL_ICON_SIZE)
+                .with_theme_color(ColorToken::Border, app)
+                .finish(),
+        )
+        .with_size(CONTROL_BUTTON_SIZE)
+        .with_corner_radius(8.0)
+        .finish(),
+        tip,
+    )
+    .with_position(TooltipPosition::Below)
+    .finish()
+}
+
+/// The active conversation's display name, or the fresh-pane placeholder. The
+/// strip shows only this run; the folder crumb is deliberately gone.
+fn active_conversation_name(state: &UiSnapshot) -> String {
+    let id = state.selected_id.as_deref();
+    id.and_then(|id| state.conversations.iter().find(|entry| entry.id == id))
+        .map(|entry| entry.name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "New Agent".to_string())
+}
+
+/// The side-panel section's tabs: DSH's new-side-question chip, at most one real
+/// work tab (the active pane's own unfinished background task), and the shell
+/// tab. No label is invented when the pane has no work item.
+fn side_panel_tabs(app: &AppContext, state: &UiSnapshot) -> Box<dyn Element> {
+    let task = state
+        .pane_live_work
+        .get(&state.active_pane_id)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.kind == crate::state::PaneWorkKind::Task
+                    && !item.description.trim().is_empty()
+            })
+        })
+        .map(|item| item.description.clone());
+    let mut tabs = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(side_panel_tab(
+            app,
+            "message-plus-square",
+            "New Side Question",
+            task.is_none(),
+        ));
+    if let Some(task) = task {
+        tabs = tabs.with_child(side_panel_tab(
+            app,
+            "terminal-input",
+            &truncate_label(&task, 28),
+            true,
+        ));
+    }
+    tabs = tabs.with_child(side_panel_tab(app, "terminal", "zsh", false));
+    tabs.finish()
+}
+
+/// One side-panel tab chip: icon plus a single-line label, selected when it is
+/// the surface the panel currently shows.
+fn side_panel_tab(
+    app: &AppContext,
+    icon: &'static str,
+    label: &str,
+    selected: bool,
+) -> Box<dyn Element> {
+    let token = if selected {
+        ColorToken::Text
+    } else {
+        ColorToken::Muted
+    };
+    let content = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(
+            Icon::new(icon)
+                .with_size(TAB_ICON_SIZE)
+                .with_theme_color(token, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(label)
+                .with_font_size(TAB_FONT_SIZE)
+                .with_theme_color(token, app)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .finish();
+    HoverRow::new(content)
+        .with_selected(selected)
+        .with_padding(EdgeInsets::new(9.0, 6.0, 9.0, 6.0))
+        .with_corner_radius(8.0)
+        .finish()
+}
+
+/// Fit a label into a one-line chip without inventing different text: take a
+/// prefix and an ellipsis when the run would be too long.
+fn truncate_label(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
 }
 
 /// The right Overview panel: real Review/Files/Terminal actions, the live
 /// sub-agent and background-task lists, maximize and collapse controls.
-pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+pub fn build_side_panel(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
     let pane = state.pane_chat.get(&state.active_pane_id);
     let on_max = actions.on_toggle_side_panel_maximized.clone();
     let on_close = actions.on_toggle_right_sidebar.clone();
@@ -328,11 +531,14 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         )
         .with_child(Spacer::new().finish())
         .with_child(
-            TopbarButton::new(glyph(app, if state.side_panel_maximized {
-                "fullscreen-exit"
-            } else {
-                "fullscreen-enter"
-            }))
+            TopbarButton::new(glyph(
+                app,
+                if state.side_panel_maximized {
+                    "fullscreen-exit"
+                } else {
+                    "fullscreen-enter"
+                },
+            ))
             .with_size(26.0)
             .with_on_click(move || (on_max.borrow_mut())())
             .finish(),
@@ -375,7 +581,8 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
                 .collect();
             if !conversations.is_empty() {
                 found = true;
-                results = results.with_child(section_header(app, "Conversations", conversations.len()));
+                results =
+                    results.with_child(section_header(app, "Conversations", conversations.len()));
                 let select = actions.on_select_conversation.clone();
                 for entry in conversations {
                     let id = entry.id.clone();
@@ -429,7 +636,11 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
             let files: Vec<_> = state
                 .global_search_rows
                 .iter()
-                .filter(|row| row.name.is_empty() || row.name.to_lowercase().contains(&lower) || row.text.to_lowercase().contains(&lower))
+                .filter(|row| {
+                    row.name.is_empty()
+                        || row.name.to_lowercase().contains(&lower)
+                        || row.text.to_lowercase().contains(&lower)
+                })
                 .take(12)
                 .collect();
             if !files.is_empty() {
@@ -448,11 +659,14 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
                         HoverRow::new(
                             Text::new(label)
                                 .with_font_size(12.0)
-                                .with_theme_color(if row.line.is_some() {
-                                    ColorToken::Muted
-                                } else {
-                                    ColorToken::Text
-                                }, app)
+                                .with_theme_color(
+                                    if row.line.is_some() {
+                                        ColorToken::Muted
+                                    } else {
+                                        ColorToken::Text
+                                    },
+                                    app,
+                                )
                                 .with_max_lines(1)
                                 .finish(),
                         )
@@ -492,7 +706,7 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         ("message-plus-square", "Side Question", 4),
         ("layers-three-01", "Extensions", 5),
     ] {
-        let disabled = matches!(action, 3 | 4);
+        let disabled = matches!(action, 3);
         let row = if disabled {
             Container::new(panel_row(app, icon, label, true)).finish()
         } else {
@@ -500,6 +714,7 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
             let on_explorer = on_explorer.clone();
             let on_terminal = on_terminal.clone();
             let on_connectors = on_connectors.clone();
+            let on_side_question = actions.on_create_submit.clone();
             HoverRow::new(panel_row(app, icon, label, false))
                 .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
                 .with_corner_radius(8.0)
@@ -507,6 +722,7 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
                     0 => (on_diff.borrow_mut())(active, DiffPanelAction::Open(None)),
                     1 => (on_explorer.borrow_mut())(SidebarView::Explorer),
                     2 => (on_terminal.borrow_mut())(active),
+                    4 => (on_side_question.borrow_mut())(),
                     5 => (on_connectors.borrow_mut())(),
                     _ => {}
                 })
@@ -562,7 +778,12 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
     let tasks: Vec<_> = state
         .pane_live_work
         .get(&active)
-        .map(|items| items.iter().filter(|item| item.kind == crate::state::PaneWorkKind::Task).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item.kind == crate::state::PaneWorkKind::Task)
+                .collect()
+        })
         .unwrap_or_default();
     sections = sections.with_child(
         Container::new(section_header(app, "Background Tasks", tasks.len()))
@@ -573,7 +794,8 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         sections = sections.with_child(muted_line(app, "No background tasks"));
     } else {
         for task in tasks {
-            sections = sections.with_child(panel_row(app, "terminal-input", &task.description, false));
+            sections =
+                sections.with_child(panel_row(app, "terminal-input", &task.description, false));
         }
     }
 
@@ -598,7 +820,12 @@ pub fn build_side_panel(app: &AppContext, state: &UiSnapshot, actions: &UiAction
         .finish()
 }
 
-fn panel_row(app: &AppContext, icon: &'static str, label: &str, disabled: bool) -> Box<dyn Element> {
+fn panel_row(
+    app: &AppContext,
+    icon: &'static str,
+    label: &str,
+    disabled: bool,
+) -> Box<dyn Element> {
     Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -606,13 +833,27 @@ fn panel_row(app: &AppContext, icon: &'static str, label: &str, disabled: bool) 
         .with_child(
             Icon::new(icon)
                 .with_size(15.0)
-                .with_theme_color(if disabled { ColorToken::Border } else { ColorToken::Muted }, app)
+                .with_theme_color(
+                    if disabled {
+                        ColorToken::Border
+                    } else {
+                        ColorToken::Muted
+                    },
+                    app,
+                )
                 .finish(),
         )
         .with_child(
             Text::new(label)
                 .with_font_size(13.0)
-                .with_theme_color(if disabled { ColorToken::Muted } else { ColorToken::Text }, app)
+                .with_theme_color(
+                    if disabled {
+                        ColorToken::Muted
+                    } else {
+                        ColorToken::Text
+                    },
+                    app,
+                )
                 .finish(),
         )
         .with_child(Spacer::new().finish())

@@ -361,11 +361,11 @@ use super::*;
                 .any(|t| t.contains("CHILD CONVERSATION MARKER")),
             "the card's handoff shows the child's conversation: {texts:?}"
         );
-        click_icon(&mut root, "x-close");
+        assert!(press_escape(&mut root), "Escape returns to the parent");
         assert_eq!(
             state.borrow().pane_view(1),
             BlockView::Terminal,
-            "the frame's x returns to the parent it came from"
+            "Escape returns to the parent it came from"
         );
         let texts = pane_texts(&mut root);
         assert!(

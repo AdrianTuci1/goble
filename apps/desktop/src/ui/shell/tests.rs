@@ -1606,22 +1606,14 @@ fn bsp_panes_cast_the_window_frame() {
             .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == shadow)),
         "a tiled tab casts no shadow: its gutter is the panel surface: {commands:?}"
     );
-    // The focused pane's accent corner marker, over its card's top-left corner.
-    let card = {
-        let s = state.borrow();
-        let bounds = s.pane_bounds.borrow();
-        *bounds.get(&7).expect("the pane recorded its bounds")
-    };
-    let marker = commands.iter().find_map(|c| match c {
-        RenderCommand::DrawIcon {
-            origin, name, color, ..
-        } if name == "upper-left-triangle" && *color == accent => Some(*origin),
-        _ => None,
-    });
-    let marker = marker.expect("the focused pane wears its accent corner marker");
+    // The panel has a clean top-left corner: the old accent marker is gone.
     assert!(
-        (marker.x - card.min_x()).abs() < 0.01 && (marker.y - card.min_y()).abs() < 0.01,
-        "the accent corner sits on the pane card's top-left corner: {marker:?} against {card:?}"
+        !commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawIcon { name, color, .. }
+                if name == "upper-left-triangle" && *color == accent
+        )),
+        "the focused pane wears no accent corner ornament"
     );
 }
 

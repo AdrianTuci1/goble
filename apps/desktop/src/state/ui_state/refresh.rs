@@ -25,21 +25,15 @@ impl UiState {
             .unwrap_or(SideTabKind::Overview)
     }
 
-    /// The side panel was opened: show Overview. The tab list keeps whatever
-    /// tabs were there, with Overview present and selected, so opening the
-    /// panel always lands on the surface the default opens on.
+    /// The side panel was opened: keep the tabs and land on the one that was
+    /// active. The Overview surface is the body's home when there is no tab,
+    /// but it is not a chip and opening the panel must not add one.
     pub fn open_side_panel(&mut self) {
-        match self
-            .side_tabs
-            .iter()
-            .position(|kind| *kind == SideTabKind::Overview)
-        {
-            Some(index) => self.active_side_tab = index,
-            None => {
-                self.side_tabs.insert(0, SideTabKind::Overview);
-                self.active_side_tab = 0;
-            }
+        if self.side_tabs.is_empty() {
+            self.active_side_tab = 0;
+            return;
         }
+        self.active_side_tab = self.active_side_tab.min(self.side_tabs.len() - 1);
     }
 
     /// Make the tab at `index` the panel's surface. An index outside the strip

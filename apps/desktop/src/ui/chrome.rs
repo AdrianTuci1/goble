@@ -365,11 +365,21 @@ pub fn build_chrome_row(
         .with_child(Expanded::new(main_section).finish());
     if panel_open {
         let maximized = state.side_panel_maximized;
-        // The chip strip is measured at its natural width and clipped to the
-        // section's remaining width; horizontal wheel/trackpad travel scrolls
-        // that measured strip instead of squeezing the chips. The `+` and the
-        // window controls stay pinned at the far right.
-        let tab_strip = TabStripScroller::new(app, state, actions).finish();
+        // The chip strip and its `+` are one measured row: the `+` sits
+        // immediately after the last chip and travels/scrolls with it, so it is
+        // never pinned over the window controls. Only the maximize/toggle
+        // controls stay at the far right. With no open tab the section shows
+        // nothing but those controls: Overview is the panel-1 launcher, not a
+        // chip.
+        let has_tabs = state
+            .side_tabs
+            .iter()
+            .any(|kind| *kind != SideTabKind::Overview);
+        let tab_strip: Box<dyn Element> = if has_tabs {
+            TabStripScroller::new(app, state, actions).finish()
+        } else {
+            Empty::new().finish()
+        };
         let on_max = actions.on_toggle_side_panel_maximized.clone();
         let on_close = actions.on_toggle_right_sidebar.clone();
         let side_section = Flex::row()
@@ -377,7 +387,6 @@ pub fn build_chrome_row(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(CONTROL_SPACING)
             .with_child(Expanded::new(tab_strip).finish())
-            .with_child(side_tab_add_menu(app, state, actions))
             .with_child(button_click(
                 app,
                 if maximized {
@@ -633,36 +642,49 @@ impl TabStripScroller {
         state: &UiSnapshot,
         actions: &UiActions,
     ) -> Self {
-        let widths = state
-            .side_tabs
-            .iter()
-            .map(|kind| {
-                let label = advance_width(
-                    kind.title(),
-                    12.5,
-                    FontWeight::Medium,
-                    FontFamily::System,
-                    false,
-                );
+        let mut widths = Vec::new();
+        let mut active = 0;
+        for (index, kind) in state.side_tabs.iter().enumerate() {
+            if *kind == SideTabKind::Overview {
+                continue;
+            }
+            if index == state.active_side_tab {
+                active = widths.len();
+            }
+            let label = advance_width(
+                kind.title(),
+                12.5,
+                FontWeight::Medium,
+                FontFamily::System,
+                false,
+            );
+            widths.push(
                 TAB_STRIP_PADDING_X * 2.0
                     + TAB_STRIP_ICON
                     + TAB_STRIP_LABEL_GAP
                     + label
                     + TAB_STRIP_CLOSE_GAP
-                    + TAB_STRIP_CLOSE
-            })
-            .collect();
+                    + TAB_STRIP_CLOSE,
+            );
+        }
+        let tabs = widths.len();
         let scroll = side_tab_scroll();
-        let scrollable = Scrollable::new(
-            side_tabs::build_tab_strip(app, state, actions),
-            Axis::Horizontal,
-        )
-        .with_state(Rc::clone(&scroll));
+        // Chips and the `+` are one row inside the viewport: the button is
+        // immediately beside the last chip and scrolls with it.
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(4.0)
+            .with_child(side_tabs::build_tab_strip(app, state, actions))
+            .with_child(side_tab_add_menu(app, state, actions))
+            .finish();
+        let scrollable = Scrollable::new(row, Axis::Horizontal)
+            .with_state(Rc::clone(&scroll));
         Self {
             scrollable,
             widths,
-            active: state.active_side_tab,
-            tabs: state.side_tabs.len(),
+            active,
+            tabs,
             scroll,
         }
     }
@@ -1839,7 +1861,9 @@ fn build_overview_content(
 
     let on_diff = actions.on_diff_panel.clone();
     let on_explorer = actions.on_select_sidebar_view.clone();
-    let on_terminal = actions.on_toggle_terminal_dock.clone();
+    // Terminal and Side Question open as panel-2 tabs from this launcher (the
+    // Overview icon is the way to add a surface without the strip's `+`).
+    let on_side_tab = actions.on_side_tab.clone();
     let on_connectors = actions.on_settings.clone();
     let active = state.active_pane_id;
     let mut rows = Flex::column()
@@ -1859,17 +1883,16 @@ fn build_overview_content(
         } else {
             let on_diff = on_diff.clone();
             let on_explorer = on_explorer.clone();
-            let on_terminal = on_terminal.clone();
+            let on_side_tab = on_side_tab.clone();
             let on_connectors = on_connectors.clone();
-            let on_side_question = actions.on_create_submit.clone();
             HoverRow::new(panel_row(app, icon, label, false, trailing))
                 .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
                 .with_corner_radius(8.0)
                 .with_on_click(move || match action {
                     0 => (on_diff.borrow_mut())(active, DiffPanelAction::Open(None)),
                     1 => (on_explorer.borrow_mut())(SidebarView::Explorer),
-                    2 => (on_terminal.borrow_mut())(active),
-                    4 => (on_side_question.borrow_mut())(),
+                    2 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Terminal)),
+                    4 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Agent)),
                     5 => (on_connectors.borrow_mut())(),
                     _ => {}
                 })

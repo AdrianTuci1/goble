@@ -62,6 +62,7 @@ fn main() -> anyhow::Result<()> {
             ("panel-more", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("overview-popover", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-panel", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("side-tabs-multi", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-tabs-overflow", vec2f(1200.0, 900.0), false, SettingsCategory::General),
             ("side-agent", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-terminal", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
@@ -90,14 +91,27 @@ fn main() -> anyhow::Result<()> {
                 s.settings.page = page;
                 s.settings_overlay_wide = size.x >= 900.0;
                 if name == "side-panel" {
+                    // Empty panel: the Overview home surface, no chip and no +.
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
+                    s.active_side_tab = 0;
+                }
+                if name == "side-tabs-multi" {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![
                         goble_app::state::SideTabKind::Overview,
-                        goble_app::state::SideTabKind::Agent,
                         goble_app::state::SideTabKind::Terminal,
+                        goble_app::state::SideTabKind::Agent,
                         goble_app::state::SideTabKind::Files,
                     ];
-                    s.active_side_tab = 0;
+                    s.active_side_tab = 1;
+                    let pane = s.active_pane_id;
+                    s.terminal.borrow_mut().sessions.insert(
+                        pane,
+                        goble_app::terminal::TerminalSession::preview_screen(
+                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                        ),
+                    );
                 }
                 if name == "side-tabs-overflow" {
                     s.right_sidebar_open = true;
@@ -111,7 +125,14 @@ fn main() -> anyhow::Result<()> {
                         goble_app::state::SideTabKind::Files,
                         goble_app::state::SideTabKind::Agent,
                     ];
-                    s.active_side_tab = 0;
+                    s.active_side_tab = 2;
+                    let pane = s.active_pane_id;
+                    s.terminal.borrow_mut().sessions.insert(
+                        pane,
+                        goble_app::terminal::TerminalSession::preview_screen(
+                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                        ),
+                    );
                 }
                 if name == "side-agent" {
                     s.right_sidebar_open = true;
@@ -145,10 +166,9 @@ fn main() -> anyhow::Result<()> {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![
                         goble_app::state::SideTabKind::Overview,
-                        goble_app::state::SideTabKind::Agent,
                         goble_app::state::SideTabKind::Terminal,
                     ];
-                    s.active_side_tab = 2;
+                    s.active_side_tab = 1;
                     let pane = s.active_pane_id;
                     s.terminal.borrow_mut().sessions.insert(
                         pane,

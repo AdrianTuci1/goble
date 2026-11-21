@@ -1205,33 +1205,11 @@ mod tests {
         );
         let card = frames[0];
         let markers = corner_markers(&commands, &app);
-        assert_eq!(markers.len(), 1, "one focused corner: {markers:?}");
         assert!(
-            (markers[0].x - card.min_x()).abs() < 0.01
-                && (markers[0].y - card.min_y()).abs() < 0.01,
-            "the accent corner sits on the focused pane's top-left corner: {:?} against {card:?}",
-            markers[0]
+            markers.is_empty(),
+            "the panel's top-left corner has no accent ornament: {markers:?}"
         );
-        // It is painted after the card's fill, so it reads on the darker panel.
-        let card_fill = commands
-            .iter()
-            .position(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *rect == card && *color == app.theme.color(ColorToken::Bg) =>
-                {
-                    true
-                }
-                _ => false,
-            })
-            .expect("the panel card paints its darker background");
-        let marker = commands
-            .iter()
-            .position(|command| matches!(command, RenderCommand::DrawIcon { name, color, .. } if name == "upper-left-triangle" && *color == accent))
-            .expect("the accent corner marker");
-        assert!(
-            marker > card_fill,
-            "the panel paints the marker above the card: {marker} against {card_fill}"
-        );
+        let _ = card;
 
         // Two panes: still no outlines; the two cards keep their own Border
         // edges and only the focused (left) pane wears the accent corner.
@@ -1252,13 +1230,9 @@ mod tests {
             "one card edge per pane, no outline around the slots"
         );
         let markers = corner_markers(&commands, &app);
-        assert_eq!(markers.len(), 1, "only the focused tab is marked: {markers:?}");
         assert!(
-            (markers[0].x - frames[0].min_x()).abs() < 0.01
-                && (markers[0].y - frames[0].min_y()).abs() < 0.01,
-            "the corner sits on the focused (left) pane: {:?} against {:?}",
-            markers[0],
-            frames[0]
+            markers.is_empty(),
+            "neither pane wears an accent corner: {markers:?}"
         );
     }
 
@@ -1347,15 +1321,11 @@ mod tests {
         assert_cards_are_rounded(&light, true);
     }
 
-    /// The focused pane's accent triangle is clipped to the card's rounded
-    /// top-left corner: the card paints the panel-surface band outside its
-    /// rounded path after the content and after the marker — the cut — and then
-    /// draws the rounded `Border` edge over the cut, so the corner reads as one
-    /// rounded card with the coloured corner inside it. Without that order the
-    /// marker's square corner would sit in the card's corner spandrel, outside
-    /// the radius: the "square bite" the owner reported.
+    /// The panel's top-left corner carries no ornament: the old accent
+    /// triangle is gone for both a single and a split pane, while the card's
+    /// rounded cut and its own Border edge still close the corner.
     #[test]
-    fn the_focus_triangle_is_clipped_to_the_cards_rounded_corner() {
+    fn the_panel_has_no_corner_ornament() {
         let app = AppContext::default();
         let accent = app.theme.color(ColorToken::Accent);
         let surface = app.theme.color(ColorToken::Surface);
@@ -1369,76 +1339,38 @@ mod tests {
             let commands = render_element(&mut root, window(), &app);
             let frames = pane_frames(&state);
             assert_eq!(frames.len(), if two_panes { 2 } else { 1 }, "{frames:?}");
+            assert!(
+                !commands.iter().any(|command| matches!(
+                    command,
+                    RenderCommand::DrawIcon { name, color, .. }
+                        if name == "upper-left-triangle" && *color == accent
+                )),
+                "no accent corner triangle is drawn on any pane"
+            );
             let card = frames[0];
             let radius = crate::ui::panes::card_radius(vec2f(card.width(), card.height()));
             let band = crate::ui::panes::CARD_EDGE_BAND;
-
-            let marker = commands
-                .iter()
-                .position(|command| {
-                    matches!(
-                        command,
-                        RenderCommand::DrawIcon { origin, name, color, .. }
-                            if name == "upper-left-triangle"
-                                && *color == accent
-                                && (origin.x - card.min_x()).abs() < 0.01
-                                && (origin.y - card.min_y()).abs() < 0.01
-                    )
-                })
-                .expect("the focused pane's accent corner marker on its card corner");
-            let cut = commands
-                .iter()
-                .position(|command| {
-                    matches!(
-                        command,
-                        RenderCommand::StrokeRect {
-                            rect,
-                            color,
-                            width,
-                            corner_radius,
-                        } if *color == surface
+            assert!(
+                commands.iter().any(|command| matches!(
+                    command,
+                    RenderCommand::StrokeRect { rect, color, width, corner_radius }
+                        if *color == surface
                             && (*width - band).abs() < 0.01
                             && (*corner_radius - (radius + band)).abs() < 0.01
                             && (rect.min_x() - (card.min_x() - band)).abs() < 0.01
-                            && (rect.min_y() - (card.min_y() - band)).abs() < 0.01
-                            && (rect.width() - (card.width() + band * 2.0)).abs() < 0.01
-                            && (rect.height() - (card.height() + band * 2.0)).abs() < 0.01
-                    )
-                })
-                .expect("the card cuts its content back to the rounded path");
-            let edge = commands
-                .iter()
-                .position(|command| {
-                    matches!(
-                        command,
-                        RenderCommand::StrokeRect {
-                            rect,
-                            color,
-                            width,
-                            corner_radius,
-                        } if *rect == card
+                )),
+                "the card still cuts its content back to the rounded path"
+            );
+            assert!(
+                commands.iter().any(|command| matches!(
+                    command,
+                    RenderCommand::StrokeRect { rect, color, width, corner_radius }
+                        if *rect == card
                             && *color == border
                             && (*width - 1.0).abs() < 0.01
                             && (*corner_radius - radius).abs() < 0.01
-                    )
-                })
-                .expect("the card's rounded Border edge over the cut");
-            assert!(
-                cut > marker,
-                "the surface cut is painted after the focus marker, so it clips the marker's \
-                 square corner: cut {cut} against marker {marker}"
-            );
-            assert!(
-                edge > cut,
-                "the rounded Border edge is painted over the cut, so the card's corner closes: \
-                 edge {edge} against cut {cut}"
-            );
-            // The cut's inner edge is the card's own rounded path: the stroked
-            // band starts on the expanded rect's edge and reaches in by `band`,
-            // and the radius shrinks by the same amount.
-            assert!(
-                (radius + band - band - radius).abs() < 0.01,
-                "the cut's inner edge is the card's rounded path"
+                )),
+                "the card's own rounded Border edge still closes the corner"
             );
         }
     }
@@ -1498,29 +1430,19 @@ mod tests {
                         );
                     }
 
-                    // The focus marker is inside the rounded top-left corner: it
-                    // paints there, and no accent pixel lies in the spandrel
-                    // outside the path (the square bite would show here).
+                    // No pane wears an accent corner ornament: the rounded cut
+                    // leaves the corner clean, and no accent pixel lies inside
+                    // or outside the path.
                     let inside = corner(card.min_x() + radius * 0.5, card.min_y() + radius * 0.5);
                     let outside = accent_pixels_outside_corner(&pixels, *card, radius, accent);
-                    if focused {
-                        assert!(
-                            near(inside, accent),
-                            "the focused pane's accent triangle paints inside the card's \
-                             rounded top-left corner: {inside:?} against {accent:?}"
-                        );
-                        assert_eq!(
-                            outside, 0,
-                            "no accent pixel may sit outside the card's rounded top-left \
-                             corner (the marker is clipped to the radius)"
-                        );
-                    } else {
-                        assert!(
-                            !near(inside, accent),
-                            "an unfocused pane wears no accent corner: {inside:?}"
-                        );
-                        assert_eq!(outside, 0);
-                    }
+                    assert!(
+                        !near(inside, accent),
+                        "no pane wears an accent corner ornament: {inside:?}"
+                    );
+                    assert_eq!(
+                        outside, 0,
+                        "no accent pixel may sit outside the card's rounded top-left corner"
+                    );
                 }
             }
         }
@@ -2694,7 +2616,6 @@ mod tests {
             })
             .collect();
         for expected in [
-            "Overview",
             "Search or enter a URL",
             "Review",
             "Open File",
@@ -2748,7 +2669,6 @@ mod tests {
             })
             .collect();
         for expected in [
-            "Overview",
             "Search or enter a URL",
             "Review",
             "Open File",
@@ -3227,15 +3147,16 @@ mod tests {
             "the Agent tab mounts the chat, not Overview: {texts:?}"
         );
         assert_eq!(
-            texts.iter().filter(|text| **text == "Agent").count(),
+            texts.iter().filter(|text| **text == "Side Question").count(),
             1,
-            "only the strip chip names Agent: the topbar owns the panel controls, \
-             so the body has no second header: {texts:?}"
+            "only the strip chip names Side Question: the topbar owns the panel \
+             controls, so the body has no second header: {texts:?}"
         );
     }
 
-    /// The side-panel chips are real controls: clicking Overview moves the
-    /// panel off the Agent tab it was showing.
+    /// The side-panel chips are real controls: clicking the Side Question chip
+    /// moves the panel off the Files tab it was showing. Overview has no chip,
+    /// so it cannot be clicked back to from the strip.
     #[test]
     fn a_side_tab_chip_click_selects_that_tab() {
         let app = AppContext::default();
@@ -3248,23 +3169,139 @@ mod tests {
         }
         assert_eq!(state.borrow().active_side_tab, 2);
         let commands = render_element(&mut root, window(), &app);
-        let overview = commands
+        let chip = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "Overview" => {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Side Question"
+                        && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
                     Some(*origin + vec2f(2.0, 4.0))
                 }
                 _ => None,
             })
-            .expect("the Overview chip is drawn");
-        click(&mut root, &app, overview);
+            .expect("the Side Question chip is drawn");
+        click(&mut root, &app, chip);
         assert_eq!(
             state.borrow().active_side_tab,
-            0,
-            "the chip click selects Overview"
+            1,
+            "the chip click selects Side Question"
+        );
+        // Overview is the panel-1 launcher, not a strip chip.
+        let commands = render_element(&mut root, window(), &app);
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Overview" && origin.y < crate::ui::chrome::CHROME_HEIGHT
+            )),
+            "no Overview chip in the strip"
         );
     }
 
+
+    /// G: an open panel with no real tab draws no chip and no `+` — Overview is
+    /// the body's home surface and the panel-1 launcher, never a strip chip.
+    #[test]
+    fn the_empty_side_panel_draws_no_chip_and_no_add_button() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        state.borrow_mut().right_sidebar_open = true;
+        assert_eq!(
+            state.borrow().side_tabs,
+            vec![SideTabKind::Overview],
+            "the default is the Overview home surface"
+        );
+        let commands = render_element(&mut root, window(), &app);
+        let chrome_text: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !chrome_text.iter().any(|text| *text == "Overview"),
+            "no Overview chip: {chrome_text:?}"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if name == "plus"
+                        && origin.y < crate::ui::chrome::CHROME_HEIGHT
+                        && origin.x > 300.0
+            )),
+            "the empty section has no + button"
+        );
+    }
+
+    /// G: the `+` is part of the chip row, immediately after the last chip and
+    /// inside the scrollable strip — not pinned at the far right beside the
+    /// window controls.
+    #[test]
+    fn the_add_button_sits_beside_the_last_chip() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.add_side_tab(SideTabKind::Terminal);
+            s.add_side_tab(SideTabKind::Agent);
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let icon_x = |name: &str| -> Option<f32> {
+            commands.iter().find_map(|command| match command {
+                RenderCommand::DrawIcon { name: drawn, origin, .. }
+                    if *drawn == name && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(origin.x)
+                }
+                _ => None,
+            })
+        };
+        let terminal = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Terminal" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(origin.x)
+                }
+                _ => None,
+            })
+            .expect("the Terminal chip");
+        let side_question = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Side Question" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(origin.x)
+                }
+                _ => None,
+            })
+            .expect("the Side Question chip");
+        let plus = icon_x("plus").expect("the add button");
+        let maximize = icon_x("fullscreen-enter").expect("the maximize control");
+        assert!(terminal < side_question, "the chips keep strip order");
+        assert!(
+            plus > side_question,
+            "the + follows the last chip: plus {plus}, chip {side_question}"
+        );
+        assert!(
+            plus - side_question < 150.0,
+            "the + is adjacent to the chip, not pinned: plus {plus}, chip {side_question}"
+        );
+        assert!(
+            maximize - plus > 20.0,
+            "the + is not at the far right beside the window controls:              plus {plus}, maximize {maximize}"
+        );
+    }
 
     /// Panel 1's trailing controls are exactly the More menu and the Overview
     /// popover; the maximize/collapse and side-panel controls live in panel 2.
@@ -3436,7 +3473,8 @@ mod tests {
                 .iter()
                 .filter_map(|command| match command {
                     RenderCommand::DrawText { text, origin, .. }
-                        if text == "Agent" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                        if text == "Side Question"
+                            && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
                     {
                         Some(origin.x)
                     }

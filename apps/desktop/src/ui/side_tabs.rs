@@ -54,6 +54,12 @@ pub fn build_tab_strip(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(4.0);
     for (index, kind) in state.side_tabs.iter().enumerate() {
+        // Overview is the panel's home surface, not a strip chip: the strip is
+        // empty while it is the only surface, and every real tab (Terminal,
+        // Side Question, Files, ...) is the one that gets a chip.
+        if *kind == SideTabKind::Overview {
+            continue;
+        }
         let on_select = actions.on_side_tab.clone();
         let on_close = actions.on_side_tab.clone();
         let selected = index == state.active_side_tab;
@@ -62,8 +68,6 @@ pub fn build_tab_strip(
                 app,
                 *kind,
                 selected,
-                // Overview can be closed like any other tab; the state machine
-                // brings it back when the last tab closes.
                 true,
                 move || (on_select.borrow_mut())(SideTabAction::Select(index)),
                 move || (on_close.borrow_mut())(SideTabAction::Close(index)),
@@ -506,10 +510,11 @@ mod tests {
         state
     }
 
-    /// The panel starts on Overview and reopens on it, whichever tab was up
-    /// when it was collapsed.
+    /// The panel starts on the Overview home surface, but reopening keeps the
+    /// tab that was up when it was collapsed: Overview is not re-selected and
+    /// no chip is added for it.
     #[test]
-    fn the_side_panel_starts_and_reopens_on_overview() {
+    fn the_side_panel_starts_on_overview_and_reopens_on_its_last_tab() {
         let mut state = UiState::mock();
         assert_eq!(state.side_tabs, vec![SideTabKind::Overview]);
         assert_eq!(state.active_side_tab, 0);
@@ -520,8 +525,8 @@ mod tests {
         state.open_side_panel();
         assert_eq!(
             state.active_side_tab_kind(),
-            SideTabKind::Overview,
-            "opening the panel lands on Overview"
+            SideTabKind::Terminal,
+            "opening the panel keeps the tab that was showing"
         );
     }
 

@@ -139,7 +139,7 @@ impl SideTabKind {
     pub fn title(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
-            Self::Agent => "Agent",
+            Self::Agent => "Side Question",
             Self::Files => "Files",
             Self::Terminal => "Terminal",
             Self::TaskOutput => "Task output",

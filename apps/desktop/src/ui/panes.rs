@@ -109,7 +109,7 @@ pub fn build_active_space(
             // The fallback is a pane card like any other leaf: the panel itself
             // is the darker background and the card is rounded like every other
             // pane (see [`PaneCard`]).
-            PaneCard::new(column.finish(), app, false).finish()
+            PaneCard::new(column.finish(), app).finish()
         }
     };
     // A window floated over the layout is a second layer above it, not a
@@ -858,20 +858,17 @@ struct PaneCard {
     /// The panel surface the card sits on, painted over the content that spills
     /// past the card's rounded path.
     backdrop: goble_ui::ColorU,
-    /// The focus triangle's colour, when this card is the focused pane.
-    focus_marker: Option<goble_ui::ColorU>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
 impl PaneCard {
-    fn new(content: Box<dyn Element>, app: &AppContext, focused: bool) -> Self {
+    fn new(content: Box<dyn Element>, app: &AppContext) -> Self {
         Self {
             content,
             fill: pane_surface(app),
             border: app.theme.color(ColorToken::Border),
             backdrop: app.theme.color(ColorToken::Surface),
-            focus_marker: focused.then(|| app.theme.color(ColorToken::Accent)),
             size: None,
             origin: None,
         }
@@ -905,12 +902,9 @@ impl Element for PaneCard {
         self.content.paint(origin, ctx, app);
 
         if let Some(renderer) = ctx.renderer.as_mut() {
-            // The focused pane's corner cue, inside the card's top-left corner.
-            // It is drawn before the cut, so its square corner is rounded with
-            // the card's own corner (see `paint_card_corner_cut`).
-            if let Some(accent) = self.focus_marker {
-                renderer.draw_icon(origin, "upper-left-triangle", FOCUS_MARKER_SIZE, accent);
-            }
+            // No corner ornament: the panel's top-left corner is clean, and the
+            // workspace surface owns the casing. Only the rounded cut and the
+            // card's own border shape the corner.
             paint_card_corner_cut(renderer, card, radius, self.backdrop);
             renderer.stroke_rect(card, self.border, 1.0, radius);
         }
@@ -1461,7 +1455,7 @@ fn build_leaf_with_lift(
     // (see [`PaneCard`]). The fill is the panel's own darker surface (see
     // [`pane_surface`]): every pane card — an agent pane's included — is `Bg` on
     // the panel area's `Surface`.
-    let framed = PaneCard::new(column, app, active).finish();
+    let framed = PaneCard::new(column, app).finish();
     // A lifted pane paints nothing where it stood. The tiled tree has already
     // left it out (see `build_pane`); a maximized pane or a region layout keeps
     // its slot, so cancelling the drag puts it back exactly there.

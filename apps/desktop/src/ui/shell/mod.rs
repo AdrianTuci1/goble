@@ -9,6 +9,7 @@
 
 mod content;
 mod layout;
+mod surface;
 mod topbar;
 
 #[cfg(test)]
@@ -16,4 +17,5 @@ mod tests;
 
 pub use content::build_main;
 pub use layout::SidebarLayout;
+pub use surface::{build_workspace_surface, WORKSPACE_MARGIN};
 pub use topbar::{build_topbar, TOPBAR_BOTTOM_BAND, TOPBAR_HEIGHT};

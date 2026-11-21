@@ -64,6 +64,7 @@ fn main() -> anyhow::Result<()> {
             ("panel-more-copy", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("overview-popover", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-panel", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("side-panel-resize", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-tabs-multi", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-tabs-overflow", vec2f(1200.0, 900.0), false, SettingsCategory::General),
             ("side-agent", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
@@ -97,6 +98,25 @@ fn main() -> anyhow::Result<()> {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
                     s.active_side_tab = 0;
+                }
+                if name == "side-panel-resize" {
+                    // Mid-drag: a wider side panel and the hairline boundary
+                    // between the two flat panels.
+                    s.right_sidebar_open = true;
+                    s.side_split_ratio = 0.62;
+                    s.side_split_dragging = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Overview,
+                        goble_app::state::SideTabKind::Terminal,
+                    ];
+                    s.active_side_tab = 1;
+                    let pane = s.active_pane_id;
+                    s.terminal.borrow_mut().sessions.insert(
+                        pane,
+                        goble_app::terminal::TerminalSession::preview_screen(
+                            "$ cargo test -p goble-app --lib\r\n   Compiling goble-app\r\n$ ",
+                        ),
+                    );
                 }
                 if name == "side-tabs-multi" {
                     s.right_sidebar_open = true;

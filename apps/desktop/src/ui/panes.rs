@@ -841,11 +841,11 @@ pub(crate) fn card_radius(size: Vector2F) -> f32 {
 ///
 /// A pane's content paints its own full-width surfaces (the chat's `Bg` column,
 /// the terminal's grid, the full-bleed `Surface` header band), so the card draws
-/// itself around them in three layers: the rounded fill under the content, the
-/// panel-surface band that cuts the content — and the accent triangle, which is
-/// therefore drawn before the band — back to the rounded path, and the rounded
-/// `Border` edge last, over the cut. That leaves the card reading as one closed,
-/// rounded panel with the coloured corner inside the same radius.
+/// itself around them in two layers: the rounded fill under the content and
+/// the panel-surface band that cuts the content back to the rounded path. The
+/// card has no border of its own any more — the shell's workspace surface and
+/// the split's hairline own the separation; the rounded cut keeps the card's
+/// corners clean without a casing.
 ///
 /// The band is `Surface`, the material the card sits on, so the cut is only
 /// visible where the content would have carried a different colour: the corners.
@@ -853,8 +853,6 @@ struct PaneCard {
     content: Box<dyn Element>,
     /// The card's own fill: the darker panel material (`Bg`), for every kind.
     fill: goble_ui::ColorU,
-    /// The card's 1 pt edge, drawn over the cut.
-    border: goble_ui::ColorU,
     /// The panel surface the card sits on, painted over the content that spills
     /// past the card's rounded path.
     backdrop: goble_ui::ColorU,
@@ -867,7 +865,6 @@ impl PaneCard {
         Self {
             content,
             fill: pane_surface(app),
-            border: app.theme.color(ColorToken::Border),
             backdrop: app.theme.color(ColorToken::Surface),
             size: None,
             origin: None,
@@ -906,7 +903,6 @@ impl Element for PaneCard {
             // workspace surface owns the casing. Only the rounded cut and the
             // card's own border shape the corner.
             paint_card_corner_cut(renderer, card, radius, self.backdrop);
-            renderer.stroke_rect(card, self.border, 1.0, radius);
         }
     }
 

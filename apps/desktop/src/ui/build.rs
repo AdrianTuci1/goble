@@ -35,16 +35,6 @@ const WINDOW_CORNER_RADIUS: f32 = 10.0;
 #[cfg(not(target_os = "macos"))]
 const WINDOW_CORNER_RADIUS: f32 = 0.0;
 
-/// The free margin the workspace surface keeps from the shell (sidebar,
-/// topbar, window edges). It is painted with the shell's own `Bg`, so the
-/// panels read as one raised sheet floating inside the window frame.
-pub(crate) const WORKSPACE_MARGIN: f32 = 5.0;
-
-/// The workspace surface's outer corner radius. It is larger than a pane
-/// card's (6 pt) because it wraps BOTH panels; the shared main/side-panel
-/// boundary is square and borderless.
-const WORKSPACE_RADIUS: f32 = 12.0;
-
 /// The radius the window's rule is drawn at: [`WINDOW_CORNER_RADIUS`] while the
 /// window is windowed, square once it is full screen (macOS hides the rounded
 /// frame then, and the window reaches the screen's own square corners).
@@ -224,10 +214,17 @@ impl Element for SideSplitLayout {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        // No spacing: the main card's right edge and the panel's left edge are
-        // the same coordinate, so the two 1 pt casings meet on one shared line.
+        // The panels are flat: no spacing, no casing. The shell's surface is
+        // drawn around both; the only separation between them is the one
+        // hairline painted over their shared edge below.
         self.main.paint(origin, ctx, app);
         self.panel.paint(origin + vec2f(self.main_width, 0.0), ctx, app);
+        if let (Some(renderer), Some(size)) = (ctx.renderer.as_mut(), self.size) {
+            renderer.fill_rect(
+                rectf(origin.x + self.main_width, origin.y, 1.0, size.y),
+                app.theme.color(ColorToken::Border),
+            );
+        }
         // Requested after the children paint, so the resize cursor wins over
         // any cursor a child asked for inside the band.
         self.request_cursor(ctx, app);
@@ -416,7 +413,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             .with_corner_radius(12.0)
             .finish()
     } else if state.side_panel_maximized && state.right_sidebar_open {
-        workspace_surface(app, chrome::build_side_panel(app, state, actions))
+        shell::build_workspace_surface(app, chrome::build_side_panel(app, state, actions))
     } else {
         let row: Box<dyn Element> = if side_split {
             let panel = chrome::build_side_panel(app, state, actions);
@@ -432,7 +429,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         } else {
             main
         };
-        workspace_surface(app, row)
+        shell::build_workspace_surface(app, row)
     };
     let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
     let body: Box<dyn Element> = if sidebar_shown && !state.side_panel_maximized {
@@ -855,110 +852,6 @@ impl Element for WindowBorderPaint {
     }
 }
 
-/// The one rounded sheet the whole workspace (main panel + side panel) lives
-/// on.
-///
-/// It paints the `Surface` fill and the rounded `Border` around both panels as
-/// a single silhouette, with the free margin outside it left to the shell's
-/// `Bg`. The children paint their own flat `Surface` rectangles; the corner
-/// band erases the square spandrels outside this element's rounded path (the
-/// same trick a pane card uses), so the sheet's corners read round while the
-/// panels inside keep a square, borderless shared boundary.
-struct WorkspaceSurface {
-    child: Box<dyn Element>,
-    fill: ColorU,
-    backdrop: ColorU,
-    border: ColorU,
-    radius: f32,
-    size: Option<Vector2F>,
-    origin: Option<Point>,
-}
-
-impl WorkspaceSurface {
-    fn new(child: Box<dyn Element>, app: &AppContext) -> Self {
-        Self {
-            child,
-            fill: app.theme.color(ColorToken::Surface),
-            backdrop: app.theme.color(ColorToken::Bg),
-            border: app.theme.color(ColorToken::Border),
-            radius: WORKSPACE_RADIUS,
-            size: None,
-            origin: None,
-        }
-    }
-}
-
-impl Element for WorkspaceSurface {
-    fn layout(
-        &mut self,
-        constraint: SizeConstraint,
-        ctx: &mut LayoutContext,
-        app: &AppContext,
-    ) -> Vector2F {
-        let size = self.child.layout(constraint, ctx, app);
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
-        self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        let Some(size) = self.size else { return };
-        let sheet = rectf(origin.x, origin.y, size.x, size.y);
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.fill_rounded_rect(sheet, self.fill, self.radius);
-        }
-        self.child.paint(origin, ctx, app);
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            // Cut what the children painted past the rounded path back to the
-            // outer shell colour. The band is one margin wide: the deepest
-            // spandrel of this radius is under 5 pt, so it stays in the free
-            // margin and never reaches the sidebar or topbar.
-            let band = WORKSPACE_MARGIN;
-            renderer.stroke_rect(
-                rectf(
-                    sheet.min_x() - band,
-                    sheet.min_y() - band,
-                    sheet.width() + band * 2.0,
-                    sheet.height() + band * 2.0,
-                ),
-                self.backdrop,
-                band,
-                self.radius + band,
-            );
-            renderer.stroke_rect(sheet, self.border, 1.0, self.radius);
-        }
-    }
-
-    fn size(&self) -> Option<Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<Point> {
-        self.origin
-    }
-
-    fn wants_animation(&self) -> bool {
-        self.child.wants_animation()
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &DispatchedEvent,
-        ctx: &mut EventContext,
-        app: &AppContext,
-    ) -> bool {
-        self.child.dispatch_event(event, ctx, app)
-    }
-}
-
-/// Wrap the panel row in the workspace sheet and its 5 pt free margin.
-fn workspace_surface(app: &AppContext, content: Box<dyn Element>) -> Box<dyn Element> {
-    let sheet = WorkspaceSurface::new(content, app).finish();
-    Container::new(sheet)
-        .with_padding(EdgeInsets::uniform(WORKSPACE_MARGIN))
-        .finish()
-}
-
 /// One side of the window: the constraint's own, or nothing when it is
 /// unbounded — an infinite rule would be no rule at all.
 fn window_extent(value: f32) -> f32 {
@@ -1200,8 +1093,8 @@ mod tests {
         assert_eq!(frames.len(), 1, "one pane: {frames:?}");
         assert_eq!(
             rounded_border_strokes(&commands, &app),
-            1,
-            "only the pane card's own Border edge frames the pane"
+            0,
+            "the pane card has no Border edge of its own any more"
         );
         let card = frames[0];
         let markers = corner_markers(&commands, &app);
@@ -1226,8 +1119,8 @@ mod tests {
         assert_eq!(frames.len(), 2, "two panes: {frames:?}");
         assert_eq!(
             rounded_border_strokes(&commands, &app),
-            2,
-            "one card edge per pane, no outline around the slots"
+            0,
+            "no pane card edge: the shell surface and split hairline separate"
         );
         let markers = corner_markers(&commands, &app);
         assert!(
@@ -1258,6 +1151,7 @@ mod tests {
             );
             let bg = app.theme.color(ColorToken::Bg);
             let border = app.theme.color(ColorToken::Border);
+            let _ = border;
             for card in &frames {
                 let radius = crate::ui::panes::card_radius(vec2f(card.width(), card.height()));
                 assert!(radius > 0.0, "the pane card has a corner radius: {radius}");
@@ -1277,38 +1171,20 @@ mod tests {
                     "the pane card's fill is rounded on every corner: {card:?}"
                 );
             }
-            // The card's own Border edge: one rounded rect per card, over the
-            // content and the corner cut, so the visible card edge rounds with
-            // the card.
-            let edges: Vec<f32> = commands
+            // No card owns a Border edge any more: the shell's rounded
+            // surface and the split hairline draw the separation, while the
+            // rounded fill + corner cut keep each pane's shape clean.
+            let pane_edges = commands
                 .iter()
-                .filter_map(|command| match command {
-                    RenderCommand::StrokeRect {
-                        rect,
-                        color,
-                        width,
-                        corner_radius,
-                    } if *color == border
-                        && (*width - 1.0).abs() < 0.01
-                        && frames.contains(rect) =>
-                    {
-                        Some(*corner_radius)
-                    }
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                edges.len(),
-                frames.len(),
-                "one rounded Border edge per pane card, over its content"
-            );
-            for (edge, card) in edges.iter().zip(&frames) {
-                let radius = crate::ui::panes::card_radius(vec2f(card.width(), card.height()));
-                assert_eq!(
-                    *edge, radius,
-                    "the card's Border edge rounds at the card radius: {card:?}"
-                );
-            }
+                .filter(|command| matches!(
+                    command,
+                    RenderCommand::StrokeRect { rect, color, width, .. }
+                        if *color == border
+                            && (*width - 1.0).abs() < 0.01
+                            && frames.contains(rect)
+                ))
+                .count();
+            assert_eq!(pane_edges, 0, "no pane card paints a 1 pt Border edge");
         }
 
         // One pane, both themes.
@@ -1361,17 +1237,17 @@ mod tests {
                 )),
                 "the card still cuts its content back to the rounded path"
             );
-            assert!(
-                commands.iter().any(|command| matches!(
+            let pane_edges = commands
+                .iter()
+                .filter(|command| matches!(
                     command,
-                    RenderCommand::StrokeRect { rect, color, width, corner_radius }
+                    RenderCommand::StrokeRect { rect, color, width, .. }
                         if *rect == card
                             && *color == border
                             && (*width - 1.0).abs() < 0.01
-                            && (*corner_radius - radius).abs() < 0.01
-                )),
-                "the card's own rounded Border edge still closes the corner"
-            );
+                ))
+                .count();
+            assert_eq!(pane_edges, 0, "the card owns no Border edge");
         }
     }
 
@@ -2270,7 +2146,7 @@ mod tests {
     fn first_card_left() -> f32 {
         // The pane area's inset inside the one workspace sheet, plus the free
         // margin the sheet keeps from the window/sidebar edge.
-        WORKSPACE_MARGIN
+        shell::WORKSPACE_MARGIN
             + crate::ui::panes::PANE_AREA_INSET
             + crate::ui::panes::PANE_INSET
     }
@@ -3103,7 +2979,7 @@ mod tests {
             ("bottom", size.y - sheet.max_y()),
         ] {
             assert!(
-                (actual - WORKSPACE_MARGIN).abs() < 0.51,
+                (actual - shell::WORKSPACE_MARGIN).abs() < 0.51,
                 "the {label} free margin is 5 pt, got {actual}: {sheet:?}"
             );
         }
@@ -3159,6 +3035,63 @@ mod tests {
                 RenderCommand::DrawIcon { name, .. } if name == "chevron-right"
             )),
             "the Plugins row carries its disclosure chevron"
+        );
+    }
+
+    /// J: the two flat panels are separated by exactly one 1 pt hairline at
+    /// the shared boundary, full panel height, in the Border colour. The panels
+    /// themselves paint no casing.
+    #[test]
+    fn the_open_panels_share_one_hairline_and_no_card_casing() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let size = vec2f(1024.0, 768.0);
+        state.borrow_mut().right_sidebar_open = true;
+        let commands = render_element(&mut root, size, &app);
+        let sheet = workspace_sheet(&commands, &app, size);
+        let boundary = sheet.min_x() + sheet.width() * 0.5;
+        let border = app.theme.color(ColorToken::Border);
+        let hairlines: Vec<RectF> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == border
+                        && (rect.width() - 1.0).abs() < 0.01
+                        && rect.height() > sheet.height() * 0.9
+                        && (rect.min_x() - boundary).abs() < 1.5 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hairlines.len(),
+            1,
+            "one hairline at the shared boundary: {hairlines:?}"
+        );
+        assert!(
+            (hairlines[0].min_y() - sheet.min_y()).abs() < 0.51
+                && (hairlines[0].max_y() - sheet.max_y()).abs() < 0.51,
+            "the hairline spans the panel height: {:?} vs {sheet:?}",
+            hairlines[0]
+        );
+        // No pane card border: the only `Border` strokes are the sheet frame.
+        let pane_edges = commands
+            .iter()
+            .filter(|command| matches!(
+                command,
+                RenderCommand::StrokeRect { rect, color, width, .. }
+                    if *color == border
+                        && (*width - 1.0).abs() < 0.01
+                        && rect.height() > sheet.height() * 0.9
+                        && *rect != sheet
+                        && !(rect.width() == size.x && rect.height() == size.y)
+            ))
+            .count();
+        assert_eq!(
+            pane_edges, 0,
+            "no pane card adds a Border edge beside the shell surface"
         );
     }
 

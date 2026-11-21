@@ -1053,7 +1053,7 @@ mod chat_geometry_tests {
         assert!(band.1 > 0.0, "the user's bubble is rounded");
         assert_eq!(
             band.0.min_x(),
-            crate::ui::build::WORKSPACE_MARGIN
+            crate::ui::shell::WORKSPACE_MARGIN
                 + crate::ui::SIDEBAR_WIDTH
                 + crate::ui::panes::PANE_AREA_INSET
                 + crate::ui::panes::PANE_INSET,
@@ -1062,7 +1062,7 @@ mod chat_geometry_tests {
         assert_eq!(
             band.0.max_x(),
             1024.0
-                - crate::ui::build::WORKSPACE_MARGIN
+                - crate::ui::shell::WORKSPACE_MARGIN
                 - crate::ui::panes::PANE_AREA_INSET
                 - crate::ui::panes::PANE_INSET,
             "the agent surface runs to the pane's right edge, past the panel and frame insets"
@@ -1495,29 +1495,13 @@ mod agent_pill_tests {
             "every row the lock measures must be drawn, got {rows:?}"
         );
 
-        // The pane's own split frame encloses every row: it is window chrome
-        // (a square border around the pane), not a row's box. Every other pill
-        // is the pane's to explain.
+        // The pane no longer paints a casing of its own: the shell's rounded
+        // workspace surface encloses the rows, so there is no pane frame to
+        // mistake for a row pill. Every remaining pill is a row's own box.
         let pills: Vec<goble_ui::RectF> = pill_rects(&commands)
             .into_iter()
             .filter(|pill| !rows.iter().all(|row| rect_contains(*pill, *row)))
             .collect();
-        let frame = pill_rects(&commands)
-            .into_iter()
-            .find(|pill| rows.iter().all(|row| rect_contains(*pill, *row)));
-        if let Some(frame) = frame {
-            // The frame is square: a rounded pane card would be chrome of its
-            // own, and the transcript rows must not sit inside one.
-            let filled_round = commands.iter().any(|command| {
-                matches!(command, RenderCommand::FillRect { rect, corner_radius, .. }
-                    if *rect == frame && *corner_radius > 0.0)
-            });
-            assert!(
-                !filled_round,
-                "the pane's own frame is square, got {frame:?}"
-            );
-        }
-
         for label in row_labels {
             let Some(origin) = pane_run_origin(&commands, label) else {
                 continue;

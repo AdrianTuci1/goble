@@ -382,17 +382,11 @@ fn unavailable_rows_are_disabled_and_honest() {
     let fixture = Fixture::new(SEEDED_CONFIG);
     let shortcuts = fixture.drawn_text(SettingsCategory::Shortcuts);
     assert!(drawn_contains(&shortcuts, "Remap a shortcut"));
-    assert!(
-        shortcuts
-            .iter()
-            .any(|text| text.contains("Not available in this build")),
-        "the disabled row says why: {shortcuts:?}"
-    );
+    // K: the row carries no descriptive subtitle any more; the control is
+    // disabled and the model still reports why, which the assertions below
+    // cover.
     let providers = fixture.drawn_text(SettingsCategory::Providers);
     assert!(drawn_contains(&providers, "Sign in with Codex"));
-    assert!(providers
-        .iter()
-        .any(|text| text.contains("no OAuth sign-in")));
     let secrets = fixture.drawn_text(SettingsCategory::Secrets);
     assert!(drawn_contains(&secrets, "1Password"));
     // The model is honest about the binding, not just the render: a disabled

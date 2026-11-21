@@ -575,8 +575,10 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         // workspace"): same casing, its own copy and callbacks.
         session_menu::build_workspace_rename_dialog_surface(app, state, actions),
         // Settings floats above every workspace surface; it is a sheet, not a
-        // pane, so it never takes a tab.
-        settings_overlay,
+        // pane, so it never takes a tab. It is queued in the last paint layer
+        // as well, so the topbar's own last-layer menu triggers cannot draw
+        // through a narrow settings sheet that reaches the window's top edge.
+        chrome::TopLayer::new(settings_overlay).finish(),
     ]);
 
     // A finished turn is announced here, at the window's top layer, so the
@@ -2734,6 +2736,24 @@ mod tests {
             split.x + 120.0 < size.x,
             "the flyout stays inside the window: {split:?} in {size:?}"
         );
+    }
+
+    #[test]
+    fn dbg_narrow_settings_icons() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.open_settings_tab(None);
+            s.settings_overlay_open = true;
+            s.settings_overlay_wide = false;
+        }
+        let commands = render_element(&mut root, vec2f(700.0, 900.0), &app);
+        for command in &commands {
+            if let RenderCommand::DrawIcon { name, origin, .. } = command {
+                println!("ICON {name} at {origin:?}");
+            }
+        }
     }
 
     /// The two panels live inside one rounded workspace sheet: the main pane

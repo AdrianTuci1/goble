@@ -56,6 +56,11 @@ pub struct SettingsTextField {
     disabled: bool,
     write_only: bool,
     width: Option<f32>,
+    /// A leading control drawn inside the field's casing (the colour swatch),
+    /// with the text starting after it.
+    leading: Option<Box<dyn Element>>,
+    leading_width: f32,
+    leading_size: Option<Vector2F>,
     on_change: Option<TextCallback>,
     on_submit: Option<SubmitCallback>,
     on_focus_change: Option<FocusCallback>,
@@ -73,6 +78,9 @@ impl SettingsTextField {
             disabled: false,
             write_only: false,
             width: None,
+            leading: None,
+            leading_width: 0.0,
+            leading_size: None,
             on_change: None,
             on_submit: None,
             on_focus_change: None,
@@ -114,6 +122,14 @@ impl SettingsTextField {
     /// the control minimum.
     pub fn with_width(mut self, width: f32) -> Self {
         self.width = Some(width.max(SETTINGS_CONTROL_MIN_WIDTH));
+        self
+    }
+
+    /// Put a leading control inside the field's casing: the colour swatch sits
+    /// at the input's leading edge and the value starts after it.
+    pub fn with_leading(mut self, leading: Box<dyn Element>, width: f32) -> Self {
+        self.leading = Some(leading);
+        self.leading_width = width.max(0.0);
         self
     }
 
@@ -188,12 +204,26 @@ impl Element for SettingsTextField {
         let width = self
             .width
             .unwrap_or_else(|| constraint.max.x.max(SETTINGS_CONTROL_MIN_WIDTH));
+        let available = (width - Self::INSET * 2.0).max(0.0);
+        let leading_width = if self.leading.is_some() {
+            self.leading_width.min(available * 0.5)
+        } else {
+            0.0
+        };
+        let field_width = (available - leading_width).max(0.0);
+        if let Some(leading) = self.leading.as_mut() {
+            let size = leading.layout(
+                SizeConstraint::loose(vec2f(leading_width, SETTINGS_CONTROL_HEIGHT)),
+                ctx,
+                app,
+            );
+            self.leading_size = Some(size);
+        } else {
+            self.leading_size = None;
+        }
         let inner = SizeConstraint::new(
-            vec2f((width - Self::INSET * 2.0).max(0.0), 0.0),
-            vec2f(
-                (width - Self::INSET * 2.0).max(0.0),
-                SETTINGS_CONTROL_HEIGHT,
-            ),
+            vec2f(field_width, 0.0),
+            vec2f(field_width, SETTINGS_CONTROL_HEIGHT),
         );
         let child = self.field_mut().layout(inner, ctx, app);
         let size = vec2f(width, SETTINGS_CONTROL_HEIGHT.max(child.y));
@@ -221,11 +251,21 @@ impl Element for SettingsTextField {
             renderer.fill_rounded_rect(rect, fill, SETTINGS_CONTROL_RADIUS);
             renderer.stroke_rect(rect, border, 1.0, SETTINGS_CONTROL_RADIUS);
         }
-        // The field's text is vertically centred in the 32px control.
+        // The field's text is vertically centred in the 32px control; a
+        // leading control (the colour swatch) sits inside the casing at that
+        // same inset, and the text starts after it.
         let child_height = self.field_mut().size().map(|size| size.y).unwrap_or(0.0);
         let y = origin.y + ((size.y - child_height).max(0.0)) / 2.0;
+        let leading_width = if let Some(leading) = self.leading.as_mut() {
+            let leading_height = self.leading_size.map(|size| size.y).unwrap_or(0.0);
+            let leading_y = origin.y + ((size.y - leading_height).max(0.0)) / 2.0;
+            leading.paint(vec2f(origin.x + Self::INSET, leading_y), ctx, app);
+            self.leading_width
+        } else {
+            0.0
+        };
         self.field_mut()
-            .paint(vec2f(origin.x + Self::INSET, y), ctx, app);
+            .paint(vec2f(origin.x + Self::INSET + leading_width, y), ctx, app);
     }
 
     fn size(&self) -> Option<Vector2F> {

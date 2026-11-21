@@ -74,6 +74,12 @@ fn main() -> anyhow::Result<()> {
             ("terminal-dock", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("settings-wide", vec2f(1600.0, 1000.0), true, SettingsCategory::General),
             ("settings-wide-appearance", vec2f(1600.0, 1000.0), true, SettingsCategory::Appearance),
+            (
+                "settings-wide-appearance-palette",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::Appearance,
+            ),
             ("settings-wide-shortcuts", vec2f(1600.0, 1000.0), true, SettingsCategory::Shortcuts),
             ("settings-narrow", vec2f(700.0, 900.0), true, SettingsCategory::General),
         ] {
@@ -199,6 +205,12 @@ fn main() -> anyhow::Result<()> {
                         ),
                     );
                 }
+                if name == "settings-wide-appearance-palette" {
+                    // The in-field swatch's palette popover, opened on the
+                    // accent channel so the square and the anchored grid are
+                    // both in the shot.
+                    *s.settings.color_palette_menu.borrow_mut() = Some(0);
+                }
                 if name == "overview-popover" {
                     s.right_sidebar_open = true;
                     *s.chrome_overview_open.borrow_mut() = true;
@@ -236,6 +248,13 @@ fn main() -> anyhow::Result<()> {
             let _ = raster::render_element_to_png(
                 &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
             );
+            if name == "settings-wide-appearance-palette" {
+                // The palette is anchored to the swatch painted on the first
+                // frame; draw the settled frame before the final capture.
+                let _ = raster::render_element_to_png(
+                    &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
+                );
+            }
             if name.starts_with("panel-more") {
                 let closed = raster::render_commands(&mut root, size, &app);
                 let trigger = closed.iter().position(|command| {

@@ -559,9 +559,13 @@ impl ColorPaletteControl {
         }
     }
 
+    /// The swatch sits INSIDE the hex input, at its leading edge: the field
+    /// draws a leading box and the swatch fills it, so the value starts after
+    /// the square instead of the square sitting beside the row title.
     fn swatch_rect(&self, origin: Vector2F) -> RectF {
+        const FIELD_INSET: f32 = 10.0;
         rectf(
-            origin.x + PALETTE_TRIGGER_WIDTH - SWATCH_TRIGGER,
+            origin.x + FIELD_INSET,
             origin.y + (TRIGGER_HEIGHT - SWATCH_TRIGGER) / 2.0,
             SWATCH_TRIGGER,
             SWATCH_TRIGGER,
@@ -584,7 +588,13 @@ impl ColorPaletteControl {
             let field = SettingsTextField::new()
                 .with_value(self.value.clone())
                 .with_placeholder(placeholder)
-                .with_width(PALETTE_TRIGGER_WIDTH - SWATCH_TRIGGER - 8.0)
+                .with_width(PALETTE_TRIGGER_WIDTH)
+                // Reserve the leading box the swatch paints into; the text
+                // starts after it, inside the same input casing.
+                .with_leading(
+                    goble_ui::elements::Empty::new().finish(),
+                    SWATCH_TRIGGER + 8.0,
+                )
                 .with_focused(self.hex_focused && !self.disabled)
                 .with_disabled(self.disabled)
                 .with_on_change(move |value| {
@@ -648,7 +658,12 @@ impl Element for ColorPaletteControl {
         let size = self
             .size
             .unwrap_or(vec2f(PALETTE_TRIGGER_WIDTH, TRIGGER_HEIGHT));
-        self.anchors.borrow_mut().palette = Some(rectf(origin.x, origin.y, size.x, size.y));
+        // The palette is anchored to the in-field swatch, so the flip/clamp
+        // maths places it under the square rather than under the whole row.
+        self.anchors
+            .borrow_mut()
+            .palette
+            .insert(self.channel, self.swatch_rect(origin));
 
         let field = self.field_mut(app);
         field.paint(origin, ctx, app);
@@ -669,8 +684,8 @@ impl Element for ColorPaletteControl {
                 .mix(&app.theme.color(ColorToken::Text), 0.2)
         };
         if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.fill_rounded_rect(swatch, fill, 6.0);
-            renderer.stroke_rect(swatch, border, if self.open { 2.0 } else { 1.0 }, 6.0);
+            renderer.fill_rounded_rect(swatch, fill, 4.0);
+            renderer.stroke_rect(swatch, border, if self.open { 2.0 } else { 1.0 }, 4.0);
         }
     }
 
@@ -854,7 +869,9 @@ impl AppearanceMenuLayer {
     fn anchor(&self) -> Option<RectF> {
         match self.kind {
             MenuKind::Theme { .. } => self.anchors.borrow().theme,
-            MenuKind::Palette { .. } => self.anchors.borrow().palette,
+            MenuKind::Palette { channel, .. } => {
+                self.anchors.borrow().palette.get(&channel).copied()
+            }
         }
     }
 
@@ -1090,21 +1107,35 @@ impl Element for AppearanceMenuLayer {
         // the rectangle the panel must stay inside or it is clipped. On the
         // first frame (or in a direct element test) fall back to the layout
         // constraint, widened to the anchor when an axis is unbounded.
+        // The scroll region's painted viewport is the true clip rectangle. A
+        // stale viewport from before the sheet was measured (or a page whose
+        // overlay now sits outside the scroll) can have the anchor outside it;
+        // fall back to a rectangle that right-aligns the panel to the trigger
+        // and opens it below, which keeps it on the same sheet.
+        let anchor_point = goble_ui::geometry::PointF::new(anchor.min_x(), anchor.min_y());
         let viewport = self
             .state
             .scroll
             .borrow()
             .painted_viewport()
+            .filter(|viewport| {
+                viewport.width() > 0.0
+                    && viewport.height() > 0.0
+                    && viewport.contains(anchor_point)
+            })
             .unwrap_or_else(|| {
                 let width = if constraint.max.x.is_finite() {
-                    constraint.max.x
+                    constraint.max.x.max(anchor.max_x() + PANEL_EDGE_MARGIN)
                 } else {
-                    anchor.max_x() + size.x + PANEL_EDGE_MARGIN
+                    anchor.max_x() + PANEL_EDGE_MARGIN
                 };
                 let height = if constraint.max.y.is_finite() {
-                    constraint.max.y
+                    constraint
+                        .max
+                        .y
+                        .max(anchor.max_y() + PANEL_GAP + size.y + PANEL_EDGE_MARGIN)
                 } else {
-                    anchor.max_y() + size.y + PANEL_EDGE_MARGIN
+                    anchor.max_y() + PANEL_GAP + size.y + PANEL_EDGE_MARGIN
                 };
                 rectf(0.0, 0.0, width, height)
             });
@@ -1132,8 +1163,12 @@ impl Element for AppearanceMenuLayer {
         else {
             return;
         };
-        let offset = position - vec2f(origin.x, origin.y);
-        panel.paint(offset, ctx, app);
+        // `position` is already in window coordinates (the anchor and the
+        // viewport are), so the panel is painted there directly. Subtracting
+        // the layer's own origin would shift it left/up by that origin when the
+        // layer is mounted outside the scroll content (the settings overlay).
+        let _ = origin;
+        panel.paint(position, ctx, app);
         let bounds = rectf(position.x, position.y, size.x, size.y);
         self.panel_bounds = Some(bounds);
 
@@ -1896,8 +1931,11 @@ mod tests {
         let mut state = SettingsUiState::default();
         *state.color_palette_menu.borrow_mut() = Some(0);
         state.set_draft(palette_highlight_draft(), "1".to_string());
-        state.appearance_anchors.borrow_mut().palette =
-            Some(rectf(20.0, 20.0, PALETTE_TRIGGER_WIDTH, TRIGGER_HEIGHT));
+        state
+            .appearance_anchors
+            .borrow_mut()
+            .palette
+            .insert(0, rectf(20.0, 20.0, PALETTE_TRIGGER_WIDTH, TRIGGER_HEIGHT));
         let (actions, log) = record_actions();
         let app = AppContext::default();
         let mut menu = appearance_menu_layer(&app, &state, &actions).expect("palette menu");
@@ -1956,12 +1994,10 @@ mod click_tests {
             &app,
         );
         control.paint(vec2f(40.0, 10.0), &mut PaintContext::default(), &app);
-        assert!(state.appearance_anchors.borrow().palette.is_some());
+        assert!(state.appearance_anchors.borrow().palette.contains_key(&0));
         let mut ctx = EventContext::default();
-        let at = vec2f(
-            40.0 + PALETTE_TRIGGER_WIDTH - SWATCH_TRIGGER / 2.0,
-            10.0 + 16.0,
-        );
+        // The swatch is at the hex field's leading edge now.
+        let at = vec2f(40.0 + 10.0 + SWATCH_TRIGGER / 2.0, 10.0 + 16.0);
         assert!(control.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position: at,
@@ -2047,8 +2083,11 @@ mod render_tests {
     fn the_open_palette_paints_the_grid_and_hex_entry() {
         let state = SettingsUiState::default();
         *state.color_palette_menu.borrow_mut() = Some(0);
-        state.appearance_anchors.borrow_mut().palette =
-            Some(rectf(40.0, 40.0, PALETTE_TRIGGER_WIDTH, TRIGGER_HEIGHT));
+        state
+            .appearance_anchors
+            .borrow_mut()
+            .palette
+            .insert(0, rectf(40.0, 40.0, PALETTE_TRIGGER_WIDTH, TRIGGER_HEIGHT));
         let actions = SettingsActions::new(|_| {});
         let app = AppContext::default();
         let texts = draw_texts(&state, &actions, &app);

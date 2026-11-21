@@ -187,7 +187,10 @@ pub struct VaultState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AppearanceMenuAnchors {
     pub theme: Option<RectF>,
-    pub palette: Option<RectF>,
+    /// The in-field swatch of each channel, keyed by channel index. The opened
+    /// palette anchors to its own channel's swatch, not whichever channel
+    /// happened to paint last.
+    pub palette: BTreeMap<usize, RectF>,
 }
 
 /// One page's worth of settings data plus the interaction state of the whole

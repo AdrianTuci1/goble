@@ -253,6 +253,24 @@ pub fn render_page(
     settings: &State,
     actions: &SettingsActions,
 ) -> Box<dyn Element> {
+    let content = render_page_content(app, model, settings, actions);
+    // The Appearance menu is painted after every section but receives pointer
+    // and key events before them: a panel anchored under an early row must draw
+    // over the rows below it, and a press inside it must not reach a control
+    // that happens to sit underneath.
+    let overlay = color_palette::appearance_menu_layer(app, settings, actions);
+    Box::new(color_palette::OverlayLayer::new(content, overlay))
+}
+
+/// The page's sections/search without the Appearance popover layer. The
+/// Settings overlay mounts that layer above its own Scrollable so the panel is
+/// not clipped by the scroll viewport.
+pub fn render_page_content(
+    app: &AppContext,
+    model: &PageModel,
+    settings: &State,
+    actions: &SettingsActions,
+) -> Box<dyn Element> {
     let mut children: Vec<Box<dyn Element>> = Vec::new();
     if let Some(notice) = settings.notice.as_ref() {
         children.push(render_notice(app, notice, actions));
@@ -288,13 +306,7 @@ pub fn render_page(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_children(children)
         .finish();
-    // The Appearance menu is painted after every section but receives pointer
-    // and key events before them: a panel anchored under an early row must draw
-    // over the rows below it, and a press inside it must not reach a control
-    // that happens to sit underneath.
-    let overlay = color_palette::appearance_menu_layer(app, settings, actions);
-    let page: Box<dyn Element> = Box::new(color_palette::OverlayLayer::new(column, overlay));
-    let padded = Container::new(page)
+    let padded = Container::new(column)
         .with_padding(goble_ui::elements::EdgeInsets::uniform(
             SETTINGS_PAGE_PADDING,
         ))
@@ -365,9 +377,9 @@ fn render_section(
     slot: &mut usize,
 ) -> Box<dyn Element> {
     let mut element = SettingsSection::new(section.title.clone());
-    if !section.description.is_empty() {
-        element = element.with_description(section.description.clone());
-    }
+    // K: Settings carry no description copy. Section headings, labels, values
+    // and controls are the whole page; the model keeps the strings for other
+    // surfaces (search indexing) but the sheet does not draw them.
     if let Some(action) = section.header_action.as_ref() {
         element = element.with_header_action(action_button(app, action, actions));
     }
@@ -415,15 +427,20 @@ fn render_row(
     // visible on a row, as the parity document requires).
     let row_ring = focused && settings.focused_field.is_none();
     let mut element =
-        SettingsRow::new(app, row.label.clone(), row.hint.clone()).with_focused(row_ring);
+        SettingsRow::new(app, row.label.clone(), String::new()).with_focused(row_ring);
     if let Some(swatch) = row.swatch {
         element = element.with_swatch(swatch);
     }
     if row.disabled {
         element = element.with_disabled(true);
     }
+    // K: muted status lines were descriptive subtitles ("Using the palette's
+    // accent"); keep only real feedback (info/success/warning/error).
     if let Some((text, kind)) = row.status.as_ref() {
-        element = element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+        if !matches!(kind, super::state::StatusKind::Muted) {
+            element =
+                element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+        }
     }
     if let Some(reset) = row.reset.as_ref() {
         element = element.with_reset(reset_button(app, reset, actions));
@@ -836,15 +853,20 @@ fn render_sheet_row(
     }
     let row_ring = focused && settings.focused_field.is_none();
     let mut element =
-        SettingsRow::new(app, row.label.clone(), row.hint.clone()).with_focused(row_ring);
+        SettingsRow::new(app, row.label.clone(), String::new()).with_focused(row_ring);
     if let Some(swatch) = row.swatch {
         element = element.with_swatch(swatch);
     }
     if row.disabled {
         element = element.with_disabled(true);
     }
+    // K: muted status lines were descriptive subtitles ("Using the palette's
+    // accent"); keep only real feedback (info/success/warning/error).
     if let Some((text, kind)) = row.status.as_ref() {
-        element = element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+        if !matches!(kind, super::state::StatusKind::Muted) {
+            element =
+                element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+        }
     }
     if let ControlModel::ReadOnly { text } = &row.control {
         element = element.with_body(

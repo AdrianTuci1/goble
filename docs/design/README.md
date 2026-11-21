@@ -169,8 +169,10 @@ and light), topbar with More open (plain, Split flyout, Copy flyout) and
 Overview open, the empty side panel (no chip, no `+`), the Terminal tab, the
 Side Question conversation, multiple tabs with `+` beside them, the tight-width
 overflow strip, the split mid-resize state with the 1 pt inter-panel hairline,
-the terminal shell, Settings (General, Appearance, Shortcuts, narrow), the diff
-reviewer, the floating file window and the changed-files card. The shell draws
+the terminal shell, Settings (General, Appearance with its in-field swatch,
+Appearance with the colour palette open, Shortcuts, narrow; no descriptions,
+floating close x), the diff reviewer, the floating file window and the
+changed-files card. The shell draws
 one rounded workspace sheet with a 5 pt free margin; the panels are flat
 children (same background, no borders, no corner ornament) separated only by
 the full-height hairline, with the radius on the shell's outer corners.

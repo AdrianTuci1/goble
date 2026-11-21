@@ -39,9 +39,6 @@ pub fn page(state: &SettingsUiState) -> PageModel {
         "The palette this build starts from; the channel rows below can override any one of them.",
     )
     .select("theme.preset", labels, selected);
-    if let Some(swatch) = palette_swatch(state, selected) {
-        theme_row = theme_row.with_swatch(swatch);
-    }
     if state.file_read_only() {
         theme_row = theme_row.disabled();
     }
@@ -71,7 +68,6 @@ pub fn page(state: &SettingsUiState) -> PageModel {
         let value = stored.clone().unwrap_or_default();
         let color = color_palette::channel_color(state, key);
         let mut row = text_row(state, &path, label, hint, value, "#rrggbb")
-            .with_swatch(color)
             .with_status(
                 StatusKind::Muted,
                 if stored.is_some() {
@@ -197,7 +193,10 @@ mod tests {
                 .flat_map(|section| section.rows.iter())
                 .find(|row| row.id == format!("theme.{key}"))
                 .unwrap_or_else(|| panic!("the {key} channel row"));
-            assert!(row.swatch.is_some(), "the {key} row has a swatch");
+            assert!(
+                row.swatch.is_none(),
+                "the {key} swatch lives inside its hex field, not beside the title"
+            );
             assert!(
                 matches!(row.control, ControlModel::Text { .. }),
                 "the {key} row keeps a real hex field"

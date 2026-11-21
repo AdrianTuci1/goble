@@ -1172,14 +1172,14 @@ impl Element for OverviewPopover {
 /// `AppContext::hover_chips` — the same layer the Overview popover uses — so
 /// the panel is above every pane, panel and overlay while it stays in the tree
 /// for hit-testing and keyboard routing.
-struct TopLayer {
+pub(crate) struct TopLayer {
     inner: Rc<RefCell<Box<dyn Element>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
 impl TopLayer {
-    fn new(inner: Box<dyn Element>) -> Self {
+    pub(crate) fn new(inner: Box<dyn Element>) -> Self {
         Self {
             inner: Rc::new(RefCell::new(inner)),
             size: None,

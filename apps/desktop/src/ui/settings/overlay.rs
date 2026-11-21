@@ -13,9 +13,9 @@ use std::rc::Rc;
 use goble_ui::elements::settings::{SettingsNav, SettingsNavGroup, SettingsNavItem};
 use goble_ui::elements::{
     AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, Dialog, Divider,
-    EdgeInsets, Element, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, PopupMenu,
-    PopupMenuItem, PopupMenuPosition, Scrollable, Spacer, Text, Tooltip, TooltipPosition,
-    TopbarButton,
+    EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize,
+    PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, Spacer, Stack, Text, Tooltip,
+    TooltipPosition, TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::platform::text_atlas::FontWeight;
@@ -75,7 +75,7 @@ fn overlay_content(
     let settings = &state.settings;
     let page = settings.page;
     let model = pages::page_model(page, settings);
-    let body = render::render_page(app, &model, settings, &actions.settings);
+    let body = render::render_page_content(app, &model, settings, &actions.settings);
     let body = if page == SettingsCategory::General {
         Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -89,16 +89,51 @@ fn overlay_content(
     } else {
         body
     };
-    let scroll = Scrollable::new(body, goble_ui::elements::Axis::Vertical)
-        .with_state(settings.scroll.clone())
-        .finish();
-    let header = overlay_header(app, state, actions, page, narrow, close);
-    let page_column = Flex::column()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(header)
-        .with_child(Divider::horizontal().finish())
-        .with_child(Expanded::new(scroll).finish())
+    // The floating x sits over the sheet's top-right corner without a bar.
+    // Keep the page's first row clear of it: the scroll content starts under a
+    // small top band, so the x never covers a control.
+    let scroll = Container::new(
+        Scrollable::new(body, goble_ui::elements::Axis::Vertical)
+            .with_state(settings.scroll.clone())
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(0.0, 30.0, 0.0, 0.0))
+    .finish();
+    // K: no topbar inside the settings content. The page starts directly on
+    // its sections; the only close affordance is the floating x over the
+    // content's top-right corner, with no bar or rule behind it.
+    let close_button = TopbarButton::new(
+        Icon::new("x")
+            .with_size(14.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(28.0)
+    .with_corner_radius(14.0)
+    .with_on_click(move || (close.borrow_mut())())
+    .finish();
+    let close_row = Container::new(
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Expanded::new(Empty::new().finish()).finish())
+            .with_child(close_button)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(0.0, 8.0, 12.0, 8.0))
+    .finish();
+    let mut page_stack = Stack::new().with_children(vec![scroll]);
+    // The Appearance popover rides above the scroll viewport (outside its
+    // clip), so a palette anchored to a row is never cut by the page edge.
+    if let Some(palette) = render::color_palette::appearance_menu_layer(
+        app,
+        settings,
+        &actions.settings,
+    ) {
+        page_stack = page_stack.with_overlay(palette, vec2f(0.0, 0.0));
+    }
+    let page_column = page_stack
+        .with_overlay(close_row, vec2f(0.0, 0.0))
         .finish();
 
     let mut row = Flex::row()
@@ -229,7 +264,7 @@ fn photo_nav(app: &AppContext, settings: &super::SettingsUiState, actions: &UiAc
 /// this build, so the selected state is presented as the product default rather
 /// than hidden behind a dead toggle.
 fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
-    let card = |title: &str, body: &str, icon: &'static str, selected: bool| -> Box<dyn Element> {
+    let card = |title: &str, _body: &str, icon: &'static str, selected: bool| -> Box<dyn Element> {
         let content = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_spacing(6.0)
@@ -251,12 +286,6 @@ fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
                     .with_font_size(14.0)
                     .with_weight(FontWeight::Medium)
                     .with_theme_color(ColorToken::Text, app)
-                    .finish(),
-            )
-            .with_child(
-                Text::new(body)
-                    .with_font_size(12.0)
-                    .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
             .finish();
@@ -319,106 +348,6 @@ fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
         )
         .with_child(cards)
         .finish()
-}
-
-fn overlay_header(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-    page: SettingsCategory,
-    narrow: bool,
-    close: Rc<RefCell<dyn FnMut()>>,
-) -> Box<dyn Element> {
-    let md = app.theme.spacing_px(SpacingToken::Md);
-    let mut leading = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(8.0);
-    if narrow {
-        leading = leading.with_child(hamburger(app, state, actions));
-    }
-    let description = page_description(page);
-    let mut subtitle = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(1.0)
-        .with_child(
-            Text::new(page_title(page))
-                .with_font_size(20.0)
-                .with_line_height(26.0 / 20.0)
-                .with_weight(FontWeight::SemiBold)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        );
-    if !description.is_empty() {
-        subtitle = subtitle.with_child(
-            Text::new(description)
-                .with_font_size(12.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        );
-    }
-    let labels = subtitle.finish();
-    leading = leading.with_child(labels);
-    let close_button = TopbarButton::new(
-        Icon::new("x")
-            .with_size(14.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_size(28.0)
-    .with_corner_radius(8.0)
-    .with_on_click(move || (close.borrow_mut())())
-    .finish();
-    Container::new(
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(Expanded::new(leading.finish()).finish())
-            .with_child(close_button)
-            .finish(),
-    )
-    .with_padding(EdgeInsets::new(0.0, md, 0.0, 12.0))
-    .finish()
-}
-
-fn hamburger(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let pages = SettingsCategory::ALL.to_vec();
-    let dispatch = actions.settings.dispatch.clone();
-    let trigger = TopbarButton::new(
-        Icon::new("menu-01")
-            .with_size(15.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_size(28.0)
-    .with_corner_radius(8.0)
-    .finish();
-    PopupMenu::new(
-        trigger,
-        pages
-            .iter()
-            .map(|page| PopupMenuItem::new(page.label()))
-            .collect(),
-    )
-    .with_open(state.settings_overlay_hamburger.clone())
-    .with_position(PopupMenuPosition::Below)
-    .with_max_width(220.0)
-    .with_on_select(move |index| {
-        if let Some(page) = pages.get(index).copied() {
-            (dispatch.borrow_mut())(SettingsAction::Navigate(page));
-        }
-    })
-    .finish()
-}
-
-fn page_title(page: SettingsCategory) -> &'static str {
-    match page {
-        SettingsCategory::Updates => "Notifications",
-        SettingsCategory::Providers => "Models",
-        SettingsCategory::Connectors => "Browser",
-        SettingsCategory::Environments => "Projects",
-        SettingsCategory::Hosts => "Conversations",
-        other => other.label(),
-    }
 }
 
 fn page_description(page: SettingsCategory) -> &'static str {

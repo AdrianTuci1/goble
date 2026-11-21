@@ -165,9 +165,10 @@ semantic id used by code (`ellipsis`, `flat-list`, `terminal`, `files`,
 
 `docs/design/previews/` holds the headless-rendered screenshots used to check
 parity with the reference photos in `.refs/t3-new/`: shell (wide/narrow, dark
-and light), topbar with More and Overview open, the empty side panel (no chip,
-no `+`), the Terminal tab, the Side Question conversation, multiple tabs with
-`+` beside them, the tight-width overflow strip, the terminal shell, Settings
+and light), topbar with More open (plain, Split flyout, Copy flyout) and
+Overview open, the empty side panel (no chip, no `+`), the Terminal tab, the
+Side Question conversation, multiple tabs with `+` beside them, the tight-width
+overflow strip, the terminal shell, Settings
 (General, Appearance, Shortcuts, narrow), the diff reviewer, the floating file
 window and the changed-files card. The workspace is one rounded sheet with a
 5 pt free margin; panels have no corner ornament and no boundary casing.

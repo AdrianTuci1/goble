@@ -23,6 +23,10 @@ const BLOCKED_TOAST: Duration = Duration::from_secs(6);
 /// A transient notice raised by a session-menu action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToastKind {
+    /// A menu flyout's labelled value reached the clipboard.
+    Copied { what: String },
+    /// The clipboard helper refused a menu flyout's value.
+    CopyFailed { what: String },
     /// The conversation id reached the clipboard.
     ConversationIdCopied,
     /// No OS clipboard helper took the id (the in-process copy still holds it).
@@ -49,6 +53,8 @@ impl ToastKind {
     /// The sentence the toast draws.
     pub fn message(&self) -> String {
         match self {
+            Self::Copied { what } => format!("{what} copied"),
+            Self::CopyFailed { what } => format!("Couldn’t copy the {what}."),
             Self::ConversationIdCopied => "Conversation ID copied".to_string(),
             Self::ConversationIdCopyFailed => "Couldn’t copy the conversation ID.".to_string(),
             Self::Archived { .. } => "Conversation archived.".to_string(),
@@ -88,7 +94,10 @@ impl ToastKind {
 
     fn hold(&self) -> Duration {
         match self {
-            Self::ConversationIdCopied | Self::ConversationIdCopyFailed => SHORT_TOAST,
+            Self::ConversationIdCopied
+            | Self::ConversationIdCopyFailed
+            | Self::Copied { .. }
+            | Self::CopyFailed { .. } => SHORT_TOAST,
             Self::Archived { .. } | Self::StoppedAndArchived { .. } => ARCHIVE_TOAST,
             Self::ArchivedNotOpenable
             | Self::ArchiveFailed
@@ -189,6 +198,28 @@ impl UiState {
             ToastKind::ConversationIdCopied
         } else {
             ToastKind::ConversationIdCopyFailed
+        });
+    }
+
+    /// Copy one labelled menu value (the More menu's Copy flyout) and say so.
+    /// The toast names the value, so the confirmation is honest about what the
+    /// clipboard now holds; a refused copy keeps the failure visible.
+    pub fn copy_menu_value(&mut self, what: &str, value: &str) {
+        if value.trim().is_empty() {
+            self.show_toast(ToastKind::CopyFailed {
+                what: what.to_ascii_lowercase(),
+            });
+            return;
+        }
+        let copied = crate::clipboard::copy_text_checked(value);
+        self.show_toast(if copied {
+            ToastKind::Copied {
+                what: what.to_string(),
+            }
+        } else {
+            ToastKind::CopyFailed {
+                what: what.to_ascii_lowercase(),
+            }
         });
     }
 

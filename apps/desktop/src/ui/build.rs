@@ -2692,12 +2692,25 @@ mod tests {
         );
     }
 
-    /// The panel's More menu carries the DSH actions with their shortcuts, and
-    /// the Split right row really splits the focused pane.
+    /// The panel's More menu keeps only top-level rows; Split and Copy open
+    /// flyouts on Right/hover with their real options and shortcuts, and a
+    /// flyout row runs the real pane action.
     #[test]
     fn the_panel_more_menu_offers_split_replace_and_their_shortcuts() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
+        let mut ctx = EventContext;
+        let key = |root: &mut Box<dyn Element>, ctx: &mut EventContext, name: &str| {
+            let _ = root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: name.to_string(),
+                    modifiers: Default::default(),
+                },
+                ctx,
+                &app,
+            );
+        };
+
         let commands = render_element(&mut root, window(), &app);
         let more = commands
             .iter()
@@ -2708,7 +2721,6 @@ mod tests {
                 _ => None,
             })
             .expect("the panel header draws its More control");
-        let mut ctx = EventContext;
         for event in [
             DispatchedEvent::MouseDown { position: more, button: 0 },
             DispatchedEvent::MouseUp { position: more, button: 0 },
@@ -2716,23 +2728,38 @@ mod tests {
             let _ = root.dispatch_event(&event, &mut ctx, &app);
         }
         let commands = render_element(&mut root, window(), &app);
-        let texts: Vec<&str> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        for expected in [
-            "Split right",
-            "Split down",
-            "Replace with new",
-            "⌘ Space",
-            "⌘ ⇧ D",
-        ] {
+        let texts = |commands: &[RenderCommand]| -> Vec<String> {
+            commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let top = texts(&commands);
+        for expected in ["Rename", "Pin", "Archive", "Split", "Copy", "Close pane"] {
             assert!(
-                texts.iter().any(|text| *text == expected),
-                "the More menu draws {expected:?}: {texts:?}"
+                top.iter().any(|text| text == expected),
+                "the More menu draws {expected:?}: {top:?}"
+            );
+        }
+        assert!(
+            !top.iter().any(|text| text == "Split right"),
+            "the inline split rows are gone: {top:?}"
+        );
+
+        // Highlight Split (0 Rename, 1 Pin, 2 Archive, 3 Split) and open it.
+        for _ in 0..3 {
+            key(&mut root, &mut ctx, "ArrowDown");
+        }
+        key(&mut root, &mut ctx, "ArrowRight");
+        let commands = render_element(&mut root, window(), &app);
+        let flyout = texts(&commands);
+        for expected in ["Split right", "Split down", "Replace with new", "⌘ Space", "⌘ ⇧ D"] {
+            assert!(
+                flyout.iter().any(|text| text == expected),
+                "the Split flyout draws {expected:?}: {flyout:?}"
             );
         }
 
@@ -2745,7 +2772,7 @@ mod tests {
                 }
                 _ => None,
             })
-            .expect("the Split right row");
+            .expect("the Split right row in the flyout");
         for event in [
             DispatchedEvent::MouseDown {
                 position: split + vec2f(6.0, 6.0),
@@ -2760,6 +2787,77 @@ mod tests {
         }
         let after = state.borrow().spaces[state.borrow().active_space].root.leaf_count();
         assert_eq!(after, before + 1, "Split right splits the focused pane");
+
+        // Copy opens its own flyout with the three copyable values.
+        let commands = render_element(&mut root, window(), &app);
+        let more = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { origin, name, size, .. } if name == "ellipsis" => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the More control");
+        for event in [
+            DispatchedEvent::MouseDown { position: more, button: 0 },
+            DispatchedEvent::MouseUp { position: more, button: 0 },
+        ] {
+            let _ = root.dispatch_event(&event, &mut ctx, &app);
+        }
+        let _ = render_element(&mut root, window(), &app);
+        for _ in 0..4 {
+            key(&mut root, &mut ctx, "ArrowDown");
+        }
+        key(&mut root, &mut ctx, "ArrowRight");
+        let commands = render_element(&mut root, window(), &app);
+        let copy_flyout = texts(&commands);
+        for expected in ["Conversation name", "Conversation id", "Project name"] {
+            assert!(
+                copy_flyout.iter().any(|text| text == expected),
+                "the Copy flyout draws {expected:?}: {copy_flyout:?}"
+            );
+        }
+    }
+
+    /// The More menu's Split/Copy flyouts never run off the window: at the
+    /// topbar's right edge they flip to the left of the parent panel.
+    #[test]
+    fn the_more_menu_flyouts_stay_inside_the_window() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let mut ctx = EventContext;
+        let size = window();
+        let _ = render_element(&mut root, size, &app);
+        *state.borrow().chrome_more_open.borrow_mut() = true;
+        let _ = render_element(&mut root, size, &app);
+        for name in ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowRight"] {
+            let _ = root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: name.to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut ctx,
+                &app,
+            );
+        }
+        // One settling frame measures the menu origin; the next places the
+        // flyout against the window edge.
+        let _ = render_element(&mut root, size, &app);
+        let commands = render_element(&mut root, size, &app);
+        let split = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Split right" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Split flyout draws");
+        assert!(
+            split.x + 120.0 < size.x,
+            "the flyout stays inside the window: {split:?} in {size:?}"
+        );
     }
 
     /// The two panels live inside one rounded workspace sheet: the main pane

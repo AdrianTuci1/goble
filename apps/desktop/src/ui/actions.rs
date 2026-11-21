@@ -366,6 +366,9 @@ pub struct UiActions {
     pub on_fork_conversation_by_id: Rc<RefCell<dyn FnMut(String)>>,
     /// Copy a conversation's raw id to the system clipboard and toast it.
     pub on_copy_conversation_id: Rc<RefCell<dyn FnMut(String)>>,
+    /// Copy one labelled value from a menu flyout (conversation name, id,
+    /// project name) to the clipboard and toast the result. `(what, value)`.
+    pub on_copy_menu_value: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Archive a conversation; live work opens the stop-and-archive confirm.
     pub on_archive_conversation: Rc<RefCell<dyn FnMut(String)>>,
     /// Restore an archived conversation.

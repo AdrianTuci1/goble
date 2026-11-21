@@ -273,6 +273,7 @@ pub fn make_actions(
     let on_fork_conversation_by_id = Rc::clone(&state);
     let desktop_fork_conversation = desktop.clone();
     let on_copy_conversation_id = Rc::clone(&state);
+    let on_copy_menu_value = Rc::clone(&state);
     let on_archive_conversation = Rc::clone(&state);
     let desktop_archive_conversation = desktop.clone();
     let on_unarchive_conversation = Rc::clone(&state);
@@ -2469,6 +2470,9 @@ pub fn make_actions(
         })),
         on_copy_conversation_id: Rc::new(RefCell::new(move |id: String| {
             on_copy_conversation_id.borrow_mut().copy_conversation_id(&id);
+        })),
+        on_copy_menu_value: Rc::new(RefCell::new(move |what: String, value: String| {
+            on_copy_menu_value.borrow_mut().copy_menu_value(&what, &value);
         })),
         on_archive_conversation: Rc::new(RefCell::new(move |id: String| {
             on_archive_conversation

@@ -111,6 +111,27 @@ fn overview_scroll() -> Rc<RefCell<ScrollState>> {
     OVERVIEW_SCROLL.with(Rc::clone)
 }
 
+/// The More menu's open submenu row and the row the keyboard is on inside it:
+/// session-only state, like the menu's own open flag, so it survives the
+/// per-frame element rebuild.
+fn more_submenu_state() -> (
+    Rc<RefCell<Option<usize>>>,
+    Rc<RefCell<usize>>,
+    Rc<std::cell::Cell<bool>>,
+) {
+    thread_local! {
+        static MORE_SUBMENU: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        static MORE_SUBMENU_HIGHLIGHT: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        static MORE_SUBMENU_KEYBOARD: Rc<std::cell::Cell<bool>> =
+            Rc::new(std::cell::Cell::new(false));
+    }
+    (
+        MORE_SUBMENU.with(Rc::clone),
+        MORE_SUBMENU_HIGHLIGHT.with(Rc::clone),
+        MORE_SUBMENU_KEYBOARD.with(Rc::clone),
+    )
+}
+
 /// The side panel's kebab menu open flag. The panel is rebuilt every frame, so
 /// the flag lives with the other session-only strip state.
 fn side_panel_menu_open() -> Rc<RefCell<bool>> {
@@ -284,31 +305,95 @@ pub fn build_chrome_row(
     let pin_label = if pinned { "Unpin" } else { "Pin" };
     let id = selected.clone();
     let close_id = selected.clone();
+    // The top level keeps only leaf actions and the two rows that open
+    // flyouts; their options live in the flyout, not inline (DSH's behaviour).
+    let entry = state
+        .conversations
+        .iter()
+        .find(|entry| entry.id == selected)
+        .cloned();
+    let conversation_name = entry
+        .as_ref()
+        .map(|entry| entry.name.clone())
+        .unwrap_or_default();
+    let project_name = entry
+        .as_ref()
+        .map(|entry| {
+            if !entry.folder.trim().is_empty() {
+                entry.folder.clone()
+            } else {
+                std::path::Path::new(&entry.directory)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            }
+        })
+        .unwrap_or_default();
+    let copy_value = actions.on_copy_menu_value.clone();
+    let copy_split_right = on_split_right.clone();
+    let copy_split_down = on_split_down.clone();
+    let copy_create = on_create.clone();
+    let copy_name_action = copy_value.clone();
+    let copy_id_action = copy_value.clone();
+    let copy_project_action = copy_value;
+    let name_for_copy = conversation_name.clone();
+    let id_for_copy = selected.clone();
+    let project_for_copy = project_name.clone();
+    let split_children = vec![
+        PopupMenuItem::new("Split right")
+            .with_shortcut("⌘ Space")
+            .with_on_select(move || (copy_split_right.borrow_mut())()),
+        PopupMenuItem::new("Split down")
+            .with_shortcut("⌘ ⇧ D")
+            .with_on_select(move || (copy_split_down.borrow_mut())()),
+        PopupMenuItem::new("Replace with new")
+            .with_on_select(move || (copy_create.borrow_mut())()),
+    ];
+    let mut name_item = PopupMenuItem::new("Conversation name").with_on_select(move || {
+        (copy_name_action.borrow_mut())("Conversation name".to_string(), name_for_copy.clone())
+    });
+    if conversation_name.trim().is_empty() {
+        name_item = name_item.disabled();
+    }
+    let id_available = !id_for_copy.trim().is_empty();
+    let mut id_item = PopupMenuItem::new("Conversation id").with_on_select(move || {
+        (copy_id_action.borrow_mut())("Conversation id".to_string(), id_for_copy.clone())
+    });
+    if !id_available {
+        id_item = id_item.disabled();
+    }
+    let mut project_item = PopupMenuItem::new("Project name").with_on_select(move || {
+        (copy_project_action.borrow_mut())("Project name".to_string(), project_for_copy.clone())
+    });
+    if project_name.trim().is_empty() {
+        project_item = project_item.disabled();
+    }
+    let copy_children = vec![name_item, id_item, project_item];
     let more_items = vec![
         PopupMenuItem::new("Rename").with_shortcut("⌘ R"),
         PopupMenuItem::new(pin_label),
         PopupMenuItem::new("Archive").with_shortcut("⌘ ⇧ A"),
-        PopupMenuItem::new("Split right")
-            .with_shortcut("⌘ Space")
+        PopupMenuItem::new("Split")
+            .with_icon("split-horizontal")
+            .with_children(split_children)
             .with_separator_before(),
-        PopupMenuItem::new("Split down").with_shortcut("⌘ ⇧ D"),
-        PopupMenuItem::new("Replace with new"),
-        PopupMenuItem::new("Copy ID").with_shortcut("⌘ ⇧ C"),
+        PopupMenuItem::new("Copy")
+            .with_icon("copy")
+            .with_children(copy_children),
         PopupMenuItem::new("Close pane").with_separator_before(),
     ];
+    let (submenu_index, submenu_highlight, submenu_keyboard) = more_submenu_state();
     let more = PopupMenu::new(button(app, "ellipsis", "More"), more_items)
         .with_open(state.chrome_more_open.clone())
         .with_position(PopupMenuPosition::BelowEnd)
         .with_max_width(240.0)
+        .with_window_width(state.window_size.x)
+        .with_submenu_state(submenu_index, submenu_highlight, submenu_keyboard)
         .with_on_select(move |index| match index {
             0 => (on_rename.borrow_mut())(id.clone()),
             1 => (on_pin.borrow_mut())(id.clone()),
             2 => (on_archive.borrow_mut())(close_id.clone()),
-            3 => (on_split_right.borrow_mut())(),
-            4 => (on_split_down.borrow_mut())(),
-            5 => (on_create.borrow_mut())(),
-            6 => (on_copy.borrow_mut())(close_id.clone()),
-            7 => (on_close.borrow_mut())(),
+            3 => (on_close.borrow_mut())(),
             _ => {}
         })
         .finish();

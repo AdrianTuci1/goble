@@ -770,3 +770,32 @@ fn the_hovered_session_row_does_not_move_the_rows_below_it() {
         "the hovered row is 32pt, not 36: {band:?}"
     );
 }
+
+/// The More menu's Copy flyout names each value it copies and reports the
+/// outcome; an unavailable value is refused with the same visible notice.
+#[test]
+fn the_copy_flyout_toasts_the_value_it_copied_and_refuses_empty_values() {
+    let mut state = UiState::mock();
+    state.copy_menu_value("Conversation name", "");
+    let notice = state.toast.as_ref().expect("the refusal is visible");
+    assert!(matches!(notice.kind, ToastKind::CopyFailed { .. }));
+    assert!(
+        notice.kind.message().contains("conversation name"),
+        "the failure names the value: {}",
+        notice.kind.message()
+    );
+
+    state.copy_menu_value("Project name", "General");
+    let notice = state.toast.as_ref().expect("the copy result is visible");
+    match &notice.kind {
+        ToastKind::Copied { what } => {
+            assert_eq!(what, "Project name");
+            assert_eq!(notice.kind.message(), "Project name copied");
+        }
+        ToastKind::CopyFailed { what } => {
+            assert_eq!(what, "project name");
+            assert!(notice.kind.message().contains("project name"));
+        }
+        other => panic!("a copy never ends in {other:?}"),
+    }
+}

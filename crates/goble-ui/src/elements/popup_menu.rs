@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::elements::interactive::{contains, handle_mouse_event, InteractiveState};
@@ -56,7 +56,7 @@ pub struct PopupMenuDiff {
 }
 
 /// One entry in a [`PopupMenu`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PopupMenuItem {
     pub label: String,
     pub icon: Option<&'static str>,
@@ -75,6 +75,29 @@ pub struct PopupMenuItem {
     /// branch menu separates the branches from "Work in a New Worktree" with
     /// it; `None` keeps the row in the ordinary flow.
     pub separator_before: bool,
+    /// A submenu opened by hovering (or Right/Enter on) this row. The panel is
+    /// drawn as a flyout beside the row: right normally, flipped left when the
+    /// window edge leaves no room. An empty list makes this an ordinary row.
+    pub children: Vec<PopupMenuItem>,
+    /// A row's own action, used by submenu rows (whose selection is not the
+    /// parent menu's index). Parent rows without children keep using the
+    /// menu-level `on_select(index)` callback.
+    pub on_select: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+}
+
+impl std::fmt::Debug for PopupMenuItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The row's action is a closure (not Debug); the snapshot types keep
+        // their Debug derive, so print the fields that describe the row.
+        f.debug_struct("PopupMenuItem")
+            .field("label", &self.label)
+            .field("icon", &self.icon)
+            .field("selected", &self.selected)
+            .field("disabled", &self.disabled)
+            .field("shortcut", &self.shortcut)
+            .field("children", &self.children.len())
+            .finish()
+    }
 }
 
 impl PopupMenuItem {
@@ -88,6 +111,8 @@ impl PopupMenuItem {
             description: None,
             shortcut: None,
             separator_before: false,
+            children: Vec::new(),
+            on_select: None,
         }
     }
 
@@ -127,6 +152,26 @@ impl PopupMenuItem {
     /// Draw the 1px pane separator above this row.
     pub fn with_separator_before(mut self) -> Self {
         self.separator_before = true;
+        self
+    }
+
+    /// Give this row a submenu flyout. Hovering the row (or pressing Right or
+    /// Enter on it) opens the flyout beside the menu; the parent row itself
+    /// takes no action.
+    pub fn with_children(mut self, children: Vec<PopupMenuItem>) -> Self {
+        self.children = children;
+        self
+    }
+
+    /// `true` when this row opens a submenu rather than acting.
+    pub fn has_children(&self) -> bool {
+        !self.children.is_empty()
+    }
+
+    /// The row's own action, for a submenu child (or any row whose action should
+    /// not go through the parent menu's index callback).
+    pub fn with_on_select<F: FnMut() + 'static>(mut self, action: F) -> Self {
+        self.on_select = Some(Rc::new(RefCell::new(action)));
         self
     }
 
@@ -226,6 +271,14 @@ pub struct PopupMenu {
     /// outside the element. `None` while the menu is closed; an open menu with
     /// no highlight starts on the item marked `.selected()` (or the first row).
     highlight_index: Rc<RefCell<Option<usize>>>,
+    /// The parent row whose submenu flyout is open, shared with the app like
+    /// the hover cell. `None` leaves every flyout closed.
+    submenu_index: Rc<RefCell<Option<usize>>>,
+    /// The row the keyboard is on inside the open flyout.
+    submenu_highlight: Rc<RefCell<usize>>,
+    /// Whether the open flyout was opened from the keyboard (sticky until
+    /// Left/Escape/selection) rather than by hover (closes on leave).
+    submenu_keyboard: Rc<Cell<bool>>,
     /// A row drawn after every item, in the panel's own flow — the tab menu's
     /// colour dots, which are a row of controls rather than a labelled item.
     /// `None` leaves the panel exactly the items it was given.
@@ -258,6 +311,11 @@ pub struct PopupMenu {
     /// keep the defaults; the diff menu widens for file paths and squares its
     /// corners.
     max_width: f32,
+    /// The window width for the submenu's overflow test, when the app knows it.
+    /// A topbar row can be laid out with an unbounded width (it shrinks to its
+    /// content), so the layout constraint alone cannot tell the flyout where
+    /// the window ends.
+    window_width: Option<f32>,
     corner_radius: f32,
     /// A row height override for this menu (the sidebar's view options are 44pt
     /// tall); `None` keeps the shared casing's 32/48.
@@ -286,6 +344,9 @@ impl PopupMenu {
             hover_tray: None,
             hover_index: Rc::new(RefCell::new(None)),
             highlight_index: Rc::new(RefCell::new(None)),
+            submenu_index: Rc::new(RefCell::new(None)),
+            submenu_highlight: Rc::new(RefCell::new(0)),
+            submenu_keyboard: Rc::new(Cell::new(false)),
             footer_row: None,
             on_close: None,
             menu_id: DEFAULT_MENU_ID,
@@ -297,6 +358,7 @@ impl PopupMenu {
             max_visible_rows: None,
             panel_scroll: PanelScroll::default(),
             max_width: POPUP_MAX_WIDTH,
+            window_width: None,
             corner_radius: POPUP_PANEL_RADIUS,
             row_height: None,
             icon_size: 14.0,
@@ -318,6 +380,14 @@ impl PopupMenu {
     /// the one that can be open: opening it closes any other menu first, and
     /// the pointer on its panel belongs to it alone (see
     /// [`crate::elements::OpenMenus`]).
+    /// Tell the menu the window's width, so a submenu opens to the right only
+    /// when it fits and flips left at the window's edge even when the row's own
+    /// layout constraint is unbounded.
+    pub fn with_window_width(mut self, width: f32) -> Self {
+        self.window_width = Some(width);
+        self
+    }
+
     pub fn with_menu_id(mut self, id: MenuId) -> Self {
         self.menu_id = id;
         self
@@ -426,6 +496,21 @@ impl PopupMenu {
     /// first row; a closed menu resets the cell to `None`.
     pub fn with_highlight_index(mut self, highlight_index: Rc<RefCell<Option<usize>>>) -> Self {
         self.highlight_index = highlight_index;
+        self
+    }
+
+    /// Share the open submenu's parent row and its keyboard row with the app,
+    /// so a hover/keyboard-opened flyout survives the per-frame rebuild (the
+    /// same reason `open` and the hover/highlight cells are shared).
+    pub fn with_submenu_state(
+        mut self,
+        submenu_index: Rc<RefCell<Option<usize>>>,
+        submenu_highlight: Rc<RefCell<usize>>,
+        submenu_keyboard: Rc<Cell<bool>>,
+    ) -> Self {
+        self.submenu_index = submenu_index;
+        self.submenu_highlight = submenu_highlight;
+        self.submenu_keyboard = submenu_keyboard;
         self
     }
 
@@ -613,12 +698,25 @@ impl PopupMenu {
         self.tray_size = None;
         self.tray_origin = Vector2F::zero();
 
-        let (Some(index), Some(hover_tray)) = (*self.hover_index.borrow(), self.hover_tray.as_ref())
-        else {
-            return;
-        };
-        let Some(content) = (hover_tray.build)(index, app) else {
-            return;
+        // A row with children opens a flyout; a menu that asked for a hover
+        // tray keeps that sidecar for rows without children. The flyout has
+        // priority so a menu cannot accidentally show both.
+        let submenu = *self.submenu_index.borrow();
+        let (mut tray, width): (Box<dyn Element>, f32) = if let Some(index) = submenu {
+            let Some(item) = self.items.get(index).filter(|item| item.has_children()) else {
+                return;
+            };
+            (self.build_submenu(index, item, app), POPUP_MAX_WIDTH * 0.8)
+        } else {
+            let (Some(index), Some(hover_tray)) =
+                (*self.hover_index.borrow(), self.hover_tray.as_ref())
+            else {
+                return;
+            };
+            let Some(content) = (hover_tray.build)(index, app) else {
+                return;
+            };
+            (content, hover_tray.width)
         };
         let Some(panel_size) = self.panel_size else {
             return;
@@ -627,17 +725,21 @@ impl PopupMenu {
         // row's top edge and sits just past the panel's trailing edge. Rows
         // start one casing padding inside the panel's top edge.
         let row_top =
-            self.panel_origin.y + POPUP_PANEL_PADDING + self.item_top(index) - self.scroll_offset();
+            self.panel_origin.y
+                + POPUP_PANEL_PADDING
+                + self.item_top(
+                    submenu.or_else(|| *self.hover_index.borrow()).unwrap_or(0),
+                )
+                - self.scroll_offset();
         let panel_right = self.panel_origin.x + panel_size.x;
 
-        let mut tray = content;
         let max_height = if constraint.max.y.is_finite() {
             constraint.max.y
         } else {
             POPUP_MAX_WIDTH
         };
         let size = tray.layout(
-            SizeConstraint::loose(vec2f(hover_tray.width, max_height)),
+            SizeConstraint::loose(vec2f(width, max_height)),
             ctx,
             app,
         );
@@ -648,8 +750,9 @@ impl PopupMenu {
         // unbounded available width (a shrink-to-content row, as the topbar's
         // is) means there is no edge to run into, so the tray opens rightwards.
         let menu_left = self.origin.map(|o| o.x()).unwrap_or(0.0);
-        let fits_right = !constraint.max.x.is_finite()
-            || menu_left + panel_right + TRAY_GAP + size.x <= constraint.max.x;
+        let limit = self.window_width.unwrap_or(constraint.max.x);
+        let fits_right = !limit.is_finite()
+            || menu_left + panel_right + TRAY_GAP + size.x <= limit;
         let x = if fits_right {
             panel_right + TRAY_GAP
         } else {
@@ -658,6 +761,71 @@ impl PopupMenu {
         self.tray_origin = vec2f(x, row_top);
         self.tray_size = Some(size);
         self.tray = Some(tray);
+    }
+
+    /// Build the flyout panel for `item`'s children: the same casing and rows
+    /// as the parent menu, with the keyboard row marked and every row's own
+    /// action on click. The panel is positioned by [`Self::build_tray`].
+    fn build_submenu(
+        &self,
+        index: usize,
+        item: &PopupMenuItem,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let _ = index;
+        let highlight: Rc<RefCell<Option<usize>>> =
+            Rc::new(RefCell::new(Some(*self.submenu_highlight.borrow())));
+        let open = self.open.clone();
+        let row_radius = self.corner_radius.min(POPUP_ITEM_RADIUS);
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(POPUP_ITEM_SPACING);
+        for (child_index, child) in item.children.iter().enumerate() {
+            if child.separator_before {
+                column = column.with_child(
+                    Container::new(Divider::horizontal().finish())
+                        .with_padding(EdgeInsets::new(0.0, 4.0, 0.0, 4.0))
+                        .finish(),
+                );
+            }
+            let action = child.on_select.clone();
+            let is_open = open.clone();
+            let disabled = child.disabled;
+            let row = PopupMenuItemView::new(
+                child_index,
+                highlight.clone(),
+                child.label.clone(),
+                child.icon,
+                child.selected,
+                disabled,
+                child.diff,
+                child.description.clone(),
+                child.shortcut.clone(),
+                false,
+                self.selected_color.unwrap_or(ColorToken::Accent),
+                self.max_width,
+                row_radius,
+                self.row_height,
+                self.icon_size,
+                move || {
+                    if disabled {
+                        return;
+                    }
+                    if let Some(action) = action.as_ref() {
+                        (action.borrow_mut())();
+                    }
+                    *is_open.borrow_mut() = false;
+                },
+            )
+            .finish();
+            column = column.with_child(row);
+        }
+        Container::new(column.finish())
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_border(app.theme.color(ColorToken::Border).into())
+            .with_corner_radius(self.corner_radius)
+            .with_padding(EdgeInsets::uniform(POPUP_PANEL_PADDING))
+            .finish()
     }
 
     /// Re-read which row the pointer is over from the paint-time cursor, which
@@ -671,6 +839,17 @@ impl PopupMenu {
             .find(|i| self.row_bounds(*i, app).is_some_and(|row| ctx.hovered(row)));
         if let Some(index) = over_row {
             *self.hover_index.borrow_mut() = Some(index);
+            // Hover intent: a row with children opens its flyout, a plain row
+            // closes whatever flyout the row above it had opened.
+            if self.items[index].has_children() {
+                if *self.submenu_index.borrow() != Some(index) {
+                    *self.submenu_index.borrow_mut() = Some(index);
+                    *self.submenu_highlight.borrow_mut() = 0;
+                    self.submenu_keyboard.set(false);
+                }
+            } else {
+                *self.submenu_index.borrow_mut() = None;
+            }
             return;
         }
         let over_tray = self.tray_bounds().is_some_and(|tray| ctx.hovered(tray));
@@ -681,6 +860,9 @@ impl PopupMenu {
             .is_some_and(|corridor| ctx.hovered(corridor));
         if !over_tray && !in_corridor {
             *self.hover_index.borrow_mut() = None;
+            if !self.submenu_keyboard.get() {
+                *self.submenu_index.borrow_mut() = None;
+            }
         }
     }
 
@@ -700,55 +882,118 @@ impl PopupMenu {
         if modifiers.command || modifiers.ctrl || modifiers.alt {
             return false;
         }
-        match key.as_str() {
-            "ArrowDown" | "ArrowUp" => {
-                let len = self.items.len();
-                if len == 0 {
-                    return true;
-                }
-                let delta = if key == "ArrowDown" { 1 } else { -1 };
-                let current = *self.highlight_index.borrow();
-                let Some(current) = current else {
-                    // Nothing highlighted yet: the first enabled row is where a
-                    // move starts.
-                    *self.highlight_index.borrow_mut() =
-                        (0..len).find(|index| !self.items[*index].disabled);
-                    return true;
-                };
-                let mut index = current.min(len - 1);
-                for _ in 0..len {
-                    index = (index as isize + delta).rem_euclid(len as isize) as usize;
-                    if !self.items[index].disabled {
-                        *self.highlight_index.borrow_mut() = Some(index);
-                        break;
+        // An open flyout owns the keys first: Up/Down move inside it, Enter
+        // runs its row, Left/Escape closes the flyout (Escape from the parent
+        // menu closes the menu itself).
+        let open_submenu = *self.submenu_index.borrow();
+        if let Some(parent) = open_submenu {
+            let children = self
+                .items
+                .get(parent)
+                .map(|item| item.children.as_slice())
+                .unwrap_or(&[]);
+            let len = children.len();
+            let current = (*self.submenu_highlight.borrow()).min(len.saturating_sub(1));
+            match key.as_str() {
+                "ArrowDown" | "ArrowUp" => {
+                    if len == 0 {
+                        return true;
                     }
+                    let delta = if key == "ArrowDown" { 1 } else { -1 };
+                    let mut index = current;
+                    for _ in 0..len {
+                        index = (index as isize + delta).rem_euclid(len as isize) as usize;
+                        if !children[index].disabled {
+                            *self.submenu_highlight.borrow_mut() = index;
+                            break;
+                        }
+                    }
+                    true
                 }
-                true
+                "ArrowRight" => true,
+                "ArrowLeft" | "Escape" => {
+                    *self.submenu_index.borrow_mut() = None;
+                    self.submenu_keyboard.set(false);
+                    true
+                }
+                "Enter" => {
+                    let Some(child) = children.get(current) else {
+                        return true;
+                    };
+                    if !child.disabled {
+                        if let Some(action) = child.on_select.as_ref() {
+                            (action.borrow_mut())();
+                        }
+                        *self.open.borrow_mut() = false;
+                        self.submenu_keyboard.set(false);
+                    }
+                    true
+                }
+                _ => false,
             }
-            "Enter" => {
-                let Some(index) = *self.highlight_index.borrow() else {
-                    return false;
-                };
-                let Some(item) = self.items.get(index) else {
-                    return false;
-                };
-                if item.disabled {
-                    return true;
+        } else {
+            match key.as_str() {
+                "ArrowDown" | "ArrowUp" => {
+                    let len = self.items.len();
+                    if len == 0 {
+                        return true;
+                    }
+                    let delta = if key == "ArrowDown" { 1 } else { -1 };
+                    let current = *self.highlight_index.borrow();
+                    let Some(current) = current else {
+                        // Nothing highlighted yet: the first enabled row is
+                        // where a move starts.
+                        *self.highlight_index.borrow_mut() =
+                            (0..len).find(|index| !self.items[*index].disabled);
+                        return true;
+                    };
+                    let mut index = current.min(len - 1);
+                    for _ in 0..len {
+                        index = (index as isize + delta).rem_euclid(len as isize) as usize;
+                        if !self.items[index].disabled {
+                            *self.highlight_index.borrow_mut() = Some(index);
+                            break;
+                        }
+                    }
+                    true
                 }
-                if let Some(cb) = self.on_select.as_ref() {
-                    (cb.borrow_mut())(index);
+                "ArrowRight" | "Enter" => {
+                    let Some(index) = *self.highlight_index.borrow() else {
+                        return false;
+                    };
+                    let Some(item) = self.items.get(index) else {
+                        return false;
+                    };
+                    if item.disabled {
+                        return true;
+                    }
+                    if item.has_children() {
+                        // Open the flyout and put the keyboard in it.
+                        *self.submenu_index.borrow_mut() = Some(index);
+                        *self.submenu_highlight.borrow_mut() = 0;
+                        self.submenu_keyboard.set(true);
+                        *self.hover_index.borrow_mut() = Some(index);
+                        return true;
+                    }
+                    if key == "ArrowRight" {
+                        return false;
+                    }
+                    if let Some(cb) = self.on_select.as_ref() {
+                        (cb.borrow_mut())(index);
+                    }
+                    *self.open.borrow_mut() = false;
+                    true
                 }
-                *self.open.borrow_mut() = false;
-                true
+                "ArrowLeft" => false,
+                "Escape" => {
+                    *self.open.borrow_mut() = false;
+                    if let Some(cb) = self.on_close.as_ref() {
+                        (cb.borrow_mut())();
+                    }
+                    true
+                }
+                _ => false,
             }
-            "Escape" => {
-                *self.open.borrow_mut() = false;
-                if let Some(cb) = self.on_close.as_ref() {
-                    (cb.borrow_mut())();
-                }
-                true
-            }
-            _ => false,
         }
     }
 
@@ -760,6 +1005,8 @@ impl PopupMenu {
             self.tray_size = None;
             *self.hover_index.borrow_mut() = None;
             *self.highlight_index.borrow_mut() = None;
+            *self.submenu_index.borrow_mut() = None;
+            self.submenu_keyboard.set(false);
             return;
         }
         // An open menu with no highlight starts on the item in force (or the
@@ -806,9 +1053,15 @@ impl PopupMenu {
             let disabled = item.disabled;
             let is_open = open.clone();
             let cb = on_select.clone();
+            let own_action = item.on_select.clone();
             let diff = item.diff;
             let description = item.description.clone();
             let shortcut = item.shortcut.clone();
+            let has_children = item.has_children();
+            let submenu_index = self.submenu_index.clone();
+            let submenu_highlight = self.submenu_highlight.clone();
+            let submenu_keyboard = self.submenu_keyboard.clone();
+            let hover_index = self.hover_index.clone();
             let row = PopupMenuItemView::new(
                 index,
                 highlight.clone(),
@@ -819,18 +1072,31 @@ impl PopupMenu {
                 diff,
                 description,
                 shortcut,
+                has_children,
                 self.selected_color.unwrap_or(ColorToken::Accent),
                 self.max_width,
                 row_radius,
                 self.row_height,
                 self.icon_size,
                 move || {
-                    if !disabled {
-                        if let Some(cb) = cb.as_ref() {
-                            (cb.borrow_mut())(index);
-                        }
-                        *is_open.borrow_mut() = false;
+                    if disabled {
+                        return;
                     }
+                    if has_children {
+                        // A parent row opens its flyout instead of acting (and
+                        // keeps the menu open behind it).
+                        *submenu_index.borrow_mut() = Some(index);
+                        *submenu_highlight.borrow_mut() = 0;
+                        submenu_keyboard.set(false);
+                        *hover_index.borrow_mut() = Some(index);
+                        return;
+                    }
+                    if let Some(action) = own_action.as_ref() {
+                        (action.borrow_mut())();
+                    } else if let Some(cb) = cb.as_ref() {
+                        (cb.borrow_mut())(index);
+                    }
+                    *is_open.borrow_mut() = false;
                 },
             )
             .finish();
@@ -1001,6 +1267,24 @@ impl Element for PopupMenu {
                 panel.paint(origin + self.panel_origin, ctx, app);
             }
             if let Some(tray) = self.tray.as_mut() {
+                // The flyout's left/right placement needs the window position,
+                // which only paint has: layout sees a freshly rebuilt element
+                // with no origin yet. With the app-supplied window width, flip
+                // or clamp the already-laid-out tray against the window edge
+                // here so even the first frame stays inside it.
+                if let (Some(limit), Some(tray_size), Some(panel_size)) =
+                    (self.window_width, self.tray_size, self.panel_size)
+                {
+                    let right = origin.x + self.panel_origin.x + panel_size.x + TRAY_GAP;
+                    let left = origin.x + self.panel_origin.x - TRAY_GAP - tray_size.x;
+                    let x = if right + tray_size.x <= limit {
+                        right
+                    } else {
+                        left
+                    }
+                    .clamp(0.0, (limit - tray_size.x).max(0.0));
+                    self.tray_origin.x = x - origin.x;
+                }
                 tray.paint(origin + self.tray_origin, ctx, app);
             }
             self.track_hover(ctx, app);
@@ -1176,6 +1460,8 @@ struct PopupMenuItemView {
     /// A muted second line under the label, when the item has one.
     description: Option<String>,
     shortcut: Option<String>,
+    /// Whether this row opens a submenu (draws the trailing chevron).
+    submenu: bool,
     /// The ink of the selected label (the menu's own choice).
     selected_color: ColorToken,
     max_width: f32,
@@ -1206,6 +1492,7 @@ impl PopupMenuItemView {
         diff: Option<PopupMenuDiff>,
         description: Option<String>,
         shortcut: Option<String>,
+        submenu: bool,
         selected_color: ColorToken,
         max_width: f32,
         corner_radius: f32,
@@ -1223,6 +1510,7 @@ impl PopupMenuItemView {
             diff,
             description,
             shortcut,
+            submenu,
             selected_color,
             max_width,
             corner_radius,
@@ -1298,6 +1586,16 @@ impl PopupMenuItemView {
                     .with_border_color(app.theme.color(ColorToken::Border)))
                 .with_corner_radius(6.0)
                 .finish(),
+            );
+        }
+        // A submenu row says it opens a flyout with the disclosure chevron at
+        // the trailing edge, where the reference puts it.
+        if self.submenu {
+            line = line.with_child(
+                Icon::new("chevron-right")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
             );
         }
         // The item in force is marked with the reference's trailing check: the
@@ -1823,6 +2121,134 @@ mod tests {
         move_pointer(&mut menu, vec2f(0.0, 380.0), &app, 600.0, at);
         assert_eq!(*menu.hover_index.borrow(), None, "the row is left");
         assert!(menu.tray.is_none(), "and the tray goes with it");
+    }
+
+    /// A menu whose second row has a Split-style flyout; the first leaf row and
+    /// the flyout's rows record what ran.
+    fn menu_with_a_submenu(
+        fired: Rc<RefCell<Vec<String>>>,
+    ) -> (
+        PopupMenu,
+        Rc<RefCell<bool>>,
+        Rc<RefCell<Option<usize>>>,
+        Rc<RefCell<usize>>,
+        Rc<std::cell::Cell<bool>>,
+    ) {
+        let open = Rc::new(RefCell::new(true));
+        let submenu = Rc::new(RefCell::new(None));
+        let highlight = Rc::new(RefCell::new(0));
+        let keyboard = Rc::new(std::cell::Cell::new(false));
+        let run = |label: &'static str, fired: Rc<RefCell<Vec<String>>>| {
+            PopupMenuItem::new(label).with_on_select(move || {
+                fired.borrow_mut().push(label.to_string());
+            })
+        };
+        let items = vec![
+            PopupMenuItem::new("One"),
+            PopupMenuItem::new("Split").with_children(vec![
+                run("Split right", Rc::clone(&fired)),
+                run("Split down", Rc::clone(&fired)),
+            ]),
+        ];
+        let menu = PopupMenu::new(trigger(), items)
+            .with_open(Rc::clone(&open))
+            .with_submenu_state(
+                Rc::clone(&submenu),
+                Rc::clone(&highlight),
+                Rc::clone(&keyboard),
+            );
+        (menu, open, submenu, highlight, keyboard)
+    }
+
+    #[test]
+    fn hovering_a_submenu_row_opens_its_flyout_and_a_row_click_runs_it() {
+        let fired = Rc::new(RefCell::new(Vec::new()));
+        let (mut menu, open, submenu, _highlight, _keyboard) =
+            menu_with_a_submenu(Rc::clone(&fired));
+        let app = AppContext::default();
+        let at = vec2f(0.0, 0.0);
+        lay_out_open(&mut menu, &app, 600.0, at);
+        assert!(menu.tray.is_none(), "no flyout before the pointer");
+        hover_item(&mut menu, 1, &app, 600.0, at);
+        assert_eq!(*submenu.borrow(), Some(1), "hover opens the flyout");
+        let tray = menu.tray_bounds().expect("the flyout has bounds");
+
+        let mut ctx = EventContext::default();
+        let pos = vec2f(tray.min_x() + 8.0, tray.min_y() + 8.0);
+        let down = DispatchedEvent::MouseDown { position: pos, button: 0 };
+        let up = DispatchedEvent::MouseUp { position: pos, button: 0 };
+        let _ = menu.dispatch_event(&down, &mut ctx, &app);
+        let _ = menu.dispatch_event(&up, &mut ctx, &app);
+        assert_eq!(
+            *fired.borrow(),
+            vec!["Split right".to_string()],
+            "the flyout row ran its real action"
+        );
+        assert!(!*open.borrow(), "selecting a flyout row closes the menu");
+    }
+
+    #[test]
+    fn keyboard_right_opens_the_flyout_and_escape_closes_it_first() {
+        let fired = Rc::new(RefCell::new(Vec::new()));
+        let (mut menu, open, submenu, highlight, _keyboard) =
+            menu_with_a_submenu(Rc::clone(&fired));
+        let app = AppContext::default();
+        let at = vec2f(0.0, 0.0);
+        lay_out_open(&mut menu, &app, 600.0, at);
+        *menu.highlight_index.borrow_mut() = Some(1);
+
+        let mut ctx = EventContext::default();
+        let mut press = |menu: &mut PopupMenu, key: &str| {
+            let _ = menu.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: key.to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut ctx,
+                &app,
+            );
+        };
+        press(&mut menu, "ArrowRight");
+        assert_eq!(*submenu.borrow(), Some(1), "Right opens the flyout");
+        assert!(*open.borrow(), "the parent menu stays open");
+        // Down moves inside; Enter runs the second row.
+        press(&mut menu, "ArrowDown");
+        assert_eq!(*highlight.borrow(), 1);
+        press(&mut menu, "Enter");
+        assert_eq!(*fired.borrow(), vec!["Split down".to_string()]);
+        assert!(!*open.borrow());
+
+        // Escape closes the flyout first, then the menu.
+        let fired = Rc::new(RefCell::new(Vec::new()));
+        let (mut menu, open, submenu, _highlight, _keyboard) = menu_with_a_submenu(fired);
+        lay_out_open(&mut menu, &app, 600.0, at);
+        *menu.highlight_index.borrow_mut() = Some(1);
+        press(&mut menu, "ArrowRight");
+        assert_eq!(*submenu.borrow(), Some(1));
+        press(&mut menu, "Escape");
+        assert_eq!(*submenu.borrow(), None, "Escape closes the flyout");
+        assert!(*open.borrow(), "the first Escape leaves the menu open");
+        press(&mut menu, "Escape");
+        assert!(!*open.borrow(), "the second Escape closes the menu");
+    }
+
+    #[test]
+    fn a_submenu_flyout_flips_left_when_it_would_leave_the_window() {
+        let app = AppContext::default();
+        let width = 420.0;
+        let fired = Rc::new(RefCell::new(Vec::new()));
+        let (mut menu, _open, _submenu, _highlight, _keyboard) = menu_with_a_submenu(fired);
+        // A trailing menu at the right edge: its flyout cannot fit rightwards.
+        let mut menu = menu.with_position(PopupMenuPosition::BelowEnd);
+        let at = vec2f(width - 30.0, 0.0);
+        lay_out_open(&mut menu, &app, width, at);
+        hover_item(&mut menu, 1, &app, width, at);
+        let tray = menu.tray_bounds().expect("the flyout");
+        let panel_right = menu.origin.expect("origin").x() + menu.panel_origin.x + menu.panel_size.expect("panel").x;
+        assert!(
+            tray.max_x() <= panel_right + 1.0,
+            "the flyout flipped to the left of the parent panel: {tray:?} vs {panel_right}"
+        );
     }
 
     #[test]

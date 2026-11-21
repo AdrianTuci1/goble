@@ -60,6 +60,8 @@ fn main() -> anyhow::Result<()> {
             ("shell-wide", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("shell-narrow", vec2f(760.0, 900.0), false, SettingsCategory::General),
             ("panel-more", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("panel-more-split", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("panel-more-copy", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("overview-popover", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-panel", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-tabs-multi", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
@@ -214,7 +216,7 @@ fn main() -> anyhow::Result<()> {
             let _ = raster::render_element_to_png(
                 &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
             );
-            if name == "panel-more" {
+            if name.starts_with("panel-more") {
                 let closed = raster::render_commands(&mut root, size, &app);
                 let trigger = closed.iter().position(|command| {
                     matches!(
@@ -240,6 +242,42 @@ fn main() -> anyhow::Result<()> {
                 // point is the frame, not the pointer.
                 if !*state.borrow().chrome_more_open.borrow() {
                     *state.borrow().chrome_more_open.borrow_mut() = true;
+                }
+                // The flyout variants put the keyboard on Split (row 3) or
+                // Copy (row 4) in the open menu, then open its flyout with
+                // Right — the same keys the app handles.
+                if name != "panel-more" {
+                    // One frame with the menu open: its rebuild puts the
+                    // keyboard on the first row, so the Down count below lands
+                    // on Split/Copy rather than just seeding the highlight.
+                    let _ = raster::render_commands(&mut root, size, &app);
+                    let mut ctx = EventContext::default();
+                    let steps = if name == "panel-more-copy" { 4 } else { 3 };
+                    for _ in 0..steps {
+                        let _ = root.dispatch_event(
+                            &DispatchedEvent::KeyDown {
+                                key: "ArrowDown".to_string(),
+                                modifiers: Default::default(),
+                            },
+                            &mut ctx,
+                            &app,
+                        );
+                    }
+                    let _ = root.dispatch_event(
+                        &DispatchedEvent::KeyDown {
+                            key: "ArrowRight".to_string(),
+                            modifiers: Default::default(),
+                        },
+                        &mut ctx,
+                        &app,
+                    );
+                }
+                // A flyout's left/right placement is decided from the menu's
+                // last-painted origin (layout has no window origin), so the
+                // first frame with the flyout measures it and the next one
+                // places it. Render that settling frame before the final one.
+                if name != "panel-more" {
+                    let _ = raster::render_commands(&mut root, size, &app);
                 }
                 // The chrome menus paint themselves in the window's last
                 // layer, so the command list is already in the right order:

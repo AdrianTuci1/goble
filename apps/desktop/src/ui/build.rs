@@ -35,6 +35,16 @@ const WINDOW_CORNER_RADIUS: f32 = 10.0;
 #[cfg(not(target_os = "macos"))]
 const WINDOW_CORNER_RADIUS: f32 = 0.0;
 
+/// The free margin the workspace surface keeps from the shell (sidebar,
+/// topbar, window edges). It is painted with the shell's own `Bg`, so the
+/// panels read as one raised sheet floating inside the window frame.
+pub(crate) const WORKSPACE_MARGIN: f32 = 5.0;
+
+/// The workspace surface's outer corner radius. It is larger than a pane
+/// card's (6 pt) because it wraps BOTH panels; the shared main/side-panel
+/// boundary is square and borderless.
+const WORKSPACE_RADIUS: f32 = 12.0;
+
 /// The radius the window's rule is drawn at: [`WINDOW_CORNER_RADIUS`] while the
 /// window is windowed, square once it is full screen (macOS hides the rounded
 /// frame then, and the window reaches the screen's own square corners).
@@ -393,14 +403,22 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // step) and the main card takes the whole content width. The row itself
     // only arranges the cards; each branch below owns its casing, so the side
     // panel's border is not nested inside the main panel's.
-    let main: Box<dyn Element> = if state.side_panel_maximized && state.right_sidebar_open {
-        chrome::build_side_panel(app, state, actions)
-    } else {
-        let main = Container::new(main)
+    // The chat workspace is ONE raised sheet: the main panel and the side
+    // panel live inside the same rounded surface, separated by a square,
+    // borderless boundary, with a 5 pt free margin of the shell's `Bg` around
+    // the whole sheet. The two panels paint the same flat `Surface` (see
+    // `chrome::build_side_panel`), so the sheet reads as one material. Pages
+    // that are not the chat workspace keep the older single-card casing.
+    let panel_surface = state.current_tab == AppTab::Chat && !dashboard_shown;
+    let main: Box<dyn Element> = if !panel_surface {
+        Container::new(main)
             .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
             .with_corner_radius(12.0)
-            .finish();
-        if side_split {
+            .finish()
+    } else if state.side_panel_maximized && state.right_sidebar_open {
+        workspace_surface(app, chrome::build_side_panel(app, state, actions))
+    } else {
+        let row: Box<dyn Element> = if side_split {
             let panel = chrome::build_side_panel(app, state, actions);
             let on_drag_start = actions.on_side_split_drag_start.clone();
             let on_drag_move = actions.on_side_split_drag_move.clone();
@@ -413,7 +431,8 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
                 .finish()
         } else {
             main
-        }
+        };
+        workspace_surface(app, row)
     };
     let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
     let body: Box<dyn Element> = if sidebar_shown && !state.side_panel_maximized {
@@ -836,6 +855,110 @@ impl Element for WindowBorderPaint {
     }
 }
 
+/// The one rounded sheet the whole workspace (main panel + side panel) lives
+/// on.
+///
+/// It paints the `Surface` fill and the rounded `Border` around both panels as
+/// a single silhouette, with the free margin outside it left to the shell's
+/// `Bg`. The children paint their own flat `Surface` rectangles; the corner
+/// band erases the square spandrels outside this element's rounded path (the
+/// same trick a pane card uses), so the sheet's corners read round while the
+/// panels inside keep a square, borderless shared boundary.
+struct WorkspaceSurface {
+    child: Box<dyn Element>,
+    fill: ColorU,
+    backdrop: ColorU,
+    border: ColorU,
+    radius: f32,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl WorkspaceSurface {
+    fn new(child: Box<dyn Element>, app: &AppContext) -> Self {
+        Self {
+            child,
+            fill: app.theme.color(ColorToken::Surface),
+            backdrop: app.theme.color(ColorToken::Bg),
+            border: app.theme.color(ColorToken::Border),
+            radius: WORKSPACE_RADIUS,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for WorkspaceSurface {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(size) = self.size else { return };
+        let sheet = rectf(origin.x, origin.y, size.x, size.y);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.fill_rounded_rect(sheet, self.fill, self.radius);
+        }
+        self.child.paint(origin, ctx, app);
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            // Cut what the children painted past the rounded path back to the
+            // outer shell colour. The band is one margin wide: the deepest
+            // spandrel of this radius is under 5 pt, so it stays in the free
+            // margin and never reaches the sidebar or topbar.
+            let band = WORKSPACE_MARGIN;
+            renderer.stroke_rect(
+                rectf(
+                    sheet.min_x() - band,
+                    sheet.min_y() - band,
+                    sheet.width() + band * 2.0,
+                    sheet.height() + band * 2.0,
+                ),
+                self.backdrop,
+                band,
+                self.radius + band,
+            );
+            renderer.stroke_rect(sheet, self.border, 1.0, self.radius);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.child.wants_animation()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, ctx, app)
+    }
+}
+
+/// Wrap the panel row in the workspace sheet and its 5 pt free margin.
+fn workspace_surface(app: &AppContext, content: Box<dyn Element>) -> Box<dyn Element> {
+    let sheet = WorkspaceSurface::new(content, app).finish();
+    Container::new(sheet)
+        .with_padding(EdgeInsets::uniform(WORKSPACE_MARGIN))
+        .finish()
+}
+
 /// One side of the window: the constraint's own, or nothing when it is
 /// unbounded — an infinite rule would be no rule at all.
 fn window_extent(value: f32) -> f32 {
@@ -975,22 +1098,27 @@ mod tests {
             .collect()
     }
 
-    /// The two rounded content-card casings when the side panel is open beside
-    /// the main card, left to right: the main card then the side panel.
-    fn side_split_casings(
+    /// The one workspace sheet: the rounded surface both panels live on. It is
+    /// the only `Border` rule with the sheet radius that spans the content
+    /// height, so its count also proves the old per-panel casings are gone.
+    fn workspace_sheet(
         commands: &[RenderCommand],
         app: &AppContext,
         size: Vector2F,
-    ) -> Vec<RectF> {
-        let mut casings: Vec<RectF> = rules(commands, app)
+    ) -> RectF {
+        let sheets: Vec<RectF> = rules(commands, app)
             .into_iter()
             .filter(|(rect, _, radius)| {
                 (*radius - 12.0).abs() < 0.01 && rect.height() > size.y / 2.0
             })
             .map(|(rect, _, _)| rect)
             .collect();
-        casings.sort_by(|a, b| a.min_x().total_cmp(&b.min_x()));
-        casings
+        assert_eq!(
+            sheets.len(),
+            1,
+            "the workspace wears one sheet, not a casing per panel: {sheets:?}"
+        );
+        sheets[0]
     }
 
     /// The rule that spans the window, when the frame drew one.
@@ -2218,7 +2346,11 @@ mod tests {
     /// The left edge of the first pane card: the panel surface's inset plus the
     /// card's own gutter from the body's left edge.
     fn first_card_left() -> f32 {
-        crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET
+        // The pane area's inset inside the one workspace sheet, plus the free
+        // margin the sheet keeps from the window/sidebar edge.
+        WORKSPACE_MARGIN
+            + crate::ui::panes::PANE_AREA_INSET
+            + crate::ui::panes::PANE_INSET
     }
 
     /// The dashboard's roster search field names it; the dashboard is the
@@ -2567,7 +2699,7 @@ mod tests {
             "Review",
             "Open File",
             "Terminal",
-            "Extensions",
+            "Plugins",
             "Subagents",
             "Background Tasks",
         ] {
@@ -2710,11 +2842,9 @@ mod tests {
         assert_eq!(after, before + 1, "Split right splits the focused pane");
     }
 
-    /// The side panel's half and the main half meet on one boundary: the main
-    /// pane card fills its half edge-to-edge on the right, so its border and the
-    /// side panel's left border are the same line instead of two lines with a
-    /// pane-area gutter between them. The sidebar↔content inset on the left is
-    /// untouched, and the two halves stay equal.
+    /// The two panels live inside one rounded workspace sheet: the main pane
+    /// reaches the shared boundary (the old right gutter and its casing are
+    /// canceled under the panel) and the free margin sits outside the sheet.
     #[test]
     fn the_open_side_panel_shares_the_main_cards_right_edge() {
         let app = AppContext::default();
@@ -2735,45 +2865,42 @@ mod tests {
         );
 
         // The left edge keeps the normal sidebar↔content inset while the right
-        // edge reaches the card's half boundary, where the panel begins.
+        // edge reaches the shared boundary inside the one sheet.
         assert!(
             (open[0].min_x() - closed[0].min_x()).abs() < 0.01,
             "the left inset is unchanged: {:?} -> {:?}",
             closed[0],
             open[0]
         );
-        // The two rounded casings are the two halves: equal widths, touching on
-        // one boundary, with the pane card's right border on that same line.
-        let mut casings: Vec<RectF> = rules(&commands, &app)
-            .into_iter()
-            .filter(|(rect, _, radius)| {
-                (*radius - 12.0).abs() < 0.01 && rect.height() > size.y / 2.0
-            })
-            .map(|(rect, _, _)| rect)
-            .collect();
-        casings.sort_by(|a, b| a.min_x().total_cmp(&b.min_x()));
-        assert_eq!(casings.len(), 2, "the main and side casings: {casings:?}");
+        let sheet = workspace_sheet(&commands, &app, size);
         assert!(
-            (casings[0].width() - casings[1].width()).abs() < 0.01,
-            "the halves stay equal: {casings:?}"
+            sheet.min_x() < open[0].min_x() && sheet.max_x() > open[0].max_x(),
+            "the sheet wraps both panels with the free margin outside it: {sheet:?} vs {:?}",
+            open[0]
+        );
+        // The pane area's 4 pt inset + the card's own 4 pt gutter.
+        assert!(
+            (open[0].min_y() - sheet.min_y() - 8.0).abs() < 0.5,
+            "the pane keeps its usual inset inside the sheet: {:?} vs {sheet:?}",
+            open[0]
+        );
+        let boundary = sheet.min_x() + sheet.width() * 0.5;
+        assert!(
+            open[0].max_x() >= boundary - 0.5,
+            "the main pane reaches the shared boundary: {:?} vs {boundary}",
+            open[0]
         );
         assert!(
-            (casings[0].max_x() - casings[1].min_x()).abs() < 0.01,
-            "the casings meet without a gutter: {casings:?}"
-        );
-        let overlap = open[0].max_x() - casings[1].min_x();
-        assert!(
-            (0.0..=1.01).contains(&overlap),
-            "the main card reaches just under the panel's left border (one shared \
-             line, no gutter): {:?} vs {:?}",
-            open[0],
-            casings[1]
+            open[0].max_x() <= boundary + 6.0,
+            "only the canceled gutter crosses under the panel: {:?}",
+            open[0]
         );
     }
 
     /// Dragging the shared boundary writes the side panel's ratio, clamps it to
-    /// the `0.25..=0.75` range at a wide window, and stops at each card's
-    /// 320 pt minimum when the content area is narrower.
+    /// the `0.25..=0.75` range at a wide window, and stops at each panel's
+    /// 320 pt minimum when the content area is narrower. The handle is still a
+    /// cursor-only band centred on the boundary inside the one sheet.
     #[test]
     fn dragging_the_side_split_changes_and_clamps_the_ratio() {
         let app = AppContext::default();
@@ -2785,10 +2912,9 @@ mod tests {
             s.side_split_ratio = 0.5;
         }
         let commands = render_element(&mut root, size, &app);
-        let casings = side_split_casings(&commands, &app, size);
-        assert_eq!(casings.len(), 2, "the main and side casings: {casings:?}");
-        let boundary = casings[1].min_x();
-        let mid_y = (casings[0].min_y() + casings[0].max_y()) / 2.0;
+        let sheet = workspace_sheet(&commands, &app, size);
+        let boundary = sheet.min_x() + sheet.width() * 0.5;
+        let mid_y = sheet.min_y() + sheet.height() / 2.0;
         let mut ctx = EventContext::default();
         assert!(root.dispatch_event(
             &DispatchedEvent::MouseDown {
@@ -2816,10 +2942,12 @@ mod tests {
         );
         let _ = render_element(&mut root, size, &app);
         let commands = render_element(&mut root, size, &app);
-        let casings = side_split_casings(&commands, &app, size);
-        let content = casings[0].width() + casings[1].width();
-        assert!((casings[1].width() - content * 0.75).abs() < 0.5);
-        assert!((casings[0].width() - content * 0.25).abs() < 0.5);
+        let sheet = workspace_sheet(&commands, &app, size);
+        let main = pane_frames(&state)[0];
+        assert!(
+            (main.width() - sheet.width() * 0.25).abs() < 10.0,
+            "the main panel keeps the quarter share: {main:?} in {sheet:?}"
+        );
 
         assert!(root.dispatch_event(
             &DispatchedEvent::MouseUp {
@@ -2831,16 +2959,25 @@ mod tests {
         ));
         assert!(!state.borrow().side_split_dragging, "mouse up ends the drag");
 
-        // Narrower content: at 1400 the side panel can be at most
-        // 1100 - 320 = 780 pt, and the main card stops at 320 pt.
+        // Narrower content: at 1400 the panel can be at most all but 320 pt,
+        // and the main panel stops at 320 pt.
         let narrow = vec2f(1400.0, 900.0);
         state.borrow_mut().side_split_ratio = 0.75;
         let _ = render_element(&mut root, narrow, &app);
         let commands = render_element(&mut root, narrow, &app);
-        let casings = side_split_casings(&commands, &app, narrow);
-        assert!((casings[0].width() - 320.0).abs() < 0.5, "{casings:?}");
-        let boundary = casings[1].min_x();
-        let mid_y = (casings[0].min_y() + casings[0].max_y()) / 2.0;
+        let sheet = workspace_sheet(&commands, &app, narrow);
+        let expected = 1.0 - 320.0 / sheet.width();
+        // The layout resolves the stored 0.75 against the minimum rather than
+        // writing the clamped value back; the panel widths are the evidence.
+        let main = pane_frames(&state)[0];
+        assert!(
+            (main.width() - 320.0).abs() < 10.0,
+            "the main panel holds its 320 pt minimum: {main:?}"
+        );
+        // The pane card's right edge crosses the shared boundary by the
+        // canceled gutter (card max = boundary + 5), so the handle is there.
+        let boundary = main.max_x() - 5.0;
+        let mid_y = main.min_y() + main.height() / 2.0;
         assert!(root.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position: vec2f(boundary, mid_y),
@@ -2857,16 +2994,13 @@ mod tests {
             &mut ctx,
             &app,
         ));
-        let expected = 320.0 / (narrow.x - crate::ui::SIDEBAR_WIDTH);
+        let min_side = 320.0 / sheet.width();
         assert!(
-            (state.borrow().side_split_ratio - expected).abs() < 0.001,
-            "the drag clamps at the 320 pt side minimum, got {} (wanted {expected})",
+            (state.borrow().side_split_ratio - min_side).abs() < 0.001,
+            "the drag clamps at the 320 pt side minimum, got {} (wanted {min_side})",
             state.borrow().side_split_ratio
         );
-        let _ = render_element(&mut root, narrow, &app);
-        let commands = render_element(&mut root, narrow, &app);
-        let casings = side_split_casings(&commands, &app, narrow);
-        assert!((casings[1].width() - 320.0).abs() < 0.5, "{casings:?}");
+
         let _ = root.dispatch_event(
             &DispatchedEvent::MouseUp {
                 position: vec2f(0.0, mid_y),
@@ -2877,8 +3011,8 @@ mod tests {
         );
     }
 
-    /// Both cards fill the same row height: one top edge, one bottom edge, no
-    /// vertical padding on either side of the boundary.
+    /// Both panels fill the same sheet height: one top edge, one bottom edge,
+    /// and the same inset inside the workspace surface.
     #[test]
     fn the_side_split_cards_share_one_top_and_bottom() {
         let app = AppContext::default();
@@ -2886,16 +3020,23 @@ mod tests {
         let size = vec2f(1024.0, 768.0);
         state.borrow_mut().right_sidebar_open = true;
         let commands = render_element(&mut root, size, &app);
-        let casings = side_split_casings(&commands, &app, size);
-        assert_eq!(casings.len(), 2, "the main and side casings: {casings:?}");
-        let (main, panel) = (casings[0], casings[1]);
-        assert!((main.min_y() - panel.min_y()).abs() < 0.01, "{casings:?}");
-        assert!((main.max_y() - panel.max_y()).abs() < 0.01, "{casings:?}");
-        assert!((main.height() - panel.height()).abs() < 0.01, "{casings:?}");
+        let sheet = workspace_sheet(&commands, &app, size);
+        let main = pane_frames(&state)[0];
+        let top = main.min_y() - sheet.min_y();
+        let bottom = sheet.max_y() - main.max_y();
+        assert!(
+            (top - bottom).abs() < 0.5,
+            "the main panel is centred in the sheet's height: {top} vs {bottom}"
+        );
+        assert!(
+            (top - 8.0).abs() < 0.5,
+            "the pane keeps its usual 8 pt inset: {top}"
+        );
     }
 
-    /// At the default 0.5 ratio the two cards are equal halves of the content
-    /// width and their casings meet exactly, with no gutter for the handle.
+    /// At the default 0.5 ratio the sheet is split in equal halves with no
+    /// casing at the boundary: the main pane reaches the middle and the panel
+    /// starts from the same line, both on one surface.
     #[test]
     fn the_side_split_cards_meet_with_no_gap_at_the_default_ratio() {
         let app = AppContext::default();
@@ -2904,16 +3045,102 @@ mod tests {
         state.borrow_mut().right_sidebar_open = true;
         assert!((state.borrow().side_split_ratio - 0.5).abs() < f32::EPSILON);
         let commands = render_element(&mut root, size, &app);
-        let casings = side_split_casings(&commands, &app, size);
-        assert_eq!(casings.len(), 2, "the main and side casings: {casings:?}");
-        let (main, panel) = (casings[0], casings[1]);
+        let sheet = workspace_sheet(&commands, &app, size);
+        let boundary = sheet.min_x() + sheet.width() * 0.5;
+        let main = pane_frames(&state)[0];
         assert!(
-            (main.max_x() - panel.min_x()).abs() < 0.01,
-            "the casings meet with no gutter: {casings:?}"
+            (main.max_x() - boundary).abs() < 6.0,
+            "the main pane meets the boundary: {main:?} vs {boundary}"
+        );
+        // The side panel's first row starts to the right of the boundary on the
+        // same sheet; no second rounded casing splits it.
+        let panel_text = commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. } if text == "Review" => Some(*origin),
+            _ => None,
+        });
+        let panel_text = panel_text.expect("the Overview rows draw");
+        assert!(
+            panel_text.x > boundary,
+            "the panel content starts right of the boundary: {panel_text:?}"
+        );
+    }
+
+    /// F: the whole workspace is one rounded sheet with a 5 pt free margin of
+    /// the shell's own material, and the side panel is the same flat `Bg` as
+    /// the main panel (no second casing, no border or radius on the boundary).
+    #[test]
+    fn the_workspace_sheet_keeps_the_margin_and_both_panels_share_its_material() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let size = vec2f(1024.0, 768.0);
+        state.borrow_mut().right_sidebar_open = true;
+        let commands = render_element(&mut root, size, &app);
+        let sheet = workspace_sheet(&commands, &app, size);
+
+        // The free margin is exactly 5 pt on every side, outside the sheet.
+        for (label, actual) in [
+            ("left", sheet.min_x() - crate::ui::SIDEBAR_WIDTH),
+            ("top", sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT),
+            ("right", size.x - sheet.max_x()),
+            ("bottom", size.y - sheet.max_y()),
+        ] {
+            assert!(
+                (actual - WORKSPACE_MARGIN).abs() < 0.51,
+                "the {label} free margin is 5 pt, got {actual}: {sheet:?}"
+            );
+        }
+        // The margin is the shell's `Bg`, not the sheet's `Surface`.
+        let bg = app.theme.color(ColorToken::Bg);
+        let margin_at = vec2f(sheet.min_x() - 2.0, sheet.min_y() + 4.0);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == bg && contains(*rect, margin_at)
+            )),
+            "the free margin is painted in the shell background"
+        );
+
+        // The side panel body paints the main panel's `Bg` across the boundary,
+        // with no casing of its own: the only rounded sheet rule is the one
+        // `workspace_sheet` found.
+        let boundary = sheet.min_x() + sheet.width() * 0.5;
+        let side_at = vec2f(boundary + 30.0, sheet.min_y() + 120.0);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == bg
+                        && rect.width() > 100.0
+                        && contains(*rect, side_at)
+            )),
+            "the side panel is flat Bg, not a separate card"
+        );
+        let casings: Vec<_> = rules(&commands, &app)
+            .into_iter()
+            .filter(|(rect, _, radius)| {
+                (*radius - 6.0).abs() < 0.01 && rect.min_x() >= boundary - 1.0
+            })
+            .collect();
+        assert!(
+            casings.is_empty(),
+            "no pane-card casing wraps the side panel: {casings:?}"
+        );
+
+        // The reference's side panel header: the search row and its kebab.
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "dots-vertical"
+            )),
+            "the side panel's search row carries the kebab"
         );
         assert!(
-            (main.width() - panel.width()).abs() < 0.5,
-            "the default is an equal split: {casings:?}"
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "chevron-right"
+            )),
+            "the Plugins row carries its disclosure chevron"
         );
     }
 

@@ -90,6 +90,11 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("left-panel-close", "left-panel-close.svg"),
     icon_bytes!("left-panel-open", "left-panel-open.svg"),
     icon_bytes!("dots-horizontal", "dots-horizontal.svg"),
+    // The vertical kebab (side panel's own actions) and the older horizontal
+    // ellipsis name the topbar's More control asks for. Both files exist; the
+    // atlas has to know them, or the renderer falls back to `x-close`.
+    icon_bytes!("dots-vertical", "dots-vertical.svg"),
+    icon_bytes!("ellipsis", "ellipsis.svg"),
     icon_bytes!("trash-02", "trash-02.svg"),
     icon_bytes!("paperclip", "paperclip.svg"),
     icon_bytes!("send", "send.svg"),

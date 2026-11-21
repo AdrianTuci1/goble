@@ -1321,12 +1321,14 @@ fn a_pressed_floating_tab_paints_the_selected_tone() {
     );
 }
 
-/// The strip draws no vertical rules at all: not between tabs, and not around
-/// them — the bar's `Bg` and the floating pills' own gaps are the separation.
+/// The strip keeps exactly the one rule between panel 1 and panel 2: the
+/// separator that used to sit to the left of the title is gone (the title
+/// starts at its panel's own edge), and there are no rules between tabs.
 #[test]
-fn the_topbar_draws_the_partition_separator() {
+fn the_topbar_draws_only_the_panel_separator() {
     let (mut root, state, _desktop, _dir) = app_root();
     workspace_of_tabs(&state, 3);
+    state.borrow_mut().right_sidebar_open = true;
     let app = AppContext::default();
     let commands = render_element(&mut root, window(), &app);
 
@@ -1343,9 +1345,14 @@ fn the_topbar_draws_the_partition_separator() {
             _ => None,
         })
         .collect();
+    assert_eq!(
+        rules.len(),
+        1,
+        "the strip draws only the panel-1/panel-2 separator: {rules:?}"
+    );
     assert!(
-        !rules.is_empty(),
-        "the partitioned strip draws at least the sidebar/main separator: {rules:?}"
+        rules[0].min_x() > crate::ui::SIDEBAR_WIDTH,
+        "the rule is not the old sidebar/title separator: {rules:?}"
     );
 }
 

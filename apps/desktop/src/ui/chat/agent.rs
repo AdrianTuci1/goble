@@ -1053,14 +1053,18 @@ mod chat_geometry_tests {
         assert!(band.1 > 0.0, "the user's bubble is rounded");
         assert_eq!(
             band.0.min_x(),
-            crate::ui::SIDEBAR_WIDTH
+            crate::ui::build::WORKSPACE_MARGIN
+                + crate::ui::SIDEBAR_WIDTH
                 + crate::ui::panes::PANE_AREA_INSET
                 + crate::ui::panes::PANE_INSET,
             "the agent surface runs to the pane's left edge, past the panel and frame insets"
         );
         assert_eq!(
             band.0.max_x(),
-            1024.0 - crate::ui::panes::PANE_AREA_INSET - crate::ui::panes::PANE_INSET,
+            1024.0
+                - crate::ui::build::WORKSPACE_MARGIN
+                - crate::ui::panes::PANE_AREA_INSET
+                - crate::ui::panes::PANE_INSET,
             "the agent surface runs to the pane's right edge, past the panel and frame insets"
         );
         let padded = reply_x - band.0.min_x();

@@ -111,6 +111,16 @@ fn overview_scroll() -> Rc<RefCell<ScrollState>> {
     OVERVIEW_SCROLL.with(Rc::clone)
 }
 
+/// The side panel's kebab menu open flag. The panel is rebuilt every frame, so
+/// the flag lives with the other session-only strip state.
+fn side_panel_menu_open() -> Rc<RefCell<bool>> {
+    thread_local! {
+        static SIDE_PANEL_MENU_OPEN: Rc<RefCell<bool>> =
+            Rc::new(RefCell::new(false));
+    }
+    SIDE_PANEL_MENU_OPEN.with(Rc::clone)
+}
+
 /// The room the window controls take at the strip's leading edge. On macOS the
 /// OS draws the real traffic lights over this strip, so the whole band stays
 /// clear of the sidebar toggle and navigation. Elsewhere the strip is compact
@@ -346,11 +356,12 @@ pub fn build_chrome_row(
         ))
         .finish();
 
+    // The title starts at its panel's own left edge: the separator that
+    // used to sit between the sidebar section and the main section is gone.
     let mut strip = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(leading)
-        .with_child(vertical_separator(app))
         .with_child(Expanded::new(main_section).finish());
     if panel_open {
         let maximized = state.side_panel_maximized;
@@ -1618,11 +1629,24 @@ pub fn build_side_panel(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(Expanded::new(content).finish())
         .finish();
+    // The side panel uses the main panel's own `Bg` material — flat, with no
+    // card casing, border or radius — so the two panels read as one surface at
+    // the shared boundary. The sheet's `Surface` frame stays around the panel
+    // on its top, right and bottom edges, exactly the frame the main pane card
+    // keeps, and the content gets the same 8 pt inset. The left edge has no
+    // frame: the `Bg` runs to the boundary so no gap or line separates it from
+    // the main card (which crosses under it by the canceled gutter).
+    let inset = crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET;
+    let body = Container::new(body)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        // The reference's content inset (the search field's own left margin)
+        // is a little wider than the panel frame: 16 pt inside the `Bg`, the
+        // same breathing room the main pane's chat column keeps.
+        .with_padding(EdgeInsets::uniform(inset + 8.0))
+        .finish();
     Container::new(body)
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-        .with_corner_radius(12.0)
-        .with_padding(EdgeInsets::new(12.0, 12.0, 12.0, 12.0))
+        .with_padding(EdgeInsets::new(0.0, inset, inset, inset))
         .finish()
 }
 
@@ -1646,6 +1670,45 @@ fn build_overview_content(
         .with_extra_height(12.0)
         .with_on_change(move |value| (on_search_change.borrow_mut())(value))
         .with_on_focus_change(move |focused| (on_search_focus.borrow_mut())(focused))
+        .finish();
+    // The reference keeps one kebab at the search row's trailing edge: the
+    // side panel's own actions (maximize/restore, close), painted above the
+    // panel content through the window's last layer.
+    let on_max = actions.on_toggle_side_panel_maximized.clone();
+    let on_close = actions.on_toggle_right_sidebar.clone();
+    let maximized = state.side_panel_maximized;
+    let kebab = PopupMenu::new(
+        button(app, "dots-vertical", "Side panel actions"),
+        vec![
+            PopupMenuItem::new(if maximized {
+                "Restore side panel"
+            } else {
+                "Maximize side panel"
+            })
+            .with_icon(if maximized {
+                "fullscreen-exit"
+            } else {
+                "fullscreen-enter"
+            }),
+            PopupMenuItem::new("Close side panel").with_icon("left-panel-close"),
+        ],
+    )
+    .with_open(side_panel_menu_open())
+    .with_menu_id("chrome.side-panel")
+    .with_position(PopupMenuPosition::BelowEnd)
+    .with_max_width(210.0)
+    .with_on_select(move |index| match index {
+        0 => (on_max.borrow_mut())(),
+        1 => (on_close.borrow_mut())(),
+        _ => {}
+    })
+    .finish();
+    let search_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(Expanded::new(search).finish())
+        .with_child(TopLayer::new(kebab).finish())
         .finish();
     let mut results = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -1782,24 +1845,24 @@ fn build_overview_content(
     let mut rows = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(2.0);
-    for (icon, label, action) in [
-        ("file", "Review", 0u8),
-        ("folder", "Open File", 1),
-        ("terminal", "Terminal", 2),
-        ("environment-cloud", "Browser", 3),
-        ("message-plus-square", "Side Question", 4),
-        ("layers-three-01", "Extensions", 5),
+    for (icon, label, action, trailing) in [
+        ("file", "Review", 0u8, None),
+        ("folder", "Open File", 1, None),
+        ("terminal", "Terminal", 2, None),
+        ("environment-cloud", "Browser", 3, None),
+        ("message-plus-square", "Side Question", 4, None),
+        ("layers-three-01", "Plugins", 5, Some("chevron-right")),
     ] {
         let disabled = matches!(action, 3);
         let row = if disabled {
-            Container::new(panel_row(app, icon, label, true)).finish()
+            Container::new(panel_row(app, icon, label, true, trailing)).finish()
         } else {
             let on_diff = on_diff.clone();
             let on_explorer = on_explorer.clone();
             let on_terminal = on_terminal.clone();
             let on_connectors = on_connectors.clone();
             let on_side_question = actions.on_create_submit.clone();
-            HoverRow::new(panel_row(app, icon, label, false))
+            HoverRow::new(panel_row(app, icon, label, false, trailing))
                 .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
                 .with_corner_radius(8.0)
                 .with_on_click(move || match action {
@@ -1879,14 +1942,20 @@ fn build_overview_content(
     } else {
         for task in tasks {
             sections =
-                sections.with_child(panel_row(app, "terminal-input", &task.description, false));
+                sections.with_child(panel_row(
+                    app,
+                    "terminal-input",
+                    &task.description,
+                    false,
+                    None,
+                ));
         }
     }
 
     let body = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(10.0)
-        .with_child(search)
+        .with_child(search_row)
         .with_child(results.finish())
         .with_child(rows.finish())
         .with_child(
@@ -1903,8 +1972,9 @@ fn panel_row(
     icon: &'static str,
     label: &str,
     disabled: bool,
+    trailing: Option<&'static str>,
 ) -> Box<dyn Element> {
-    Flex::row()
+    let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(10.0)
@@ -1934,14 +2004,16 @@ fn panel_row(
                 )
                 .finish(),
         )
-        .with_child(Spacer::new().finish())
-        .with_child(
-            Text::new(if disabled { "not available" } else { "" })
-                .with_font_size(10.0)
+        .with_child(Spacer::new().finish());
+    if let Some(trailing) = trailing {
+        row = row.with_child(
+            Icon::new(trailing)
+                .with_size(14.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
-        )
-        .finish()
+        );
+    }
+    row.finish()
 }
 
 fn section_header(app: &AppContext, label: &str, count: usize) -> Box<dyn Element> {

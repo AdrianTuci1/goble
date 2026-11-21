@@ -63,6 +63,21 @@ pub const NEW_CONVERSATION_TITLE: &str = "New conversation";
 /// reads the subject instead (see [`UiState::space_label`]).
 pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
 
+/// The reserved pane id the side panel's Agent tab owns.
+///
+/// The side panel is a second surface beside the pane tree, but its Agent tab
+/// is a real conversation agent: it has its own store conversation (created on
+/// its first prompt), its own draft, transcript, model and turn events. A
+/// reserved id outside the pane tree gives it exactly the same per-pane
+/// machinery ([`UiState::pane_sessions`], `pane_runtime`, `pane_chat`) without
+/// appearing as a leaf, so the active pane's chat is never reused.
+pub const SIDE_AGENT_PANE_ID: u64 = u64::MAX - 1;
+
+/// The subject a fresh side-panel agent conversation starts under. It is a
+/// placeholder like [`NEW_CONVERSATION_TITLE`], replaced by the first prompt's
+/// subject through the same title path a pane's conversation uses.
+pub const SIDE_AGENT_TITLE: &str = "New side question";
+
 /// The name a fresh cloud agent draws while its conversation has no subject
 /// yet: a viewer pane starts on the worker, and the surface that opens for it
 /// says what it is about to do.
@@ -404,10 +419,10 @@ pub struct UiState {
     /// unmaximized: the panel gets `side_split_ratio` of the width the left
     /// sidebar leaves, the main card gets the rest. `0.5` is the equal split.
     ///
-    /// Session-scoped, like `sidebar_width`: the persisted pane blob
-    /// (`PersistedPaneState`) carries no field for it yet, so a restart starts
-    /// back at `0.5`. The value lives in app state (not the frame) so a drag
-    /// survives the per-frame element rebuild, and it is restored across
+    /// Persisted with the pane layout (`PersistedPaneState::side_split_ratio`,
+    /// clamped to `0.25..=0.75` on restore), so the split the user dragged
+    /// survives a restart. The value lives in app state (not the frame) so a
+    /// drag survives the per-frame element rebuild, and it is restored across
     /// per-frame rebuilds and pane/space switches in one run.
     pub side_split_ratio: f32,
     /// Whether the shared main/side-panel boundary is being dragged. Carried in

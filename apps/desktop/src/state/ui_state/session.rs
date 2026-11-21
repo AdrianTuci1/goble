@@ -919,6 +919,18 @@ impl UiState {
     /// Ensure every rendered leaf pane has a controls entry, so the composer
     /// always reads a stable per-pane value rather than the window globals.
     pub fn ensure_pane_controls(&mut self) {
+        // The side panel's Agent tab is a conversation agent of its own, not a
+        // second view of the active pane: give it the same per-pane session and
+        // runtime entries a leaf pane has (its conversation id stays empty
+        // until its first prompt starts one), so its draft, transcript and
+        // turn events are independent.
+        self.pane_sessions
+            .entry(SIDE_AGENT_PANE_ID)
+            .or_insert_with(|| PaneSession {
+                path: self.composer_path.clone(),
+                ..PaneSession::default()
+            });
+        self.pane_runtime.entry(SIDE_AGENT_PANE_ID).or_default();
         let mut ids = Vec::new();
         for space in &self.spaces {
             collect_leaf_pane_ids(&space.root, &mut ids);

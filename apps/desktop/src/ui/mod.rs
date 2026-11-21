@@ -54,7 +54,7 @@ mod types;
 
 pub use actions::{
     AgentDashboardAction, AiActions, DiffPanelAction, FloatStartHandler, MediaActions,
-    ProjectsActions, UiActions,
+    ProjectsActions, SideChatAction, UiActions,
 };
 pub use build::{build_ui, BuildContext};
 pub use pane::{

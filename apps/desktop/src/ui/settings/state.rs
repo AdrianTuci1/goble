@@ -221,6 +221,11 @@ pub struct SettingsUiState {
     pub search: String,
     /// Whether the rail search field holds the keyboard.
     pub search_focused: bool,
+    /// The Shortcuts page's own search query. It is app-owned so the filtered
+    /// rows survive the per-frame element rebuild, exactly like the rail's.
+    pub shortcuts_search: String,
+    /// Whether the Shortcuts page's search field has the caret.
+    pub shortcuts_search_focused: bool,
     /// The notice above the page.
     pub notice: Option<SettingsNotice>,
     /// The last outcome line under the page header.
@@ -326,6 +331,8 @@ impl Default for SettingsUiState {
             drafts: BTreeMap::new(),
             search: String::new(),
             search_focused: false,
+            shortcuts_search: String::new(),
+            shortcuts_search_focused: false,
             notice: None,
             status: None,
             busy: false,
@@ -633,6 +640,16 @@ pub enum SettingsAction {
     ToggleFold(String),
     /// Refresh the local agent-CLI detection from the service catalog.
     RefreshHarnesses,
+
+    // ---- shortcuts ------------------------------------------------------
+    /// The Shortcuts page's search query (label, hint or key).
+    ShortcutsSearch(String),
+    ShortcutsSearchFocus(bool),
+    ShortcutsClearSearch,
+    /// The row's trailing trash affordance. Remapping is not in this build, so
+    /// the handler reports that instead of deleting anything; the binding id
+    /// names the row the user pressed.
+    ShortcutRemap(String),
 
     // ---- scalar rows (paths are `[section, key]`; see `fields.rs`) ------
     SetToggle {

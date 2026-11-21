@@ -27,7 +27,7 @@ use crate::elements::{
     AppContext, Element, LayoutContext, PaintContext, Point, ScrollState, SizeConstraint, TextSpan,
 };
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{advance_width, measure_text_family, wrapped_lines, FontWeight};
+use crate::platform::text_atlas::{advance_width_exact, measure_text_family, wrapped_lines, FontWeight};
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 
@@ -1035,10 +1035,11 @@ fn draw_sliced_runs(
         if text.is_empty() {
             continue;
         }
-        // Place the run from the exact source prefix. Accumulating per-run
-        // widths drifts when fontdue rounds each glyph, and trailing spaces in
-        // a run would either collapse or double at the next boundary.
-        let run_x = x + advance_width(
+        // Place the run from the exact source prefix with the exact pen
+        // advance, not the whole-pixel layout budget: the renderer draws each
+        // glyph at fontdue's fractional advance, so the rounded budget would
+        // overshoot at every style boundary and read as an inserted space.
+        let run_x = x + advance_width_exact(
             &full_text[..lo],
             FONT_SIZE,
             FontWeight::Regular,

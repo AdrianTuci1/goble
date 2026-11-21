@@ -407,6 +407,62 @@ fn unavailable_rows_are_disabled_and_honest() {
     assert!(row.disabled);
 }
 
+/// The Shortcuts row's trash is not a silent delete: the action reports that
+/// remapping is absent, and the config file is untouched.
+#[test]
+fn the_shortcuts_trash_reports_the_honest_notice_and_deletes_nothing() {
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    fixture.dispatch(SettingsAction::ShortcutRemap(
+        "shortcut.Command palette".to_string(),
+    ));
+    {
+        let state = fixture.state.borrow();
+        let (kind, text) = state
+            .settings
+            .status
+            .as_ref()
+            .expect("the trash press leaves a status line");
+        assert_eq!(*kind, StatusKind::Info);
+        assert_eq!(text, pages::REMAP_UNAVAILABLE);
+        assert!(
+            text.contains("Remapping is not available in this build"),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        fixture.text(),
+        SEEDED_CONFIG,
+        "the trash never edits or removes a binding from the file"
+    );
+}
+
+/// The Shortcuts search is app-owned: the query filters the page model and a
+/// new page build (each frame) reads the same query.
+#[test]
+fn the_shortcuts_search_filters_the_page_and_survives_a_rebuild() {
+    let fixture = Fixture::new(SEEDED_CONFIG);
+    fixture.dispatch(SettingsAction::ShortcutsSearch("sidebar".to_string()));
+    {
+        let state = fixture.state.borrow();
+        assert_eq!(state.settings.shortcuts_search, "sidebar");
+    }
+    let model = fixture.model(SettingsCategory::Shortcuts);
+    let labels: Vec<&str> = model.sections[0]
+        .rows
+        .iter()
+        .map(|row| row.label.as_str())
+        .collect();
+    assert_eq!(labels, vec!["Toggle sidebar"]);
+    let search = model.search.as_ref().expect("the page has a search field");
+    assert_eq!(search.value, "sidebar");
+    let commands = fixture.drawn_text(SettingsCategory::Shortcuts);
+    assert!(drawn_contains(&commands, "⌘ + ⇧ + E"));
+
+    fixture.dispatch(SettingsAction::ShortcutsClearSearch);
+    let model = fixture.model(SettingsCategory::Shortcuts);
+    assert!(model.sections[0].rows.len() > 1, "clearing restores the list");
+}
+
 /// The focus order the keyboard walks is the render order: the focused slot
 /// names a row that is actually drawn and interactive.
 #[test]

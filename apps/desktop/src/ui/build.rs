@@ -796,6 +796,46 @@ struct WindowBorder {
     origin: Option<Point>,
 }
 
+/// The window rule, drawn in the window's last layer (see
+/// [`WindowBorder::paint`]).
+struct WindowBorderPaint {
+    rect: RectF,
+    color: ColorU,
+    corner_radius: f32,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl Element for WindowBorderPaint {
+    fn paint(&mut self, _origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.stroke_rect(
+                self.rect,
+                self.color,
+                WINDOW_BORDER_WIDTH,
+                self.corner_radius,
+            );
+        }
+    }
+
+    fn layout(
+        &mut self,
+        _constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        self.size.unwrap_or(Vector2F::zero())
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
+
 /// One side of the window: the constraint's own, or nothing when it is
 /// unbounded — an infinite rule would be no rule at all.
 fn window_extent(value: f32) -> f32 {
@@ -822,17 +862,26 @@ impl Element for WindowBorder {
         size
     }
 
-    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+    fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            renderer.stroke_rect(
-                RectF::new(PointF::new(origin.x, origin.y), Size2F::new(size.x, size.y)),
-                self.color,
-                WINDOW_BORDER_WIDTH,
-                self.corner_radius,
-            );
-        }
+        // The rule wraps the whole window and must read over every surface the
+        // frame draws — panes, sheets, dialogs and the open menus/topbar
+        // popovers that paint in the window's last layer. Queue it there; the
+        // layer drains in push order, and this is pushed last of the tree.
+        app.hover_chips.borrow_mut().push(
+            origin,
+            Box::new(WindowBorderPaint {
+                rect: RectF::new(
+                    PointF::new(origin.x, origin.y),
+                    Size2F::new(size.x, size.y),
+                ),
+                color: self.color,
+                corner_radius: self.corner_radius,
+                size: Some(size),
+                origin: Some(Point::from_vec2f(origin, Default::default())),
+            }),
+        );
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -2950,9 +2999,11 @@ mod tests {
             !texts.iter().any(|text| *text == "Search or enter a URL"),
             "the Agent tab mounts the chat, not Overview: {texts:?}"
         );
-        assert!(
-            texts.iter().filter(|text| **text == "Agent").count() >= 2,
-            "the strip chip and the panel header both name Agent: {texts:?}"
+        assert_eq!(
+            texts.iter().filter(|text| **text == "Agent").count(),
+            1,
+            "only the strip chip names Agent: the topbar owns the panel controls, \
+             so the body has no second header: {texts:?}"
         );
     }
 

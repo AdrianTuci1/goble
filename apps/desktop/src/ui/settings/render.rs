@@ -14,8 +14,8 @@ use std::rc::Rc;
 use goble_core::config::ConfigFile;
 use goble_ui::color::ColorU;
 use goble_ui::elements::settings::{
-    SettingsButton, SettingsNav, SettingsNavGroup, SettingsNavItem, SettingsNotice,
-    SettingsNoticeKind, SettingsRow, SettingsRowStatus, SettingsRowStatusKind,
+    SettingsButton, SettingsKeyChip, SettingsNav, SettingsNavGroup, SettingsNavItem,
+    SettingsNotice, SettingsNoticeKind, SettingsRow, SettingsRowStatus, SettingsRowStatusKind,
     SettingsSecretField, SettingsSection, SettingsSegmented, SettingsSelect, SettingsSlider,
     SettingsTextField, SettingsToggle, SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING,
     SETTINGS_RAIL_WIDTH, SETTINGS_SECTION_GAP, SETTINGS_SHEET_PADDING, SETTINGS_SHEET_WIDTH,
@@ -23,7 +23,8 @@ use goble_ui::elements::settings::{
 use goble_ui::elements::{
     AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, Element,
     EventContext, Expanded, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment,
-    MainAxisSize, PaintContext, Point, Scrollable, SizeConstraint, Text, Tooltip, TooltipPosition,
+    MainAxisSize, PaintContext, Point, Scrollable, SearchInput, SizeConstraint, Text, Tooltip,
+    TooltipPosition,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
@@ -32,12 +33,15 @@ use goble_ui::theme::ColorToken;
 
 use crate::ui::SettingsCategory;
 
-use super::model::{ActionModel, ActionStyle, ControlModel, PageModel, RowModel, SectionModel};
+use super::model::{
+    ActionModel, ActionStyle, ControlModel, PageModel, PageSearch, RowModel, SectionModel,
+};
 use super::state::{SettingsAction, SettingsActions, SettingsUiState as State, StatusKind};
 
-/// The rail: the grouped pages, filtered by the search query.
+/// The rail: the grouped pages, filtered by the search query, with the compact
+/// account footer at its bottom.
 pub fn render_nav(
-    _app: &AppContext,
+    app: &AppContext,
     settings: &State,
     actions: &SettingsActions,
 ) -> Box<dyn Element> {
@@ -91,8 +95,66 @@ pub fn render_nav(
             (clear_dispatch.borrow_mut())(SettingsAction::ClearSearch);
         })
         .finish();
-    ConstrainedBox::new(nav)
+    let nav = ConstrainedBox::new(nav)
         .with_width(SETTINGS_RAIL_WIDTH)
+        .finish();
+    Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(nav).finish())
+        .with_child(Divider::horizontal().finish())
+        .with_child(render_rail_footer(app, settings))
+        .finish()
+}
+
+/// The compact account footer every settings rail ends with: the avatar, the
+/// user's friendly name (or "You" until one is set) and the local workspace
+/// line. Shared by the in-pane rail and the floating overlay rail so the two
+/// cannot drift.
+pub fn render_rail_footer(app: &AppContext, settings: &State) -> Box<dyn Element> {
+    let name = super::fields::app_text(settings, "friendly_name");
+    let who = if name.trim().is_empty() {
+        "You".to_string()
+    } else {
+        name
+    };
+    let initial = who.chars().next().unwrap_or('?').to_uppercase().to_string();
+    let avatar = Container::new(
+        Text::new(initial)
+            .with_font_size(12.0)
+            .with_weight(FontWeight::SemiBold)
+            .with_color(app.theme.color(ColorToken::Text))
+            .finish(),
+    )
+    .with_padding(goble_ui::elements::EdgeInsets::uniform(10.0))
+    .with_background(Fill::Solid(app.theme.color(ColorToken::Hover)))
+    .with_corner_radius(16.0)
+    .finish();
+    let labels = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(1.0)
+        .with_child(
+            Text::new(who)
+                .with_font_size(13.0)
+                .with_weight(FontWeight::Medium)
+                .with_color(app.theme.color(ColorToken::Text))
+                .finish(),
+        )
+        .with_child(
+            Text::new("Local workspace")
+                .with_font_size(11.0)
+                .with_color(app.theme.color(ColorToken::Muted))
+                .finish(),
+        )
+        .finish();
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.0)
+        .with_child(avatar)
+        .with_child(labels)
+        .finish();
+    Container::new(row)
+        .with_padding(goble_ui::elements::EdgeInsets::new(8.0, 6.0, 8.0, 6.0))
         .finish()
 }
 
@@ -195,6 +257,9 @@ pub fn render_page(
     if let Some(notice) = settings.notice.as_ref() {
         children.push(render_notice(app, notice, actions));
     }
+    if let Some(search) = model.search.as_ref() {
+        children.push(render_page_search(app, search, actions));
+    }
     let mut slot = 0usize;
     let section_count = model.sections.len();
     for (index, section) in model.sections.iter().enumerate() {
@@ -236,6 +301,40 @@ pub fn render_page(
         .finish();
     ConstrainedBox::new(padded)
         .with_max_width(SETTINGS_PAGE_MAX_WIDTH)
+        .finish()
+}
+
+/// The page-level search field: the same `SearchInput` the rail uses, sized to
+/// the page and given the reference's rounded box and magnifier. Its value and
+/// focus live in the app state, so a frame rebuild neither drops the query nor
+/// pulls the caret out.
+fn render_page_search(
+    app: &AppContext,
+    search: &PageSearch,
+    actions: &SettingsActions,
+) -> Box<dyn Element> {
+    let change_dispatch = actions.dispatch.clone();
+    let focus_dispatch = actions.dispatch.clone();
+    let kind = search.kind;
+    let field = SearchInput::new()
+        .with_value(search.value.clone())
+        .with_placeholder(search.placeholder.clone())
+        .with_focused(search.focused)
+        .with_compact(true)
+        .with_icon(true)
+        .with_extra_height(6.0)
+        .with_text_size(13.0)
+        .with_corner_radius(8.0)
+        .with_on_change(move |value| {
+            (change_dispatch.borrow_mut())(kind.change_action(value));
+        })
+        .with_on_focus_change(move |focused| {
+            (focus_dispatch.borrow_mut())(kind.focus_action(focused));
+        })
+        .finish();
+    let _ = app;
+    Container::new(field)
+        .with_padding(goble_ui::elements::EdgeInsets::new(0.0, 0.0, 0.0, 16.0))
         .finish()
 }
 
@@ -557,6 +656,18 @@ fn render_control(
                 .with_child(slider)
                 .finish()
         }
+        ControlModel::KeyChips { keys, action } => {
+            let chip = SettingsKeyChip::new(keys.clone()).finish();
+            let mut parts: Vec<Box<dyn Element>> = vec![chip];
+            if let Some(action) = action {
+                parts.push(icon_action_button(app, action, actions));
+            }
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(8.0)
+                .with_children(parts)
+                .finish()
+        }
         ControlModel::ReadOnly { text } => {
             let mut parts: Vec<Box<dyn Element>> = Vec::new();
             if let Some(colour) = ColorU::from_hex(text) {
@@ -785,6 +896,30 @@ fn action_buttons(
     row.finish()
 }
 
+/// The trailing icon action a key-chip row carries (the Shortcuts page's
+/// trash). It is a real `SettingsButton`, so the click goes through the same
+/// dispatch as every other settings control; the tooltip states the honest
+/// outcome before the press.
+fn icon_action_button(
+    app: &AppContext,
+    action: &ActionModel,
+    settings: &SettingsActions,
+) -> Box<dyn Element> {
+    let dispatch = settings.dispatch.clone();
+    let forwarded = action.action.clone();
+    let button = SettingsButton::icon(action.icon.unwrap_or("trash"))
+        .with_disabled(action.disabled)
+        .ghost()
+        .with_on_click(move || {
+            (dispatch.borrow_mut())(forwarded.clone());
+        })
+        .finish();
+    let _ = app;
+    Tooltip::new(button, action.label.clone())
+        .with_position(TooltipPosition::Above)
+        .finish()
+}
+
 fn action_button(
     app: &AppContext,
     action: &ActionModel,
@@ -983,5 +1118,75 @@ mod tests {
             vec2f(origin.x + 2.0, origin.y + 2.0)
         ));
         assert!(!*open.borrow(), "choosing a row closes the select");
+    }
+
+    fn texts(commands: &[goble_ui::render::RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                goble_ui::render::RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_shortcuts_trash_is_a_real_button_that_dispatches_the_honest_remap() {
+        let app = AppContext::default();
+        let state = State::default();
+        let dispatched: Rc<RefCell<Vec<SettingsAction>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&dispatched);
+        let actions = SettingsActions::new(move |action| seen.borrow_mut().push(action));
+        let model = super::super::pages::page_model(SettingsCategory::Shortcuts, &state);
+        let mut page = render_page(&app, &model, &state, &actions);
+        let commands = render_element(&mut page, vec2f(900.0, 2400.0), &app);
+
+        // The chips draw the grouped chord before the trash button.
+        assert!(texts(&commands).iter().any(|text| text == "⌘ + K"));
+
+        let (origin, size) = commands
+            .iter()
+            .find_map(|command| match command {
+                goble_ui::render::RenderCommand::DrawIcon { origin, name, size, .. }
+                    if name == "trash-02" =>
+                {
+                    Some((*origin, *size))
+                }
+                _ => None,
+            })
+            .expect("the binding row draws its trash icon");
+        assert!(press(
+            &mut page,
+            &app,
+            vec2f(origin.x + size / 2.0, origin.y + size / 2.0)
+        ));
+        assert_eq!(
+            dispatched.borrow().as_slice(),
+            &[SettingsAction::ShortcutRemap(
+                "shortcut.Command palette".to_string()
+            )],
+            "the trash press is honest: it asks to remap, it does not delete"
+        );
+    }
+
+    #[test]
+    fn the_rail_footer_names_you_and_the_local_workspace() {
+        let app = AppContext::default();
+        let state = State::default();
+        let mut footer = render_rail_footer(&app, &state);
+        let commands = render_element(&mut footer, vec2f(200.0, 80.0), &app);
+        let drawn = texts(&commands);
+        assert!(drawn.iter().any(|text| text == "You"), "{drawn:?}");
+        assert!(
+            drawn.iter().any(|text| text == "Local workspace"),
+            "{drawn:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                goble_ui::render::RenderCommand::DrawText { text, .. } if text == "Y"
+            )),
+            "the avatar initial comes from the name: {drawn:?}"
+        );
     }
 }

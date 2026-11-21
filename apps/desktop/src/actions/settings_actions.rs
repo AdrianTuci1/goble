@@ -128,6 +128,27 @@ fn handle(
             state.settings.search.clear();
             state.settings.search_focused = false;
         }
+        SettingsAction::ShortcutsSearch(query) => {
+            state.settings.shortcuts_search = query;
+            state.settings.shortcuts_search_focused = true;
+        }
+        SettingsAction::ShortcutsSearchFocus(focused) => {
+            state.settings.shortcuts_search_focused = focused;
+        }
+        SettingsAction::ShortcutsClearSearch => {
+            state.settings.shortcuts_search.clear();
+            state.settings.shortcuts_search_focused = false;
+        }
+        SettingsAction::ShortcutRemap(id) => {
+            // Remapping is not in this build. The trash affordance is a real
+            // press that says so; it never deletes a binding (the list is a
+            // report of what the app dispatches, and there is nowhere to write
+            // a removal to).
+            let _ = id;
+            state
+                .settings
+                .set_status(StatusKind::Info, pages::REMAP_UNAVAILABLE);
+        }
         SettingsAction::Step(delta) => step_focus(state, delta),
         SettingsAction::Adjust(delta) => {
             if let Some(row) = focused_row(state) {

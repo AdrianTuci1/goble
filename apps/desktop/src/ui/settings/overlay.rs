@@ -80,7 +80,7 @@ fn overlay_content(
         Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(
-                Container::new(layout_cards(app))
+                Container::new(layout_cards(app, narrow))
                     .with_padding(EdgeInsets::new(24.0, 20.0, 24.0, 0.0))
                     .finish(),
             )
@@ -140,44 +140,6 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
         (feedback.borrow_mut())("https://github.com/AdrianTuci1/goble/issues".to_string())
     })
     .finish();
-    let name = super::fields::app_text(settings, "friendly_name");
-    let who = if name.trim().is_empty() { "You".to_string() } else { name };
-    let initial = who.chars().next().unwrap_or('?').to_uppercase().to_string();
-    let avatar = Container::new(
-        Text::new(initial)
-            .with_font_size(12.0)
-            .with_weight(FontWeight::SemiBold)
-            .with_theme_color(ColorToken::Text, app)
-            .finish(),
-    )
-    .with_padding(EdgeInsets::uniform(10.0))
-    .with_background(Fill::Solid(app.theme.color(ColorToken::Hover)))
-    .with_corner_radius(16.0)
-    .finish();
-    let footer = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(8.0)
-        .with_child(avatar)
-        .with_child(
-            Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(4.0)
-        .with_child(
-            Text::new(who)
-                .with_font_size(13.0)
-                .with_weight(FontWeight::Medium)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        )
-        .with_child(
-            Text::new("Local workspace")
-                .with_font_size(11.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .finish(),
-        )
-        .finish();
     let column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -194,13 +156,10 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
             .finish(),
         )
         .with_child(ConstrainedBox::new(nav).with_height(520.0).finish())
+        .with_child(Spacer::new().finish())
         .with_child(feedback)
         .with_child(Divider::horizontal().finish())
-        .with_child(
-            Container::new(footer)
-                .with_padding(EdgeInsets::new(8.0, 6.0, 8.0, 6.0))
-                .finish(),
-        )
+        .with_child(render::render_rail_footer(app, settings))
         .finish();
     ConstrainedBox::new(column)
         .with_width(196.0)
@@ -269,7 +228,7 @@ fn photo_nav(app: &AppContext, settings: &super::SettingsUiState, actions: &UiAc
 /// tint on Software Engineering. The preference has no file-backed backend in
 /// this build, so the selected state is presented as the product default rather
 /// than hidden behind a dead toggle.
-fn layout_cards(app: &AppContext) -> Box<dyn Element> {
+fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
     let card = |title: &str, body: &str, icon: &'static str, selected: bool| -> Box<dyn Element> {
         let content = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
@@ -316,29 +275,38 @@ fn layout_cards(app: &AppContext) -> Box<dyn Element> {
             .with_corner_radius(12.0)
             .finish()
     };
-    let cards = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(16.0)
-        .with_child(
-            Expanded::new(card(
-                "Knowledge Work",
-                "Simplified interface for research, writing, and everyday tasks.",
-                "folder",
-                false,
-            ))
-            .finish(),
-        )
-        .with_child(
-            Expanded::new(card(
-                "Software Engineering",
-                "Full interface for coding, developer tools, and managing agents.",
-                "code",
-                true,
-            ))
-            .finish(),
-        )
-        .finish();
+    let knowledge = card(
+        "Knowledge Work",
+        "Simplified interface for research, writing, and everyday tasks.",
+        "folder",
+        false,
+    );
+    let software = card(
+        "Software Engineering",
+        "Full interface for coding, developer tools, and managing agents.",
+        "code",
+        true,
+    );
+    // A narrow sheet stacks the two tiles full-width: side by side, each card's
+    // intrinsic label width would push the pair past the page and clip the
+    // second tile (the photo's 2-up is the wide layout).
+    let cards: Box<dyn Element> = if narrow {
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(12.0)
+            .with_child(knowledge)
+            .with_child(software)
+            .finish()
+    } else {
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(16.0)
+            .with_child(Expanded::new(knowledge).finish())
+            .with_child(Expanded::new(software).finish())
+            .finish()
+    };
     Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(12.0)
@@ -368,37 +336,27 @@ fn overlay_header(
     if narrow {
         leading = leading.with_child(hamburger(app, state, actions));
     }
-    let labels = if narrow {
-        Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_spacing(2.0)
-            .with_child(
-                Text::new(page_title(page))
-                    .with_font_size(20.0)
-                    .with_line_height(26.0 / 20.0)
-                    .with_weight(FontWeight::SemiBold)
-                    .with_theme_color(ColorToken::Text, app)
-                    .finish(),
-            )
-            .with_child(
-                Text::new(page_description(page))
-                    .with_font_size(12.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .finish()
-    } else {
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(
-                Text::new(page.label())
-                    .with_font_size(20.0)
-                    .with_weight(FontWeight::SemiBold)
-                    .with_theme_color(ColorToken::Text, app)
-                    .finish(),
-            )
-            .finish()
-    };
+    let description = page_description(page);
+    let mut subtitle = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(1.0)
+        .with_child(
+            Text::new(page_title(page))
+                .with_font_size(20.0)
+                .with_line_height(26.0 / 20.0)
+                .with_weight(FontWeight::SemiBold)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        );
+    if !description.is_empty() {
+        subtitle = subtitle.with_child(
+            Text::new(description)
+                .with_font_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        );
+    }
+    let labels = subtitle.finish();
     leading = leading.with_child(labels);
     let close_button = TopbarButton::new(
         Icon::new("x")

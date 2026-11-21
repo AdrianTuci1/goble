@@ -464,7 +464,8 @@ pub struct UiSnapshot {
     /// unmaximized (`0.5` = equal split). The build lays the main card and the
     /// panel out at `(1 - ratio)` and `ratio` of the measured content width,
     /// with the same minimum width on each and the ratio clamped to
-    /// `0.25..=0.75`. Session-scoped (see `UiState::side_split_ratio`).
+    /// `0.25..=0.75`. Persisted in the pane layout and restored on startup
+    /// (see `UiState::side_split_ratio`).
     pub side_split_ratio: f32,
     /// Whether the shared main/side-panel boundary is being dragged.
     pub side_split_dragging: bool,

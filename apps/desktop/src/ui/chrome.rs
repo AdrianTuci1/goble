@@ -23,16 +23,16 @@ use goble_ui::platform::text_atlas::{advance_width, FontWeight};
 use goble_ui::theme::{ColorToken, FontFamily};
 
 use crate::state::{SideTabAction, SideTabKind};
-use crate::ui::{DiffPanelAction, PaneKind, SidebarView, UiActions, UiSnapshot};
+use crate::ui::{DiffPanelAction, PaneKind, SideChatAction, SidebarView, UiActions, UiSnapshot};
 
 #[path = "side_tabs.rs"]
 mod side_tabs;
 
 /// The strip's height: the one row the window's chrome occupies.
-pub const CHROME_HEIGHT: f32 = 42.0;
+pub const CHROME_HEIGHT: f32 = 44.0;
 /// The quiet band above the strip's content. The Surface covers the whole 42 pt,
 /// so the padding reads as one continuous material, not as a second bar.
-const CHROME_TOP_PADDING: f32 = 2.0;
+const CHROME_TOP_PADDING: f32 = 4.0;
 /// The strip's content band, below [`CHROME_TOP_PADDING`]. The section rules
 /// span exactly this height, so every section bottom ends where the content
 /// sheet begins.
@@ -302,6 +302,8 @@ pub fn build_chrome_row(
             _ => {}
         })
         .finish();
+    // The panel must not be covered by the panes painted after the chrome.
+    let more = TopLayer::new(more).finish();
     let panel_open = state.right_sidebar_open;
 
     // Panel 1's trailing controls are the More menu and the Overview popover
@@ -561,7 +563,7 @@ fn side_tab_add_menu(
         PopupMenuItem::new(SideTabKind::TaskOutput.title())
             .with_icon(SideTabKind::TaskOutput.icon()),
     ];
-    PopupMenu::new(button(app, "plus", "Add tab"), items)
+    let menu = PopupMenu::new(button(app, "plus", "Add tab"), items)
         .with_open(state.side_tab_add_menu_open.clone())
         .with_position(PopupMenuPosition::BelowEnd)
         .with_max_width(200.0)
@@ -575,7 +577,9 @@ fn side_tab_add_menu(
             };
             (on_add.borrow_mut())(SideTabAction::Add(kind));
         })
-        .finish()
+        .finish();
+    // The `+` panel is above the panes, like the More menu.
+    TopLayer::new(menu).finish()
 }
 
 /// Fit a label into a one-line chip without inventing different text: take a
@@ -1040,6 +1044,73 @@ impl Element for OverviewPopover {
     }
 }
 
+/// Paints its child in the window's last-painted layer.
+///
+/// The topbar is painted before the body, so a `PopupMenu` mounted in the
+/// chrome would have its panel covered by the panes and the side panel (the
+/// owner reported the More and `+` menus opening behind them in the real app;
+/// the previews only looked right because they reordered the command list).
+/// The trigger still lays out in the chrome, while the child paints through
+/// `AppContext::hover_chips` — the same layer the Overview popover uses — so
+/// the panel is above every pane, panel and overlay while it stays in the tree
+/// for hit-testing and keyboard routing.
+struct TopLayer {
+    inner: Rc<RefCell<Box<dyn Element>>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl TopLayer {
+    fn new(inner: Box<dyn Element>) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(inner)),
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for TopLayer {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.borrow_mut().layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        app.hover_chips
+            .borrow_mut()
+            .push_shared(origin, Rc::clone(&self.inner));
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.inner.borrow().wants_animation()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.inner.borrow_mut().dispatch_event(event, ctx, app)
+    }
+}
+
 /// The pointer position a mouse event carries, if any.
 fn event_position(event: &DispatchedEvent) -> Option<Vector2F> {
     match event {
@@ -1449,49 +1520,58 @@ pub fn build_side_panel(
         .get(state.active_side_tab)
         .copied()
         .unwrap_or(SideTabKind::Overview);
-    let on_max = actions.on_toggle_side_panel_maximized.clone();
-    let on_close = actions.on_toggle_right_sidebar.clone();
-    let header = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(4.0)
-        .with_child(
-            Text::new(kind.title())
-                .with_font_size(13.0)
-                .with_weight(FontWeight::Medium)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        )
-        .with_child(Spacer::new().finish())
-        .with_child(
-            TopbarButton::new(glyph(
-                app,
-                if state.side_panel_maximized {
-                    "fullscreen-exit"
-                } else {
-                    "fullscreen-enter"
-                },
-            ))
-            .with_size(26.0)
-            .with_on_click(move || (on_max.borrow_mut())())
-            .finish(),
-        )
-        .with_child(
-            TopbarButton::new(glyph(app, "left-panel-close"))
-                .with_size(26.0)
-                .with_on_click(move || (on_close.borrow_mut())())
-                .finish(),
-        )
-        .finish();
+    // The panel's window controls (maximize, toggle) live at the far right of
+    // the topbar's panel-2 section, so the body starts directly on the tab's
+    // surface: no second header row repeating the controls.
 
-    // Every tab draws the active pane's own surface. Overview keeps the
-    // original search/actions/subagent/task body; the others mount the real
-    // pane views rather than a second, static overview.
+    // Every tab draws a real surface. Overview keeps the original
+    // search/actions/subagent/task body; the Agent tab is a conversation agent
+    // of its own (the reserved side pane id, never the active pane's chat);
+    // Terminal and Files mount the real pane views rather than a static
+    // overview.
     let content: Box<dyn Element> = match kind {
         SideTabKind::Overview => build_overview_content(app, state, actions),
-        SideTabKind::Agent => crate::ui::chat::build_agent_chat(
-            app, state, actions, active, true, false, None,
-        ),
+        SideTabKind::Agent => {
+            // The side composer routes to the side conversation's own session.
+            // The pane target is the reserved id, so the active pane's draft and
+            // transcript are untouched; activating the reserved id would be
+            // meaningless (it is not a leaf), so the side chat's submit/focus
+            // paths are wired to no-op activation and side actions instead.
+            let mut side_actions = actions.clone();
+            let on_side = actions.on_side_chat.clone();
+            let on_side_change = on_side.clone();
+            side_actions.on_composer_change = Rc::new(RefCell::new(move |value: String| {
+                (on_side_change.borrow_mut())(SideChatAction::Draft(value))
+            }));
+            let on_side_send = on_side.clone();
+            side_actions.on_send_message = Rc::new(RefCell::new(move |text: String| {
+                (on_side_send.borrow_mut())(SideChatAction::Send(text))
+            }));
+            let on_side_enter = on_side.clone();
+            side_actions.on_cmd_enter = Rc::new(RefCell::new(move |text: String| {
+                (on_side_enter.borrow_mut())(SideChatAction::Send(text))
+            }));
+            let on_side_attach = on_side.clone();
+            side_actions.on_attach = Rc::new(RefCell::new(move || {
+                (on_side_attach.borrow_mut())(SideChatAction::Attach)
+            }));
+            let on_side_focus = on_side;
+            side_actions.on_composer_focus_change = Rc::new(RefCell::new(
+                move |focused: bool| (on_side_focus.borrow_mut())(SideChatAction::Focus(focused)),
+            ));
+            // Focusing or submitting in the side chat must not move the pane
+            // tree's active pane to the reserved id.
+            side_actions.on_pane_activate = Rc::new(RefCell::new(|_pane: u64| {}));
+            crate::ui::chat::build_agent_chat(
+                app,
+                state,
+                &side_actions,
+                crate::state::SIDE_AGENT_PANE_ID,
+                true,
+                false,
+                None,
+            )
+        }
         SideTabKind::Terminal => {
             let cwd = state
                 .pane_chat
@@ -1536,8 +1616,6 @@ pub fn build_side_panel(
     let body = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(10.0)
-        .with_child(header)
         .with_child(Expanded::new(content).finish())
         .finish();
     Container::new(body)

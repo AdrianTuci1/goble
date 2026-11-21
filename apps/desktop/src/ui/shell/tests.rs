@@ -2162,3 +2162,49 @@ fn ctrl_tab_does_not_move_a_one_tab_workspace() {
         "a switch that did not happen writes no layout"
     );
 }
+
+/// C7: the strip keeps a 4 pt quiet band above its content, its controls are
+/// 10 % smaller than the pre-tighten 17 pt baseline, and the main section is
+/// title-only (no folder crumb before the name).
+#[test]
+fn the_chrome_keeps_a_four_point_top_band_and_a_title_only_main_section() {
+    use crate::ui::chrome::CHROME_HEIGHT;
+
+    let app = AppContext::default();
+    let (mut root, _state, _desktop, _dir) = app_root();
+    let commands = render_element(&mut root, window(), &app);
+
+    assert!(CHROME_HEIGHT >= 44.0, "44 pt strip: {CHROME_HEIGHT}");
+    // The strip's controls (icons) start below the 4 pt band. The traffic
+    // lights are the one exception: they centre on the full bar.
+    let controls: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawIcon { origin, .. } if origin.y < CHROME_HEIGHT => Some(origin.y),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        controls.iter().any(|y| *y >= 8.0),
+        "the icons sit under the 4 pt top band: {controls:?}"
+    );
+    // 15.5 pt icons are the 10 % reduction from the 17 pt baseline.
+    let icons: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawIcon { size, .. } if *size > 0.0 && *size < 20.0 => Some(*size),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        icons.iter().any(|size| (*size - 15.5).abs() < 0.01),
+        "chrome glyphs are 15.5 pt: {icons:?}"
+    );
+    // The title is the conversation name alone: the retired folder crumb would
+    // have drawn a project label before it.
+    let texts = drawn_texts(&commands);
+    assert!(
+        !texts.iter().any(|text| text.contains("Not in project")),
+        "no breadcrumb before the title: {texts:?}"
+    );
+}

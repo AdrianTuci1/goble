@@ -1,12 +1,24 @@
-//! Settings → Shortcuts: the read-only list of chords this build answers.
+//! Settings → Shortcuts: the chords this build answers.
 //!
 //! Remapping is not in this build, and the page says so in the same breath as it
 //! lists the bindings rather than hiding the section: a user who came here to
 //! change a key should learn that the feature is absent, not that the page is.
+//!
+//! The page is searchable by label, hint and key. The query is app-owned
+//! (`SettingsUiState::shortcuts_search`) so a rebuild each frame does not drop
+//! it. Each row puts its chord in one grouped key-chip pill and a trailing
+//! trash action; the action is honest — it reports that remapping is absent
+//! instead of silently deleting the binding.
 
-use super::super::model::{PageModel, RowModel, SectionModel};
-use super::super::state::{SettingsUiState, StatusKind};
+use super::super::model::{
+    ActionModel, ActionStyle, PageModel, PageSearch, RowModel, SectionModel,
+};
+use super::super::state::{SettingsAction, SettingsUiState, StatusKind};
 use super::unavailable_row;
+
+/// The sentence the trash affordance reports. It is one constant so the page,
+/// the dispatch and the tests say exactly the same thing.
+pub const REMAP_UNAVAILABLE: &str = "Remapping is not available in this build.";
 
 /// One chord, with the key caps the row's control draws.
 struct Binding {
@@ -76,28 +88,107 @@ const BINDINGS: &[Binding] = &[
     },
 ];
 
-pub fn page(_state: &SettingsUiState) -> PageModel {
+/// The names a user is likely to type for a key, after the glyph itself
+/// (`cmd`, `shift`, `enter`).
+fn key_names(key: &str) -> &'static [&'static str] {
+    match key {
+        "⌘" => &["cmd", "command"],
+        "⇧" => &["shift"],
+        "⌥" => &["option", "alt"],
+        "⌃" => &["control", "ctrl"],
+        "Enter" | "↵" => &["enter", "return"],
+        "Esc" => &["escape"],
+        _ => &[],
+    }
+}
+
+/// Every contiguous spelling of a chord: the glyphs, and the combinations that
+/// replace any key with one of its names (`⌘ ⇧ N`, `cmd shift n`, ...).
+fn chord_spellings(keys: &[&str]) -> Vec<String> {
+    let mut spellings = vec![String::new()];
+    for key in keys {
+        let mut next = Vec::new();
+        for prefix in &spellings {
+            for spelling in std::iter::once(*key).chain(key_names(key).iter().copied()) {
+                if prefix.is_empty() {
+                    next.push(spelling.to_string());
+                } else {
+                    next.push(format!("{prefix} {spelling}"));
+                }
+            }
+        }
+        spellings = next;
+    }
+    spellings
+}
+
+/// Whether a binding matches the page's query. The query is checked against the
+/// label, the hint and every spelling of the chord, case-insensitively; an
+/// empty query matches every binding.
+fn binding_matches(query: &str, binding: &Binding) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let mut haystacks = vec![
+        binding.label.to_lowercase(),
+        binding.hint.to_lowercase(),
+        binding.keys.join(" ").to_lowercase(),
+        binding.keys.join("+").to_lowercase(),
+    ];
+    haystacks.extend(
+        chord_spellings(binding.keys)
+            .into_iter()
+            .map(|spelling| spelling.to_lowercase()),
+    );
+    haystacks.iter().any(|haystack| haystack.contains(&query))
+}
+
+/// The row that says no binding matched, so a search never renders as a blank
+/// page under its heading.
+fn empty_row(query: &str) -> RowModel {
+    RowModel::new(
+        "shortcuts-empty",
+        format!("No shortcuts match “{}”", query.trim()),
+        "The search checks labels, descriptions and key chords.",
+    )
+    .with_status(StatusKind::Muted, "Clear the search to see every binding.")
+}
+
+pub fn page(state: &SettingsUiState) -> PageModel {
+    let query = state.shortcuts_search.trim().to_string();
     let mut section = SectionModel::new("bindings", "Keyboard")
         .with_description(
             "The chords this build answers. Remapping is not available in this build; the list is read-only.",
         );
+    let mut matched = 0usize;
     for binding in BINDINGS {
-        let caps = binding
+        if !binding_matches(&query, binding) {
+            continue;
+        }
+        matched += 1;
+        let keys = binding
             .keys
             .iter()
             .map(|key| (*key).to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let mut row = RowModel::new(
-            format!("shortcut.{}", binding.label),
-            binding.label,
-            binding.hint,
-        )
-        .read_only(caps);
-        // The chord is reported in the status line too, so a screen reader and
-        // the test both read one string per binding.
-        row = row.with_status(StatusKind::Muted, binding.keys.join(" "));
-        section = section.with_row(row);
+            .collect::<Vec<_>>();
+        let remap = ActionModel::new("Remapping is not available in this build.", SettingsAction::ShortcutRemap(format!(
+            "shortcut.{}",
+            binding.label
+        )))
+        .with_icon("trash")
+        .with_ghost();
+        section = section.with_row(
+            RowModel::new(
+                format!("shortcut.{}", binding.label),
+                binding.label,
+                binding.hint,
+            )
+            .key_chips(keys, Some(remap)),
+        );
+    }
+    if matched == 0 {
+        section = section.with_row(empty_row(&query));
     }
     PageModel::new(vec![
         section,
@@ -115,4 +206,136 @@ pub fn page(_state: &SettingsUiState) -> PageModel {
                 "remapping is not available",
             )),
     ])
+    .with_search(PageSearch::shortcuts(
+        state.shortcuts_search.clone(),
+        state.shortcuts_search_focused,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::settings::model::ControlModel;
+    use crate::ui::settings::render;
+    use crate::ui::settings::state::SettingsActions;
+    use goble_ui::elements::{AppContext, Element};
+    use goble_ui::geometry::vec2f;
+    use goble_ui::test_util::render_element;
+
+    fn binding_rows(model: &PageModel) -> Vec<&RowModel> {
+        model
+            .sections
+            .iter()
+            .find(|section| section.id == "bindings")
+            .expect("the bindings section")
+            .rows
+            .iter()
+            .collect()
+    }
+
+    fn drawn_text(model: &PageModel) -> Vec<String> {
+        let state = SettingsUiState::default();
+        let actions = SettingsActions::new(|_| {});
+        let app = AppContext::default();
+        let mut page: Box<dyn Element> = render::render_page(&app, model, &state, &actions);
+        render_element(&mut page, vec2f(900.0, 2400.0), &app)
+            .into_iter()
+            .filter_map(|command| match command {
+                goble_ui::render::RenderCommand::DrawText { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn search_filters_the_binding_rows_by_label_hint_and_key() {
+        let mut state = SettingsUiState::default();
+
+        state.shortcuts_search = "sidebar".to_string();
+        let model = page(&state);
+        let labels: Vec<&str> = binding_rows(&model)
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["Toggle sidebar"], "the query is app-owned and filters");
+
+        // The hint is searchable too.
+        state.shortcuts_search = "active space".to_string();
+        let model = page(&state);
+        let labels: Vec<&str> = binding_rows(&model)
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["New tab"]);
+
+        // So is the chord, in glyphs and in the user's own spelling.
+        state.shortcuts_search = "⌘ ⇧ W".to_string();
+        let model = page(&state);
+        let labels: Vec<&str> = binding_rows(&model)
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["Close space"]);
+        state.shortcuts_search = "cmd shift n".to_string();
+        let model = page(&state);
+        let labels: Vec<&str> = binding_rows(&model)
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["New space"]);
+
+        // No match still draws the heading and says why the card is empty.
+        state.shortcuts_search = "no such shortcut".to_string();
+        let model = page(&state);
+        assert_eq!(binding_rows(&model).len(), 1);
+        assert_eq!(binding_rows(&model)[0].id, "shortcuts-empty");
+        assert!(drawn_text(&model)
+            .iter()
+            .any(|text| text.contains("No shortcuts match")));
+
+        // The search field itself is part of the page model and survives the
+        // per-frame rebuild with the query intact.
+        let search = model.search.as_ref().expect("the page has a search");
+        assert_eq!(search.value, "no such shortcut");
+        assert_eq!(search.placeholder, "Search shortcuts...");
+    }
+
+    #[test]
+    fn a_binding_row_groups_its_keys_and_carries_the_honest_trash_action() {
+        let state = SettingsUiState::default();
+        let model = page(&state);
+        let row = binding_rows(&model)
+            .into_iter()
+            .find(|row| row.id == "shortcut.Command palette")
+            .expect("the command-palette row");
+        match &row.control {
+            ControlModel::KeyChips { keys, action } => {
+                assert_eq!(keys, &vec!["⌘".to_string(), "K".to_string()]);
+                let action = action.as_ref().expect("the trailing trash action");
+                assert_eq!(action.icon, Some("trash"));
+                assert_eq!(action.style, ActionStyle::Ghost);
+                assert_eq!(
+                    action.action,
+                    SettingsAction::ShortcutRemap("shortcut.Command palette".to_string())
+                );
+            }
+            other => panic!("a binding row is a key-chip control, got {other:?}"),
+        }
+
+        // The chips are drawn as one grouped chord, and the trash icon with it.
+        let commands = {
+            let actions = SettingsActions::new(|_| {});
+            let app = AppContext::default();
+            let mut page: Box<dyn Element> = render::render_page(&app, &model, &state, &actions);
+            render_element(&mut page, vec2f(900.0, 2400.0), &app)
+        };
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            goble_ui::render::RenderCommand::DrawText { text, .. } if text == "⌘ + K"
+        )));
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            goble_ui::render::RenderCommand::DrawIcon { name, .. } if name == "trash-02"
+        )));
+    }
 }

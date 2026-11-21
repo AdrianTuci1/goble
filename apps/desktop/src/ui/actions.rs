@@ -148,9 +148,29 @@ pub enum AgentDashboardAction {
     ToggleGrouping,
 }
 
+/// One gesture the side panel's Agent tab sends to the host.
+///
+/// The tab is a real conversation agent with its own conversation id, so its
+/// composer cannot go through the active-pane callbacks: typing in it must not
+/// touch the active pane's draft, and sending must run the side conversation's
+/// turn even when the keyboard is in the main pane. The host owns the side
+/// pane's session under [`crate::state::SIDE_AGENT_PANE_ID`].
+pub enum SideChatAction {
+    /// The side composer's draft changed.
+    Draft(String),
+    /// The side composer gained or lost focus.
+    Focus(bool),
+    /// Submit the side draft: bind a new conversation on the first send, then
+    /// run the turn on the side pane's own conversation.
+    Send(String),
+    /// The side composer's attach control.
+    Attach,
+}
+
 /// Callbacks supplied by the host app for the main view. Created fresh on
 /// every rebuild; they mutate app-owned state, which is rendered back on the
 /// next frame.
+#[derive(Clone)]
 pub struct UiActions {
     pub on_search_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_search_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
@@ -161,6 +181,9 @@ pub struct UiActions {
     pub on_select_tab: Rc<RefCell<dyn FnMut(AppTab)>>,
     pub on_composer_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_composer_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
+    /// The side panel Agent tab's composer: a conversation of its own, routed to
+    /// [`crate::state::SIDE_AGENT_PANE_ID`] instead of the active pane.
+    pub on_side_chat: Rc<RefCell<dyn FnMut(SideChatAction)>>,
     pub on_send_message: Rc<RefCell<dyn FnMut(String)>>,
     /// Send a line to the CLI agent running in a pane's pty: `(pane, text)`.
     /// This is the rich input of a TUI harness — the prompt goes to the agent's

@@ -11,7 +11,7 @@ use crate::elements::{
     AppContext, Element, LayoutContext, PaintContext, Point, ScrollState, SizeConstraint, TextSpan,
 };
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
+use crate::platform::text_atlas::{advance_width_exact, measure_text_family, FontWeight};
 use crate::syntax::{HighlightedLine, HighlightedSpans};
 use crate::theme::{ColorToken, FontFamily};
 
@@ -592,12 +592,14 @@ fn draw_line_text(
         Some(runs) if !runs.is_empty() => {
             let mut x = x;
             for run in runs {
-                // The advance, not the ink extent: a run that ends in a space
-                // paints no ink for it, but the next token still starts after
-                // the space. Measuring the ink alone would close that gap and
-                // make `draw_new(pane)` read as `draw_new(pane)` one column
-                // early at every style boundary.
-                let width = advance_width(
+                // The exact pen advance, not the ink extent and not the
+                // whole-pixel layout budget: a run that ends in a space paints
+                // no ink for it, but the next token still starts after the
+                // space, and the renderer places glyphs at fontdue's fractional
+                // `glyph.x`. Budgeting the rounded-up advance would push every
+                // run after a style boundary right by up to a pixel per glyph,
+                // which reads as an inserted space (`build_panes (state );`).
+                let width = advance_width_exact(
                     &run.text,
                     FONT_SIZE,
                     run.weight,

@@ -1729,3 +1729,74 @@ fn while_a_turn_runs_attachments_ride_the_queued_prompt() {
         "the queued submission spends the chips"
     );
 }
+
+/// The side panel's Agent tab is a conversation of its own: its draft and its
+/// send route to the reserved side pane, so typing/submitting there never
+/// touches the active pane's draft or binds the active pane's conversation.
+#[test]
+fn the_side_agent_tab_owns_its_own_conversation_and_draft() {
+    use crate::state::SIDE_AGENT_PANE_ID;
+    use crate::ui::SideChatAction;
+
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let runtime = configured(&state);
+    let active = state.borrow().active_pane_id;
+    {
+        let mut s = state.borrow_mut();
+        s.selected_model = "mock-model".to_string();
+        s.ensure_pane_controls();
+        s.set_active_pane_draft("main draft".to_string());
+    }
+
+    // A draft typed in the side composer is the side session's, not the active
+    // pane's (which is what the pane composer callbacks would write).
+    (actions.on_side_chat.borrow_mut())(SideChatAction::Draft("side draft".to_string()));
+    {
+        let s = state.borrow();
+        assert_eq!(
+            s.pane_sessions[&SIDE_AGENT_PANE_ID].draft, "side draft",
+            "the side draft lands on the reserved side pane"
+        );
+        assert_eq!(
+            s.pane_sessions[&active].draft, "main draft",
+            "the active pane's draft is untouched"
+        );
+        assert!(
+            s.pane_sessions[&SIDE_AGENT_PANE_ID]
+                .conversation_id
+                .is_empty(),
+            "the side tab starts without a conversation"
+        );
+    }
+
+    // The first send creates the side conversation and keeps it separate from
+    // the pane tree's conversation.
+    {
+        let _guard = runtime.enter();
+        (actions.on_side_chat.borrow_mut())(SideChatAction::Send("side prompt".to_string()));
+    }
+    let s = state.borrow();
+    let side = s.pane_sessions[&SIDE_AGENT_PANE_ID].conversation_id.clone();
+    assert!(!side.is_empty(), "the first side send binds a conversation");
+    assert_eq!(
+        s.pane_sessions[&SIDE_AGENT_PANE_ID].draft, "",
+        "a submitted side draft is spent"
+    );
+    assert_eq!(
+        s.pane_sessions[&active].draft, "main draft",
+        "the active pane's draft still survives"
+    );
+    assert_ne!(
+        Some(&side),
+        s.pane_sessions
+            .get(&active)
+            .map(|session| &session.conversation_id)
+            .filter(|id| !id.is_empty()),
+        "the side conversation is never the active pane's"
+    );
+    assert!(
+        desktop.list_chats().iter().any(|chat| chat.id == side),
+        "the side conversation is a real store chat"
+    );
+}

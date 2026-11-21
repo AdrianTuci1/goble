@@ -24,9 +24,9 @@ use crate::ui::color_picker::ColorTarget;
 use crate::ui::{
     AgentDashboardAction, AppTab, ArchivedFilter, CronEntry, DiffPanelAction, FileMenuAction,
     FloatingDrag, FloatingDragMode, LayoutKind, NavDir, OnboardingAction, Pane, PaneKind,
-    SettingsCategory, SidebarView, Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
+    SettingsCategory, SidebarView, SideChatAction, Space, SplitDir, TabMenuAction, UiActions,
+    WorkspaceRouting,
 };
-
 use super::pane_ops::{
     close_space_at, ensure_pane_hover, open_diff_pane, open_file_pane, open_pane_harness,
     open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
@@ -320,6 +320,7 @@ pub fn make_actions(
     let on_select_conversation = Rc::clone(&state);
     let on_select_tab = Rc::clone(&state);
     let on_composer_change = Rc::clone(&state);
+    let on_side_chat = Rc::clone(&state);
     let on_slash_move = Rc::clone(&state);
     let on_slash_close = Rc::clone(&state);
     let on_slash_dismiss = Rc::clone(&state);
@@ -552,6 +553,8 @@ pub fn make_actions(
     let desktop_create = desktop.clone();
     let desktop_select = desktop.clone();
     let desktop_send = desktop.clone();
+    let desktop_side_chat = desktop.clone();
+    let desktop_side_split_end = desktop.clone();
     let desktop_cmd_enter = desktop.clone();
     let desktop_send_to_cloud = desktop.clone();
     let desktop_stop = desktop.clone();
@@ -683,6 +686,7 @@ pub fn make_actions(
     let desktop_pane_drop = desktop.clone();
     let desktop_agent_delete = desktop.clone();
     let media_send = Rc::clone(&media);
+    let media_side_chat = Rc::clone(&media);
     let media_cmd_enter = Rc::clone(&media);
     let media_send_to_cloud = Rc::clone(&media);
     let media_send_queued = Rc::clone(&media);
@@ -1060,6 +1064,72 @@ pub fn make_actions(
         })),
         on_composer_focus_change: Rc::new(RefCell::new(move |focused: bool| {
             on_composer_focus_change.borrow_mut().composer_focused = focused;
+        })),
+        // The side panel's Agent tab is a real conversation of its own, keyed by
+        // the reserved side pane id: its draft, attachments and turn live on
+        // that session, never on the active pane's. The first prompt binds a new
+        // conversation (named like any other from the prompt), so the side tab
+        // starts empty instead of showing the main pane's chat.
+        on_side_chat: Rc::new(RefCell::new(move |action: SideChatAction| {
+            let mut state = on_side_chat.borrow_mut();
+            let pane_id = crate::state::SIDE_AGENT_PANE_ID;
+            match action {
+                SideChatAction::Draft(value) => {
+                    state.pane_sessions.entry(pane_id).or_default().draft = value;
+                    // The draft is the slash menu's query: typing restarts the
+                    // menu and brings it back after Escape, exactly as it does
+                    // in a pane's composer.
+                    *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
+                    *state.pane_controls_mut(pane_id).slash_dismissed.borrow_mut() = false;
+                }
+                SideChatAction::Focus(_focused) => {
+                    // Focus is per element tree: the frame that draws the side
+                    // composer is the one that owns its caret, so there is no
+                    // app-wide flag to flip here.
+                }
+                SideChatAction::Attach => {
+                    if let Some(path) = goble_ui::platform::current::pick_file() {
+                        state.attach_pane_file(pane_id, path);
+                    }
+                }
+                SideChatAction::Send(text) => {
+                    let attachments = state.pane_attachments(pane_id);
+                    if text.trim().is_empty() && attachments.is_empty() {
+                        return;
+                    }
+                    // The side tab owns a conversation of its own: the first
+                    // send creates it, and later sends keep appending to it.
+                    // It never adopts the sidebar's selection the way an
+                    // unbound pane's fallback does.
+                    if state.can_run_agent_turn(pane_id)
+                        && !state.pane_owns_conversation(pane_id)
+                    {
+                        state.bind_pane_new_conversation_titled(
+                            pane_id,
+                            crate::state::SIDE_AGENT_TITLE,
+                            desktop_side_chat.as_deref(),
+                        );
+                    }
+                    let ran = send_agent_prompt_with_attachments(
+                        &mut state,
+                        desktop_side_chat.as_ref(),
+                        &media_side_chat,
+                        &text,
+                        pane_id,
+                        &attachments,
+                    );
+                    // The side composer is not the active pane's, so the
+                    // helper's active-pane draft clear does not reach it.
+                    if ran {
+                        state
+                            .pane_sessions
+                            .entry(pane_id)
+                            .or_default()
+                            .draft
+                            .clear();
+                    }
+                }
+            }
         })),
         // The TUI pane's rich input: the line goes to the CLI agent's own
         // stdin (with the per-agent delivery warp-new uses), so a harness keeps
@@ -2991,7 +3061,14 @@ pub fn make_actions(
             }
         })),
         on_side_split_drag_end: Rc::new(RefCell::new(move || {
-            on_side_split_drag_end.borrow_mut().side_split_dragging = false;
+            let mut state = on_side_split_drag_end.borrow_mut();
+            state.side_split_dragging = false;
+            // The ratio lives in the persisted pane layout: committing it on
+            // drag end is what makes the split survive a restart. Saving on
+            // every move would write the file once per pixel.
+            if let Some(desktop) = desktop_side_split_end.as_ref() {
+                state.save_panes(desktop);
+            }
         })),
         on_content_lane_drag_start: Rc::new(RefCell::new(
             move |pane_id: u64,

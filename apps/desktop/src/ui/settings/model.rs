@@ -120,6 +120,12 @@ pub enum ControlModel {
     },
     /// A value the page reports but does not edit.
     ReadOnly { text: String },
+    /// A grouped key-chip pill, with an optional trailing action drawn as an
+    /// icon button (the Shortcuts page's read-only bindings and trash).
+    KeyChips {
+        keys: Vec<String>,
+        action: Option<ActionModel>,
+    },
     /// The row's actions, in draw order. `Enter` runs the first one.
     Buttons(Vec<ActionModel>),
     /// A row with no control at all (a status or explanation row).
@@ -134,6 +140,9 @@ impl ControlModel {
             | ControlModel::Segmented { disabled, .. }
             | ControlModel::Text { disabled, .. } => !disabled,
             ControlModel::Slider { .. } => true,
+            ControlModel::KeyChips { action, .. } => {
+                action.as_ref().is_some_and(|action| !action.disabled)
+            }
             ControlModel::ReadOnly { .. } | ControlModel::None => false,
             ControlModel::Buttons(actions) => actions.iter().any(|action| !action.disabled),
         }
@@ -273,6 +282,15 @@ impl RowModel {
         self
     }
 
+    /// A grouped key-chip control: the chords in one rounded pill, plus an
+    /// optional trailing icon action. The action is honest about what the build
+    /// can do — the Shortcuts page's trash reports that remapping is absent
+    /// rather than deleting the binding.
+    pub fn key_chips(mut self, keys: Vec<String>, action: Option<ActionModel>) -> Self {
+        self.control = ControlModel::KeyChips { keys, action };
+        self
+    }
+
     pub fn buttons(mut self, actions: Vec<ActionModel>) -> Self {
         self.control = ControlModel::Buttons(actions);
         self
@@ -392,6 +410,10 @@ impl RowModel {
                 }
             }
             ControlModel::Slider { .. } => None,
+            ControlModel::KeyChips { action, .. } => action
+                .as_ref()
+                .filter(|action| !action.disabled)
+                .map(|action| action.action.clone()),
             ControlModel::Buttons(actions) => actions
                 .iter()
                 .find(|action| !action.disabled)
@@ -595,15 +617,76 @@ impl SectionModel {
     }
 }
 
+/// Which page-level search a [`PageSearch`] drives. The actions live on the
+/// model rather than in the renderer, so the page and its keys share one
+/// definition of what typing in the field means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageSearchKind {
+    Shortcuts,
+}
+
+impl PageSearchKind {
+    pub fn change_action(self, value: String) -> SettingsAction {
+        match self {
+            PageSearchKind::Shortcuts => SettingsAction::ShortcutsSearch(value),
+        }
+    }
+
+    pub fn focus_action(self, focused: bool) -> SettingsAction {
+        match self {
+            PageSearchKind::Shortcuts => SettingsAction::ShortcutsSearchFocus(focused),
+        }
+    }
+
+    pub fn clear_action(self) -> SettingsAction {
+        match self {
+            PageSearchKind::Shortcuts => SettingsAction::ShortcutsClearSearch,
+        }
+    }
+}
+
+/// A search field at the top of a page, above its sections. The value and the
+/// caret's focus are app-owned (the tree is rebuilt every frame).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageSearch {
+    pub id: String,
+    pub value: String,
+    pub placeholder: String,
+    pub focused: bool,
+    pub kind: PageSearchKind,
+}
+
+impl PageSearch {
+    pub fn shortcuts(value: impl Into<String>, focused: bool) -> Self {
+        Self {
+            id: "shortcuts-search".to_string(),
+            value: value.into(),
+            placeholder: "Search shortcuts...".to_string(),
+            focused,
+            kind: PageSearchKind::Shortcuts,
+        }
+    }
+}
+
 /// One page: its sections plus the header line under the title.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageModel {
     pub sections: Vec<SectionModel>,
+    /// A page-level search field drawn above the sections.
+    pub search: Option<PageSearch>,
 }
 
 impl PageModel {
     pub fn new(sections: Vec<SectionModel>) -> Self {
-        Self { sections }
+        Self {
+            sections,
+            search: None,
+        }
+    }
+
+    pub fn with_search(mut self, search: PageSearch) -> Self {
+        self.search = Some(search);
+        self
     }
 
     /// The interactive rows, in draw order — the page's focus order. A folded

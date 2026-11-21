@@ -35,6 +35,7 @@ use crate::theme::ColorToken;
 
 pub mod fields;
 pub mod fold;
+pub mod key_chip;
 pub mod nav;
 pub mod row;
 pub mod secret;
@@ -48,6 +49,7 @@ mod tests;
 
 pub use fields::{SettingsButton, SettingsPathField, SettingsSegmented, SettingsSelect, SettingsTextField};
 pub use fold::SettingsFold;
+pub use key_chip::SettingsKeyChip;
 pub use nav::{SettingsNav, SettingsNavGroup, SettingsNavItem};
 pub use row::{SettingsRow, SettingsRowStatus, SettingsRowStatusKind};
 pub use secret::SettingsSecretField;
@@ -131,6 +133,10 @@ pub const SETTINGS_CONTROL_RADIUS: f32 = 8.0;
 pub const SETTINGS_CONTROL_MIN_WIDTH: f32 = 160.0;
 /// A control's type size.
 pub const SETTINGS_CONTROL_TEXT_SIZE: f32 = 13.0;
+
+/// The grouped key-chip pill's height, and the muted chord inside it.
+pub const SETTINGS_KEY_CHIP_HEIGHT: f32 = 24.0;
+pub const SETTINGS_KEY_CHIP_TEXT_SIZE: f32 = 12.0;
 
 /// The square switch's track (DSH/T3 switches are a rounded pill; the owner
 /// asked for the square switch kept, so the track and thumb are right angles).

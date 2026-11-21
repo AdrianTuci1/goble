@@ -16,7 +16,6 @@ use goble_core::store::Store;
 use goble_desktop_service::{DesktopState, ThreadStore};
 use goble_ui::elements::{AppContext, Element, EventContext};
 use goble_ui::event::DispatchedEvent;
-use goble_ui::geometry::{rectf, RectF};
 use goble_ui::render::RenderCommand;
 use goble_ui::theme::Theme;
 use goble_ui::{vec2f, ChatFragment, ChatMessage, ChatRole};
@@ -33,108 +32,19 @@ fn seed(state: &mut UiState, desktop: &DesktopState) {
     state.add_workspace("/tmp/goble-work/beta", Some(desktop));
     let pane = state.active_pane_id;
     state.pane_sessions.entry(pane).or_default();
-    state.chat_messages = vec![
+    let messages = vec![
         ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Make the shell DSH-like.")]),
         ChatMessage::from_markdown(
             ChatRole::Assistant,
             "## Shell\n\nThe global bar is gone. The panel owns the top edge.\n\n- Sidebar first\n- Panel title\n- Settings overlay\n",
         ),
     ];
+    state.chat_messages = messages.clone();
+    // The pane's own transcript is what the chat leaf draws: keep the mock
+    // messages on its runtime so the shell preview shows a real conversation
+    // rather than the empty state (no store chat is created here).
+    state.pane_runtime.entry(pane).or_default().messages = messages;
     state.refresh_settings(desktop);
-}
-
-/// The painted extent of one command, used to decide which commands a menu's
-/// surface owns. Commands that only change clip state have no extent of their
-/// own and are treated as part of the run they sit in.
-fn command_bounds(command: &RenderCommand) -> Option<RectF> {
-    match command {
-        RenderCommand::FillRect { rect, .. }
-        | RenderCommand::FillRectFadeRight { rect, .. }
-        | RenderCommand::StrokeRect { rect, .. }
-        | RenderCommand::DrawImage { rect, .. }
-        | RenderCommand::ClipRect(rect) => Some(*rect),
-        RenderCommand::PopClip => None,
-        RenderCommand::DrawText {
-            origin,
-            text,
-            font_size,
-            max_width,
-            line_height,
-            ..
-        } => {
-            // `max_width` is the layout budget, not the glyph extent: the
-            // shortcut cells pass a budget wider than the panel, so using it
-            // would end the menu's run inside its first row. Estimate the
-            // painted width instead, capped by the budget when one is set.
-            let budget = if max_width.is_finite() && *max_width > 0.0 {
-                *max_width
-            } else {
-                f32::INFINITY
-            };
-            let width = (font_size * 0.7 * text.chars().count() as f32).min(budget);
-            let height = font_size * line_height.max(1.0);
-            Some(rectf(origin.x, origin.y, width.max(1.0), height.max(1.0)))
-        }
-        RenderCommand::DrawIcon { origin, size, .. } => {
-            Some(rectf(origin.x, origin.y, *size, *size))
-        }
-    }
-}
-
-/// Paints the open More menu above the chrome/body that otherwise cover it.
-///
-/// A popup's panel is painted in tree order, inside the topbar, so later
-/// commands (the pane body, the sidebar, the window border) paint over it. The
-/// open-menu registry already knows the rectangle the menu's own last-layer
-/// paint reported; collect the contiguous run of commands painted inside that
-/// surface, starting after the trigger, and move just that run to the end of
-/// the command list before rasterizing. Everything else keeps its paint order,
-/// so only the menu is lifted.
-fn lift_open_menu_commands(
-    commands: Vec<RenderCommand>,
-    surfaces: &[RectF],
-    trigger: Option<usize>,
-) -> Vec<RenderCommand> {
-    if surfaces.is_empty() {
-        return commands;
-    }
-    let inside = |command: &RenderCommand| match command_bounds(command) {
-        Some(bounds) => surfaces
-            .iter()
-            .any(|surface| surface.contains_rect(&bounds)),
-        None => true,
-    };
-
-    // The menu's commands are a contiguous run; the popup paints its panel
-    // immediately after its trigger. Prefer that run, falling back to the
-    // longest run if the trigger index moved.
-    let mut runs = Vec::new();
-    let mut index = 0;
-    while index < commands.len() {
-        if inside(&commands[index]) {
-            let start = index;
-            while index < commands.len() && inside(&commands[index]) {
-                index += 1;
-            }
-            if index - start >= 2 {
-                runs.push((start, index));
-            }
-        } else {
-            index += 1;
-        }
-    }
-    let run = trigger
-        .and_then(|trigger| runs.iter().copied().find(|(start, _)| *start > trigger))
-        .or_else(|| runs.iter().copied().max_by_key(|(start, end)| end - start));
-    let Some((start, end)) = run else {
-        return commands;
-    };
-
-    let mut lifted = Vec::with_capacity(commands.len());
-    lifted.extend_from_slice(&commands[..start]);
-    lifted.extend_from_slice(&commands[end..]);
-    lifted.extend_from_slice(&commands[start..end]);
-    lifted
 }
 
 fn main() -> anyhow::Result<()> {
@@ -150,11 +60,16 @@ fn main() -> anyhow::Result<()> {
             ("shell-wide", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("shell-narrow", vec2f(760.0, 900.0), false, SettingsCategory::General),
             ("panel-more", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("overview-popover", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-panel", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("side-tabs-overflow", vec2f(1200.0, 900.0), false, SettingsCategory::General),
+            ("side-agent", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
+            ("side-terminal", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("overview", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("side-panel-max", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("terminal-dock", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
             ("settings-wide", vec2f(1600.0, 1000.0), true, SettingsCategory::General),
+            ("settings-wide-appearance", vec2f(1600.0, 1000.0), true, SettingsCategory::Appearance),
             ("settings-wide-shortcuts", vec2f(1600.0, 1000.0), true, SettingsCategory::Shortcuts),
             ("settings-narrow", vec2f(700.0, 900.0), true, SettingsCategory::General),
         ] {
@@ -183,6 +98,68 @@ fn main() -> anyhow::Result<()> {
                         goble_app::state::SideTabKind::Files,
                     ];
                     s.active_side_tab = 0;
+                }
+                if name == "side-tabs-overflow" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Overview,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Terminal,
+                        goble_app::state::SideTabKind::Files,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Terminal,
+                        goble_app::state::SideTabKind::Files,
+                        goble_app::state::SideTabKind::Agent,
+                    ];
+                    s.active_side_tab = 0;
+                }
+                if name == "side-agent" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Overview,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Terminal,
+                    ];
+                    s.active_side_tab = 1;
+                    s.ensure_pane_controls();
+                    s.pane_sessions
+                        .entry(goble_app::state::SIDE_AGENT_PANE_ID)
+                        .or_default()
+                        .draft = "Why did the wrap fix drop spaces?".to_string();
+                    s.pane_runtime
+                        .entry(goble_app::state::SIDE_AGENT_PANE_ID)
+                        .or_default()
+                        .messages = vec![
+                        ChatMessage::new(
+                            ChatRole::User,
+                            vec![ChatFragment::text("What changed in the diff panel?")],
+                        ),
+                        ChatMessage::from_markdown(
+                            ChatRole::Assistant,
+                            "The wrapped runs now come from source prefixes, so the \
+                             highlighted rows concatenate back to the source exactly.",
+                        ),
+                    ];
+                }
+                if name == "side-terminal" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Overview,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Terminal,
+                    ];
+                    s.active_side_tab = 2;
+                    let pane = s.active_pane_id;
+                    s.terminal.borrow_mut().sessions.insert(
+                        pane,
+                        goble_app::terminal::TerminalSession::preview_screen(
+                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                        ),
+                    );
+                }
+                if name == "overview-popover" {
+                    s.right_sidebar_open = true;
+                    *s.chrome_overview_open.borrow_mut() = true;
                 }
                 if name == "overview" {
                     s.right_sidebar_open = true;
@@ -244,9 +221,10 @@ fn main() -> anyhow::Result<()> {
                 if !*state.borrow().chrome_more_open.borrow() {
                     *state.borrow().chrome_more_open.borrow_mut() = true;
                 }
+                // The chrome menus paint themselves in the window's last
+                // layer, so the command list is already in the right order:
+                // the open panel is after every pane and overlay.
                 let commands = raster::render_commands(&mut root, size, &app);
-                let surfaces = app.open_menus.surfaces();
-                let commands = lift_open_menu_commands(commands, &surfaces, trigger);
                 raster::rasterize_to_png(
                     &assets, &app, &commands, size, 2.0, None, &path,
                 )?;

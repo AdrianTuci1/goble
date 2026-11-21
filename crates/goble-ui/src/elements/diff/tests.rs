@@ -846,3 +846,66 @@ fn a_two_sided_split_keeps_its_two_half_columns() {
         "a two-sided split still fills the empty half of a paired row"
     );
 }
+
+/// The runs of one highlighted line must start at the exact pen position the
+/// rasterizer will have reached, not at the whole-pixel layout budget: the old
+/// `advance_width` rounded every glyph up, so each style boundary after the
+/// first drifted right by a fraction of a pixel per glyph and the preview read
+/// `build_panes (state );` instead of `build_panes(state);`. Concatenating the
+/// run texts cannot see that drift, so this asserts the geometry.
+#[test]
+fn adjacent_highlight_runs_start_at_the_exact_pen_advance() {
+    use crate::platform::text_atlas::{advance_width, advance_width_exact, FontWeight};
+    use crate::theme::FontFamily;
+
+    let line = "    let panes = build_panes(state);";
+    let mut element: Box<dyn Element> = FileDiffView::new(context_hunk(line))
+        .with_language("src/panes.rs")
+        .with_wrap(false)
+        .with_line_numbers(false)
+        .finish();
+    let commands = commands_for(&mut element, 420.0);
+    let mut runs: Vec<(f32, String)> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if origin.y >= 30.0 => {
+                Some((origin.x, text.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    runs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(runs.len() > 2, "the line is highlighted in several runs: {runs:?}");
+
+    let mut rounded_differed = false;
+    for pair in runs.windows(2) {
+        let (x, text) = &pair[0];
+        let (next_x, next_text) = &pair[1];
+        let exact = advance_width_exact(
+            text,
+            super::DiffSpec::DIFF_FONT_SIZE,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        );
+        let rounded = advance_width(
+            text,
+            super::DiffSpec::DIFF_FONT_SIZE,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        );
+        assert!(
+            (next_x - (x + exact)).abs() < 0.01,
+            "run {next_text:?} starts at the exact pen position after {text:?}: \
+             expected {}, got {next_x}",
+            x + exact
+        );
+        rounded_differed |= rounded > exact;
+    }
+    assert!(
+        rounded_differed,
+        "the fixture must contain a boundary where the rounded budget \
+         overshoots, or this test cannot catch the corruption"
+    );
+}

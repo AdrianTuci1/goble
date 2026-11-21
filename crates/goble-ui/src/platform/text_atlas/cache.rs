@@ -86,6 +86,10 @@ pub(super) struct AdvanceKey {
     weight: FontWeight,
     family: FontFamily,
     italic: bool,
+    /// Whether this entry is the whole-pixel layout budget (`true`) or the
+    /// rasterizer's exact pen advance (`false`). The two answers differ, so
+    /// they never share an entry.
+    round_up: bool,
     generation: u64,
 }
 
@@ -97,6 +101,30 @@ impl AdvanceKey {
         family: FontFamily,
         italic: bool,
     ) -> Self {
+        Self::with_rounding(text, font_size, weight, family, italic, true)
+    }
+
+    /// The key for the rasterizer's exact pen advance
+    /// ([`super::fonts::advance_width_exact`]): the same run and face, a
+    /// different answer from the whole-pixel budget above.
+    pub(super) fn new_exact(
+        text: &str,
+        font_size: f32,
+        weight: FontWeight,
+        family: FontFamily,
+        italic: bool,
+    ) -> Self {
+        Self::with_rounding(text, font_size, weight, family, italic, false)
+    }
+
+    fn with_rounding(
+        text: &str,
+        font_size: f32,
+        weight: FontWeight,
+        family: FontFamily,
+        italic: bool,
+        round_up: bool,
+    ) -> Self {
         Self {
             text: text.to_string(),
             font_size: font_size.to_bits(),
@@ -104,6 +132,7 @@ impl AdvanceKey {
             family,
             italic,
             generation: GENERATION.load(Ordering::Relaxed),
+            round_up,
         }
     }
 }

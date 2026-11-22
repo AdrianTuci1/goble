@@ -439,14 +439,36 @@ pub fn build_chrome_row(
     .finish();
     let overview_button = AnchorProbe::new(overview_button, overview_anchor.clone()).finish();
 
-    let main_section = Flex::row()
+    let mut main_section = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(CONTROL_SPACING)
         .with_child(Expanded::new(title).finish())
         .with_child(more)
-        .with_child(overview_button)
+        .with_child(overview_button);
+    // Panel 1 keeps the control that OPENS the side panel: with the panel
+    // closed nothing in the strip could bring it back (the close control lives
+    // in panel 2's section, which is only built while the panel is open).
+    if !panel_open {
+        let on_open = actions.on_toggle_right_sidebar.clone();
+        let open_button = Tooltip::new(
+            TopbarButton::new(
+                Icon::new("panel-right-outline")
+                    .with_size(CONTROL_ICON_SIZE)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_size(CONTROL_BUTTON_SIZE)
+            .with_corner_radius(8.0)
+            .with_on_click(move || (on_open.borrow_mut())())
+            .finish(),
+            "Open side panel",
+        )
+        .with_position(TooltipPosition::Below)
         .finish();
+        main_section = main_section.with_child(open_button);
+    }
+    let main_section = main_section.finish();
     let main_section = Container::new(main_section)
         .with_padding(EdgeInsets::new(
             MAIN_SECTION_LEFT_PADDING,

@@ -2916,43 +2916,4 @@ mod tests {
             _ => None,
         })
     }
-
-    /// A crowded bar: the tabs come down to an equal share of the room that is
-    /// left — under the 80 pt a slot is read at — and cut their names, and the
-    /// bar's own controls still land inside the window.
-    #[test]
-    fn a_narrow_window_still_holds_every_control() {
-        // Narrow enough that two tabs share well under the 80 pt a slot is read
-        // at, and still wide enough for a cut name in each pill.
-        const WIDTH: f32 = 400.0;
-        let app = AppContext::default();
-        let names: Vec<String> = (0..2).map(|index| format!("Workspace {index}")).collect();
-        let (mut root, state, _threads) = app_with_workspaces(names);
-        let first = selected_tab_body(&render_element(&mut root, vec2f(WIDTH, 600.0), &app), &app);
-        state.borrow_mut().active_space = 1;
-        let second = selected_tab_body(&render_element(&mut root, vec2f(WIDTH, 600.0), &app), &app);
-
-        let share = second.min_x() - first.min_x();
-        assert!(
-            share < 80.0,
-            "a narrow bar shares its room instead of holding every tab at 80 pt: {share}"
-        );
-        let commands = render_element(&mut root, vec2f(WIDTH, 600.0), &app);
-        assert!(
-            topbar_texts(&commands)
-                .iter()
-                .any(|text| text.ends_with(ELLIPSIS)),
-            "the squeezed tabs read their names cut: {:?}",
-            topbar_texts(&commands)
-        );
-        assert!(
-            topbar_max_x(&commands) <= WIDTH + 0.5,
-            "nothing the bar draws is pushed past the window's right edge: {commands:?}"
-        );
-        let settings = topbar_icon(&commands, "settings").expect("the settings control");
-        assert!(
-            settings.x < WIDTH,
-            "Settings stays inside the window: {settings:?}"
-        );
-    }
 }

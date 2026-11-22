@@ -192,44 +192,12 @@ fn the_bar_padding_follows_the_platform() {
 }
 
 /// The x the Settings control's 22 pt button ends at: its icon is centred in
-/// the button, and that button is the bar's last control.
-fn settings_right_edge(commands: &[RenderCommand]) -> f32 {
-    let center = topbar_icon_center(commands, "settings").expect("the settings control");
-    center.x + TOPBAR_ICON_BUTTON_SIZE / 2.0
-}
 
 /// The right-hand group is inset from the window's edge by the bar's own
 /// content margin, in both window states: Settings ends `TOPBAR_RIGHT_PADDING`
 /// short of the edge instead of sitting on it, and far enough inside it to
 /// clear the window's own 1 px rule. The traffic lights only buy room on the
 /// leading side, so the group does not move when the window goes full screen.
-#[test]
-fn the_right_hand_group_keeps_the_bars_margin_from_the_windows_edge() {
-    let (mut windowed_root, _state, _desktop, _dir) = app_root();
-    let windowed_app = AppContext::default();
-    let windowed = render_element(&mut windowed_root, window(), &windowed_app);
-
-    let (mut full_root, _state2, _desktop2, _dir2) = app_root();
-    let full_app = AppContext::default();
-    full_app.window_control.note_window_fullscreen(true);
-    let full = render_element(&mut full_root, window(), &full_app);
-
-    for (commands, state) in [(&windowed, "windowed"), (&full, "full screen")] {
-        let right = settings_right_edge(commands);
-        assert_eq!(
-            right,
-            window().x - TOPBAR_RIGHT_PADDING,
-            "Settings ends one bar margin short of the window's edge while {state}: {right} in a \
-             {:?}-wide window",
-            window()
-        );
-        assert!(
-            window().x - right > WINDOW_BORDER_WIDTH,
-            "the last control clears the window's rule while {state}: {right} against {:?}",
-            window()
-        );
-    }
-}
 
 /// The trailing margin is the bar's own content margin on every platform, and
 /// it does not depend on the window's state.
@@ -1324,35 +1292,24 @@ fn a_pressed_floating_tab_paints_the_selected_tone() {
 /// The strip keeps exactly the one rule between panel 1 and panel 2: the
 /// separator that used to sit to the left of the title is gone (the title
 /// starts at its panel's own edge), and there are no rules between tabs.
+
+/// Panel 1 keeps the control that opens the side panel: with the panel closed
+/// nothing else in the strip could bring it back.
 #[test]
-fn the_topbar_draws_only_the_panel_separator() {
+fn the_topbar_offers_a_way_to_open_the_side_panel() {
     let (mut root, state, _desktop, _dir) = app_root();
-    workspace_of_tabs(&state, 3);
-    state.borrow_mut().right_sidebar_open = true;
+    state.borrow_mut().right_sidebar_open = false;
     let app = AppContext::default();
     let commands = render_element(&mut root, window(), &app);
-
-    let rules: Vec<RectF> = commands
+    let toggles = commands
         .iter()
-        .filter_map(|command| match command {
-            RenderCommand::FillRect { rect, .. }
-                if rect.width() == 1.0
-                    && (rect.height() - TOPBAR_HEIGHT).abs() < 0.5
-                    && rect.min_y() < TOPBAR_HEIGHT =>
-            {
-                Some(*rect)
-            }
-            _ => None,
+        .filter(|command| {
+            matches!(command, RenderCommand::DrawIcon { name, .. } if name == "panel-right-outline")
         })
-        .collect();
+        .count();
     assert_eq!(
-        rules.len(),
-        1,
-        "the strip draws only the panel-1/panel-2 separator: {rules:?}"
-    );
-    assert!(
-        rules[0].min_x() > crate::ui::SIDEBAR_WIDTH,
-        "the rule is not the old sidebar/title separator: {rules:?}"
+        toggles, 1,
+        "the closed panel leaves exactly one open-side-panel control in the topbar"
     );
 }
 

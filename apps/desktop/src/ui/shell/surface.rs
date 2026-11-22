@@ -2,7 +2,7 @@
 //!
 //! The shell owns the sheet the main panel and the side panel sit on: it paints
 //! the `Surface` fill, the rounded outer corners and the free margin of the
-//! shell's own `Bg` around it. The panels are flat children inside it — they
+//! shell's own `Surface` band around it. The panels are flat children inside it — they
 //! paint their own backgrounds but no casing, border or radius of their own.
 //! The shared main/side-panel boundary is square and carries only the one
 //! hairline separator the split layout paints.
@@ -17,8 +17,9 @@ use goble_ui::theme::ColorToken;
 use goble_ui::ColorU;
 
 /// The free margin the workspace surface keeps from the shell (sidebar,
-/// topbar, window edges). It is painted with the shell's own `Bg`, so the
-/// panels read as one raised sheet floating inside the window frame.
+/// topbar, window edges). It is painted with the shell's own `Surface`, the same
+/// grey as the topbar and the sidebar, so the content space reads as one light
+/// grey material around the sheet rather than a dark frame.
 pub const WORKSPACE_MARGIN: f32 = 5.0;
 
 /// The workspace surface's outer corner radius. It is larger than a pane
@@ -39,10 +40,18 @@ struct WorkspaceSurface {
 
 impl WorkspaceSurface {
     fn new(child: Box<dyn Element>, app: &AppContext) -> Self {
+        // The content space reads as the shell's grey. Dark themes use the
+        // sidebar's `Surface`; the light theme's `Surface` is pure white, so it
+        // uses its own light grey (`Bg`) instead of a white frame.
+        let backdrop = if app.theme.name == "light" {
+            app.theme.color(ColorToken::Bg)
+        } else {
+            app.theme.color(ColorToken::Surface)
+        };
         Self {
             child,
             fill: app.theme.color(ColorToken::Surface),
-            backdrop: app.theme.color(ColorToken::Bg),
+            backdrop,
             radius: WORKSPACE_RADIUS,
             size: None,
             origin: None,

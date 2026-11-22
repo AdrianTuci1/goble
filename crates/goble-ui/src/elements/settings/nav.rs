@@ -241,11 +241,9 @@ impl SettingsNav {
             } else {
                 FontWeight::Regular
             })
-            .with_color(if selected {
-                app.theme.color(ColorToken::Text)
-            } else {
-                app.theme.color(ColorToken::Muted)
-            })
+            // L: every rail entry is primary text, selected or not; weight
+            // carries the selection instead of a muted colour.
+            .with_color(app.theme.color(ColorToken::Text))
             .finish();
         let content = crate::elements::Flex::row()
             .with_main_axis_size(crate::elements::MainAxisSize::Max)

@@ -72,27 +72,14 @@ pub fn render_nav(
     };
     let pages = visible_pages.clone();
     let select_dispatch = actions.dispatch.clone();
-    let search_dispatch = actions.dispatch.clone();
-    let focus_dispatch = actions.dispatch.clone();
-    let clear_dispatch = actions.dispatch.clone();
     let nav = SettingsNav::new(groups)
         .with_selected(selected)
         .with_focused(rail_focused)
-        .with_search(settings.search.clone())
-        .with_search_focused(settings.search_focused)
+        .without_search()
         .with_on_select(move |index| {
             if let Some(page) = pages.get(index).copied() {
                 (select_dispatch.borrow_mut())(SettingsAction::Navigate(page));
             }
-        })
-        .with_on_search(move |query| {
-            (search_dispatch.borrow_mut())(SettingsAction::Search(query));
-        })
-        .with_on_focus_change(move |focused| {
-            (focus_dispatch.borrow_mut())(SettingsAction::FocusSearch(focused));
-        })
-        .with_on_clear(move || {
-            (clear_dispatch.borrow_mut())(SettingsAction::ClearSearch);
         })
         .finish();
     let nav = ConstrainedBox::new(nav)
@@ -101,8 +88,6 @@ pub fn render_nav(
     Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(Expanded::new(nav).finish())
-        .with_child(Divider::horizontal().finish())
-        .with_child(render_rail_footer(app, settings))
         .finish()
 }
 
@@ -274,9 +259,6 @@ pub fn render_page_content(
     let mut children: Vec<Box<dyn Element>> = Vec::new();
     if let Some(notice) = settings.notice.as_ref() {
         children.push(render_notice(app, notice, actions));
-    }
-    if let Some(search) = model.search.as_ref() {
-        children.push(render_page_search(app, search, actions));
     }
     let mut slot = 0usize;
     let section_count = model.sections.len();

@@ -1001,12 +1001,26 @@ mod tests {
         app: &AppContext,
         size: Vector2F,
     ) -> RectF {
-        let sheets: Vec<RectF> = rules(commands, app)
-            .into_iter()
-            .filter(|(rect, _, radius)| {
-                (*radius - 12.0).abs() < 0.01 && rect.height() > size.y / 2.0
+        // The shell's sheet is the one rounded `Surface` fill that spans the
+        // workspace; it owns no Border stroke any more (the windows float with
+        // a shadow instead).
+        let surface = app.theme.color(ColorToken::Surface);
+        let sheets: Vec<RectF> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == surface
+                    && (*corner_radius - 12.0).abs() < 0.01
+                    && rect.height() > size.y / 2.0
+                    && rect.width() > size.x / 2.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
             })
-            .map(|(rect, _, _)| rect)
             .collect();
         assert_eq!(
             sheets.len(),
@@ -2754,6 +2768,118 @@ mod tests {
                 println!("ICON {name} at {origin:?}");
             }
         }
+    }
+
+    /// L8: the shell surface has no framing Border stroke; it floats on a
+    /// soft black shadow ring instead.
+    #[test]
+    fn the_shell_surface_floats_without_a_framing_border() {
+        let app = AppContext::default();
+        let (mut root, _state, _dir) = app_root();
+        let size = vec2f(1024.0, 768.0);
+        let commands = render_element(&mut root, size, &app);
+        let sheet = workspace_sheet(&commands, &app, size);
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::StrokeRect { rect, color, width, corner_radius }
+                    if *rect == sheet
+                        && *color == app.theme.color(ColorToken::Border)
+                        && (*width - 1.0).abs() < 0.01
+                        && (*corner_radius - 12.0).abs() < 0.01
+            )),
+            "the shell surface owns no Border frame"
+        );
+        let shadow = commands.iter().any(|command| match command {
+            RenderCommand::StrokeRect {
+                rect,
+                color,
+                width,
+                corner_radius,
+            } => {
+                color.a > 0
+                    && color.r == 0
+                    && color.g == 0
+                    && color.b == 0
+                    && color.a < 120
+                    && (*width - 2.0).abs() < 0.01
+                    && (*corner_radius - 14.0).abs() < 0.01
+                    && rect.width() > sheet.width()
+            }
+            _ => false,
+        });
+        assert!(shadow, "the floating sheet casts a soft shadow");
+    }
+
+    /// L: the settings sheet has no search field, no user footer, no row or
+    /// section separator rules, and its rail heading is small/muted while every
+    /// menu label is primary text.
+    #[test]
+    fn the_settings_sheet_has_no_search_footer_or_separator_rules() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.open_settings_tab(None);
+            s.settings_overlay_open = true;
+            s.settings_overlay_wide = true;
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let texts: Vec<String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        for gone in ["Search settings", "Search shortcuts...", "Local workspace", "You"] {
+            assert!(
+                !texts.iter().any(|text| text == gone),
+                "settings no longer draw {gone:?}: {texts:?}"
+            );
+        }
+        // Rail heading: 12 pt and muted.
+        let heading = commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                origin,
+                font_size,
+                color,
+                ..
+            } if text == "Settings" && origin.x > 250.0 && origin.x < 500.0 => {
+                Some((*font_size, *color))
+            }
+            _ => None,
+        });
+        let (size, color) = heading.expect("the rail heading");
+        assert!((size - 12.0).abs() < 0.01, "small rail heading: {size}");
+        assert_eq!(
+            color,
+            app.theme.color(ColorToken::Muted),
+            "the rail heading is secondary text"
+        );
+        // Every rail entry is primary text, selected or not.
+        for label in ["General", "Appearance", "Shortcuts", "About"] {
+            let ink = commands.iter().find_map(|command| match command {
+                RenderCommand::DrawText { text, color, .. } if text == label => Some(*color),
+                _ => None,
+            });
+            assert_eq!(
+                ink,
+                Some(app.theme.color(ColorToken::Text)),
+                "{label} is primary text"
+            );
+        }
+        // No 1 px row/section rules across the sheet.
+        let rules = commands
+            .iter()
+            .filter(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, .. }
+                    if (rect.height() - 1.0).abs() < 0.01 && rect.width() > 300.0
+            ))
+            .count();
+        assert_eq!(rules, 0, "settings draw no separator rules between rows");
     }
 
     /// The two panels live inside one rounded workspace sheet: the main pane

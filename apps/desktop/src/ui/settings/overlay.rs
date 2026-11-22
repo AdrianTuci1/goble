@@ -76,11 +76,25 @@ fn overlay_content(
     let page = settings.page;
     let model = pages::page_model(page, settings);
     let body = render::render_page_content(app, &model, settings, &actions.settings);
+    // L: the Interface Layout tiles take the page's full width: two long
+    // cards with an 8 pt gap when wide, one full-width pair stacked narrow.
+    let window_width = if state.window_size.x > 0.0 {
+        state.window_size.x
+    } else {
+        OVERLAY_MAX_WIDTH
+    };
+    let sheet_width = if narrow {
+        (window_width - 16.0).max(320.0)
+    } else {
+        (window_width - OVERLAY_MARGIN).min(OVERLAY_MAX_WIDTH)
+    };
+    let rail_width = if narrow { 0.0 } else { 196.0 };
+    let available = (sheet_width - rail_width - 48.0).max(220.0);
     let body = if page == SettingsCategory::General {
         Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(
-                Container::new(layout_cards(app, narrow))
+                Container::new(layout_cards(app, narrow, available))
                     .with_padding(EdgeInsets::new(24.0, 20.0, 24.0, 0.0))
                     .finish(),
             )
@@ -141,7 +155,6 @@ fn overlay_content(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     if !narrow {
         row = row.with_child(overlay_rail(app, state, actions));
-        row = row.with_child(Divider::vertical().finish());
     }
     row = row.with_child(Expanded::new(page_column).finish());
     let row = if narrow {
@@ -166,7 +179,7 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
     let feedback = goble_ui::elements::HoverRow::new(
         Text::new("Give Feedback")
             .with_font_size(13.0)
-            .with_theme_color(ColorToken::Muted, app)
+            .with_theme_color(ColorToken::Text, app)
             .finish(),
     )
     .with_padding(EdgeInsets::new(8.0, 6.0, 8.0, 6.0))
@@ -175,6 +188,9 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
         (feedback.borrow_mut())("https://github.com/AdrianTuci1/goble/issues".to_string())
     })
     .finish();
+    // L: the rail is one full-height secondary column (same grey tone top to
+    // bottom), with a smaller muted heading, no search field, no row rules, and
+    // no user/avatar footer.
     let column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -182,23 +198,104 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
         .with_child(
             Container::new(
                 Text::new("Settings")
-                    .with_font_size(14.0)
-                    .with_weight(FontWeight::SemiBold)
-                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_size(12.0)
+                    .with_weight(FontWeight::Medium)
+                    .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
-            .with_padding(EdgeInsets::new(12.0, 8.0, 12.0, 4.0))
+            .with_padding(EdgeInsets::new(14.0, 14.0, 12.0, 2.0))
             .finish(),
         )
         .with_child(ConstrainedBox::new(nav).with_height(520.0).finish())
         .with_child(Spacer::new().finish())
         .with_child(feedback)
-        .with_child(Divider::horizontal().finish())
-        .with_child(render::render_rail_footer(app, settings))
         .finish();
-    ConstrainedBox::new(column)
+    ConstrainedBox::new(RailSurface::new(column, app).finish())
         .with_width(196.0)
         .finish()
+}
+
+/// The rail's full-height secondary column. It paints the same grey from the
+/// sheet's top edge to its bottom edge, with the sheet's own radius on the two
+/// OUTER (left) corners and a square edge on the page side — the rounded sheet
+/// must not be squared off by its rail child.
+struct RailSurface {
+    child: Box<dyn Element>,
+    fill: goble_ui::ColorU,
+    radius: f32,
+    size: Option<goble_ui::geometry::Vector2F>,
+    origin: Option<goble_ui::elements::Point>,
+}
+
+impl RailSurface {
+    fn new(child: Box<dyn Element>, app: &AppContext) -> Self {
+        Self {
+            child,
+            fill: app.theme.color(ColorToken::SurfaceRaised),
+            radius: 16.0,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for RailSurface {
+    fn layout(
+        &mut self,
+        constraint: goble_ui::elements::SizeConstraint,
+        ctx: &mut goble_ui::elements::LayoutContext,
+        app: &AppContext,
+    ) -> goble_ui::geometry::Vector2F {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(
+        &mut self,
+        origin: goble_ui::geometry::Vector2F,
+        ctx: &mut goble_ui::elements::PaintContext,
+        app: &AppContext,
+    ) {
+        self.origin = Some(goble_ui::elements::Point::from_vec2f(
+            origin,
+            Default::default(),
+        ));
+        let Some(size) = self.size else { return };
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            let rect = goble_ui::geometry::rectf(origin.x, origin.y, size.x, size.y);
+            renderer.fill_rounded_rect(rect, self.fill, self.radius);
+            // Square the page-side edge after rounding: only the two left
+            // corners should follow the sheet's radius.
+            renderer.fill_rect(
+                goble_ui::geometry::rectf(
+                    origin.x + self.radius,
+                    origin.y,
+                    (size.x - self.radius).max(0.0),
+                    size.y,
+                ),
+                self.fill,
+            );
+        }
+        self.child.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<goble_ui::geometry::Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<goble_ui::elements::Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &goble_ui::event::DispatchedEvent,
+        ctx: &mut goble_ui::elements::EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, ctx, app)
+    }
 }
 
 /// The rail labels and order from the reference photos, mapped onto the real
@@ -248,7 +345,7 @@ fn photo_nav(app: &AppContext, settings: &super::SettingsUiState, actions: &UiAc
     let dispatch = actions.settings.dispatch.clone();
     let nav = SettingsNav::new(vec![SettingsNavGroup::new("").with_items(items), advanced])
         .with_selected(selected)
-        .with_search(String::new())
+        .without_search()
         .with_on_select(move |selected| {
             if let Some(page) = pages.get(selected).copied() {
                 (dispatch.borrow_mut())(SettingsAction::Navigate(page));
@@ -263,9 +360,21 @@ fn photo_nav(app: &AppContext, settings: &super::SettingsUiState, actions: &UiAc
 /// tint on Software Engineering. The preference has no file-backed backend in
 /// this build, so the selected state is presented as the product default rather
 /// than hidden behind a dead toggle.
-fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
-    let card = |title: &str, _body: &str, icon: &'static str, selected: bool| -> Box<dyn Element> {
+fn layout_cards(app: &AppContext, narrow: bool, available: f32) -> Box<dyn Element> {
+    let card_height = 120.0;
+    let gap = 8.0;
+    let card_width = if narrow {
+        available
+    } else {
+        ((available - gap) / 2.0).max(120.0)
+    };
+    let card = |title: &str,
+                icon: &'static str,
+                selected: bool,
+                width: f32|
+     -> Box<dyn Element> {
         let content = Flex::column()
+            .with_main_axis_alignment(MainAxisAlignment::Center)
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_spacing(6.0)
             .with_child(
@@ -289,8 +398,20 @@ fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
                     .finish(),
             )
             .finish();
-        Container::new(content)
-            .with_padding(EdgeInsets::uniform(14.0))
+        // A fixed-size spacer gives the card its longer/wider box; the content
+        // rides on top, so the background and border fill the whole tile.
+        let frame = Stack::new()
+            .with_children(vec![Empty::new()
+                .with_size(vec2f(width, card_height))
+                .finish()])
+            .with_overlay(
+                Container::new(content)
+                    .with_padding(EdgeInsets::uniform(14.0))
+                    .finish(),
+                vec2f(0.0, 0.0),
+            )
+            .finish();
+        Container::new(frame)
             .with_background(Fill::Solid(app.theme.color(if selected {
                 ColorToken::Selected
             } else {
@@ -304,26 +425,13 @@ fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
             .with_corner_radius(12.0)
             .finish()
     };
-    let knowledge = card(
-        "Knowledge Work",
-        "Simplified interface for research, writing, and everyday tasks.",
-        "folder",
-        false,
-    );
-    let software = card(
-        "Software Engineering",
-        "Full interface for coding, developer tools, and managing agents.",
-        "code",
-        true,
-    );
-    // A narrow sheet stacks the two tiles full-width: side by side, each card's
-    // intrinsic label width would push the pair past the page and clip the
-    // second tile (the photo's 2-up is the wide layout).
+    let knowledge = card("Knowledge Work", "folder", false, card_width);
+    let software = card("Software Engineering", "code", true, card_width);
     let cards: Box<dyn Element> = if narrow {
         Flex::column()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(12.0)
+            .with_spacing(gap)
             .with_child(knowledge)
             .with_child(software)
             .finish()
@@ -331,9 +439,9 @@ fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
         Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(16.0)
-            .with_child(Expanded::new(knowledge).finish())
-            .with_child(Expanded::new(software).finish())
+            .with_spacing(gap)
+            .with_child(knowledge)
+            .with_child(software)
             .finish()
     };
     Flex::column()
@@ -348,20 +456,4 @@ fn layout_cards(app: &AppContext, narrow: bool) -> Box<dyn Element> {
         )
         .with_child(cards)
         .finish()
-}
-
-fn page_description(page: SettingsCategory) -> &'static str {
-    match page {
-        SettingsCategory::General => {
-            "Configure agent execution, queued message delivery, and permissions."
-        }
-        SettingsCategory::Shortcuts => "Keyboard shortcuts for quick navigation and control.",
-        SettingsCategory::Appearance => "Theme, colours and text scale.",
-        SettingsCategory::Providers => "Models and the agent CLIs this machine runs.",
-        SettingsCategory::Connectors => "Extensions and MCP servers this workspace can use.",
-        SettingsCategory::Environments => "Projects and their environments.",
-        SettingsCategory::Hosts => "Saved SSH hosts and the conversations they carry.",
-        SettingsCategory::Updates => "Notifications and update status.",
-        _ => "",
-    }
 }

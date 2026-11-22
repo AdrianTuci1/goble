@@ -190,7 +190,7 @@ fn a_row_has_a_14px_label_and_a_12px_description() {
 /// A section is a 12px-radius card with a 1px border, and it draws exactly
 /// `n - 1` rules between `n` rows (none at the card's edges).
 #[test]
-fn a_section_card_has_a_12px_radius_and_one_rule_between_rows() {
+fn a_section_card_has_a_12px_radius_and_no_rules_between_rows() {
     let app = dark();
     let mut section: Box<dyn Element> = Box::new(
         SettingsSection::new("Interface")
@@ -212,7 +212,7 @@ fn a_section_card_has_a_12px_radius_and_one_rule_between_rows() {
         .into_iter()
         .filter(|(rect, _, _)| (rect.height() - 1.0).abs() < 0.01 && rect.width() > 600.0)
         .count();
-    assert_eq!(rules, 2, "n - 1 rules for n rows");
+    assert_eq!(rules, 0, "settings draw no row separator rules");
 }
 
 /// The card's fill and border come from tokens: the dark card sits on a dark

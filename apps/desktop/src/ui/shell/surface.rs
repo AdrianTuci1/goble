@@ -32,7 +32,7 @@ struct WorkspaceSurface {
     child: Box<dyn Element>,
     fill: ColorU,
     backdrop: ColorU,
-    border: ColorU,
+    shadow: ColorU,
     radius: f32,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -44,7 +44,9 @@ impl WorkspaceSurface {
             child,
             fill: app.theme.color(ColorToken::Surface),
             backdrop: app.theme.color(ColorToken::Bg),
-            border: app.theme.color(ColorToken::Border),
+            // A soft neutral shadow under the sheet: the windows float over the
+            // app instead of sitting in a framed box.
+            shadow: ColorU::new(0, 0, 0, 90),
             radius: WORKSPACE_RADIUS,
             size: None,
             origin: None,
@@ -89,7 +91,21 @@ impl Element for WorkspaceSurface {
                 band,
                 self.radius + band,
             );
-            renderer.stroke_rect(sheet, self.border, 1.0, self.radius);
+            // No framing border on the shell: the sheet floats over the app
+            // background with a two-ring soft shadow in the free margin.
+            for (grow, alpha) in [(4.0, 26u8), (2.0, 60u8)] {
+                renderer.stroke_rect(
+                    rectf(
+                        sheet.min_x() - grow,
+                        sheet.min_y() - grow,
+                        sheet.width() + grow * 2.0,
+                        sheet.height() + grow * 2.0,
+                    ),
+                    ColorU::new(0, 0, 0, alpha),
+                    2.0,
+                    self.radius + grow,
+                );
+            }
         }
     }
 

@@ -175,4 +175,8 @@ floating close x), the diff reviewer, the floating file window and the
 changed-files card. The shell draws
 one rounded workspace sheet with a 5 pt free margin; the panels are flat
 children (same background, no borders, no corner ornament) separated only by
-the full-height hairline, with the radius on the shell's outer corners.
+the full-height hairline, with the radius on the shell's outer corners and a
+soft shadow instead of a framing border. The Settings sheet uses a full-height
+secondary rail (small muted heading, primary-text menu labels, no search field,
+no user footer, no row/section rules) and long 120 pt Interface Layout tiles
+with an 8 pt gap.

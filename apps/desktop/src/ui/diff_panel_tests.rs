@@ -341,8 +341,8 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
     );
     assert_eq!(
         times(&commands, "tracked.txt"),
-        1,
-        "the diff header names the second file; the selector is on the first"
+        2,
+        "the Files Changed rail row and the diff header name the second file"
     );
     let pane_x = text_origin(&commands, "review").x;
     let first_content = commands
@@ -415,8 +415,8 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
 
     assert_eq!(
         times(&commands, "new.txt"),
-        2,
-        "the ReviewTab selector and the new file's header both name it"
+        3,
+        "the rail, the ReviewTab selector and the new file's header all name it"
     );
     for expected in ["beta", "gamma"] {
         assert!(
@@ -488,11 +488,15 @@ fn selecting_a_file_narrows_the_view_and_all_changes_restores_it() {
     std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
     std::fs::write(repo.path().join("new.txt"), "gamma\n").unwrap();
     let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
+    let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
 
-    // The list starts collapsed; it is where one file is picked from.
-    click_toolbar_icon(&mut root, &app, "layers-three-01");
-    click_text(&mut root, &app, "new.txt");
+    // R: selecting a row of the Files Changed rail narrows the stack to that
+    // file (the rail click path is covered by the reviewer rail tests).
+    {
+        let mut s = state.borrow_mut();
+        let active = s.active_pane_id;
+        s.select_diff_file(active, Some("new.txt".to_string()));
+    }
     let drawn = texts(&frame(&mut root, &app));
     assert!(
         drawn.iter().any(|text| text == "gamma"),
@@ -521,13 +525,13 @@ fn the_file_list_icon_shows_and_hides_the_rail() {
     let cwd = repo.path().to_string_lossy().to_string();
     let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
 
-    click_toolbar_icon(&mut root, &app, "layers-three-01");
+    // R: the Files Changed rail is visible by default.
     let commands = frame(&mut root, &app);
     let drawn = texts(&commands);
     assert_eq!(
         times(&commands, "new.txt"),
         3,
-        "the list row, the ReviewTab selector and the diff header all name it: {drawn:?}"
+        "the rail row, the ReviewTab selector and the diff header all name it: {drawn:?}"
     );
 
     click_toolbar_icon(&mut root, &app, "layers-three-01");
@@ -536,6 +540,15 @@ fn the_file_list_icon_shows_and_hides_the_rail() {
         times(&commands, "new.txt"),
         2,
         "hiding leaves the path in the ReviewTab selector and diff header: {:?}",
+        texts(&commands)
+    );
+
+    click_toolbar_icon(&mut root, &app, "layers-three-01");
+    let commands = frame(&mut root, &app);
+    assert_eq!(
+        times(&commands, "new.txt"),
+        3,
+        "showing it again brings the rail row back: {:?}",
         texts(&commands)
     );
 }
@@ -558,8 +571,8 @@ fn a_large_file_starts_folded_and_its_header_opens_it() {
     let drawn = texts(&commands);
     assert_eq!(
         times(&commands, "big.txt"),
-        2,
-        "the ReviewTab selector and the diff header both name it"
+        3,
+        "the rail, the ReviewTab selector and the diff header all name it"
     );
     assert!(
         !drawn.iter().any(|text| text == "line-1"),
@@ -1131,10 +1144,11 @@ fn icon_origin(cmds: &[RenderCommand], name: &str) -> Vector2F {
         .unwrap_or_else(|| panic!("the pane draws the {name:?} icon"))
 }
 
-/// A card's header carries warp-new's controls: the fold chevron, copy, link,
-/// revert and open-in-editor, in every file's row.
+/// R: a card's header is text/badge led — the fold chevron, a File/Diff swap,
+/// Revert and copy. The old warp-new icon cluster (link, undo glyph, open in
+/// editor, float) is gone.
 #[test]
-fn every_card_header_wears_warp_news_controls() {
+fn every_card_header_wears_the_compact_controls() {
     if !git_available() {
         return;
     }
@@ -1145,22 +1159,33 @@ fn every_card_header_wears_warp_news_controls() {
     let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
 
     let commands = frame(&mut root, &app);
-    let drawn: Vec<String> = commands
+    let icons: Vec<String> = commands
         .iter()
         .filter_map(|command| match command {
             RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
             _ => None,
         })
         .collect();
-    for control in ["copy", "link", "undo", "maximize-01"] {
+    assert!(
+        icons.iter().filter(|name| *name == "copy").count() >= 2,
+        "both cards keep the copy affordance: {icons:?}"
+    );
+    for heavy in ["link", "undo"] {
         assert!(
-            drawn.iter().filter(|name| *name == control).count() >= 2,
-            "both cards draw {control:?}: {drawn:?}"
+            !icons.iter().any(|name| name == heavy),
+            "the icon cluster dropped {heavy:?}: {icons:?}"
+        );
+    }
+    let labels = texts(&commands);
+    for label in ["File", "Revert"] {
+        assert!(
+            labels.iter().filter(|text| *text == label).count() >= 2,
+            "both cards draw the {label:?} text control: {labels:?}"
         );
     }
     assert!(
-        drawn.iter().any(|name| name == "chevron-down"),
-        "an open card draws its fold chevron: {drawn:?}"
+        icons.iter().any(|name| name == "chevron-down"),
+        "an open card draws its fold chevron: {icons:?}"
     );
 }
 
@@ -1176,9 +1201,7 @@ fn reverting_a_file_asks_first_and_restores_its_head_version() {
     let cwd = repo.path().to_string_lossy().to_string();
     let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
 
-    let commands = frame(&mut root, &app);
-    let undo = icon_origin(&commands, "undo");
-    click(&mut root, &app, undo + vec2f(6.0, 6.0));
+    click_text(&mut root, &app, "Revert");
     let asked = texts(&frame(&mut root, &app));
     assert!(
         asked.iter().any(|text| text == "Discard changes?"),
@@ -1480,16 +1503,18 @@ fn only_the_files_in_view_are_built() {
         "the first file opens the list: {top:?}"
     );
     assert!(
-        !top.iter().any(|text| text == "file-24.txt"),
-        "a file far below the window is not built: {top:?}"
+        !top.iter().any(|text| text == "file-24-line-1"),
+        "a file far below the window has no diff body built: {top:?}"
     );
-    let headers = top
+    // The Files Changed rail is a text list and names every file; only a
+    // windowful of DIFF BODIES is built.
+    let bodies = top
         .iter()
-        .filter(|text| text.starts_with("file-") && text.ends_with(".txt"))
+        .filter(|text| text.starts_with("file-") && text.ends_with("-line-1"))
         .count();
     assert!(
-        headers <= 8,
-        "only a windowful of boxes is built, got {headers}: {top:?}"
+        bodies <= 8,
+        "only a windowful of diff bodies is built, got {bodies}: {top:?}"
     );
 
     {

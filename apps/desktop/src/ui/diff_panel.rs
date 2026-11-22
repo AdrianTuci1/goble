@@ -935,21 +935,9 @@ fn body(
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     let view = crate::state::review_for(&actions.review_views, pane_id);
-    if sidebar {
-        row = row
-            .with_child(reviewer::file_list(
-                app,
-                actions,
-                pane_id,
-                detail,
-                selected.as_deref(),
-                &view.folded_dirs,
-                list_scroll,
-            ))
-            .with_child(divider(app));
-    }
-    // The keyboard handler needs the fold map and the editor focus after the
-    // list has taken its own copies; clone the cheap handles first.
+    // R: the stacked diff is the left column; the single file-list rail is the
+    // narrow "Files Changed" column on the RIGHT. The diff column is not a
+    // second file list — each file opens inline under its own header.
     let keyboard_expanded = expanded.clone();
     let edit_focus = Rc::clone(&focus);
     row = row.with_child(
@@ -959,6 +947,18 @@ fn body(
         ))
         .finish(),
     );
+    if sidebar {
+        let _ = list_scroll;
+        row = row
+            .with_child(divider(app))
+            .with_child(reviewer::files_changed_rail(
+                app,
+                actions,
+                pane_id,
+                detail,
+                selected_path.as_deref(),
+            ));
+    }
     let row = row.finish();
     if !active {
         return row;
@@ -1251,24 +1251,34 @@ fn file_header(
     // DSH's changed-file header: a 40pt rounded tile beside a 13/20 medium
     // path with a 10/16 mono stat line under it. The fold chevron stays at the
     // leading edge so the card still folds from the header.
-    let tile = Container::new(
-        Icon::new(goble_ui::elements::file_icon_name(&file.path))
-            .with_size(20.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
-    )
-    .with_padding(EdgeInsets::uniform((FILE_TILE_SIZE - 20.0) / 2.0))
-    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-    .with_border(Border::all(1.0).with_border_fill(app.theme.color(ColorToken::Border)))
-    .with_corner_radius(10.0)
-    .finish();
-    // DSH's 13/20 medium path: the host's own fade label keeps the cut edge
-    // legible when the controls leave it less room than the path needs.
-    let title = Box::new(PathLabel::new(
-        file.path.clone(),
-        app.theme.color(ColorToken::Text),
-        app.theme.color(ColorToken::SurfaceRaised),
-    )) as Box<dyn Element>;
+    // R: bold filename, muted directory beside it (text/badge led header).
+    let (dir, name) = match file.path.rsplit_once('/') {
+        Some((dir, name)) => (dir.to_string(), name.to_string()),
+        None => (String::new(), file.path.clone()),
+    };
+    let title = {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.0)
+            .with_child(
+                Text::new(name)
+                    .with_font_size(13.0)
+                    .with_weight(FontWeight::SemiBold)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_max_lines(1)
+                    .finish(),
+            );
+        if !dir.is_empty() {
+            row = row.with_child(
+                Text::new(dir)
+                    .with_font_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_max_lines(1)
+                    .finish(),
+            );
+        }
+        row.finish()
+    };
     let titles = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
         .with_spacing(2.0)
@@ -1296,7 +1306,6 @@ fn file_header(
             .with_theme_color(ColorToken::Muted, app)
             .finish(),
         )
-        .with_child(tile)
         .with_child(Expanded::new(titles).finish());
     // An editor's buffer says whether its text has been written back; the
     // counts above describe the change itself.
@@ -1328,96 +1337,52 @@ fn file_header(
         })
         .finish();
 
-    // A deleted file has no text on disk: the controls that would read it are
-    // drawn disabled rather than failing after the press.
-    let exists = reviewer::file_exists(file);
-    let on_copy = actions.on_diff_panel.clone();
+    // R: the header is text/badge led. Only the file/diff swap and a copy
+    // affordance stay beside the path; the old icon cluster is gone.
+    let on_new_row = actions.on_diff_panel.clone();
     let path = file.path.clone();
-    let copy_button = icon_button(app, "copy", "Copy path", move || {
-        (on_copy.borrow_mut())(pane_id, DiffPanelAction::CopyPaths(vec![path.clone()]))
-    });
-
-    // The diff is the body by default; this is the way to the file's text.
-    let on_edit = actions.on_diff_panel.clone();
-    let path = file.path.clone();
+    let _ = on_new_row;
+    let copy_button = {
+        let on_copy = actions.on_diff_panel.clone();
+        let copy_path = file.path.clone();
+        icon_button(app, "copy", "Copy path", move || {
+            (on_copy.borrow_mut())(pane_id, DiffPanelAction::CopyPaths(vec![copy_path.clone()]))
+        })
+    };
     let body_toggle = (!file.binary && !file.truncated).then(|| {
+        let on_edit = actions.on_diff_panel.clone();
+        let edit_path = file.path.clone();
         text_button(app, if editing { "Diff" } else { "File" }, move || {
             (on_edit.borrow_mut())(
                 pane_id,
-                DiffPanelAction::SetFileEditing(path.clone(), !editing),
+                DiffPanelAction::SetFileEditing(edit_path.clone(), !editing),
             )
         })
     });
-
-    let on_content = actions.on_diff_panel.clone();
-    let content_path = file.absolute_path.clone();
-    let content_button = icon_button_enabled(
-        app,
-        "file",
-        "Copy file content",
-        exists && !file.binary && !file.truncated,
-        move || {
-            (on_content.borrow_mut())(pane_id, DiffPanelAction::CopyContent(content_path.clone()))
-        },
-    );
-
-    let on_link = actions.on_diff_panel.clone();
-    let absolute = file.absolute_path.clone();
-    let link_button = icon_button(app, "link", "Copy link", move || {
-        (on_link.borrow_mut())(pane_id, DiffPanelAction::CopyLink(absolute.clone()))
-    });
-    let on_revert = actions.on_diff_panel.clone();
-    let path = file.path.clone();
-    let revert_button = icon_button(app, "undo", "Revert file", move || {
-        (on_revert.borrow_mut())(pane_id, DiffPanelAction::ConfirmRevert(path.clone()))
-    });
-    let on_open = actions.on_diff_panel.clone();
-    let absolute = file.absolute_path.clone();
-    let external_button =
-        icon_button_enabled(app, "maximize-01", "Open in editor", exists, move || {
-            (on_open.borrow_mut())(pane_id, DiffPanelAction::OpenExternal(absolute.clone()))
-        });
-    // The same file in a window of its own: the reviewer's route to the
-    // floating layout, beside the explorer's and the file pane's.
-    let on_float = actions.on_diff_panel.clone();
-    let float_path = file.absolute_path.clone();
-    let float_button = icon_button_enabled(
-        app,
-        "fullscreen-enter",
-        "Open in floating panel",
-        exists,
-        move || (on_float.borrow_mut())(pane_id, DiffPanelAction::OpenFloating(float_path.clone())),
-    );
-
+    let revert_button = {
+        let on_revert = actions.on_diff_panel.clone();
+        let revert_path = file.path.clone();
+        text_button(app, "Revert", move || {
+            (on_revert.borrow_mut())(pane_id, DiffPanelAction::ConfirmRevert(revert_path.clone()))
+        })
+    };
     let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(4.0)
-        .with_child(Expanded::new(toggle).finish())
-        .with_child(copy_button)
-        .with_child(content_button);
+        .with_spacing(6.0)
+        .with_child(Expanded::new(toggle).finish());
     if confirming_revert {
-        // A second press is the one that discards the change; the header asks
-        // in place, so no press on a narrow icon can throw work away alone.
-        let discard = Button::new(
-            Text::new("Revert")
-                .with_font_size(10.0)
-                .with_theme_color(ColorToken::Error, app)
-                .finish(),
-        )
-        .with_variant(ButtonVariant::Default)
-        .with_border_color(app.theme.color(ColorToken::Error))
-        .with_corner_radius(4.0)
-        .with_on_click({
-            let on_diff = actions.on_diff_panel.clone();
-            let path = file.path.clone();
-            move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::RevertFile(path.clone()))
-        })
-        .finish();
         let cancel = text_button(app, "Cancel", {
             let on_diff = actions.on_diff_panel.clone();
             move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::CancelRevert)
         });
+        let confirm = {
+            let on_revert = actions.on_diff_panel.clone();
+            let revert_path = file.path.clone();
+            text_button(app, "Revert", move || {
+                (on_revert.borrow_mut())(pane_id, DiffPanelAction::RevertFile(revert_path.clone()))
+            })
+        };
         row = row
             .with_child(
                 Text::new("Discard changes?")
@@ -1425,18 +1390,15 @@ fn file_header(
                     .with_theme_color(ColorToken::Error, app)
                     .finish(),
             )
-            .with_child(discard)
+            .with_child(confirm)
             .with_child(cancel);
     } else {
         if let Some(body_toggle) = body_toggle {
             row = row.with_child(body_toggle);
         }
-        row = row
-            .with_child(link_button)
-            .with_child(float_button)
-            .with_child(revert_button)
-            .with_child(external_button);
+        row = row.with_child(revert_button).with_child(copy_button);
     }
+    let _ = (&path, editing);
     ConstrainedBox::new(row.finish())
         .with_height(FILE_HEADER_HEIGHT)
         .finish()

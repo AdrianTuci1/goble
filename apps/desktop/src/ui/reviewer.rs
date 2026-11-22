@@ -1336,8 +1336,10 @@ mod ui_tests {
         let cwd = repo.path().to_string_lossy().to_string();
         let (mut root, state, _desktop, _dir, app) = root_with(PaneKind::Diff { cwd });
 
-        click_icon(&mut root, &app, "layers-three-01");
-        click_text(&mut root, &app, "new.txt");
+        // R: the Files Changed rail is on by default; select its row.
+        state
+            .borrow_mut()
+            .select_diff_file(7, Some("new.txt".to_string()));
         assert_eq!(
             *state.borrow().pane_controls(7).diff_selected.borrow(),
             Some("new.txt".to_string()),
@@ -1451,5 +1453,170 @@ mod ui_tests {
             "the file pane the action opened is the active window"
         );
         let _ = _desktop;
+    }
+}
+
+/// R: the narrow "Files Changed" rail on the RIGHT of the review surface. Its
+/// rows are text/badge led (type letter, filename, abbreviated path), with no
+/// per-row icon cluster; clicking a row selects that file in the stack. This is
+/// the one file-list rail — the diff stack beside it is not a second list.
+pub(crate) fn files_changed_rail(
+    app: &AppContext,
+    actions: &UiActions,
+    pane_id: u64,
+    detail: &DiffDetail,
+    selected: Option<&str>,
+) -> Box<dyn Element> {
+    let mut column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(2.0)
+        .with_child(
+            Container::new(
+                Text::new("Files Changed")
+                    .with_font_size(12.0)
+                    .with_weight(FontWeight::Medium)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
+            .finish(),
+        );
+    // The rail's way back to the whole tree.
+    {
+        let on_diff = actions.on_diff_panel.clone();
+        let all = HoverRow::new(
+            Container::new(
+                Text::new("All changes")
+                    .with_font_size(12.0)
+                    .with_theme_color(
+                        if selected.is_none() {
+                            ColorToken::Text
+                        } else {
+                            ColorToken::Muted
+                        },
+                        app,
+                    )
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
+            .with_corner_radius(6.0)
+            .finish(),
+        )
+        .with_selected(selected.is_none())
+        .with_on_click(move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(None)))
+        .finish();
+        column = column.with_child(all);
+    }
+    for file in &detail.files {
+        let path = file.path.clone();
+        let sel = selected == Some(file.path.as_str());
+        let on_diff = actions.on_diff_panel.clone();
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(7.0)
+            .with_child(
+                Text::new(type_badge(&file.path))
+                    .with_font_family(FontFamily::Mono)
+                    .with_font_size(10.0)
+                    .with_weight(FontWeight::SemiBold)
+                    .with_theme_color(badge_color(&file.path), app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(short_name(&file.path))
+                    .with_font_family(FontFamily::System)
+                    .with_font_size(12.0)
+                    .with_weight(FontWeight::SemiBold)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_max_lines(1)
+                    .finish(),
+            )
+            .with_child(
+                Expanded::new(
+                    Text::new(short_dir(&file.path))
+                        .with_font_family(FontFamily::System)
+                        .with_font_size(11.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_max_lines(1)
+                        .finish(),
+                )
+                .finish(),
+            )
+            .finish();
+        let row = HoverRow::new(
+            Container::new(row)
+                .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
+                .with_corner_radius(6.0)
+                .finish(),
+        )
+        .with_selected(sel)
+        .with_on_click(move || {
+            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())))
+        })
+        .finish();
+        column = column.with_child(row);
+    }
+    ConstrainedBox::new(
+        Container::new(Scrollable::new(column.finish(), Axis::Vertical).finish())
+            .with_padding(EdgeInsets::new(4.0, 4.0, 4.0, 4.0))
+            .finish(),
+    )
+    .with_width(220.0)
+    .finish()
+}
+
+fn short_name(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+fn short_dir(path: &str) -> String {
+    let parent = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+    let parts: Vec<&str> = parent.split('/').filter(|part| !part.is_empty()).collect();
+    let tail = parts[parts.len().saturating_sub(2)..].join("/");
+    if tail.is_empty() {
+        String::new()
+    } else {
+        format!("…/{tail}")
+    }
+}
+
+/// The reference's file-type letter badge: h/c source, md, shell, JSON, YAML,
+/// README. Other text files fall back to their extension's first letter.
+fn type_badge(path: &str) -> String {
+    let name = short_name(path);
+    let lower = name.to_ascii_lowercase();
+    if lower == "readme.md" {
+        return "M+".to_string();
+    }
+    let ext = lower.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    match ext {
+        "h" | "hpp" => "h".to_string(),
+        "c" => "c".to_string(),
+        "cc" | "cpp" => "c++".to_string(),
+        "rs" => "R".to_string(),
+        "ts" | "tsx" => "TS".to_string(),
+        "js" | "jsx" => "JS".to_string(),
+        "json" => "{}".to_string(),
+        "yaml" | "yml" => "Y".to_string(),
+        "sh" | "bash" | "zsh" => ">_".to_string(),
+        "md" => "md".to_string(),
+        other if !other.is_empty() => other.chars().take(2).collect(),
+        _ => "•".to_string(),
+    }
+}
+
+fn badge_color(path: &str) -> ColorToken {
+    let ext = short_name(path)
+        .to_ascii_lowercase()
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_string())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "h" | "hpp" | "c" | "cc" | "cpp" | "rs" | "ts" | "tsx" | "js" | "jsx" => ColorToken::Accent,
+        "json" => ColorToken::Warning,
+        "yaml" | "yml" | "sh" | "bash" | "zsh" => ColorToken::Success,
+        _ => ColorToken::Muted,
     }
 }

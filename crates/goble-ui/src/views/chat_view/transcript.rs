@@ -1065,12 +1065,18 @@ impl ChatView {
                     .filter(|summary| !summary.is_empty())
                 {
                     if let Some(on_review) = self.on_review_changes.clone() {
-                        message_column = message_column.with_child(build_changed_files_card(
-                            app,
-                            &summary,
-                            self.changed_files_open.clone(),
-                            on_review,
-                        ));
+                        message_column = message_column.with_child(
+                            Padding::new(
+                                build_changed_files_card(
+                                    app,
+                                    &summary,
+                                    self.changed_files_open.clone(),
+                                    on_review,
+                                ),
+                                EdgeInsets::new(20.0, 0.0, 20.0, 0.0),
+                            )
+                            .finish(),
+                        );
                     }
                 }
             }

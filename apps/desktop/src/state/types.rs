@@ -815,7 +815,7 @@ impl PaneControls {
             diff_edit_focus: Rc::new(RefCell::new(None)),
             // The diffs are the point of the pane; the file list is an optional
             // rail the user opens from the topbar.
-            diff_sidebar: Rc::new(RefCell::new(false)),
+            diff_sidebar: Rc::new(RefCell::new(true)),
             diff_scroll: Rc::new(RefCell::new(ScrollState::smooth())),
             diff_list_scroll: Rc::new(RefCell::new(ScrollState::smooth())),
             diff_hscroll: Rc::new(RefCell::new(std::collections::BTreeMap::new())),

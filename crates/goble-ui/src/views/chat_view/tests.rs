@@ -5034,16 +5034,16 @@ fn a_completed_turn_shows_its_changed_files_and_review_action() {
             _ => None,
         })
         .collect();
-    // A one-file turn is titled by the file's basename, not by a count.
-    for needle in ["a.rs", "+3", "-1", "Review"] {
+    // S: the collapsed card is a count header, not a file tile.
+    for needle in ["1 file changed", "+3", "-1", "Review"] {
         assert!(
             texts.iter().any(|text| *text == needle),
             "the card shows {needle:?}: {texts:?}"
         );
     }
     assert!(
-        !texts.iter().any(|text| *text == "1 file changed"),
-        "a single-file card names the file: {texts:?}"
+        !texts.iter().any(|text| *text == "a.rs"),
+        "the row stays folded until the header is clicked: {texts:?}"
     );
     assert!(
         !texts.iter().any(|text| *text == "src/a.rs"),
@@ -5109,13 +5109,11 @@ fn a_completed_turn_shows_its_changed_files_and_review_action() {
     );
 }
 
-/// The rebuilt changed-files card: DSH's 60 pt header and 40 pt tile, four
-/// folded rows, status glyphs, per-row counts and an expand control that
-/// reveals the rest.
+/// S: the changed-files card is one collapsible header; expanding it reveals
+/// every row (no four-row fold, no 60 pt tile) with the path and counts.
 #[test]
-fn the_changed_files_card_folds_after_four_rows_and_expands() {
+fn the_changed_files_card_expands_from_its_header() {
     use crate::elements::chat_content::{ChangedFile, ChangedFiles};
-    use crate::elements::diff::DiffSpec;
     use crate::event::DispatchedEvent;
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
@@ -5151,58 +5149,31 @@ fn the_changed_files_card_folds_after_four_rows_and_expands() {
             _ => None,
         })
         .collect();
-    for needle in ["6 files changed", "+21", "-15", "Show all 6 files"] {
+    for needle in ["6 files changed", "+21", "-15", "Review"] {
         assert!(
             texts.iter().any(|text| text == needle),
             "the closed card shows {needle:?}: {texts:?}"
         );
     }
     assert!(
-        texts.iter().any(|text| text == "file_3.rs"),
-        "the fourth row is shown"
+        !texts.iter().any(|text| text == "file_0.rs"),
+        "the closed card hides every row: {texts:?}"
     );
     assert!(
-        !texts.iter().any(|text| text == "file_4.rs"),
-        "the fifth row stays folded: {texts:?}"
+        !texts.iter().any(|text| text == "Show all 6 files"),
+        "S removed the four-row fold control"
     );
-    assert!(
-        texts.iter().filter(|text| **text == "M").count() >= 3,
-        "modified rows carry their status letter: {texts:?}"
-    );
-
-    // The header is 60 pt and the leading tile is 40 pt with a 10 pt radius.
-    let tile = commands.iter().any(|command| match command {
-        RenderCommand::FillRect {
-            rect,
-            corner_radius,
-            ..
-        } => {
-            (rect.width() - DiffSpec::CHANGED_FILES_TILE).abs() < f32::EPSILON
-                && (rect.height() - DiffSpec::CHANGED_FILES_TILE).abs() < f32::EPSILON
-                && (*corner_radius - DiffSpec::CHANGED_FILES_TILE_RADIUS).abs() < f32::EPSILON
-        }
-        _ => false,
-    });
-    assert!(tile, "the header draws DSH's 40 pt, radius-10 tile");
-    let header_fill = commands.iter().any(|command| match command {
-        RenderCommand::FillRect { rect, .. } => {
-            (rect.width() - 700.0).abs() < f32::EPSILON
-                && (rect.height() - DiffSpec::CHANGED_FILES_HEADER_HEIGHT).abs() < f32::EPSILON
-        }
-        _ => false,
-    });
-    assert!(header_fill, "the header fills DSH's 60 pt box");
     assert_eq!(card.size().expect("laid out").x, 700.0);
 
     let toggle = commands
         .iter()
         .find_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if text == "Show all 6 files" => {
+            RenderCommand::DrawText { origin, text, .. } if text == "6 files changed" => {
                 Some(*origin)
             }
             _ => None,
         })
-        .expect("the fold control is drawn");
+        .expect("the header is drawn");
     let mut ctx = crate::elements::EventContext::default();
     for event in [
         DispatchedEvent::MouseDown {
@@ -5216,9 +5187,8 @@ fn the_changed_files_card_folds_after_four_rows_and_expands() {
     ] {
         card.dispatch_event(&event, &mut ctx, &app);
     }
-    assert!(*open.borrow(), "the fold control opens the list");
+    assert!(*open.borrow(), "clicking the header opens the list");
 
-    // The app rebuilds the card from its state on the next frame.
     let mut card = super::changed_files_card::build_changed_files_card(
         &app,
         &summary,
@@ -5233,19 +5203,22 @@ fn the_changed_files_card_folds_after_four_rows_and_expands() {
             _ => None,
         })
         .collect();
+    for row in ["file_0.rs", "file_5.rs", "src"] {
+        assert!(
+            texts.iter().any(|text| text == row),
+            "the open card shows {row:?}: {texts:?}"
+        );
+    }
     assert!(
-        texts.iter().any(|text| text == "file_5.rs"),
-        "the sixth row is revealed"
+        !texts.iter().any(|text| text == "Show fewer"),
+        "there is no fold footer any more: {texts:?}"
     );
-    assert!(texts.iter().any(|text| text == "Show fewer"));
-    assert!(texts.iter().any(|text| text == "A"));
-    assert!(texts.iter().any(|text| text == "D"));
 }
 
 /// A one-file card uses the file's basename as its title and never prints the
 /// empty side of the change's counts (`+0` / `-0`).
 #[test]
-fn a_single_file_card_titles_the_basename_and_skips_zero_counts() {
+fn a_single_file_card_shows_its_count_and_skips_zero_counts() {
     use crate::elements::chat_content::{ChangedFile, ChangedFiles};
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
@@ -5274,12 +5247,12 @@ fn a_single_file_card_titles_the_basename_and_skips_zero_counts() {
         })
         .collect();
     assert!(
-        texts.iter().any(|text| text == "panes.rs"),
-        "the title is the file's basename: {texts:?}"
+        texts.iter().any(|text| text == "1 file changed"),
+        "the single-file card is titled by its count: {texts:?}"
     );
     assert!(
-        !texts.iter().any(|text| text == "1 file changed"),
-        "the single-file title is not a count: {texts:?}"
+        texts.iter().any(|text| text == "panes.rs"),
+        "the open card shows the filename: {texts:?}"
     );
     assert!(
         texts.iter().any(|text| text == "+12"),

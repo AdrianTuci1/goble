@@ -60,10 +60,12 @@ fn messages(image: &Path) -> Vec<ChatMessage> {
         extra.push(call(
             &format!("c{index}x"),
             "edit_file",
-            &format!(r#"{{"path":"docs/file-{index}.md"}}"#),
+            &format!(
+                r#"{{"path":"scratch/wheelmq/deploy/site/docs/file-{index}.md"}}"#
+            ),
             "ok",
             Some(&format!(
-                "--- a/docs/file-{index}.md\n+++ b/docs/file-{index}.md\n@@ -1 +1,2 @@\n-old\n+new\n+more\n"
+                "--- a/scratch/wheelmq/deploy/site/docs/file-{index}.md\n+++ b/scratch/wheelmq/deploy/site/docs/file-{index}.md\n@@ -1 +1,2 @@\n-old\n+new\n+more\n"
             )),
         ));
     }
@@ -163,6 +165,20 @@ fn main() -> anyhow::Result<()> {
             None,
             &path,
         )?;
+        println!("wrote {}", path.display());
+
+        // T: at a narrow card width only the path shrinks (leading ellipsis).
+        let open = std::rc::Rc::new(std::cell::RefCell::new(true));
+        let mut narrow = ChatView::new()
+            .without_composer()
+            .with_messages(messages(&fixture))
+            .with_tool_fold(Rc::new(RefCell::new(HashMap::new())))
+            .with_tool_hover(Rc::new(RefCell::new(None)))
+            .with_changed_files_open(open)
+            .with_on_review_changes(|| {})
+            .finish();
+        let path = dir.join(format!("chat-parity-card-narrow-{label}.png"));
+        raster::render_element_to_png(&assets, &app, &mut narrow, 400.0, 1100.0, 2.0, None, &path)?;
         println!("wrote {}", path.display());
 
         // N: the slash menu is an overlay above the composer; it must not

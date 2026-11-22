@@ -178,6 +178,13 @@ inline image message (`chat-parity-*`), the slash menu floating above an
 unchanged composer (`slash-menu-*`), the Review tab beside the main chat
 (`split-review-*`), the file viewer with Review beside it
 (`split-file-viewer-*`) and the narrow split (`split-review-narrow-*`). The
+review surface is a stacked/unified diff column on the left with the single
+"Files Changed" rail on its right; its file headers are text/badge led (fold
+chevron, bold name, muted directory, counts, File/Diff, Revert, copy). The
+chat's changed-files card is the simpler T3 model: one collapsible bordered
+card on the chat background, "N files changed" + counts + chevron and a
+Review button, expanding to full-path rows with counts flush right; on narrow
+widths only the path shrinks, with a leading ellipsis. The
 shell draws one flat workspace sheet with a 5 pt free margin; the panels are
 flat children (same background, no borders, no corner ornament, no shadow)
 separated only by the full-height hairline, with the radius on the shell's

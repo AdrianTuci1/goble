@@ -2,28 +2,27 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::super::read_excerpt::{drawn_lines, EXPANDED_LINE_CAP};
+use super::super::tool_body::READ_TRUNCATION;
+use super::super::{read_excerpt, ChatMessageBubble};
+use super::*;
 use crate::color::ColorU;
 use crate::elements::chat_content::{tool_fold_key, ChatRole, ToolDisplayMode};
 use crate::elements::TerminalFilter;
 use crate::elements::{terminal_block, AppContext, TerminalData, TerminalStatus};
 use crate::geometry::vec2f;
+use crate::platform::text_atlas::FontWeight;
 use crate::render::RenderCommand;
 use crate::test_util::render_element;
-use crate::platform::text_atlas::FontWeight;
 use crate::theme::ColorToken;
 use goble_core::harness::ToolCallStatus;
 use goble_core::harness::{tool_kind_for, tool_row, ToolKind};
-use super::*;
-use super::super::{ChatMessageBubble, read_excerpt};
-use super::super::read_excerpt::{drawn_lines, EXPANDED_LINE_CAP};
-use super::super::tool_body::READ_TRUNCATION;
 
 /// A tool call is inline rows: no border stroke and no raised `surface_2`
 /// card background.
 #[test]
 fn tool_call_draws_no_border_or_card() {
-    let (commands, _) =
-        paint_tool_calls(vec![call("ls", "{}", ToolCallStatus::Finished, None)]);
+    let (commands, _) = paint_tool_calls(vec![call("ls", "{}", ToolCallStatus::Finished, None)]);
 
     let borders = commands
         .iter()
@@ -71,13 +70,21 @@ fn a_tool_row_reads_in_one_quiet_ink_at_regular_weight() {
         _ => None,
     });
     let (color, weight, family, size, line_height) = words.expect("the row's words are drawn");
-    assert_eq!(weight, FontWeight::Regular, "DSH's tool row is regular weight");
+    assert_eq!(
+        weight,
+        FontWeight::Regular,
+        "DSH's tool row is regular weight"
+    );
     assert_eq!(
         color,
         app.theme.color(ColorToken::Muted),
         "the row reads in the quiet ink"
     );
-    assert_eq!(family, crate::theme::FontFamily::System, "the row is prose, not mono");
+    assert_eq!(
+        family,
+        crate::theme::FontFamily::System,
+        "the row is prose, not mono"
+    );
     assert_eq!(size, 13.0, "DSH's process row is 13 px");
     assert!(
         (line_height - 24.0 / 13.0).abs() < 1e-5,
@@ -310,7 +317,10 @@ fn an_agents_command_is_not_a_terminal_block() {
         .iter()
         .filter(|c| matches!(c, RenderCommand::StrokeRect { .. }))
         .count();
-    assert_eq!(borders, 1, "an agent's call draws its body card and no block frame");
+    assert_eq!(
+        borders, 1,
+        "an agent's call draws its body card and no block frame"
+    );
 
     // What it does draw: the row that names the command, then the output.
     let runs = text_runs(&commands);
@@ -651,7 +661,10 @@ fn expanded_read_draws_a_gutter_and_highlighted_lines_on_a_band() {
                     && (*corner_radius - card).abs() < 0.01)
         })
         .count();
-    assert_eq!(card_fills, 1, "the excerpt sits on one card, got {card_fills}");
+    assert_eq!(
+        card_fills, 1,
+        "the excerpt sits on one card, got {card_fills}"
+    );
     assert!(
         commands.iter().any(|c| matches!(
             c,
@@ -661,10 +674,15 @@ fn expanded_read_draws_a_gutter_and_highlighted_lines_on_a_band() {
     );
     let per_line_bands = commands
         .iter()
-        .filter(|c| matches!(c, RenderCommand::FillRect { color, corner_radius, .. }
-            if *color == app.theme.color(ColorToken::Bg) && *corner_radius == 0.0))
+        .filter(|c| {
+            matches!(c, RenderCommand::FillRect { color, corner_radius, .. }
+            if *color == app.theme.color(ColorToken::Bg) && *corner_radius == 0.0)
+        })
         .count();
-    assert_eq!(per_line_bands, 0, "the card owns the surface, not each line");
+    assert_eq!(
+        per_line_bands, 0,
+        "the card owns the surface, not each line"
+    );
 }
 
 /// `count` numbered source lines, the shape the harness's `read_file` returns.
@@ -695,9 +713,13 @@ fn an_expanded_read_is_capped_by_its_body_card() {
     let card = commands
         .iter()
         .find_map(|c| match c {
-            RenderCommand::FillRect { rect, color, corner_radius }
-                if *color == app.theme.color(ColorToken::SurfaceRaised)
-                    && (*corner_radius - crate::elements::chat_typography::card_radius(&app)).abs() < 0.01 =>
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - crate::elements::chat_typography::card_radius(&app)).abs()
+                    < 0.01 =>
             {
                 Some(*rect)
             }
@@ -705,9 +727,10 @@ fn an_expanded_read_is_capped_by_its_body_card() {
         })
         .expect("the excerpt is drawn on its card");
     assert!(
-        card.height() <= crate::elements::chat_typography::CARD_MAX_INNER_HEIGHT
-            + 2.0 * crate::elements::chat_typography::CARD_PADDING.top
-            + 1.0,
+        card.height()
+            <= crate::elements::chat_typography::CARD_MAX_INNER_HEIGHT
+                + 2.0 * crate::elements::chat_typography::CARD_PADDING.top
+                + 1.0,
         "the card is capped at DSH's max height, got {card:?}"
     );
 
@@ -812,7 +835,11 @@ fn drawn_lines_hands_the_highlighter_only_the_text_it_draws() {
         .tail_text
         .as_deref()
         .expect("the tail block is drawn");
-    assert_eq!(tail_text.lines().count(), last, "truncated still draws grok-build's tail");
+    assert_eq!(
+        tail_text.lines().count(),
+        last,
+        "truncated still draws grok-build's tail"
+    );
     assert_eq!(
         truncated.residue,
         Some((2000 - first - last, "…".to_string()))
@@ -895,8 +922,7 @@ fn a_recorded_write_diff_draws_the_change() {
         Some(r#"wrote "src/lib.rs""#),
     );
     write.diff = Some("@@ -0,0 +1,2 @@\n+fn main() {}\n+let x = 1;\n".to_string());
-    let (commands, _) =
-        paint_tool_calls_with_fold(vec![write], Some(ToolDisplayMode::Expanded));
+    let (commands, _) = paint_tool_calls_with_fold(vec![write], Some(ToolDisplayMode::Expanded));
 
     let rows = drawn_row_texts(&commands);
     let header = rows
@@ -932,11 +958,9 @@ fn a_recorded_edit_diff_carries_the_files_context() {
         ToolCallStatus::Finished,
         Some(r#"edited "src/lib.rs""#),
     );
-    edit.diff = Some(
-        "@@ -2,3 +2,3 @@\n let x = 1;\n-let x = 2;\n+let x = 3;\n let x = 4;\n".to_string(),
-    );
-    let (commands, _) =
-        paint_tool_calls_with_fold(vec![edit], Some(ToolDisplayMode::Expanded));
+    edit.diff =
+        Some("@@ -2,3 +2,3 @@\n let x = 1;\n-let x = 2;\n+let x = 3;\n let x = 4;\n".to_string());
+    let (commands, _) = paint_tool_calls_with_fold(vec![edit], Some(ToolDisplayMode::Expanded));
 
     let rows = drawn_row_texts(&commands);
     let header = rows
@@ -1167,8 +1191,7 @@ fn edit_call_paints_the_diff_band_and_highlights_the_code() {
         "the edit draws the delete band, got {bands:?}"
     );
 
-    let highlighted =
-        crate::syntax::highlight("let x = 2;", "src/lib.rs").expect("rust resolves");
+    let highlighted = crate::syntax::highlight("let x = 2;", "src/lib.rs").expect("rust resolves");
     assert!(
         highlighted[0].len() > 1,
         "the edited line is multi-coloured"
@@ -1388,7 +1411,9 @@ fn an_open_row_keeps_the_arrow_in_place_of_the_diamond() {
         );
         let runs = text_runs(&commands);
         assert!(
-            !runs.iter().any(|(text, ..)| text == "❯" || text == "◆" || text == "◈"),
+            !runs
+                .iter()
+                .any(|(text, ..)| text == "❯" || text == "◆" || text == "◈"),
             "an opened row draws no mark or arrow ({mode:?}), got {runs:?}"
         );
         let words = runs
@@ -1436,7 +1461,9 @@ fn a_tool_row_under_the_pointer_shows_the_arrow() {
         .unwrap_or_default();
     let runs = text_runs(&commands);
     assert!(
-        !runs.iter().any(|(text, ..)| text == "❯" || text == "◆" || text == "◈"),
+        !runs
+            .iter()
+            .any(|(text, ..)| text == "❯" || text == "◆" || text == "◈"),
         "the pointer adds no mark or arrow, got {runs:?}"
     );
     let words = runs
@@ -2205,13 +2232,14 @@ fn tool_rows_draw_neither_icon_nor_glyph() {
         });
         assert!(glyph.is_none(), "a {mode:?} tool row draws {glyph:?}");
         let icon = commands.iter().find_map(|command| match command {
-            RenderCommand::DrawIcon { name, .. }
-                if !name.starts_with("chevron-") =>
-            {
+            RenderCommand::DrawIcon { name, .. } if !name.starts_with("chevron-") => {
                 Some(name.clone())
             }
             _ => None,
         });
-        assert!(icon.is_none(), "a {mode:?} tool row draws the icon {icon:?}");
+        assert!(
+            icon.is_none(),
+            "a {mode:?} tool row draws the icon {icon:?}"
+        );
     }
 }

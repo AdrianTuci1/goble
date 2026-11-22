@@ -3,15 +3,17 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
+use super::super::ChatMessageBubble;
+use super::*;
+use crate::elements::chat_content::{
+    tool_fold_key, ChatFragment, ChatRole, SubAgentRowStatus, ToolDisplayMode,
+};
 use crate::elements::SizeConstraint;
-use crate::elements::chat_content::{tool_fold_key, ChatFragment, ChatRole, SubAgentRowStatus, ToolDisplayMode};
 use crate::elements::{AppContext, LayoutContext, PaintContext, TerminalData, TerminalLine};
 use crate::geometry::vec2f;
 use crate::render::{RenderCommand, Renderer};
 use crate::theme::ColorToken;
 use goble_core::harness::ToolCallStatus;
-use super::*;
-use super::super::ChatMessageBubble;
 
 /// A sub-agent shows its own rows: its id, the input, then its output.
 #[test]
@@ -83,11 +85,8 @@ fn each_sub_agent_status_draws_its_own_line() {
         let record = record("conv-child-1", status, activity, elapsed, outcome);
         // A spawn call draws its own row, collapsed by default: no run has to be
         // opened to reach the child this transcript exists to name.
-        let (commands, _) = paint_sub_agent(
-            vec![call.clone()],
-            HashMap::from([(call.id, record)]),
-            None,
-        );
+        let (commands, _) =
+            paint_sub_agent(vec![call.clone()], HashMap::from([(call.id, record)]), None);
         let rows = drawn_row_texts(&commands);
         let row = rows
             .iter()
@@ -112,9 +111,7 @@ fn each_sub_agent_status_draws_its_own_line() {
             "status {status:?} must draw {line:?}, got {row:?}"
         );
         assert_eq!(
-            rows.iter()
-                .filter(|row| row.starts_with("Agent "))
-                .count(),
+            rows.iter().filter(|row| row.starts_with("Agent ")).count(),
             1,
             "the call draws one plain row, got {rows:?}"
         );
@@ -314,8 +311,7 @@ fn a_sub_agent_card_carries_its_open_and_stop_controls() {
     // has no controls.
     let (commands, _) = paint_sub_agent(vec![call], HashMap::new(), None);
     assert!(
-        icon_origin(&commands, "arrow-up").is_none()
-            && icon_origin(&commands, "x-close").is_none(),
+        icon_origin(&commands, "arrow-up").is_none() && icon_origin(&commands, "x-close").is_none(),
         "a row with no record draws no controls"
     );
 }

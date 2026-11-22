@@ -24,6 +24,7 @@ use goble_core::ssh_command::SshSession;
 
 mod builder;
 mod changed_files_card;
+mod composer_overlay;
 mod element;
 mod sticky;
 mod surface;
@@ -217,6 +218,10 @@ pub struct ChatView {
     composer_slash_items: Vec<SlashMenuItem>,
     composer_slash_index: Rc<RefCell<usize>>,
     composer_slash_dismissed: Rc<RefCell<bool>>,
+    /// The floating command list the last rebuild mounted. The view holds it so
+    /// its own dispatch can give the out-of-tree panel the first chance at a
+    /// pointer event, before the transcript's rows behind it.
+    composer_slash_overlay: Rc<RefCell<composer_overlay::OverlayPanelState>>,
     on_composer_slash_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_composer_slash_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_composer_slash_dismiss: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -387,6 +392,7 @@ impl ChatView {
             composer_slash_items: Vec::new(),
             composer_slash_index: Rc::new(RefCell::new(0)),
             composer_slash_dismissed: Rc::new(RefCell::new(false)),
+            composer_slash_overlay: Rc::new(RefCell::new(Default::default())),
             on_composer_slash_move: None,
             on_composer_slash_accept: None,
             on_composer_slash_dismiss: None,

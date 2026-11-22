@@ -177,7 +177,10 @@ impl Element for UsagePopover {
         // Above the trigger, as DSH anchors it. Clamped into the window's inset;
         // when that would cover the pill (a very short pane), the panel flips
         // below instead, DSH's own `--dsh-stat-opposite` fallback.
-        let mut at = vec2f(origin.x + self.panel_origin.x, origin.y + self.panel_origin.y);
+        let mut at = vec2f(
+            origin.x + self.panel_origin.x,
+            origin.y + self.panel_origin.y,
+        );
         if at.y < PANEL_WINDOW_INSET {
             at.y = PANEL_WINDOW_INSET;
         }
@@ -229,14 +232,12 @@ impl Element for UsagePopover {
             | DispatchedEvent::MouseMove { position } => contains(trigger_bounds, *position),
             _ => false,
         };
-        let inside_panel = self
-            .panel_bounds()
-            .is_some_and(|bounds| match event {
-                DispatchedEvent::MouseDown { position, .. }
-                | DispatchedEvent::MouseUp { position, .. }
-                | DispatchedEvent::MouseMove { position } => contains(bounds, *position),
-                _ => false,
-            });
+        let inside_panel = self.panel_bounds().is_some_and(|bounds| match event {
+            DispatchedEvent::MouseDown { position, .. }
+            | DispatchedEvent::MouseUp { position, .. }
+            | DispatchedEvent::MouseMove { position } => contains(bounds, *position),
+            _ => false,
+        });
 
         match event {
             // The pill is not forwarded to: its `HoverRow` consumes the press

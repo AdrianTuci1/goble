@@ -20,6 +20,7 @@ use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
 use super::changed_files_card::build_changed_files_card;
+use super::composer_overlay::ComposerOverlay;
 use super::sticky::StickyTurn;
 use super::usage_popover::UsagePopover;
 use super::ChatView;
@@ -321,9 +322,11 @@ mod failure_tests {
 
 impl ChatView {
     /// The slash-command list, when the draft the composer holds is a command:
-    /// the items the host filtered for that draft, drawn over the whole input
-    /// block. `None` when the draft is not a command (or Escape put the list
-    /// away), so a closed list takes no space at all.
+    /// the items the host filtered for that draft, anchored above the composer
+    /// on the frame's last-painted layer (see
+    /// [`ComposerOverlay`](super::composer_overlay::ComposerOverlay)). `None`
+    /// when the draft is not a command (or Escape put the list away), so a
+    /// closed list takes no space at all.
     fn slash_menu(&self) -> Option<Box<dyn Element>> {
         // The approval card owns the keyboard while it waits, so the command
         // list has no query to follow and draws nothing.
@@ -949,6 +952,10 @@ impl ChatView {
     /// the floating bar.
     pub(super) fn rebuild(&mut self, app: &AppContext, header_height: f32) {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
+        // This frame's overlay is built below (when the draft is a command).
+        // Clear the previous frame's panel now, so a dismissed list can never
+        // keep taking pointer events through the view's dispatch.
+        *self.composer_slash_overlay.borrow_mut() = Default::default();
 
         // The pane's chrome is its own full-width band, OUTSIDE the content
         // lane: the topbar (the height the floating bar takes) and the work
@@ -1501,17 +1508,16 @@ impl ChatView {
                 }
                 column = column.with_child(footer.finish());
             }
-            // The menu sits **directly over the input card**: the owner asked
-            // for the command popup attached above the composer, not separated
-            // from it by the instruction strip (which now lives under the
-            // card). One slot, which the draft's command list wins, then the
-            // model card / flat list.
-            if !waiting {
-                if let Some(menu) = self
-                    .slash_menu()
-                    .or_else(|| self.model_tray())
-                    .or_else(|| self.model_menu())
-                {
+            // The command list is the one band that no longer takes a row in
+            // this column. It is an overlay anchored above the composer: the
+            // `ComposerOverlay` lays the composer out exactly as the closed
+            // column does and queues the panel on the frame's last-painted
+            // layer, so opening it neither shrinks the transcript nor moves the
+            // composer (or the caret inside it). The model tray / flat list keep
+            // their in-flow slot, and the draft's command list still wins it.
+            let slash_panel = if waiting { None } else { self.slash_menu() };
+            if !waiting && slash_panel.is_none() {
+                if let Some(menu) = self.model_tray().or_else(|| self.model_menu()) {
                     column = column.with_child(menu);
                 }
             }
@@ -1526,6 +1532,16 @@ impl ChatView {
             // the answer settles it. The turn-status row stays as the mark
             // that the turn is suspended.
             if !waiting {
+                let composer: Box<dyn Element> = match slash_panel {
+                    Some(panel) => ComposerOverlay::new(composer, Some(panel))
+                        // Keep the exact anchor the in-flow band had: the
+                        // column's own gap now belongs to the overlay instead
+                        // of to a row that pushed the composer.
+                        .with_gap(spacing)
+                        .with_shared_state(self.composer_slash_overlay.clone())
+                        .finish(),
+                    None => composer,
+                };
                 column = column.with_child(composer);
             }
         }

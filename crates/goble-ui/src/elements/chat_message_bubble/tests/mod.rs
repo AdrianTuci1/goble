@@ -3,21 +3,25 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
+use super::*;
 use crate::color::ColorU;
 use crate::elements::chat_content::ChatMessage;
-use crate::elements::chat_content::{tool_fold_key, ChatAction, ChatFragment, ChatRole, SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
+use crate::elements::chat_content::{
+    tool_fold_key, ChatAction, ChatFragment, ChatRole, SubAgentRow, SubAgentRowStatus, ToolCall,
+    ToolDisplayMode,
+};
 use crate::elements::{AppContext, LayoutContext, PaintContext};
 use crate::elements::{Element, SizeConstraint};
 use crate::event::DispatchedEvent;
-use crate::geometry::Vector2F;
 use crate::geometry::vec2f;
+use crate::geometry::Vector2F;
 use crate::platform::text_atlas::{advance_width, FontWeight};
 use crate::render::{RenderCommand, Renderer};
 use crate::test_util::{command_counts, render_element};
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::ToolCallStatus;
-use super::*;
 
+mod image;
 mod interaction;
 mod markdown;
 mod pill;
@@ -126,7 +130,8 @@ fn a_table_draws_a_full_grid() {
     );
     for rule in &horizontal {
         assert!(
-            (rule.width() - outline.width()).abs() < 0.5 && (rule.min_x() - outline.min_x()).abs() < 0.5,
+            (rule.width() - outline.width()).abs() < 0.5
+                && (rule.min_x() - outline.min_x()).abs() < 0.5,
             "a row rule spans the table: {rule:?} against outline {outline:?}"
         );
     }
@@ -145,7 +150,11 @@ fn a_table_draws_a_full_grid() {
     let mut xs: Vec<f32> = vertical.iter().map(|rule| rule.min_x()).collect();
     xs.sort_by(f32::total_cmp);
     xs.dedup_by(|a, b| (*a - *b).abs() < 0.5);
-    assert_eq!(xs.len(), columns - 1, "one rule per column boundary, got {xs:?}");
+    assert_eq!(
+        xs.len(),
+        columns - 1,
+        "one rule per column boundary, got {xs:?}"
+    );
     for x in &xs {
         assert!(
             *x > outline.min_x() + 1.0 && *x < outline.max_x() - 1.0,
@@ -222,7 +231,13 @@ fn a_table_aligns_its_columns_and_stays_inside_the_pane() {
         }
     }
 
-    for (label, column) in [("a.rs", "File"), ("beta", "Summary"), ("b.rs", "File"), ("delta", "Summary"), ("gamma", "Notes")] {
+    for (label, column) in [
+        ("a.rs", "File"),
+        ("beta", "Summary"),
+        ("b.rs", "File"),
+        ("delta", "Summary"),
+        ("gamma", "Notes"),
+    ] {
         let x = origins
             .get(label)
             .unwrap_or_else(|| panic!("{label:?} drew: {commands:?}"));
@@ -259,8 +274,7 @@ fn a_long_command_output_wraps_inside_the_pane() {
         ToolCallStatus::Finished,
         Some(&token),
     );
-    let (commands, width) =
-        paint_tool_calls_in_width(vec![long], ToolDisplayMode::Expanded, 400.0);
+    let (commands, width) = paint_tool_calls_in_width(vec![long], ToolDisplayMode::Expanded, 400.0);
     assert_runs_fit(&commands, width);
 }
 
@@ -315,7 +329,9 @@ fn a_long_sub_agent_row_wraps_inside_the_pane_without_controls() {
     }
     let texts = drawn_texts(&commands);
     assert!(
-        !texts.iter().any(|text| text == "open child" || text == "Stop"),
+        !texts
+            .iter()
+            .any(|text| text == "open child" || text == "Stop"),
         "the transcript row draws no controls, got {texts:?}"
     );
 }
@@ -323,8 +339,7 @@ fn a_long_sub_agent_row_wraps_inside_the_pane_without_controls() {
 #[test]
 fn bubble_layouts_non_zero() {
     let app = AppContext::default();
-    let mut bubble =
-        ChatMessageBubble::new(ChatRole::Assistant, vec![ChatFragment::text("Hello")]);
+    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, vec![ChatFragment::text("Hello")]);
     let size = bubble.layout(
         SizeConstraint::loose(vec2f(400.0, 400.0)),
         &mut LayoutContext::default(),
@@ -360,13 +375,11 @@ fn drawn_text_x(commands: &[RenderCommand], text: &str) -> f32 {
         .unwrap_or_else(|| panic!("{text:?} is drawn"))
 }
 
-/// R1: a transcript row is a full-width band, not a pill. The agent's own
-/// reply paints no box at all, the user's message is one square grey band
-/// spanning the pane, and both inset their text by the transcript's
-/// 10-15 px of padding. The user's row is led by the prompt marker on its
-/// first line, which pushes that row's text one marker-width to the right.
+/// The transcript's row geometry: the agent's reply is a full-width flat band,
+/// while the user's own message is DSH's capped, right-aligned bubble. The row
+/// still spans the lane; only the painted surface is narrow.
 #[test]
-fn transcript_rows_are_full_width_bands_not_pills() {
+fn transcript_rows_are_full_width_bands_with_a_right_aligned_user_bubble() {
     let app = AppContext::default();
     let width = 600.0;
 
@@ -379,7 +392,7 @@ fn transcript_rows_are_full_width_bands_not_pills() {
     );
     assert_eq!(
         message_size.x, width,
-        "the user's message spans the pane's full width"
+        "the user's row still claims the lane, even though its bubble does not"
     );
 
     // The agent's reply: nothing is painted behind it.
@@ -393,11 +406,12 @@ fn transcript_rows_are_full_width_bands_not_pills() {
         "the agent's reply draws no border"
     );
 
-    // The user's message: one rounded grey bubble, edge to edge.
+    // The user's message: one rounded grey bubble, anchored to the trailing
+    // edge and capped at the lane's share.
     let message_counts = command_counts(&message);
     assert_eq!(
         message_counts.fill_rect, 1,
-        "the user's message paints one band"
+        "the user's message paints one bubble"
     );
     assert_eq!(
         message_counts.stroke_rect, 0,
@@ -415,12 +429,23 @@ fn transcript_rows_are_full_width_bands_not_pills() {
             }
             _ => None,
         })
-        .expect("the user's message paints its grey band");
-    assert!(band.1 > 0.0, "the user's band is a rounded bubble");
+        .expect("the user's message paints its grey bubble");
+    assert_eq!(band.1, 20.0, "the user's bubble carries DSH's 20 px radius");
     assert_eq!(
-        (band.0.min_x(), band.0.max_x()),
-        (0.0, width),
-        "the user's band runs across the pane"
+        band.0.max_x(),
+        width,
+        "the user's bubble is right-aligned to the lane's trailing edge"
+    );
+    assert!(
+        band.0.width() <= width * 0.82 + 0.01,
+        "the user's bubble is capped at the lane's share: {} against {width}",
+        band.0.width()
+    );
+    assert_eq!(
+        band.0.height(),
+        14.0 * crate::elements::chat_typography::USER_LH
+            + 2.0 * crate::elements::chat_typography::BAND_PADDING_Y,
+        "the bubble is inset 10 px over and under its 14 / 22 line"
     );
 
     // The agent's reply keeps DSH's 16 px band inset at the edge (the vertical
@@ -431,8 +456,8 @@ fn transcript_rows_are_full_width_bands_not_pills() {
         "the agent's reply keeps its 16 px band inset, got {reply_x}"
     );
 
-    // The user's row draws no prompt marker: the text starts at the same
-    // band inset as the agent's, inside the rounded bubble.
+    // The user's row draws no prompt marker: its text starts one bubble inset
+    // in from the right-aligned bubble's edge.
     assert!(
         !message.iter().any(|command| matches!(
             command,
@@ -442,8 +467,23 @@ fn transcript_rows_are_full_width_bands_not_pills() {
     );
     let message_x = drawn_text_x(&message, "Salut!");
     assert!(
-        (message_x - reply_x).abs() < 1.5,
-        "the user's text shares the band inset: {message_x} against {reply_x}"
+        (message_x - (band.0.min_x() + 16.0)).abs() < 0.01,
+        "the user's text starts at the bubble's 16 px inset: {message_x} against {:?}",
+        band.0
+    );
+
+    // The user's text ends inside the bubble's own right inset, so the 10 × 16
+    // padding holds on both sides.
+    let advance = advance_width(
+        "Salut!",
+        14.0,
+        FontWeight::Regular,
+        crate::theme::FontFamily::System,
+        false,
+    );
+    assert!(
+        message_x + advance <= band.0.max_x() - 16.0 + 0.5,
+        "the user's text keeps the bubble's right inset"
     );
 }
 
@@ -523,10 +563,7 @@ fn run_key(calls: &[ToolCall], start: usize) -> String {
 
 /// Paint `calls` with the run anchored at `start` opened, so the member rows a
 /// folded run hides are on screen.
-fn paint_tool_calls_with_run_open(
-    calls: Vec<ToolCall>,
-    start: usize,
-) -> (Vec<RenderCommand>, f32) {
+fn paint_tool_calls_with_run_open(calls: Vec<ToolCall>, start: usize) -> (Vec<RenderCommand>, f32) {
     let fold = HashMap::from([(run_key(&calls, start), ToolDisplayMode::Expanded)]);
     paint_tool_calls_with_fold_map(calls, fold)
 }
@@ -548,12 +585,15 @@ fn paint_with_pointer_over(
         .renderer
         .take()
         .and_then(|renderer| {
-            renderer.commands().iter().find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text.starts_with(prefix) => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
+            renderer
+                .commands()
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. } if text.starts_with(prefix) => {
+                        Some(*origin)
+                    }
+                    _ => None,
+                })
         })
         .unwrap_or_else(|| panic!("the row {prefix:?} is drawn"));
 
@@ -703,8 +743,7 @@ fn drawn_rows(commands: &[RenderCommand]) -> usize {
 /// run that starts visibly past the previous run's advance — a row's leading
 /// glyph in its own box, say — reads with the space the layout put there.
 fn drawn_row_texts(commands: &[RenderCommand]) -> Vec<String> {
-    let mut runs: Vec<(f32, f32, String, f32)> =
-        commands.iter().filter_map(drawn_run).collect();
+    let mut runs: Vec<(f32, f32, String, f32)> = commands.iter().filter_map(drawn_run).collect();
     runs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     // Cluster by baseline first, then read each cluster left to right: a row's
     // leading glyph sits a few points off its words' baseline.
@@ -894,17 +933,11 @@ fn run_origin(commands: &[RenderCommand], label: &str) -> crate::geometry::Vecto
         .or_else(|| find(&|text| text == trimmed))
         .or_else(|| find(&|text| text.starts_with(trimmed)))
         .or_else(|| find(&|text| text.contains(trimmed)))
-        .unwrap_or_else(|| {
-            panic!("the paragraph must draw the run {label:?}, got {commands:?}")
-        })
+        .unwrap_or_else(|| panic!("the paragraph must draw the run {label:?}, got {commands:?}"))
 }
 
 /// Click `bubble` at an absolute position: press then release.
-fn click_at(
-    bubble: &mut ChatMessageBubble,
-    app: &AppContext,
-    position: crate::geometry::Vector2F,
-) {
+fn click_at(bubble: &mut ChatMessageBubble, app: &AppContext, position: crate::geometry::Vector2F) {
     let mut event_ctx = crate::elements::EventContext::default();
     let down = DispatchedEvent::MouseDown {
         position,
@@ -942,10 +975,7 @@ fn double_click_at(
 /// and right rule in the gutter beside the rows. The transcript draws none of
 /// them — a tool block is bare rows — so every test that reads this expects an
 /// empty list.
-fn rail_strokes(
-    commands: &[RenderCommand],
-    app: &AppContext,
-) -> Vec<crate::geometry::RectF> {
+fn rail_strokes(commands: &[RenderCommand], app: &AppContext) -> Vec<crate::geometry::RectF> {
     commands
         .iter()
         .filter_map(|command| match command {

@@ -16,8 +16,9 @@ use std::rc::Rc;
 use goble_core::harness::ToolCallStatus;
 use goble_ui::elements::chat_content::{tool_fold_key, ToolCall, ToolDisplayMode};
 use goble_ui::elements::{AppContext, Element};
+use goble_ui::elements::{HoverChipLayer, SlashMenuItem, Stack};
 use goble_ui::theme::Theme;
-use goble_ui::{vec2f, ChatFragment, ChatMessage, ChatRole, ChatView};
+use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView};
 
 fn call(id: &str, name: &str, arguments: &str, result: &str, diff: Option<&str>) -> ToolCall {
     ToolCall {
@@ -30,7 +31,7 @@ fn call(id: &str, name: &str, arguments: &str, result: &str, diff: Option<&str>)
     }
 }
 
-fn messages() -> Vec<ChatMessage> {
+fn messages(image: &Path) -> Vec<ChatMessage> {
     let read = call(
         "c1",
         "read_file",
@@ -73,13 +74,22 @@ fn messages() -> Vec<ChatMessage> {
         "test result: ok. 926 passed; 0 failed",
         None,
     );
+    let mut assistant = ChatMessage::from_markdown(
+        ChatRole::Assistant,
+        "## What changed\n\nThe pane rows now follow DSH's nested text model:\n\n- **Tool calls** are plain rows, with no icon or glyph.\n- The diff closes the turn in a card, and `Review` opens it.\n\n```rust\nlet rows = plain_rows(&calls);\n```\n\nSee [the pane guide](https://example.com/panes) for the token map.",
+    );
+    // A real fixture PNG drawn through the transcript's image block: the
+    // preview exercises the decode, aspect fit, rounded cut and caption.
+    assistant.fragments.push(ChatFragment::image(
+        "Pane geometry fixture",
+        image.to_string_lossy().into_owned(),
+    ));
     vec![
-        ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Make the panes DSH-like.")]),
-        ChatMessage::from_markdown(
-            ChatRole::Assistant,
-            "## What changed\n\nThe pane rows now follow DSH's nested text model:\n\n- **Tool calls** are plain rows, with no icon or glyph.\n- The diff closes the turn in a card, and `Review` opens it.\n\n```rust\nlet rows = plain_rows(&calls);\n```\n\nSee [the pane guide](https://example.com/panes) for the token map.",
-        )
-        .with_tool_calls({
+        ChatMessage::new(
+            ChatRole::User,
+            vec![ChatFragment::text("Make the panes DSH-like.")],
+        ),
+        assistant.with_tool_calls({
             let mut calls = vec![read, read2, edit, run];
             calls.extend(extra);
             calls
@@ -90,6 +100,18 @@ fn messages() -> Vec<ChatMessage> {
 fn main() -> anyhow::Result<()> {
     let dir = PathBuf::from("/tmp/goble-work/out");
     std::fs::create_dir_all(&dir)?;
+    // A deterministic fixture image, written next to the preview output and
+    // rendered through the transcript like a workspace screenshot.
+    let fixture = dir.join("chat-parity-fixture.png");
+    let pixels = ::image::RgbaImage::from_fn(640, 320, |x, y| {
+        ::image::Rgba([
+            (32 + x / 5) as u8,
+            (48 + y / 4) as u8,
+            (96 + (x + y) / 8) as u8,
+            255,
+        ])
+    });
+    pixels.save(&fixture)?;
     let assets_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/goble-ui/assets")
         .canonicalize()?;
@@ -99,7 +121,7 @@ fn main() -> anyhow::Result<()> {
             theme,
             ..AppContext::default()
         };
-        let calls = messages().pop().unwrap().tool_calls;
+        let calls = messages(&fixture).pop().unwrap().tool_calls;
         // Open the first run, so the preview shows the nested member rows and
         // their bodies; the group key is the first call's own fold key.
         let key = format!("verb-group:{}", tool_fold_key(&calls[0], 0));
@@ -112,7 +134,7 @@ fn main() -> anyhow::Result<()> {
         ]);
         let mut view = ChatView::new()
             .without_composer()
-            .with_messages(messages())
+            .with_messages(messages(&fixture))
             .with_tool_fold(Rc::new(RefCell::new(fold)))
             .with_tool_hover(Rc::new(RefCell::new(None)))
             .with_on_review_changes(|| {})
@@ -124,7 +146,7 @@ fn main() -> anyhow::Result<()> {
         let open = std::rc::Rc::new(std::cell::RefCell::new(true));
         let mut expanded = ChatView::new()
             .without_composer()
-            .with_messages(messages())
+            .with_messages(messages(&fixture))
             .with_tool_fold(Rc::new(RefCell::new(HashMap::new())))
             .with_tool_hover(Rc::new(RefCell::new(None)))
             .with_changed_files_open(open)
@@ -132,8 +154,45 @@ fn main() -> anyhow::Result<()> {
             .finish();
         let path = dir.join(format!("chat-parity-card-open-{label}.png"));
         raster::render_element_to_png(
-            &assets, &app, &mut expanded, 920.0, 1100.0, 2.0, None, &path,
+            &assets,
+            &app,
+            &mut expanded,
+            920.0,
+            1100.0,
+            2.0,
+            None,
+            &path,
         )?;
+        println!("wrote {}", path.display());
+
+        // N: the slash menu is an overlay above the composer; it must not
+        // resize the transcript or the input.
+        let items = vec![
+            SlashMenuItem::new("review", "Review the working tree").with_icon("file"),
+            SlashMenuItem::new("terminal", "Open a terminal").with_icon("terminal"),
+            SlashMenuItem::new("clear", "Clear the transcript").with_icon("trash-02"),
+        ];
+        let slash = ChatView::new()
+            .with_messages(vec![ChatMessage::new(
+                ChatRole::Assistant,
+                vec![ChatFragment::text("Type / to run a command.")],
+            )])
+            .with_composer_value("/")
+            .with_composer_focused(true)
+            .with_composer_slash_menu(
+                items,
+                std::rc::Rc::new(std::cell::RefCell::new(0)),
+                std::rc::Rc::new(std::cell::RefCell::new(false)),
+            )
+            .with_on_review_changes(|| {})
+            .finish();
+        // The popover is queued on the window's last-painted layer; include
+        // that layer so the preview shows what the app paints.
+        let mut slash: Box<dyn Element> = Stack::new()
+            .with_children(vec![slash, HoverChipLayer::new().finish()])
+            .finish();
+        let path = dir.join(format!("slash-menu-{label}.png"));
+        raster::render_element_to_png(&assets, &app, &mut slash, 920.0, 760.0, 2.0, None, &path)?;
         println!("wrote {}", path.display());
     }
     Ok(())

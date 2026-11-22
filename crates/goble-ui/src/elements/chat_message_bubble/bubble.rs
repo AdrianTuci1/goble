@@ -2,23 +2,27 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::image::{decoded_image, resolve_image_target, ChatImage, ImageFigure};
+use super::quote_rail::{QuoteRail, QUOTE_RAIL_WIDTH};
+use super::tool_call::{build_tool_call_rows, to_text_span};
 use crate::color::ColorU;
-use crate::elements::chat_content::{group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, InlineStyle, ListItem, SubAgentRow, ToolCall, ToolDisplayMode};
+use crate::elements::chat_content::{
+    group_fragments_into_blocks, ChatAction, ChatBlock, ChatFragment, ChatRole, InlineStyle,
+    ListItem, SubAgentRow, ToolCall, ToolDisplayMode,
+};
 use crate::elements::chat_typography;
-use crate::elements::{Chip, Code, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisSize, MainAxisAlignment, Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text, TextSpan, TopbarButton};
+use crate::elements::table_grid::{self, TableCell, TableGrid};
+use crate::elements::terminal_block::TerminalBlockPlumbing;
+use crate::elements::{
+    Chip, Code, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty,
+    Expanded, Fill, Flex, Icon, InlineText, LayoutContext, MainAxisAlignment, MainAxisSize,
+    Padding, PaintContext, Point, SizeConstraint, TerminalFilter, Text, TextSpan, TopbarButton,
+};
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, Vector2F};
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, SpacingToken};
-use super::quote_rail::{QuoteRail, QUOTE_RAIL_WIDTH};
-use crate::elements::table_grid::{self, TableCell, TableGrid};
-use crate::elements::terminal_block::TerminalBlockPlumbing;
-use super::tool_call::{build_tool_call_rows, to_text_span};
 
-/// The user's bubble corner radius. The owner removed the prompt marker and
-/// asked for a rounded bubble; the row may still span the pane, so the radius
-/// sits on the band's own rounded surface.
-const USER_BUBBLE_RADIUS: f32 = 12.0;
 /// The paragraph size of a transcript row; the marker is centred on the
 /// first line's box rather than on the row's top edge. DSH's 14 px content
 /// size, from the shared chat type sheet.
@@ -47,11 +51,99 @@ enum BlockFlow {
 impl BlockFlow {
     fn of(block: &ChatBlock) -> Self {
         match block {
-            ChatBlock::Reasoning { .. }
-            | ChatBlock::Notice { .. }
-            | ChatBlock::Terminal(_) => Self::Process,
+            ChatBlock::Reasoning { .. } | ChatBlock::Notice { .. } | ChatBlock::Terminal(_) => {
+                Self::Process
+            }
             _ => Self::Prose,
         }
+    }
+}
+
+/// Lays a user bubble out at DSH's capped width and paints it against the
+/// transcript's trailing edge.
+///
+/// The row itself still spans the lane — the assistant's rows and the sticky
+/// turn's row probe both expect a full-width row — but the bubble inside it is
+/// only as wide as its text, capped at [`user_bubble_max_width`], and
+/// right-aligned. A `Flex` row would also work, but the wrapper states the
+/// constraint and the paint offset in one place: the bubble is laid out under
+/// the capped width, then painted at `row_width - bubble_width`.
+///
+/// [`user_bubble_max_width`]: crate::elements::chat_typography::user_bubble_max_width
+struct RightAlignedBubble {
+    child: Box<dyn Element>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl RightAlignedBubble {
+    fn new(child: Box<dyn Element>) -> Self {
+        Self {
+            child,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for RightAlignedBubble {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &crate::elements::AppContext,
+    ) -> Vector2F {
+        let lane = constraint.max.x;
+        let max_width = chat_typography::user_bubble_max_width(lane);
+        let child_constraint = SizeConstraint::new(
+            vec2f(0.0, constraint.min.y),
+            vec2f(max_width, constraint.max.y),
+        );
+        let child_size = self.child.layout(child_constraint, ctx, app);
+        // The wrapper claims the lane so the sticky row probe, the transcript
+        // column and the hover/selection surfaces all see the same row width;
+        // only the painted bubble inside is narrow.
+        let width = if lane.is_finite() {
+            lane.max(child_size.x)
+        } else {
+            child_size.x
+        };
+        let size = vec2f(width, child_size.y);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(
+        &mut self,
+        origin: Vector2F,
+        ctx: &mut PaintContext,
+        app: &crate::elements::AppContext,
+    ) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let row_width = self.size.map(|size| size.x).unwrap_or(0.0);
+        let child_width = self.child.size().map(|size| size.x).unwrap_or(row_width);
+        self.child.paint(
+            origin + vec2f((row_width - child_width).max(0.0), 0.0),
+            ctx,
+            app,
+        );
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut crate::elements::EventContext,
+        app: &crate::elements::AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, ctx, app)
     }
 }
 
@@ -250,7 +342,10 @@ impl ChatMessageBubble {
         self
     }
 
-    pub fn with_on_copy_terminal(mut self, on_copy: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>) -> Self {
+    pub fn with_on_copy_terminal(
+        mut self,
+        on_copy: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
+    ) -> Self {
         self.on_copy_terminal = on_copy;
         self
     }
@@ -274,27 +369,27 @@ impl ChatMessageBubble {
         )
     }
 
-    fn rebuild(&mut self, app: &crate::elements::AppContext) {
-        // DSH's markdown block gap is 16 px; the process rows keep the older,
-        // tighter rhythm (a reasoning row and a notice are steps of the reply
-        // rather than prose blocks).
+    fn rebuild(&mut self, app: &crate::elements::AppContext, lane: f32) {
+        // The transcript's prose rhythm: DSH's markdown block gap is 16 px; the
+        // process rows keep the older, tighter rhythm (a reasoning row and a
+        // notice are steps of the reply rather than prose blocks).
         let prose_gap = chat_typography::block_gap(app);
         let process_gap = app.theme.spacing_px(SpacingToken::Sm);
+        let user = self.role == ChatRole::User;
 
-        // A transcript row is a full-width band, not a pill: the agent's own
-        // reply (and the tool rows above it) draws no box at all — no fill, no
-        // border, no corner radius — and the user's own message is the one
-        // surface, a square band that spans the pane. DSH's bubble padding —
-        // 10 px vertical, 16 px horizontal — is the transcript's inset at both
-        // edges, so no line of text touches the pane's border. The band stays
-        // square: DSH's 20 px radius belongs to its inset, right-aligned bubble,
-        // while Goble's rows share the assistant row's full-width column.
-        let bg = match self.role {
-            ChatRole::User => Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)),
-            ChatRole::Assistant | ChatRole::Tool => Fill::None,
+        // A user bubble hugs its widest block up to DSH's cap. The assistant's
+        // rows stay a full-width stretch column.
+        let content_max = if user {
+            (chat_typography::user_bubble_max_width(lane) - 2.0 * chat_typography::BAND_PADDING_X)
+                .max(0.0)
+        } else {
+            f32::INFINITY
         };
-
-        let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        let mut column = Flex::column().with_cross_axis_alignment(if user {
+            CrossAxisAlignment::Start
+        } else {
+            CrossAxisAlignment::Stretch
+        });
 
         // The assistant's own words lead the calls they announce: the harness
         // stores a step's preamble in the same row as its calls, and grok-build
@@ -329,9 +424,15 @@ impl ChatMessageBubble {
                 if *level <= 3 {
                     let top = (chat_typography::H1_TOP_MARGIN - gap).max(0.0);
                     if top > 0.0 {
-                        element = Padding::new(element, EdgeInsets::new(0.0, top, 0.0, 0.0)).finish();
+                        element =
+                            Padding::new(element, EdgeInsets::new(0.0, top, 0.0, 0.0)).finish();
                     }
                 }
+            }
+            if user && content_max.is_finite() {
+                element = ConstrainedBox::new(element)
+                    .with_max_width(content_max)
+                    .finish();
             }
             column = column.with_child(element);
             previous = Some(flow);
@@ -348,7 +449,7 @@ impl ChatMessageBubble {
             if gap > 0.0 {
                 column = column.with_child(Empty::new().with_size(vec2f(0.0, gap)).finish());
             }
-            column = column.with_child(build_tool_call_rows(
+            let mut calls = build_tool_call_rows(
                 &self.tool_calls,
                 &self.tool_fold,
                 &self.tool_hover,
@@ -357,37 +458,52 @@ impl ChatMessageBubble {
                 self.spinner_phase,
                 &self.on_action,
                 app,
-            ));
+            );
+            if user && content_max.is_finite() {
+                calls = ConstrainedBox::new(calls)
+                    .with_max_width(content_max)
+                    .finish();
+            }
+            column = column.with_child(calls);
         }
 
-        // The user's own message is a rounded bubble with no prompt marker:
-        // the owner removed the `▸`/arrow marker and the square band. The row
-        // still spans the pane's column (a full-width left row), but its own
-        // surface is rounded so a user prompt reads as a message, not as a
-        // header or a second composer.
+        // DSH's user message is a right-aligned bubble, not a pane-wide band:
+        // its stack is capped at `min(content-width * 0.702, 82%)`, its surface
+        // is the bubble token, and its 20 px radius carries the 10 × 16 inset.
+        // The agent's own reply (and the tool rows above it) stays flat prose:
+        // no fill, no border, no radius, at the transcript's full width.
         let content = column.finish();
 
-        // No width cap: the row is laid out at whatever the transcript gives
-        // it, which is the pane's full width. The user's band carries the
-        // bubble's radius; the assistant's rows stay flat prose.
         let band_padding = EdgeInsets::new(
             chat_typography::BAND_PADDING_X,
             chat_typography::BAND_PADDING_Y,
             chat_typography::BAND_PADDING_X,
             chat_typography::BAND_PADDING_Y,
         );
-        let band = Container::new(content)
-            .with_background(bg)
-            .with_padding(band_padding);
-        let band = if self.role == ChatRole::User {
-            band.with_corner_radius(USER_BUBBLE_RADIUS)
-        } else {
-            band
-        };
-        self.root = Some(band.finish());
+        let band = Container::new(content).with_padding(band_padding);
+        self.root = Some(match self.role {
+            ChatRole::User => {
+                // Goble's `SurfaceRaised` is its neutral raised surface — the
+                // equivalent of DSH's dark `--dsw-specific-bubble`
+                // (neutral-bluish-850). Keeping it a theme token means the
+                // light and preset palettes follow it too.
+                let bubble = band
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                    .with_corner_radius(chat_typography::USER_BUBBLE_RADIUS)
+                    .finish();
+                RightAlignedBubble::new(bubble).finish()
+            }
+            // Assistant and tool rows keep the full-width, flat band: the
+            // padding is the transcript's own inset, not a surface.
+            ChatRole::Assistant | ChatRole::Tool => band.finish(),
+        });
     }
 
-    fn render_block(&self, block: &ChatBlock, app: &crate::elements::AppContext) -> Box<dyn Element> {
+    fn render_block(
+        &self,
+        block: &ChatBlock,
+        app: &crate::elements::AppContext,
+    ) -> Box<dyn Element> {
         match block {
             ChatBlock::Paragraph(spans) => {
                 // Prose takes the Settings family through the one seam; an
@@ -415,15 +531,28 @@ impl ChatMessageBubble {
                 self.recorded(InlineText::new(text_spans))
                     .with_font_size(MESSAGE_FONT_SIZE)
                     .with_line_height(line_height)
+                    .with_fit_content(self.role == ChatRole::User)
                     .finish()
             }
             ChatBlock::Heading { level, text } => {
                 // DSH's markdown heading ladder: 21/30, 19/28, 18/26, 14/24,
                 // the first three bold and h4 semibold.
                 let (font_size, line_height, weight) = match level {
-                    1 => (chat_typography::H1_SIZE, chat_typography::H1_LH, FontWeight::Bold),
-                    2 => (chat_typography::H2_SIZE, chat_typography::H2_LH, FontWeight::Bold),
-                    3 => (chat_typography::H3_SIZE, chat_typography::H3_LH, FontWeight::Bold),
+                    1 => (
+                        chat_typography::H1_SIZE,
+                        chat_typography::H1_LH,
+                        FontWeight::Bold,
+                    ),
+                    2 => (
+                        chat_typography::H2_SIZE,
+                        chat_typography::H2_LH,
+                        FontWeight::Bold,
+                    ),
+                    3 => (
+                        chat_typography::H3_SIZE,
+                        chat_typography::H3_LH,
+                        FontWeight::Bold,
+                    ),
                     _ => (
                         chat_typography::H4_SIZE,
                         chat_typography::H4_LH,
@@ -473,9 +602,7 @@ impl ChatMessageBubble {
                 .with_background(chat_typography::card_surface(app))
                 .with_border(chat_typography::card_border(app))
                 .with_corner_radius(chat_typography::card_radius(app))
-                .with_padding(EdgeInsets::uniform(
-                    app.theme.spacing_px(SpacingToken::Lg),
-                ))
+                .with_padding(EdgeInsets::uniform(app.theme.spacing_px(SpacingToken::Lg)))
                 .finish()
             }
             ChatBlock::Ansi { text } => {
@@ -485,8 +612,8 @@ impl ChatMessageBubble {
                 // A terminal line is already complete, so each line is its own
                 // flow; the column keeps them one under the other without the
                 // blank line a hard break inside one flow would leave.
-                let mut column = Flex::column()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                let mut column =
+                    Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
                 for line in crate::elements::chat_content::ansi::parse(text) {
                     let spans: Vec<TextSpan> = line
                         .into_iter()
@@ -539,8 +666,36 @@ impl ChatMessageBubble {
                 )
                 .finish(),
             ChatBlock::Image { alt, url } => {
+                let target = resolve_image_target(url);
+                let action = target.action();
+                if let Some(decoded) = decoded_image(&target) {
+                    let on_action = self.on_action.clone();
+                    let click = action.clone();
+                    let image = ChatImage::new(decoded, self.role == ChatRole::User, app);
+                    // The picture is the hit target: a local file opens in a
+                    // file pane, a remote URL through the guarded opener. The
+                    // caption below stays inert prose.
+                    let image = Chip::flat(image.finish())
+                        .with_on_click(move || {
+                            if let Some(cb) = on_action.as_ref() {
+                                (cb.borrow_mut())(click.clone());
+                            }
+                        })
+                        .finish();
+                    let caption = (!alt.trim().is_empty()).then(|| {
+                        Text::new(alt.clone())
+                            .with_color(chat_typography::chat_ink_quiet(app))
+                            .with_font_family(chat_typography::chat_font(app))
+                            .with_font_size(chat_typography::SMALL_SIZE)
+                            .with_line_height(chat_typography::SMALL_LH)
+                            .finish()
+                    });
+                    return ImageFigure::new(image, caption).finish();
+                }
+                // No local bytes to draw (a network URL, an unsupported file,
+                // a failed decode): the alt text is the honest fallback. It
+                // still opens the same target a decoded image would.
                 let on_action = self.on_action.clone();
-                let url = url.clone();
                 Chip::new(
                     Text::new(alt.clone())
                         .with_theme_color(ColorToken::Accent, app)
@@ -548,7 +703,7 @@ impl ChatMessageBubble {
                 )
                 .with_on_click(move || {
                     if let Some(cb) = on_action.as_ref() {
-                        (cb.borrow_mut())(ChatAction::OpenUrl(url.clone()));
+                        (cb.borrow_mut())(action.clone());
                     }
                 })
                 .finish()
@@ -662,7 +817,11 @@ impl ChatMessageBubble {
 
     /// Render a nested block stack (a blockquote's or list item's content) in a
     /// column so it keeps its paragraph structure.
-    fn render_blocks(&self, blocks: &[ChatBlock], app: &crate::elements::AppContext) -> Box<dyn Element> {
+    fn render_blocks(
+        &self,
+        blocks: &[ChatBlock],
+        app: &crate::elements::AppContext,
+    ) -> Box<dyn Element> {
         // DSH's assistant block gap is 16 px; the nested stacks (a quote's or a
         // list item's blocks) keep it, so paragraphs stay distinct.
         let spacing = chat_typography::block_gap(app);
@@ -857,7 +1016,7 @@ impl Element for ChatMessageBubble {
         ctx: &mut LayoutContext,
         app: &crate::elements::AppContext,
     ) -> Vector2F {
-        self.rebuild(app);
+        self.rebuild(app, constraint.max.x);
         let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size

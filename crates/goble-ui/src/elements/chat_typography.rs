@@ -51,6 +51,33 @@ pub const BLOCK_GAP: f32 = 16.0;
 
 /// 22 / 14: DSH's user-bubble line height.
 pub const USER_LH: f32 = 1.571_428_6;
+/// DSH's user-bubble corner radius: `--dsw-radius-xl` = 20 px at defaults.
+pub const USER_BUBBLE_RADIUS: f32 = 20.0;
+/// DSH's user-stack width cap: `--dsh-chat-content-width * 0.702` (525 px on
+/// the 748 px default column).
+pub const USER_BUBBLE_MAX_RATIO: f32 = 0.702;
+/// DSH's fallback user-stack cap: `82%` of the width it is mounted in, used
+/// when that width is narrower than the conversation column the 0.702 ratio
+/// assumes.
+pub const USER_BUBBLE_FALLBACK_RATIO: f32 = 0.82;
+/// The lane width below which the 82% fallback applies: the narrowest content
+/// column Goble's lane can be dragged to (`CONTENT_LANE_MIN_CONTENT_WIDTH`).
+pub const USER_BUBBLE_NARROW_LANE: f32 = 640.0;
+/// The widest a user bubble may grow inside a `lane`-wide transcript: DSH's
+/// `min(content-width * 0.702, 82%)`, expressed against the lane Goble has.
+/// A narrow lane takes the 82% branch so a prompt does not shrink to a column.
+pub fn user_bubble_max_width(lane: f32) -> f32 {
+    if !lane.is_finite() {
+        return lane;
+    }
+    let lane = lane.max(0.0);
+    let ratio = if lane < USER_BUBBLE_NARROW_LANE {
+        USER_BUBBLE_FALLBACK_RATIO
+    } else {
+        USER_BUBBLE_MAX_RATIO
+    };
+    lane * ratio
+}
 /// A transcript band's horizontal inset: DSH's bubble padding 10 × 16.
 pub const BAND_PADDING_X: f32 = 16.0;
 /// Goble's own role marker: the `❯` that leads the user's row (DSH has no
@@ -369,6 +396,19 @@ mod tests {
         let overridden = crate::color::ColorU::new(1, 2, 3, 255);
         app.theme = Theme::dark().with_overrides(Some(overridden), None, None, None, None);
         assert_eq!(chat_ink(&app), overridden);
+    }
+
+    #[test]
+    fn the_user_bubble_cap_is_dshs_ratio_with_a_narrow_lane_fallback() {
+        // A full content lane takes DSH's 0.702 cap.
+        assert!((user_bubble_max_width(920.0) - 920.0 * 0.702).abs() < 1e-4);
+        // Below Goble's narrowest content column the 82% fallback keeps the
+        // bubble from collapsing to a 70.2% sliver.
+        assert!((user_bubble_max_width(600.0) - 600.0 * 0.82).abs() < 1e-4);
+        assert!((user_bubble_max_width(639.0) - 639.0 * 0.82).abs() < 1e-4);
+        assert!((user_bubble_max_width(640.0) - 640.0 * 0.702).abs() < 1e-4);
+        // A degenerate lane never produces a negative cap.
+        assert_eq!(user_bubble_max_width(0.0), 0.0);
     }
 
     #[test]

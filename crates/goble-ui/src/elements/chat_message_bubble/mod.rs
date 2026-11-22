@@ -7,13 +7,14 @@
 //! path (`elements::chat_message_bubble::ChatMessageBubble`) unchanged.
 
 mod bubble;
+mod image;
 mod quote_rail;
 mod read_excerpt;
+#[cfg(test)]
+mod tests;
 mod tool_block_gesture;
 mod tool_body;
 mod tool_call;
-#[cfg(test)]
-mod tests;
 
 pub use bubble::ChatMessageBubble;
 pub(crate) use quote_rail::QuoteRail;

@@ -1,15 +1,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::SizeConstraint;
+use super::super::ChatMessageBubble;
+use super::*;
 use crate::elements::chat_content::ChatMessage;
 use crate::elements::chat_content::{ChatAction, ChatFragment, ChatRole};
+use crate::elements::SizeConstraint;
 use crate::elements::{AppContext, LayoutContext, PaintContext};
 use crate::event::DispatchedEvent;
 use crate::geometry::vec2f;
 use crate::render::{RenderCommand, Renderer};
-use super::*;
-use super::super::{ChatMessageBubble};
 
 #[test]
 fn action_click_fires_callback() {
@@ -147,9 +147,9 @@ fn a_table_copy_control_copies_csv() {
     let (origin, size) = commands
         .iter()
         .find_map(|command| match command {
-            RenderCommand::DrawIcon { origin, name, size, .. } if name == "copy" => {
-                Some((*origin, *size))
-            }
+            RenderCommand::DrawIcon {
+                origin, name, size, ..
+            } if name == "copy" => Some((*origin, *size)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("the table draws a copy control, got {commands:?}"));

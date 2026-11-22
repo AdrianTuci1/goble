@@ -2,18 +2,18 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::super::{ChatMessageBubble, QUOTE_RAIL_WIDTH};
+use super::*;
 use crate::color::ColorU;
-use crate::elements::SizeConstraint;
 use crate::elements::chat_content::ChatMessage;
 use crate::elements::chat_content::{ChatFragment, ChatRole};
+use crate::elements::SizeConstraint;
 use crate::elements::{AppContext, LayoutContext, PaintContext};
 use crate::event::DispatchedEvent;
 use crate::geometry::vec2f;
 use crate::platform::text_atlas::FontWeight;
 use crate::render::{RenderCommand, Renderer};
 use crate::theme::ColorToken;
-use super::*;
-use super::super::{ChatMessageBubble, QUOTE_RAIL_WIDTH};
 
 #[test]
 fn italic_is_not_bold_and_bold_italic_is_both() {
@@ -117,9 +117,14 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
         FontWeight::Regular,
         "DSH's reasoning disclosure row is regular weight, got {header:?}"
     );
-    assert_eq!(header.0, "Thought", "the finished label is exactly grok-build's");
+    assert_eq!(
+        header.0, "Thought",
+        "the finished label is exactly grok-build's"
+    );
     assert!(
-        !texts.iter().any(|(text, _, _)| text == "◆ " || text == "◈ "),
+        !texts
+            .iter()
+            .any(|(text, _, _)| text == "◆ " || text == "◈ "),
         "a thinking row draws no tool mark, got {texts:?}"
     );
     assert!(
@@ -141,9 +146,7 @@ fn reasoning_row_is_recessed_and_collapsed_until_expanded() {
                 line_height,
                 font_family,
                 ..
-            } if text.contains("Thought") => {
-                Some((*font_size, *line_height, *font_family))
-            }
+            } if text.contains("Thought") => Some((*font_size, *line_height, *font_family)),
             _ => None,
         })
         .expect("the reasoning title is drawn");
@@ -195,7 +198,11 @@ fn a_notice_draws_quiet_at_note_size() {
         .into_iter()
         .find(|(text, ..)| text.starts_with("Context 82%"))
         .unwrap_or_else(|| panic!("the notice is drawn, got {commands:?}"));
-    assert_eq!(run.1, app.theme.color(ColorToken::Muted), "the notice is quiet");
+    assert_eq!(
+        run.1,
+        app.theme.color(ColorToken::Muted),
+        "the notice is quiet"
+    );
     assert_eq!(run.3, 13.0, "DSH's notice row is the 13 px process tier");
 }
 
@@ -395,7 +402,11 @@ fn fenced_code_block_is_a_hairline_card() {
             _ => None,
         })
         .collect();
-    assert_eq!(sizes, [11].into_iter().collect(), "the fence draws at 11 px");
+    assert_eq!(
+        sizes,
+        [11].into_iter().collect(),
+        "the fence draws at 11 px"
+    );
 }
 
 /// The agent's coloured output is chat text: the escapes colour the glyphs and
@@ -426,8 +437,16 @@ fn an_ansi_fence_paints_coloured_prose_without_a_panel() {
             .unwrap_or_else(|| panic!("{needle:?} is drawn, got {runs:?}"))
     };
     let red = run("red");
-    assert_eq!(red.1, ColorU::new(205, 0, 0, 255), "the named foreground colours the run");
-    assert_eq!(red.2, FontFamily::System, "coloured output is prose, not code");
+    assert_eq!(
+        red.1,
+        ColorU::new(205, 0, 0, 255),
+        "the named foreground colours the run"
+    );
+    assert_eq!(
+        red.2,
+        FontFamily::System,
+        "coloured output is prose, not code"
+    );
     let green = run("bold green");
     assert_eq!(green.1, ColorU::new(0, 205, 0, 255));
     assert_eq!(green.3, 14.0, "coloured output sits at the message's size");

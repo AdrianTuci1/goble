@@ -69,10 +69,10 @@ fn chat_view_renders_markdown_message() {
     assert!(size.y > 0.0);
 }
 
-/// R1: the transcript is full-width rows, not pills. The agent's reply
-/// paints no box, the user's message is a square band running across the
-/// pane, and the agent's row insets its text by 10-15 px of padding. The
-/// user's row is led by the prompt marker, so its text starts past it.
+/// The transcript's rows are full-width, not pills: the agent's reply paints
+/// no box and keeps DSH's 16 px inset, while the user's own message is the one
+/// surface — a right-aligned, capped bubble at 20 px radius with a 10 × 16
+/// inset.
 #[test]
 fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     use crate::render::RenderCommand;
@@ -125,8 +125,8 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     );
     let _ = command_counts(&commands);
 
-    // The user's message is a pane-wide rounded bubble. It is the only raised
-    // fill at the bubble radius.
+    // The user's message is DSH's right-aligned bubble: capped, rounded at
+    // 20 and carrying the 10 × 16 inset.
     let band = commands
         .iter()
         .find_map(|command| match command {
@@ -135,18 +135,35 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
                 color,
                 corner_radius,
             } if *color == app.theme.color(ColorToken::SurfaceRaised)
-                && (*corner_radius - 12.0).abs() < 0.01 =>
+                && (*corner_radius - crate::elements::chat_typography::USER_BUBBLE_RADIUS)
+                    .abs()
+                    < 0.01 =>
             {
                 Some((*rect, *corner_radius))
             }
             _ => None,
         })
         .expect("the user's message paints its bubble");
-    assert!(band.1 > 0.0, "the user's bubble is rounded");
     assert_eq!(
-        (band.0.min_x(), band.0.max_x()),
-        (0.0, width),
-        "the user's bubble still spans the pane"
+        band.1,
+        crate::elements::chat_typography::USER_BUBBLE_RADIUS,
+        "the user's bubble is rounded at DSH's 20 px"
+    );
+    assert_eq!(
+        band.0.max_x(),
+        width,
+        "the user's bubble is right-aligned to the pane's trailing edge"
+    );
+    assert!(
+        band.0.width() <= width * 0.82 + 0.01,
+        "the user's bubble is capped at the lane's share: {} against {width}",
+        band.0.width()
+    );
+    assert_eq!(
+        band.0.height(),
+        14.0 * crate::elements::chat_typography::USER_LH
+            + 2.0 * crate::elements::chat_typography::BAND_PADDING_Y,
+        "the bubble is inset 10 px over and under its 14 / 22 line"
     );
 
     let text_x = |label: &str| {
@@ -169,8 +186,8 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
         "the agent's row keeps DSH's 16 px band inset, got {reply_x}"
     );
 
-    // No prompt marker: the user's text starts at the same band inset as the
-    // agent's, inside the rounded bubble.
+    // No prompt marker: the user's text starts one bubble inset in from the
+    // right-aligned bubble's edge.
     assert!(
         !commands.iter().any(|command| matches!(
             command,
@@ -179,8 +196,9 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
         "the user's message draws no prompt marker"
     );
     assert!(
-        (user_x - reply_x).abs() < 1.5,
-        "the user's text shares the band inset: {user_x} against {reply_x}"
+        (user_x - (band.0.min_x() + crate::elements::chat_typography::BAND_PADDING_X)).abs() < 0.01,
+        "the user's text starts at the bubble's 16 px inset: {user_x} against {:?}",
+        band.0
     );
 }
 
@@ -2710,8 +2728,10 @@ fn the_input_card_is_the_bottom_block_with_no_rule_over_it() {
 /// the slot does not move between them.
 #[test]
 fn the_model_band_opens_over_the_strip_like_the_command_list() {
-    use crate::elements::{PopupMenuItem, ShortcutHint, SlashMenuItem};
-    use crate::render::RenderCommand;
+    use crate::elements::{
+        HoverChipLayer, PaintContext, PopupMenuItem, ShortcutHint, SlashMenuItem,
+    };
+    use crate::render::{RenderCommand, Renderer};
     use crate::test_util::render_element;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2798,9 +2818,9 @@ fn the_model_band_opens_over_the_strip_like_the_command_list() {
          {card_top} {editor} {strip}"
     );
 
-    // The same view with a command draft: the command list is the band on the
-    // frame, and it starts exactly where the model list did — one slot, not two
-    // placements that happen to look alike.
+    // The same view with a command draft: the command list is the anchored
+    // popover, so it rides the frame's last-painted layer, and it starts exactly
+    // where the model list did — one slot, not two placements that look alike.
     let dismissed = Rc::new(RefCell::new(false));
     let mut commanded = ChatView::new()
         .with_messages(messages)
@@ -2810,11 +2830,295 @@ fn the_model_band_opens_over_the_strip_like_the_command_list() {
         .with_composer_model_menu(models, open.clone(), index, |_| {})
         .with_composer_slash_menu(commands, Rc::new(RefCell::new(0)), dismissed)
         .finish();
-    let frame = render_element(&mut commanded, vec2f(width, 520.0), &app);
+    let mut frame = render_element(&mut commanded, vec2f(width, 520.0), &app);
+    let mut layer_ctx = PaintContext::new(Renderer::new());
+    HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut layer_ctx, &app);
+    frame.extend(
+        layer_ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default(),
+    );
     let command_row = line_of(&frame, "/clear");
     assert!(
         (command_row - model_row).abs() < 0.5,
         "the two bands share one slot: command row at {command_row}, model row at {model_row}"
+    );
+}
+
+/// The slash-command list is an overlay, not a row of the pane: opening it must
+/// leave the composer's rect and the transcript's content origin exactly where
+/// they were closed. The panel itself is queued on the frame's last-painted
+/// layer, above the composer, and its keys still move/take/dismiss the menu.
+#[test]
+fn the_slash_menu_opens_above_the_composer_without_moving_anything() {
+    use crate::elements::{EventContext, HoverChipLayer, PaintContext, SlashMenuItem};
+    use crate::event::{DispatchedEvent, ModifiersState};
+    use crate::geometry::RectF;
+    use crate::render::{RenderCommand, Renderer};
+    use crate::test_util::render_element;
+
+    fn composer_card(commands: &[RenderCommand], app: &AppContext) -> RectF {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } if *color == app.theme.color(ColorToken::Surface)
+                    && (*corner_radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the composer card is drawn: {commands:?}"))
+    }
+
+    fn text_origin(commands: &[RenderCommand], needle: &str) -> Vector2F {
+        commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == needle => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle:?} is drawn: {commands:?}"))
+    }
+
+    let app = AppContext::default();
+    let width = 600.0;
+    let height = 520.0;
+    let messages = vec![
+        ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Hello there")]),
+        ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text("Hi")]),
+    ];
+    let commands = vec![
+        SlashMenuItem::new("help", "List the commands"),
+        SlashMenuItem::new("clear", "Clear the transcript"),
+    ];
+    let index = Rc::new(RefCell::new(0));
+    let caret = Rc::new(RefCell::new(1));
+    // Start closed: Escape has already put the list away for this draft.
+    let dismissed = Rc::new(RefCell::new(true));
+    let accepted: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let changed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let dismiss_for_key = dismissed.clone();
+    let accepted_for_key = accepted.clone();
+    let changed_for_key = changed.clone();
+    let mut view = ChatView::new()
+        .with_messages(messages)
+        .with_composer_focused(true)
+        .with_composer_value("/")
+        .with_composer_caret(caret.clone())
+        .with_composer_slash_menu(commands, index.clone(), dismissed.clone())
+        .with_composer_on_slash_accept(move |row| accepted_for_key.borrow_mut().push(row))
+        .with_composer_on_slash_dismiss(move || *dismiss_for_key.borrow_mut() = true)
+        .with_composer_on_change(move |text| changed_for_key.borrow_mut().push(text))
+        .finish();
+
+    // Closed frame. The same view is rendered again open below, so everything
+    // but the menu's open flag is byte-for-byte the same input.
+    let closed_frame = render_element(&mut view, vec2f(width, height), &app);
+    let closed_card = composer_card(&closed_frame, &app);
+    let closed_message = text_origin(&closed_frame, "Hi");
+    assert!(
+        app.hover_chips.borrow().is_empty(),
+        "a closed list queues no overlay"
+    );
+
+    // Open the same draft's list and render the same view at the same width.
+    *dismissed.borrow_mut() = false;
+    let open_frame = render_element(&mut view, vec2f(width, height), &app);
+    assert_eq!(
+        format!("{closed_frame:?}"),
+        format!("{open_frame:?}"),
+        "the menu is an overlay: the frame's own tree (composer rect, transcript \
+         origin, caret) is identical open and closed"
+    );
+    assert_eq!(
+        composer_card(&open_frame, &app),
+        closed_card,
+        "the composer keeps its rect when the menu opens"
+    );
+    assert_eq!(
+        text_origin(&open_frame, "Hi"),
+        closed_message,
+        "the transcript content keeps its origin when the menu opens"
+    );
+    assert_eq!(
+        *caret.borrow(),
+        1,
+        "the editor keeps its caret when the menu opens"
+    );
+
+    // The menu rides the last layer, after the composer painted.
+    let mut layer_ctx = PaintContext::new(Renderer::new());
+    let queued = app.hover_chips.borrow().len();
+    app.open_menus.begin_paint();
+    HoverChipLayer::new().paint(vec2f(0.0, 0.0), &mut layer_ctx, &app);
+    app.open_menus.end_paint();
+    let layer = layer_ctx
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec())
+        .unwrap_or_default();
+    assert_eq!(queued, 1, "the open list queues itself for the last layer");
+    assert!(
+        app.hover_chips.borrow().is_empty(),
+        "the last layer drains the queue every frame"
+    );
+
+    let panel_card = layer
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - 8.0).abs() < 0.01 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("the menu panel is drawn by the last layer");
+    assert!(
+        panel_card.max_y() <= closed_card.min_y(),
+        "the panel is anchored above the composer: {panel_card:?} against {closed_card:?}"
+    );
+    assert!(
+        panel_card.min_y() >= 0.0 && panel_card.min_x() >= 0.0 && panel_card.max_x() <= width,
+        "the panel is clamped inside the pane/window: {panel_card:?}"
+    );
+    assert!(
+        layer.iter().any(
+            |command| matches!(command, RenderCommand::DrawText { text, .. } if text == "/help")
+        ),
+        "the list's rows are drawn in the overlay: {layer:?}"
+    );
+    assert_eq!(
+        app.open_menus.id(),
+        Some("composer.slash"),
+        "the overlay is the window's open menu, so an outside press dismisses it"
+    );
+    // Command order: the panel is painted after (above) the composer card.
+    let mut combined = open_frame.clone();
+    combined.extend(layer.clone());
+    let composer_at = combined
+        .iter()
+        .position(|command| {
+            matches!(command, RenderCommand::FillRect { rect, color, corner_radius }
+                if *rect == closed_card
+                    && *color == app.theme.color(ColorToken::Surface)
+                    && (*corner_radius - crate::elements::COMPOSER_CARD_RADIUS).abs() < 0.01)
+        })
+        .expect("the composer card is in the frame");
+    let panel_at = combined
+        .iter()
+        .position(|command| {
+            matches!(command, RenderCommand::FillRect { rect, color, corner_radius }
+                if *rect == panel_card
+                    && *color == app.theme.color(ColorToken::SurfaceRaised)
+                    && (*corner_radius - 8.0).abs() < 0.01)
+        })
+        .expect("the menu panel is in the last layer");
+    assert!(
+        panel_at > composer_at,
+        "the menu panel paints above the composer (commands {panel_at} vs {composer_at})"
+    );
+    // A press on the panel's surface is the menu's, not an outside dismissal.
+    assert!(
+        app.open_menus
+            .pointer_on_surface(vec2f(panel_card.min_x() + 20.0, panel_card.min_y() + 20.0)),
+        "the open menu owns the pointer over its own panel"
+    );
+
+    // The panel is out of the tree, so the wrapper must forward its press to
+    // the menu's rows: click the first row (heading 22 + row 34, padded 4).
+    let first_row = vec2f(
+        panel_card.min_x() + 100.0,
+        panel_card.min_y() + 4.0 + 22.0 + 17.0,
+    );
+    let mut event_ctx = EventContext::default();
+    for event in [
+        DispatchedEvent::MouseDown {
+            position: first_row,
+            button: 0,
+        },
+        DispatchedEvent::MouseUp {
+            position: first_row,
+            button: 0,
+        },
+    ] {
+        assert!(
+            view.dispatch_event(&event, &mut event_ctx, &app),
+            "the overlay takes the press on its row"
+        );
+    }
+    assert_eq!(
+        *accepted.borrow(),
+        vec![0],
+        "a click on the menu's row takes that row"
+    );
+    accepted.borrow_mut().clear();
+
+    // Keyboard navigation still runs through the composer: Down/Up move the
+    // highlight, Enter takes the row, Escape puts the list away.
+    let key = |key: &str| DispatchedEvent::KeyDown {
+        key: key.to_string(),
+        modifiers: ModifiersState::none(),
+    };
+    assert!(
+        view.dispatch_event(&key("ArrowDown"), &mut event_ctx, &app),
+        "Down belongs to the open list"
+    );
+    assert_eq!(*index.borrow(), 1, "Down moves the highlight");
+    assert!(
+        view.dispatch_event(&key("ArrowUp"), &mut event_ctx, &app),
+        "Up belongs to the open list"
+    );
+    assert_eq!(*index.borrow(), 0, "Up moves the highlight back");
+
+    // Filtering is the editor's job while the list is up: a letter still lands
+    // in the draft (which the host re-filters) instead of being eaten by the
+    // menu or moving the caret.
+    assert!(
+        view.dispatch_event(&key("c"), &mut event_ctx, &app),
+        "a plain letter is still the editor's"
+    );
+    assert_eq!(
+        changed.borrow().last().map(String::as_str),
+        Some("/c"),
+        "the typed letter is the next query"
+    );
+    assert_eq!(
+        *caret.borrow(),
+        2,
+        "typing into the menu's query keeps the caret with the draft"
+    );
+    assert!(
+        !*dismissed.borrow(),
+        "typing does not dismiss the list; the host re-filters it"
+    );
+
+    assert!(
+        view.dispatch_event(&key("Enter"), &mut event_ctx, &app),
+        "Enter takes the selected row"
+    );
+    assert_eq!(*accepted.borrow(), vec![0], "Enter accepts the highlight");
+    assert!(
+        view.dispatch_event(&key("Escape"), &mut event_ctx, &app),
+        "Escape belongs to the open list"
+    );
+    assert!(*dismissed.borrow(), "Escape puts the list away");
+    // And the closed list takes no layer space again.
+    let _ = render_element(&mut view, vec2f(width, height), &app);
+    assert!(
+        app.hover_chips.borrow().is_empty(),
+        "a dismissed list queues no overlay"
     );
 }
 
@@ -3629,9 +3933,10 @@ mod sticky_turn {
         super::super::sticky::painted_strip(commands, app, width)
     }
 
-    /// The user messages' bands: the full-width raised fill the transcript
-    /// draws under each user row, in transcript order. The pin draws the same
-    /// fill, so it is left out: it is an overlay of the top edge, not a row.
+    /// The user messages' bubbles: the raised fill each right-aligned user row
+    /// draws, in transcript order. The pin draws the same fill against the same
+    /// trailing edge, so it is left out: it is an overlay of the top edge, not
+    /// a row.
     fn user_bands(commands: &[RenderCommand], app: &AppContext, width: f32) -> Vec<RectF> {
         let raised = app.theme.color(ColorToken::SurfaceRaised);
         let pinned = strip(commands, app, width);
@@ -3640,7 +3945,8 @@ mod sticky_turn {
             .filter_map(|command| match command {
                 RenderCommand::FillRect { rect, color, .. }
                     if *color == raised
-                        && (rect.width() - width).abs() < 0.01
+                        && (rect.max_x() - width).abs() < 0.01
+                        && rect.width() <= width + 0.01
                         && rect.height() > 20.0
                         && Some(*rect) != pinned =>
                 {
@@ -3777,10 +4083,20 @@ mod sticky_turn {
         let band = strip(&commands, &app, width)
             .expect("the user bubble is above the top edge, so its turn pins");
         assert_eq!(band.min_y(), 0.0, "the band sits at the viewport top");
-        assert_eq!(band.width(), width, "it spans the pane");
+        assert_eq!(
+            band.max_x(),
+            width,
+            "the pin is right-aligned to the pane's trailing edge"
+        );
+        let row = user_row("Fix the login bug", width, &app);
+        assert_eq!(
+            band.width(),
+            row.band.width(),
+            "the pin is the same capped bubble width as the user's row"
+        );
         assert_eq!(
             band.height(),
-            user_row("Fix the login bug", width, &app).band.height(),
+            row.band.height(),
             "one line of the bubble's padded band, not a strip of its own"
         );
         let line = strip_line(&commands, band).expect("the pinned row draws its line");
@@ -3818,9 +4134,15 @@ mod sticky_turn {
             app.theme.color(ColorToken::SurfaceRaised),
             "the pin is the grey of the user's own message"
         );
-        assert!(
-            corner_radius > 0.0,
-            "the user's band is a rounded bubble and the pin mirrors its top edge"
+        assert_eq!(
+            corner_radius,
+            crate::elements::chat_typography::USER_BUBBLE_RADIUS,
+            "the user's band is a 20 px rounded bubble and the pin mirrors it"
+        );
+        assert_eq!(
+            band.max_x(),
+            width,
+            "the pin is anchored to the same trailing edge as the bubble"
         );
         assert!(
             !commands.iter().any(|command| matches!(
@@ -3911,7 +4233,8 @@ mod sticky_turn {
             .find_map(|command| match command {
                 RenderCommand::FillRect { rect, color, .. }
                     if *color == app.theme.color(ColorToken::Border)
-                        && (rect.width() - width).abs() < 0.01
+                        && (rect.width() - band.width()).abs() < 0.01
+                        && (rect.max_x() - band.max_x()).abs() < 0.01
                         && rect.height() <= 1.0
                         && (rect.min_y() - (band.max_y() - rect.height())).abs() < 0.01 =>
                 {

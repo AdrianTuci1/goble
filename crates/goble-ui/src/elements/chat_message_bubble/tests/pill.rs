@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
+use super::super::ChatMessageBubble;
+use super::*;
 use crate::elements::chat_content::{
     ChatFragment, ChatRole, ListItem, SubAgentRowStatus, ToolDisplayMode,
 };
@@ -25,8 +27,6 @@ use crate::test_util::{
     assert_no_row_border, assert_pill_free, bordered_control, pills, render_element,
 };
 use goble_core::harness::ToolCallStatus;
-use super::*;
-use super::super::ChatMessageBubble;
 
 /// Every family's shape, one call each, under the names the parser answers to:
 /// grok-build's aliases and our own harness tools. The arguments and results
@@ -35,36 +35,96 @@ use super::super::ChatMessageBubble;
 fn family_calls() -> Vec<ToolCall> {
     let cases: &[(&str, &str, &str)] = &[
         // grok-build's own tool names.
-        ("read", r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#, "1: line one\n2: line two"),
-        ("edit", r#"{"path":"src/lib.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#, "edited"),
-        ("write", r#"{"path":"src/new.rs","content":"fn main() {}"}"#, "created"),
+        (
+            "read",
+            r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#,
+            "1: line one\n2: line two",
+        ),
+        (
+            "edit",
+            r#"{"path":"src/lib.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#,
+            "edited",
+        ),
+        (
+            "write",
+            r#"{"path":"src/new.rs","content":"fn main() {}"}"#,
+            "created",
+        ),
         ("bash", r#"{"command":"cargo test"}"#, "test result: ok"),
         ("grep", r#"{"pattern":"fn main","path":"src"}"#, "2 matches"),
         ("ls", r#"{"path":"src"}"#, "a.rs\nb.rs"),
         ("web_fetch", r#"{"url":"https://x.ai/docs"}"#, "fetched"),
         ("search_tool", r#"{"query":"memory"}"#, "3 results"),
-        ("use_tool", r#"{"server":"github","tool":"list_issues"}"#, "[]"),
+        (
+            "use_tool",
+            r#"{"server":"github","tool":"list_issues"}"#,
+            "[]",
+        ),
         ("memory_search", r#"{"query":"preferences"}"#, "2 results"),
         ("skill", r#"{"name":"pdf"}"#, "ok"),
         // Our harness tools.
-        ("create_agent", r#"{"name":"researcher","instructions":"read a lot"}"#, "created"),
-        ("update_agent", r#"{"id":"researcher","instructions":"read more"}"#, "updated"),
-        ("create_workflow", r#"{"name":"nightly","steps":[]}"#, "created"),
-        ("update_workflow", r#"{"id":"nightly","steps":[]}"#, "updated"),
+        (
+            "create_agent",
+            r#"{"name":"researcher","instructions":"read a lot"}"#,
+            "created",
+        ),
+        (
+            "update_agent",
+            r#"{"id":"researcher","instructions":"read more"}"#,
+            "updated",
+        ),
+        (
+            "create_workflow",
+            r#"{"name":"nightly","steps":[]}"#,
+            "created",
+        ),
+        (
+            "update_workflow",
+            r#"{"id":"nightly","steps":[]}"#,
+            "updated",
+        ),
         ("create_team", r#"{"name":"reviewers"}"#, "created"),
         ("update_team", r#"{"id":"reviewers"}"#, "updated"),
-        ("run_command", r#"{"command":"cargo test","args":["--lib"]}"#, "test result: ok"),
+        (
+            "run_command",
+            r#"{"command":"cargo test","args":["--lib"]}"#,
+            "test result: ok",
+        ),
         ("credentials", r#"{"agent_id":"researcher"}"#, "none"),
         ("principals", r#"{"agent_id":"researcher"}"#, "none"),
         ("user_guide", r#"{"topic":"mcp"}"#, "the guide"),
-        ("list_entities", r#"{"entity_type":"agent"}"#, "researcher\nreviewer"),
-        ("search_store", r#"{"query":"nightly","entity_types":["workflow"]}"#, "search results: [Workflow]"),
+        (
+            "list_entities",
+            r#"{"entity_type":"agent"}"#,
+            "researcher\nreviewer",
+        ),
+        (
+            "search_store",
+            r#"{"query":"nightly","entity_types":["workflow"]}"#,
+            "search results: [Workflow]",
+        ),
         ("deploy_agent", r#"{"agent_id":"researcher"}"#, "deployed"),
-        ("deploy_workflow", r#"{"workflow_id":"nightly"}"#, "deployed"),
-        ("schedule_workflow", r#"{"workflow_id":"nightly","cron":"0 2 * * *"}"#, "scheduled"),
-        ("get_execution_status", r#"{"execution_id":"exec-1"}"#, "running"),
+        (
+            "deploy_workflow",
+            r#"{"workflow_id":"nightly"}"#,
+            "deployed",
+        ),
+        (
+            "schedule_workflow",
+            r#"{"workflow_id":"nightly","cron":"0 2 * * *"}"#,
+            "scheduled",
+        ),
+        (
+            "get_execution_status",
+            r#"{"execution_id":"exec-1"}"#,
+            "running",
+        ),
         ("read_file", r#"{"path":"src/main.rs"}"#, "1: fn main() {}"),
-        ("write_file", r#"{"path":"src/new.rs","content":"fn main() {}"}"#, "written"),
+        (
+            "write_file",
+            r#"{"path":"src/new.rs","content":"fn main() {}"}"#,
+            "written",
+        ),
         ("delete_agent", r#"{"agent_id":"researcher"}"#, "deleted"),
         ("delete_workflow", r#"{"workflow_id":"nightly"}"#, "deleted"),
         ("delete_team", r#"{"team_id":"reviewers"}"#, "deleted"),
@@ -72,24 +132,62 @@ fn family_calls() -> Vec<ToolCall> {
         ("delete_file", r#"{"path":"a.rs"}"#, "deleted"),
         ("git_status", "{}", "nothing to commit"),
         ("git_diff", r#"{"path":"src/lib.rs"}"#, "--- a\n+++ b"),
-        ("git_commit", r#"{"message":"fix","files":["src/lib.rs"]}"#, "committed"),
-        ("codebase_search", r#"{"pattern":"fn main","path":"src"}"#, "2 matches\nsrc/main.rs:1: fn main"),
-        ("install_mcp_server", r#"{"id":"github","command":"npx"}"#, "installed"),
+        (
+            "git_commit",
+            r#"{"message":"fix","files":["src/lib.rs"]}"#,
+            "committed",
+        ),
+        (
+            "codebase_search",
+            r#"{"pattern":"fn main","path":"src"}"#,
+            "2 matches\nsrc/main.rs:1: fn main",
+        ),
+        (
+            "install_mcp_server",
+            r#"{"id":"github","command":"npx"}"#,
+            "installed",
+        ),
         ("delete_mcp_server", r#"{"id":"github"}"#, "deleted"),
-        ("update_mcp_server", r#"{"id":"github","command":"npx"}"#, "updated"),
+        (
+            "update_mcp_server",
+            r#"{"id":"github","command":"npx"}"#,
+            "updated",
+        ),
         ("search_mcp_servers", r#"{"query":"github"}"#, "1 result"),
         ("discover_mcp_tools", r#"{"id":"github"}"#, "list_issues"),
         ("list_mcp_servers", "{}", "github"),
-        ("web_search", r#"{"query":"grok build","max_results":3,"advanced":false}"#, "URL: https://x.ai"),
+        (
+            "web_search",
+            r#"{"query":"grok build","max_results":3,"advanced":false}"#,
+            "URL: https://x.ai",
+        ),
         ("read_url", r#"{"url":"https://x.ai/docs"}"#, "the page"),
-        ("run_agent", r#"{"agent_id":"researcher","input":"summarize the changelog"}"#, "the summary"),
-        ("edit_file", r#"{"path":"src/lib.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#, "edited"),
-        ("memory_write", r#"{"agent_id":"researcher","content":"prefers tabs"}"#, "stored"),
-        ("memory_read", r#"{"agent_id":"researcher"}"#, "prefers tabs"),
+        (
+            "run_agent",
+            r#"{"agent_id":"researcher","input":"summarize the changelog"}"#,
+            "the summary",
+        ),
+        (
+            "edit_file",
+            r#"{"path":"src/lib.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#,
+            "edited",
+        ),
+        (
+            "memory_write",
+            r#"{"agent_id":"researcher","content":"prefers tabs"}"#,
+            "stored",
+        ),
+        (
+            "memory_read",
+            r#"{"agent_id":"researcher"}"#,
+            "prefers tabs",
+        ),
     ];
     let mut calls: Vec<ToolCall> = cases
         .iter()
-        .map(|(name, arguments, result)| call(name, arguments, ToolCallStatus::Finished, Some(result)))
+        .map(|(name, arguments, result)| {
+            call(name, arguments, ToolCallStatus::Finished, Some(result))
+        })
         .collect();
     calls.push(spawn_call(ToolCallStatus::Finished));
     calls
@@ -138,13 +236,22 @@ fn no_agent_row_paints_a_pill() {
             _ => None,
         })
         .expect("the user's message paints its bubble");
-    assert!(rounded > 0.0, "the user's bubble is rounded: {commands:?}");
+    assert_eq!(
+        rounded,
+        crate::elements::chat_typography::USER_BUBBLE_RADIUS,
+        "the user's bubble carries DSH's 20 px radius: {commands:?}"
+    );
 
     // A reasoning step, collapsed and expanded.
     for expanded in [false, true] {
         let mut reasoning = ChatMessageBubble::new(
             ChatRole::Assistant,
-            vec![ChatFragment::reasoning("step-0", "Thinking", "weighing options", true)],
+            vec![ChatFragment::reasoning(
+                "step-0",
+                "Thinking",
+                "weighing options",
+                true,
+            )],
         )
         .with_reasoning_expanded(Rc::new(RefCell::new(HashMap::from([(
             "step-0".to_string(),
@@ -179,7 +286,10 @@ fn no_agent_row_paints_a_pill() {
         ] {
             let in_flight: Vec<ToolCall> = calls
                 .iter()
-                .map(|call| ToolCall { status, ..call.clone() })
+                .map(|call| ToolCall {
+                    status,
+                    ..call.clone()
+                })
                 .collect();
             let (commands, _) = paint_tool_calls_with_fold(in_flight, Some(mode));
             let what = format!("{mode:?} {status:?} tool-call rows");
@@ -195,10 +305,30 @@ fn no_agent_row_paints_a_pill() {
 #[test]
 fn no_sub_agent_row_paints_a_pill() {
     let cases = [
-        (SubAgentRowStatus::Running, "reading the schema", Duration::from_millis(4500), None),
-        (SubAgentRowStatus::Completed, "", Duration::from_millis(43000), Some("the report")),
-        (SubAgentRowStatus::Failed, "", Duration::from_millis(12000), Some("child turn failed")),
-        (SubAgentRowStatus::Cancelled, "", Duration::from_millis(5000), Some("cancelled by the user")),
+        (
+            SubAgentRowStatus::Running,
+            "reading the schema",
+            Duration::from_millis(4500),
+            None,
+        ),
+        (
+            SubAgentRowStatus::Completed,
+            "",
+            Duration::from_millis(43000),
+            Some("the report"),
+        ),
+        (
+            SubAgentRowStatus::Failed,
+            "",
+            Duration::from_millis(12000),
+            Some("child turn failed"),
+        ),
+        (
+            SubAgentRowStatus::Cancelled,
+            "",
+            Duration::from_millis(5000),
+            Some("cancelled by the user"),
+        ),
     ];
     for (status, activity, elapsed, outcome) in cases {
         for mode in [
@@ -224,7 +354,10 @@ fn no_sub_agent_row_paints_a_pill() {
             // A spawn call with no live record — a transcript re-read after a
             // restart — draws the arguments it was given.
             let (commands, _) = paint_sub_agent(vec![call], HashMap::new(), Some(mode));
-            assert_pill_free(&commands, &format!("{status:?} {mode:?} sub-agent arguments"));
+            assert_pill_free(
+                &commands,
+                &format!("{status:?} {mode:?} sub-agent arguments"),
+            );
         }
     }
 }
@@ -293,12 +426,14 @@ fn the_lock_catches_a_row_wrapped_in_a_card() {
     use crate::elements::{Container, Fill};
 
     let app = AppContext::default();
-    let row = ChatMessageBubble::new(
-        ChatRole::Assistant,
-        Vec::new(),
-    )
-    .with_tool_calls(vec![call("read_file", r#"{"path":"src/lib.rs"}"#, ToolCallStatus::Finished, Some("1: fn main() {}"))])
-    .finish();
+    let row = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![call(
+            "read_file",
+            r#"{"path":"src/lib.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("1: fn main() {}"),
+        )])
+        .finish();
     let mut wrapped: Box<dyn Element> = Container::new(row)
         .with_background(Fill::Solid(ColorU::new(30, 30, 30, 255)))
         .with_corner_radius(app.theme.radius_px())
@@ -311,12 +446,14 @@ fn the_lock_catches_a_row_wrapped_in_a_card() {
     );
 
     // The same row unwrapped is pill-free, so the lock is measuring the wrap.
-    let mut row = ChatMessageBubble::new(
-        ChatRole::Assistant,
-        Vec::new(),
-    )
-    .with_tool_calls(vec![call("read_file", r#"{"path":"src/lib.rs"}"#, ToolCallStatus::Finished, Some("1: fn main() {}"))])
-    .finish();
+    let mut row = ChatMessageBubble::new(ChatRole::Assistant, Vec::new())
+        .with_tool_calls(vec![call(
+            "read_file",
+            r#"{"path":"src/lib.rs"}"#,
+            ToolCallStatus::Finished,
+            Some("1: fn main() {}"),
+        )])
+        .finish();
     assert_pill_free(
         &render_element(&mut row, vec2f(400.0, 400.0), &app),
         "the same row",
@@ -353,11 +490,7 @@ fn the_lock_reports_a_box_that_appears() {
         "a rounded fill is a pill: {:?}",
         pills(&boxed)
     );
-    assert_eq!(
-        pills(&[border(beside_rect)]).len(),
-        1,
-        "a border is a pill"
-    );
+    assert_eq!(pills(&[border(beside_rect)]).len(), 1, "a border is a pill");
 
     // The block's own card: its border and a rounded fill over the same rect.
     let card = vec![border(card_rect), fill(card_rect, radius)];
@@ -373,7 +506,11 @@ fn the_lock_reports_a_box_that_appears() {
     );
 
     // A box beside the card is still a pill.
-    let beside = vec![border(card_rect), fill(card_rect, radius), fill(beside_rect, 6.0)];
+    let beside = vec![
+        border(card_rect),
+        fill(card_rect, radius),
+        fill(beside_rect, 6.0),
+    ];
     assert_eq!(
         pills(&beside).len(),
         1,

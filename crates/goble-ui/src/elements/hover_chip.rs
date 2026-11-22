@@ -136,7 +136,25 @@ impl Element for HoverChipLayer {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        app.hover_chips.borrow_mut().drain(ctx, app);
+        // Drain in a loop instead of holding the registry borrowed while the
+        // chips paint: a chip's panel can itself queue a chip (a tooltip inside
+        // a tooltip panel, a chip whose content owns another tooltip), and a
+        // second `borrow_mut` while the first is alive panics the draw pass.
+        // Each iteration takes the chips out, paints them, and picks up
+        // anything they queued, until the registry stays empty.
+        let registry = app.hover_chips.clone();
+        loop {
+            let chips = {
+                let mut local = registry.borrow_mut();
+                std::mem::take(&mut local.chips)
+            };
+            if chips.is_empty() {
+                break;
+            }
+            for mut chip in chips {
+                chip.panel.paint(chip.origin, ctx, app);
+            }
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -261,6 +279,52 @@ mod tests {
         let commands = paint_frame(&mut root, &app, Some(vec2f(180.0, 180.0)));
         assert!(chip_text_index(&commands).is_none(), "no chip is drawn");
         assert_eq!(app.hover_chips.borrow().len(), 0);
+    }
+
+    /// A queued chip whose panel is a hovered tooltip: painting the chip makes
+    /// the tooltip queue a second chip. The layer must pick that up without a
+    /// nested `RefCell` borrow (it used to panic with "RefCell already
+    /// borrowed" inside winit's draw handler).
+    #[test]
+    fn a_chip_that_queues_another_chip_does_not_reborrow_the_registry() {
+        let app = AppContext::default();
+        let mut inner_tooltip =
+            Tooltip::new(Empty::new().with_size(vec2f(40.0, 32.0)).finish(), "Inner").finish();
+        inner_tooltip.layout(
+            SizeConstraint::loose(vec2f(200.0, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        app.hover_chips
+            .borrow_mut()
+            .push(vec2f(0.0, 0.0), inner_tooltip);
+
+        let mut layer = HoverChipLayer::new().finish();
+        layer.layout(
+            SizeConstraint::loose(vec2f(200.0, 200.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        let mut ctx = PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = vec2f(10.0, 10.0);
+        layer.paint(vec2f(0.0, 0.0), &mut ctx, &app);
+
+        let commands = ctx
+            .renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default();
+        assert!(
+            commands.iter().any(
+                |command| matches!(command, RenderCommand::DrawText { text, .. } if text == "Inner")
+            ),
+            "the chip queued while painting the layer is drawn in the same frame: {commands:?}"
+        );
+        assert!(
+            app.hover_chips.borrow().is_empty(),
+            "the layer empties the registry even after a nested queue"
+        );
     }
 
     #[test]

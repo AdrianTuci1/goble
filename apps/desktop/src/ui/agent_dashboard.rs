@@ -2048,7 +2048,7 @@ mod ui_tests {
     /// The panel and its card sit on the workspace's black, the way the rest
     /// of the harness does; a graphite surface would read as a separate card.
     #[test]
-    fn the_panel_and_the_response_card_sit_on_the_workspace_black() {
+    fn the_panel_and_response_card_sit_on_the_flat_workspace_surface() {
         let app = AppContext::default();
         let (mut root, state, _dir) = root();
         let sidebar_width = state.borrow().sidebar_width;
@@ -2066,7 +2066,7 @@ mod ui_tests {
         let commands = render_element(&mut root, window(), &app);
         let raised = app.theme.color(ColorToken::SurfaceRaised);
         let surface = app.theme.color(ColorToken::Surface);
-        let black = app.theme.color(ColorToken::Bg);
+        let black = app.theme.color(ColorToken::Surface);
         let graphite_band = |color| {
             commands.iter().any(|command| {
                 matches!(
@@ -2080,12 +2080,12 @@ mod ui_tests {
             })
         };
         assert!(
-            !graphite_band(raised) && !graphite_band(surface),
+            !graphite_band(raised),
             "the panel draws no raised graphite band: {commands:?}"
         );
         assert!(
-            graphite_band(black),
-            "the panel paints the workspace black: {commands:?}"
+            graphite_band(black) && graphite_band(surface),
+            "the panel paints the one flat surface: {commands:?}"
         );
     }
 

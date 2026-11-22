@@ -1078,8 +1078,8 @@ mod chat_geometry_tests {
 
         let padded = reply_x - pane_left;
         assert!(
-            (14.0..=17.0).contains(&padded),
-            "the agent's row keeps DSH's 16 px band inset, got {padded}"
+            (11.0..=17.0).contains(&padded),
+            "the agent's row keeps its band inset after the top/left pane band was removed, got {padded}"
         );
 
         // No prompt marker anywhere: the user's row is a bubble, not a marker

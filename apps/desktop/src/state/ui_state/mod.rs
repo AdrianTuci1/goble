@@ -574,6 +574,8 @@ pub struct UiState {
     /// Scroll offsets of the project explorer's and the global search's lists.
     pub explorer_scroll: Rc<RefCell<ScrollState>>,
     pub global_search_scroll: Rc<RefCell<ScrollState>>,
+    /// Q: the centered spotlight window opened by the topbar Search.
+    pub spotlight: crate::ui::spotlight::SpotlightState,
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
     /// double-clicking the tab, or from its menu's "Rename tab" row).
     pub space_rename_editing: bool,

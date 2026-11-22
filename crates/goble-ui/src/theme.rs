@@ -39,7 +39,7 @@ impl Theme {
         Self {
             name: "dark",
             colors: ColorScheme {
-                bg: ColorU::hex(0x0e0e0e),
+                bg: ColorU::hex(0x161616),
                 surface: ColorU::hex(0x161616),
                 surface_raised: ColorU::hex(0x1e1e1e),
                 border: ColorU::hex(0x262626),
@@ -75,7 +75,7 @@ impl Theme {
         Self {
             name: "light",
             colors: ColorScheme {
-                bg: ColorU::hex(0xf5f5f5),
+                bg: ColorU::hex(0xffffff),
                 surface: ColorU::hex(0xffffff),
                 surface_raised: ColorU::hex(0xf0f0f0),
                 border: ColorU::hex(0xe0e0e0),
@@ -748,7 +748,7 @@ mod tests {
     fn theme_default_is_dark() {
         let theme = Theme::default();
         assert_eq!(theme.name, "dark");
-        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x0e0e0e));
+        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x161616));
     }
 
     #[test]

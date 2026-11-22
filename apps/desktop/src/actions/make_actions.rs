@@ -971,8 +971,168 @@ pub fn make_actions(
     // The steppers run through the actions that own their bounds and, for the
     // font, the shared zoom cell; the rest belongs to the state.
 
+    let on_spotlight = {
+        let state = Rc::clone(&state);
+        let desktop = desktop.clone();
+        Rc::new(RefCell::new(
+            move |action: crate::ui::spotlight::SpotlightAction| {
+                use crate::ui::spotlight::{filtered_conversations, SpotlightAction};
+                let mut state = state.borrow_mut();
+                match action {
+                    SpotlightAction::Open => {
+                        state.spotlight.open = true;
+                        state.spotlight.focused = true;
+                        state.spotlight.selected = 0;
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::Close => {
+                        state.spotlight.open = false;
+                        state.spotlight.focused = false;
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::Escape => {
+                        if *state.spotlight.scope_menu_open.borrow() {
+                            *state.spotlight.scope_menu_open.borrow_mut() = false;
+                        } else if *state.spotlight.options_menu_open.borrow() {
+                            *state.spotlight.options_menu_open.borrow_mut() = false;
+                        } else {
+                            state.spotlight.open = false;
+                            state.spotlight.focused = false;
+                        }
+                    }
+                    SpotlightAction::Query(query) => {
+                        state.spotlight.query = query;
+                        state.spotlight.selected = 0;
+                    }
+                    SpotlightAction::Scope(scope) => {
+                        state.spotlight.scope = scope;
+                        state.spotlight.selected = 0;
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::Sort(sort) => {
+                        state.spotlight.sort = sort;
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::ToggleFilter(filter) => {
+                        match filter {
+                            crate::ui::spotlight::SpotlightFilter::Unread => {
+                                state.spotlight.only_unread = !state.spotlight.only_unread
+                            }
+                            crate::ui::spotlight::SpotlightFilter::Archived => {
+                                state.spotlight.only_archived = !state.spotlight.only_archived
+                            }
+                            crate::ui::spotlight::SpotlightFilter::Automations => {
+                                state.spotlight.only_automations = !state.spotlight.only_automations
+                            }
+                        }
+                        state.spotlight.selected = 0;
+                    }
+                    SpotlightAction::ToggleScopeMenu => {
+                        let open = *state.spotlight.scope_menu_open.borrow();
+                        *state.spotlight.scope_menu_open.borrow_mut() = !open;
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::ToggleOptionsMenu => {
+                        let open = *state.spotlight.options_menu_open.borrow();
+                        *state.spotlight.options_menu_open.borrow_mut() = !open;
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::Select(index) => state.spotlight.selected = index,
+                    SpotlightAction::Move(delta) => {
+                        let len = match state.spotlight.scope {
+                            crate::ui::spotlight::SpotlightScope::Conversations => {
+                                filtered_conversations(&state.conversations, &state.spotlight).len()
+                            }
+                            crate::ui::spotlight::SpotlightScope::Projects => {
+                                crate::ui::spotlight::filtered_projects(
+                                    &state.conversations,
+                                    &state.spotlight.query,
+                                )
+                                .len()
+                            }
+                            crate::ui::spotlight::SpotlightScope::Commands => {
+                                crate::ui::spotlight::commands().len()
+                            }
+                            crate::ui::spotlight::SpotlightScope::Files => {
+                                state.global_search_rows.len()
+                            }
+                        };
+                        if len == 0 {
+                            state.spotlight.selected = 0;
+                        } else {
+                            let next = (state.spotlight.selected as i64 + delta as i64)
+                                .rem_euclid(len as i64)
+                                as usize;
+                            state.spotlight.selected = next;
+                        }
+                    }
+                    SpotlightAction::Activate => match state.spotlight.scope {
+                        crate::ui::spotlight::SpotlightScope::Conversations => {
+                            let rows =
+                                filtered_conversations(&state.conversations, &state.spotlight);
+                            let id = rows
+                                .get(state.spotlight.selected)
+                                .map(|entry| entry.id.clone());
+                            state.spotlight.open = false;
+                            state.spotlight.focused = false;
+                            if let Some(id) = id {
+                                state.open_conversation_from_sidebar(id, desktop.as_deref());
+                            }
+                        }
+                        crate::ui::spotlight::SpotlightScope::Commands => {
+                            let query = state.spotlight.query.to_lowercase();
+                            let rows: Vec<(String, String)> = crate::ui::spotlight::commands()
+                                .into_iter()
+                                .filter(|(name, description)| {
+                                    query.is_empty()
+                                        || name.to_lowercase().contains(&query)
+                                        || description.to_lowercase().contains(&query)
+                                })
+                                .map(|(name, description)| {
+                                    (name.to_string(), description.to_string())
+                                })
+                                .collect();
+                            let name = rows
+                                .get(state.spotlight.selected)
+                                .map(|(name, _)| name.clone());
+                            state.spotlight.open = false;
+                            state.spotlight.focused = false;
+                            match name.as_deref() {
+                                Some("Toggle sidebar") => {
+                                    state.sidebar_visible = !state.sidebar_visible;
+                                }
+                                Some("Open Settings") => {
+                                    state.open_settings_tab(None);
+                                    state.settings_overlay_open = true;
+                                }
+                                Some("Review changes") => {
+                                    let pane = state.active_pane_id;
+                                    let file = None;
+                                    crate::actions::pane_ops::open_diff_pane(
+                                        &mut state,
+                                        pane,
+                                        file,
+                                        desktop.as_ref(),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        crate::ui::spotlight::SpotlightScope::Projects
+                        | crate::ui::spotlight::SpotlightScope::Files => {
+                            state.spotlight.open = false;
+                            state.spotlight.focused = false;
+                        }
+                    },
+                }
+            },
+        )) as Rc<RefCell<dyn FnMut(crate::ui::spotlight::SpotlightAction)>>
+    };
     UiActions {
         review_views,
+        on_spotlight,
         on_search_change: Rc::new(RefCell::new(move |value: String| {
             on_search_change.borrow_mut().search_query = value;
         })),

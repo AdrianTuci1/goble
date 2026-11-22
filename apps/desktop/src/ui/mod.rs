@@ -38,6 +38,7 @@ pub mod shell;
 pub mod shortcuts_help;
 pub mod sidebar;
 pub mod space_bar;
+pub mod spotlight;
 pub mod tab_menu;
 pub mod terminal;
 pub mod vault;

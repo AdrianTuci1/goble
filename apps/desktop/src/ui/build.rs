@@ -578,6 +578,15 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         // as well, so the topbar's own last-layer menu triggers cannot draw
         // through a narrow settings sheet that reaches the window's top edge.
         chrome::TopLayer::new(settings_overlay).finish(),
+        // Q: the topbar spotlight is the last surface; while open it paints a
+        // scrim and its own card, menus and keyboard above everything else.
+        chrome::TopLayer::new(crate::ui::spotlight::build_spotlight(
+            app,
+            state,
+            actions,
+            state.window_size,
+        ))
+        .finish(),
     ]);
 
     // A finished turn is announced here, at the window's top layer, so the
@@ -2165,7 +2174,7 @@ mod tests {
     fn first_card_left() -> f32 {
         // The pane area's inset inside the one workspace sheet, plus the free
         // margin the sheet keeps from the window/sidebar edge.
-        shell::WORKSPACE_MARGIN + crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET
+        shell::WORKSPACE_MARGIN + crate::ui::panes::PANE_INSET
     }
 
     /// The dashboard's roster search field names it; the dashboard is the
@@ -2967,10 +2976,10 @@ mod tests {
             "the sheet wraps both panels with the free margin outside it: {sheet:?} vs {:?}",
             open[0]
         );
-        // The pane area's 4 pt inset + the card's own 4 pt gutter.
+        // R: no band on the top edge; the card's own 4 pt gutter is the inset.
         assert!(
-            (open[0].min_y() - sheet.min_y() - 8.0).abs() < 0.5,
-            "the pane keeps its usual inset inside the sheet: {:?} vs {sheet:?}",
+            (open[0].min_y() - sheet.min_y() - 4.0).abs() < 0.5,
+            "the pane keeps its card gutter inside the sheet: {:?} vs {sheet:?}",
             open[0]
         );
         let boundary = sheet.min_x() + sheet.width() * 0.5;
@@ -3117,12 +3126,12 @@ mod tests {
         let top = main.min_y() - sheet.min_y();
         let bottom = sheet.max_y() - main.max_y();
         assert!(
-            (top - bottom).abs() < 0.5,
-            "the main panel is centred in the sheet's height: {top} vs {bottom}"
+            (top - 4.0).abs() < 0.5,
+            "the pane keeps its card gutter on the top edge: {top}"
         );
         assert!(
-            (top - 8.0).abs() < 0.5,
-            "the pane keeps its usual 8 pt inset: {top}"
+            (bottom - 8.0).abs() < 0.5,
+            "the bottom keeps the card gutter plus the shell's 4 pt free space: {bottom}"
         );
     }
 
@@ -3478,11 +3487,10 @@ mod tests {
         );
     }
 
-    /// G: the `+` is part of the chip row, immediately after the last chip and
-    /// inside the scrollable strip — not pinned at the far right beside the
-    /// window controls.
+    /// S: the `+` is pinned beside the scrolling chips, never behind the
+    /// window controls, and visible even when the strip overflows.
     #[test]
-    fn the_add_button_sits_beside_the_last_chip() {
+    fn the_add_button_is_pinned_beside_the_scrolling_chips() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
         {
@@ -3531,16 +3539,282 @@ mod tests {
         assert!(terminal < side_question, "the chips keep strip order");
         assert!(
             plus > side_question,
-            "the + follows the last chip: plus {plus}, chip {side_question}"
-        );
-        assert!(
-            plus - side_question < 150.0,
-            "the + is adjacent to the chip, not pinned: plus {plus}, chip {side_question}"
+            "the + sits after the chips: plus {plus}, chip {side_question}"
         );
         assert!(
             maximize - plus > 20.0,
-            "the + is not at the far right beside the window controls:              plus {plus}, maximize {maximize}"
+            "the + stays left of the window controls: plus {plus}, maximize {maximize}"
         );
+    }
+
+    /// Q: the topbar Search opens the spotlight, which filters real
+    /// conversations by query/scope, navigates with the keys and dismisses on
+    /// Escape or an outside press.
+    #[test]
+    fn the_topbar_search_opens_the_spotlight_and_it_filters_navigates_and_dismisses() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.conversations = vec![
+                goble_ui::ConversationEntry::new("a", "Alpha notes", "", "1d"),
+                goble_ui::ConversationEntry::new("b", "Beta build", "", "2d"),
+            ];
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let search = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "search" && origin.y < 44.0 => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the topbar Search control");
+        click(&mut root, &app, search);
+        assert!(state.borrow().spotlight.open, "Search opens the spotlight");
+        assert!(
+            state.borrow().spotlight.focused,
+            "the query field is focused"
+        );
+
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        for expected in [
+            "Conversations",
+            "Search for conversations...",
+            "Alpha notes",
+            "Beta build",
+        ] {
+            assert!(
+                texts.iter().any(|text| text == expected),
+                "the spotlight draws {expected:?}: {texts:?}"
+            );
+        }
+
+        // Query + scope filtering.
+        state.borrow_mut().spotlight.query = "beta".to_string();
+        let commands = render_element(&mut root, window(), &app);
+        let card_texts: Vec<String> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.x > 250.0 && origin.y > 90.0 && origin.y < 500.0 =>
+                {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(card_texts.iter().any(|text| text == "Beta build"));
+        assert!(!card_texts.iter().any(|text| text == "Alpha notes"));
+        *state.borrow().spotlight.scope_menu_open.borrow_mut() = true;
+        let commands = render_element(&mut root, window(), &app);
+        let commands_item = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Commands" => Some(*origin),
+                _ => None,
+            })
+            .expect("the scope menu");
+        click(&mut root, &app, commands_item + vec2f(4.0, 4.0));
+        assert_eq!(
+            state.borrow().spotlight.scope,
+            crate::ui::spotlight::SpotlightScope::Commands
+        );
+        assert!(!*state.borrow().spotlight.scope_menu_open.borrow());
+        state.borrow_mut().spotlight.scope = crate::ui::spotlight::SpotlightScope::Conversations;
+        state.borrow_mut().spotlight.query.clear();
+
+        // Keyboard: Down moves the highlight, Enter opens, Escape closes.
+        let mut ctx = EventContext;
+        assert!(root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "ArrowDown".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert_eq!(state.borrow().spotlight.selected, 1);
+        let _ = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Enter".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(!state.borrow().spotlight.open, "Enter opens and dismisses");
+
+        // Escape closes the window; with a menu open it closes the menu first.
+        state.borrow_mut().spotlight.open = true;
+        *state.borrow().spotlight.options_menu_open.borrow_mut() = true;
+        let _ = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(!*state.borrow().spotlight.options_menu_open.borrow());
+        assert!(state.borrow().spotlight.open);
+        let _ = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(!state.borrow().spotlight.open);
+
+        // An outside press dismisses it too.
+        state.borrow_mut().spotlight.open = true;
+        click(&mut root, &app, vec2f(4.0, 4.0));
+        assert!(!state.borrow().spotlight.open, "outside press closes");
+    }
+
+    /// Paint the laid-out frame once more with the pointer at `pointer`, so
+    /// hover-only controls are observable with their real geometry.
+    fn commands_with_pointer(
+        root: &mut Box<dyn Element>,
+        app: &AppContext,
+        pointer: Vector2F,
+    ) -> Vec<RenderCommand> {
+        let mut ctx = goble_ui::elements::PaintContext::new(Renderer::new());
+        ctx.cursor_inside = true;
+        ctx.cursor_position = pointer;
+        root.paint(vec2f(0.0, 0.0), &mut ctx, app);
+        ctx.renderer
+            .take()
+            .map(|renderer| renderer.commands().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// S: the full chrome row drives the strip end-to-end — a chip click
+    /// switches the body, the hover X closes that chip, and the fixed + opens
+    /// its add menu.
+    #[test]
+    fn the_side_tab_strip_handles_chip_close_and_add_clicks() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.add_side_tab(SideTabKind::Terminal);
+            s.add_side_tab(SideTabKind::Agent);
+            s.active_side_tab = 2;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let label = |text: &str| {
+            commands.iter().find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text: drawn,
+                    origin,
+                    ..
+                } if drawn == text && origin.y < crate::ui::chrome::CHROME_HEIGHT => Some(*origin),
+                _ => None,
+            })
+        };
+        // Chip click switches the panel off the active Side Question tab.
+        let terminal = label("Terminal").expect("the Terminal chip");
+        click(&mut root, &app, terminal + vec2f(4.0, 4.0));
+        assert_eq!(
+            state.borrow().active_side_tab_kind(),
+            SideTabKind::Terminal,
+            "the chip click switches the panel content"
+        );
+
+        // The hover X sits at the chip's trailing square; the fixed + is the
+        // last icon before the window controls.
+        let commands = render_element(&mut root, window(), &app);
+        let plus = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if name == "plus" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the pinned + button");
+        let agent = label("Side Question").expect("the Side Question chip");
+        // Paint with the pointer on the chip so its hover X is real geometry,
+        // then click the X itself.
+        let hovered = commands_with_pointer(&mut root, &app, agent + vec2f(16.0, 6.0));
+        let close = hovered
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, size, .. }
+                    if name == "x-close"
+                        && origin.y < crate::ui::chrome::CHROME_HEIGHT
+                        && origin.x > agent.x - 40.0
+                        && origin.x < agent.x + 140.0 =>
+                {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                let icons: Vec<_> = hovered
+                    .iter()
+                    .filter_map(|command| match command {
+                        RenderCommand::DrawIcon { name, origin, .. } => Some((name.clone(), *origin)),
+                        _ => None,
+                    })
+                    .collect();
+                panic!("the hover X on the Side Question chip: agent {agent:?}, icons {icons:?}");
+            });
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: close,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: close,
+                button: 0,
+            },
+        ] {
+            let _ = root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(
+            !state.borrow().side_tabs.contains(&SideTabKind::Agent),
+            "the X closes the Side Question chip (agent {:?}, close {:?}, tabs {:?})",
+            agent, close, state.borrow().side_tabs
+        );
+
+        // The + menu opens and offers the real tab kinds.
+        click(&mut root, &app, plus + vec2f(6.0, 6.0));
+        assert!(
+            *state.borrow().side_tab_add_menu_open.borrow(),
+            "the fixed + opens its add menu"
+        );
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for item in ["Side Question", "Files", "Terminal", "Task output"] {
+            assert!(
+                texts.iter().any(|text| *text == item),
+                "the + menu offers {item:?}: {texts:?}"
+            );
+        }
     }
 
     /// Panel 1's trailing controls are exactly the More menu and the Overview

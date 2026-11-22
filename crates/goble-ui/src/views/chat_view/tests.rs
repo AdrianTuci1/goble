@@ -4957,7 +4957,7 @@ fn the_work_dock_band_spans_the_pane_while_its_cards_are_lane_bounded() {
 /// around it keeps its `Surface`: the lane reads as a distinct darker column
 /// (the pane card and gutters are the app's `Surface` behind the view).
 #[test]
-fn the_lane_column_paints_the_darker_background() {
+fn the_lane_column_paints_the_one_surface() {
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
 
@@ -4979,17 +4979,10 @@ fn the_lane_column_paints_the_darker_background() {
         (920.0, 340.0),
         "the darker column is the centred lane: {column:?}"
     );
-    assert_ne!(
+    assert_eq!(
         bg,
         app.theme.color(ColorToken::Surface),
-        "the column's token is distinct from the pane surface"
-    );
-    let luminance = |color: crate::color::ColorU| {
-        0.2126 * color.r as f32 + 0.7152 * color.g as f32 + 0.0722 * color.b as f32
-    };
-    assert!(
-        luminance(bg) < luminance(app.theme.color(ColorToken::Surface)),
-        "the column reads darker than the pane's surface"
+        "the lane is the same flat grey as the pane surface"
     );
 }
 

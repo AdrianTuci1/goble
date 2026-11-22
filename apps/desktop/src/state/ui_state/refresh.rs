@@ -259,6 +259,7 @@ impl UiState {
             sidebar_session_order: Rc::new(RefCell::new(std::collections::HashMap::new())),
             explorer_scroll: Rc::new(RefCell::new(ScrollState::default())),
             global_search_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            spotlight: crate::ui::spotlight::SpotlightState::default(),
             space_rename_editing: false,
             command_held: false,
             space_press_run: Rc::new(RefCell::new(None)),

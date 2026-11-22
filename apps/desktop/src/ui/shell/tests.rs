@@ -322,8 +322,8 @@ fn the_selected_tab_merges_into_the_content_with_inverted_corners() {
         .collect();
     assert_eq!(
         surface_fills.len(),
-        3,
-        "the body, its foot band and the merge stem below the fillet: {surface_fills:?}"
+        5,
+        "the body, foot band, two corner discs and the merge stem: {surface_fills:?}"
     );
     let (body, body_radius) = surface_fills[0];
     assert_eq!(
@@ -382,7 +382,7 @@ fn the_selected_tab_merges_into_the_content_with_inverted_corners() {
         over.is_empty(),
         "nothing wider than the tab continues below the fillet line: {over:?}"
     );
-    let (stem, stem_radius) = surface_fills[2];
+    let (stem, stem_radius) = surface_fills[4];
     assert_eq!(
         (stem.min_y(), stem.height()),
         (fillet_bottom, merge - fillet_bottom),
@@ -404,7 +404,12 @@ fn the_selected_tab_merges_into_the_content_with_inverted_corners() {
                 rect,
                 color,
                 corner_radius,
-            } if *color == background => Some((*rect, *corner_radius)),
+            } if *color == background
+                && (rect.width() - radius * 2.0).abs() < 0.01
+                && (rect.height() - radius * 2.0).abs() < 0.01 =>
+            {
+                Some((*rect, *corner_radius))
+            }
             _ => None,
         })
         .collect();

@@ -184,12 +184,17 @@ chevron, bold name, muted directory, counts, File/Diff, Revert, copy). The
 chat's changed-files card is the simpler T3 model: one collapsible bordered
 card on the chat background, "N files changed" + counts + chevron and a
 Review button, expanding to full-path rows with counts flush right; on narrow
-widths only the path shrinks, with a leading ellipsis. The
-shell draws one flat workspace sheet with a 5 pt free margin; the panels are
-flat children (same background, no borders, no corner ornament, no shadow)
-separated only by the full-height hairline, with the radius on the shell's
-outer corners only. The topbar's two panel toggles use DSH's own
-`panel-left-outline` glyph and its mirrored right-hand twin. The Settings sheet uses a full-height
+widths only the path shrinks, with a leading ellipsis.
+
+The topbar Search opens the centered spotlight (`spotlight-*`): scope pill,
+query field, sort/filter menu and real conversation rows. The tab-strip
+evidence shows multiple chips, a hovered chip with its close X and the pinned
+`+` menu (`side-tabs-hover-*`, `side-tabs-add-*`). The app is one flat grey
+(`Surface`) surface — window, panes, cards and workspace sheet share it, with
+no darker card fill, border, rounded casing, shadow or 4 px band; the only
+separation is the full-height 1 px main/side hairline. The topbar's two panel
+toggles use DSH's own `panel-left-outline` glyph and its mirrored right-hand
+twin. The Settings sheet uses a full-height
 secondary rail (small muted heading, primary-text menu labels, no search field,
 no user footer, no row/section rules) and long 120 pt Interface Layout tiles
 with an 8 pt gap.

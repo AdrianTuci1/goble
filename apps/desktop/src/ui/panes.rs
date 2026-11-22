@@ -970,7 +970,7 @@ fn paint_card_corner_cut(
 /// The returned value is a theme token's colour, never a hardcoded one, so the
 /// dark and light themes both follow their own palette.
 fn pane_surface(app: &AppContext) -> goble_ui::ColorU {
-    app.theme.color(ColorToken::Bg)
+    app.theme.color(ColorToken::Surface)
 }
 
 /// `rect` shrunk by `amount` on every side, never past half its width or
@@ -1610,17 +1610,15 @@ mod tests {
         assert!((cut_radius - CARD_EDGE_BAND - radius).abs() < 1e-6);
     }
 
-    /// The panel itself is the darker material: EVERY pane card — chat, worker,
-    /// terminal, file, diff, settings — paints `Bg`. The surface the panels are
-    /// rendered on is the sidebar's `Surface` (painted by the app's build), so
-    /// the backdrop matches the sidebar while the panels read darker. Checked in
-    /// both themes, with theme tokens only.
+    /// R: one flat grey app surface. EVERY pane card — chat, worker, terminal,
+    /// file, diff, settings — shares the window's `Surface`; there is no darker
+    /// card material and no second backdrop tone.
     #[test]
-    fn every_panel_card_paints_the_darker_background() {
-        fn assert_panels_are_dark(app: &AppContext) {
-            let bg = app.theme.color(ColorToken::Bg);
+    fn every_panel_card_shares_the_window_surface() {
+        fn assert_panels_flat(app: &AppContext) {
             let surface = app.theme.color(ColorToken::Surface);
-            assert_ne!(bg, surface, "the two tokens are distinct materials");
+            let bg = app.theme.color(ColorToken::Bg);
+            assert_eq!(bg, surface, "window and panel materials are one grey");
             for kind in [
                 PaneKind::Chat,
                 PaneKind::Worker,
@@ -1635,18 +1633,15 @@ mod tests {
             ] {
                 assert_eq!(
                     pane_surface(app),
-                    bg,
-                    "the panel card ({kind:?}) uses the darker background"
+                    surface,
+                    "the panel card ({kind:?}) is the window surface"
                 );
             }
         }
 
-        // Dark: the panels are the window's darker `Bg` on the sidebar's
-        // `Surface` backdrop.
-        assert_panels_are_dark(&AppContext::default());
-        // Light: the same token relationship, no hardcoded colours.
+        assert_panels_flat(&AppContext::default());
         let mut light = AppContext::default();
         light.theme = goble_ui::theme::Theme::light();
-        assert_panels_are_dark(&light);
+        assert_panels_flat(&light);
     }
 }

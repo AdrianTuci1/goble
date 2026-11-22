@@ -18,6 +18,7 @@ use goble_ui::elements::{AppContext, Element, EventContext};
 use goble_ui::event::DispatchedEvent;
 use goble_ui::render::RenderCommand;
 use goble_ui::theme::Theme;
+use goble_ui::ConversationEntry;
 use goble_ui::{vec2f, ChatFragment, ChatMessage, ChatRole};
 
 fn seed(state: &mut UiState, desktop: &DesktopState) {
@@ -38,6 +39,31 @@ fn seed(state: &mut UiState, desktop: &DesktopState) {
             ChatRole::Assistant,
             "## Shell\n\nThe global bar is gone. The panel owns the top edge.\n\n- Sidebar first\n- Panel title\n- Settings overlay\n",
         ),
+    ];
+    state.conversations = vec![
+        ConversationEntry::new(
+            "spot-1",
+            "Logic Pro MCP Control and Deep House",
+            "Let's wire the transport controls.",
+            "2d",
+        )
+        .with_folder("Music"),
+        ConversationEntry::new(
+            "spot-2",
+            "Grammar Check For GitHub Description",
+            "Here is a tighter description.",
+            "2d",
+        )
+        .with_folder("Writing"),
+        ConversationEntry::new(
+            "spot-3",
+            "Automate the release notes",
+            "The scheduled task is ready.",
+            "5d",
+        )
+        .with_folder("Automations"),
+        ConversationEntry::new("spot-4", "Old archived thread", "Archived work.", "3w")
+            .with_archived(true),
     ];
     state.chat_messages = messages.clone();
     // The pane's own transcript is what the chat leaf draws: keep the mock
@@ -148,6 +174,36 @@ fn main() -> anyhow::Result<()> {
             (
                 "side-tabs-overflow",
                 vec2f(1200.0, 900.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-tabs-hover",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-tabs-add",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "spotlight",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "spotlight-scope",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "spotlight-options",
+                vec2f(1600.0, 1000.0),
                 false,
                 SettingsCategory::General,
             ),
@@ -332,6 +388,28 @@ fn main() -> anyhow::Result<()> {
                         ),
                     );
                 }
+                if name.starts_with("spotlight") {
+                    s.spotlight.open = true;
+                    s.spotlight.focused = true;
+                    if name == "spotlight-scope" {
+                        *s.spotlight.scope_menu_open.borrow_mut() = true;
+                    }
+                    if name == "spotlight-options" {
+                        *s.spotlight.options_menu_open.borrow_mut() = true;
+                    }
+                }
+                if name == "side-tabs-hover" || name == "side-tabs-add" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Terminal,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Files,
+                    ];
+                    s.active_side_tab = 0;
+                    if name == "side-tabs-add" {
+                        *s.side_tab_add_menu_open.borrow_mut() = true;
+                    }
+                }
                 if name == "side-agent" {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![
@@ -418,6 +496,44 @@ fn main() -> anyhow::Result<()> {
             let _ = raster::render_element_to_png(
                 &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
             );
+            if name == "side-tabs-hover" {
+                // Paint once with the pointer on the Side Question chip, so the
+                // hover close X is in the shot.
+                let commands = raster::render_commands(&mut root, size, &app);
+                if let Some(origin) = commands.iter().find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. }
+                        if text == "Side Question" && origin.y < 44.0 =>
+                    {
+                        Some(*origin)
+                    }
+                    _ => None,
+                }) {
+                    let _ = raster::render_element_to_png_at(
+                        &assets,
+                        &app,
+                        &mut root,
+                        size.x,
+                        size.y,
+                        1.0,
+                        origin + vec2f(20.0, 6.0),
+                        None,
+                        &path,
+                    );
+                }
+            }
+            if name == "side-tabs-add" {
+                // The add menu is anchored on its trigger; settle one frame.
+                let _ = raster::render_element_to_png(
+                    &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
+                );
+            }
+            if name == "spotlight-scope" || name == "spotlight-options" {
+                // The anchored menus lay out on the first frame and settle on
+                // the next.
+                let _ = raster::render_element_to_png(
+                    &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
+                );
+            }
             if name == "settings-wide-appearance-palette" {
                 // The palette is anchored to the swatch painted on the first
                 // frame; draw the settled frame before the final capture.
@@ -499,7 +615,9 @@ fn main() -> anyhow::Result<()> {
                 // the open panel is after every pane and overlay.
                 let commands = raster::render_commands(&mut root, size, &app);
                 raster::rasterize_to_png(&assets, &app, &commands, size, 2.0, None, &path)?;
-            } else {
+            } else if name != "side-tabs-hover" {
+                // The hover shot already carries its pointer; a final
+                // pointer-free pass would overwrite the revealed X.
                 raster::render_element_to_png(
                     &assets, &app, &mut root, size.x, size.y, 2.0, None, &path,
                 )?;

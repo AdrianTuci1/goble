@@ -424,6 +424,8 @@ pub struct UiActions {
     /// split, wrapping, folded directories and the selector survive the
     /// per-frame rebuild.
     pub review_views: Rc<RefCell<HashMap<u64, DiffReviewState>>>,
+    /// Q: one dispatch for the topbar spotlight window.
+    pub on_spotlight: Rc<RefCell<dyn FnMut(crate::ui::spotlight::SpotlightAction)>>,
     /// Update the global search query and run it.
     pub on_global_search_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Track focus of the global search field.

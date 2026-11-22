@@ -262,13 +262,15 @@ pub fn build_chrome_row(
     // they render disabled rather than pretending to navigate.
     controls = controls.with_child(disabled_button(app, "arrow-left", "Back"));
     controls = controls.with_child(disabled_button(app, "arrow-right", "Forward"));
-    let on_search = actions.on_select_sidebar_view.clone();
+    let on_search = actions.on_spotlight.clone();
     controls = controls.with_child(
         Tooltip::new(
             TopbarButton::new(glyph(app, "search"))
                 .with_size(CONTROL_BUTTON_SIZE)
                 .with_corner_radius(8.0)
-                .with_on_click(move || (on_search.borrow_mut())(SidebarView::Search))
+                .with_on_click(move || {
+                    (on_search.borrow_mut())(crate::ui::spotlight::SpotlightAction::Open)
+                })
                 .finish(),
             "Search",
         )
@@ -568,13 +570,17 @@ pub fn build_chrome_row(
             .max(0.0);
         let side_width =
             content_width * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, content_width);
-        strip = strip
-            .with_child(vertical_separator(app))
-            .with_child(
-                ConstrainedBox::new(side_section)
-                    .with_width(side_width)
-                    .finish(),
-            );
+        // The first frame (and a headless test) can build before the window
+        // measures itself: fall back to the flexible section until the width is
+        // known, so the chips are never laid out at zero width.
+        let side_section = if state.window_size.x > 0.0 {
+            ConstrainedBox::new(side_section)
+                .with_width(side_width)
+                .finish()
+        } else {
+            Expanded::new(side_section).finish()
+        };
+        strip = strip.with_child(side_section);
     }
     // The strip is the full bar height; each section carries the 2 pt quiet band
     // as its own top inset, so its controls center in the 40 pt content band.
@@ -852,6 +858,15 @@ impl TabStripScroller {
         }
     }
 
+    /// The natural width of the chip row, gaps included.
+    fn chips_width(&self) -> f32 {
+        if self.tabs == 0 {
+            0.0
+        } else {
+            self.widths.iter().sum::<f32>() + TAB_STRIP_GAP * (self.tabs - 1) as f32
+        }
+    }
+
     fn reveal_selected(&self, viewport: f32) {
         if viewport <= 0.0 || self.widths.is_empty() {
             return;
@@ -919,11 +934,12 @@ impl Element for TabStripScroller {
         self.scrollable.paint(origin, ctx, app);
         let size = self.size.unwrap_or(Vector2F::zero());
         let add_size = self.add.size().unwrap_or(Vector2F::zero());
+        // The + sits right beside the visible chips; only when they overflow
+        // the viewport is it pushed to the viewport's fixed trailing edge.
+        let room = (size.x - add_size.x - TAB_STRIP_ADD_GAP).max(0.0);
+        let add_x = origin.x + self.chips_width().min(room) + TAB_STRIP_ADD_GAP;
         self.add.paint(
-            vec2f(
-                origin.x + size.x - add_size.x,
-                origin.y + (size.y - add_size.y) / 2.0,
-            ),
+            vec2f(add_x, origin.y + (size.y - add_size.y) / 2.0),
             ctx,
             app,
         );

@@ -530,6 +530,8 @@ pub struct UiSnapshot {
     /// is open. The panel draws one of these surfaces in its content area.
     pub side_tabs: Vec<SideTabKind>,
     pub active_side_tab: usize,
+    /// Q: the topbar spotlight window.
+    pub spotlight: crate::ui::spotlight::SpotlightState,
     pub side_tab_add_menu_open: Rc<RefCell<bool>>,
     /// Horizontal swipe travel accumulated by the panel's content wrapper.
     pub side_swipe_accum: Rc<RefCell<f32>>,

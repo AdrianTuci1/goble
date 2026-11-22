@@ -80,6 +80,10 @@ pub fn user_bubble_max_width(lane: f32) -> f32 {
 }
 /// A transcript band's horizontal inset: DSH's bubble padding 10 × 16.
 pub const BAND_PADDING_X: f32 = 16.0;
+
+/// The inset the right-aligned user bubble keeps from the transcript lane's
+/// trailing edge, so the sent text never touches the chat column's border.
+pub const USER_BUBBLE_RIGHT_INSET: f32 = 16.0;
 /// Goble's own role marker: the `❯` that leads the user's row (DSH has no
 /// marker; the owner's requirement keeps Goble's), its glyph size and the room
 /// between it and the message's first character.

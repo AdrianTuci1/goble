@@ -271,7 +271,11 @@ fn the_user_bubble_is_right_aligned_and_capped() {
             _ => None,
         })
         .expect("the user's row paints its bubble");
-    approx("the user bubble's right edge", band.0.max_x(), width);
+    approx(
+        "the user bubble's right edge",
+        band.0.max_x(),
+        width - chat_typography::USER_BUBBLE_RIGHT_INSET,
+    );
     approx(
         "the narrow lane's 82% cap",
         band.0.width(),
@@ -402,7 +406,11 @@ fn a_full_lane_user_bubble_caps_at_seventy_point_two_percent() {
             _ => None,
         })
         .expect("the user's row paints its bubble");
-    approx("the full lane's right edge", band.0.max_x(), width);
+    approx(
+        "the full lane's right edge",
+        band.0.max_x(),
+        width - chat_typography::USER_BUBBLE_RIGHT_INSET,
+    );
     let cap = width * chat_typography::USER_BUBBLE_MAX_RATIO;
     assert!(
         band.0.width() <= cap + 0.01,

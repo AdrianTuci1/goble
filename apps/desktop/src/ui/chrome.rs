@@ -310,12 +310,15 @@ pub fn build_chrome_row(
         let on_submit = actions.on_session_rename_commit.clone();
         let on_cancel = actions.on_session_rename_cancel.clone();
         let on_blur = actions.on_session_rename_commit.clone();
+        // Editing keeps the title's exact footprint: no input frame, surface
+        // or border — the bare text line is drawn in place, with only the
+        // caret appearing to show that it is editable.
         let input = TextInput::new()
             .with_value(rename.draft.clone())
             .with_placeholder("Conversation name")
             .with_focused(rename.focused)
             .with_select_all(true)
-            .with_full_width(true)
+            .with_plain(true)
             .with_on_change(move |value| (on_change.borrow_mut())(value))
             .with_on_submit(move || (on_submit.borrow_mut())())
             .with_on_focus_change(move |focused| {
@@ -324,12 +327,7 @@ pub fn build_chrome_row(
                 }
             })
             .finish();
-        // The inline editor keeps the pill's exact box: same paddings, height
-        // and radius as the resting title, with no focus border adding a pixel
-        // of growth. The caret says it is being edited.
         let editor = Container::new(input)
-            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-            .with_corner_radius(8.0)
             .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
             .finish();
         let editor = ConstrainedBox::new(editor)
@@ -1955,8 +1953,11 @@ pub fn build_side_panel(
         // same breathing room the main pane's chat column keeps.
         .with_padding(EdgeInsets::uniform(inset + 8.0))
         .finish();
+    // The side panel is its own black surface (agent, terminal, files and
+    // review tabs all sit on `Bg`), so it reads apart from the grey sidebar and
+    // topbar material.
     Container::new(body)
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .with_padding(EdgeInsets::new(0.0, inset, inset, inset))
         .finish()
 }

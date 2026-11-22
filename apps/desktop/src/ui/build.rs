@@ -348,12 +348,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
                 // panel's left border. The two borders are then one shared line
                 // with no gutter, while the card's left gutter
                 // (`PANE_AREA_INSET + PANE_INSET`) stays unchanged.
-                EdgeInsets::new(
-                    0.0,
-                    0.0,
-                    -(panes::PANE_INSET + 1.0),
-                    panes::PANE_AREA_INSET,
-                )
+                EdgeInsets::new(0.0, 0.0, -(panes::PANE_INSET + 1.0), panes::PANE_AREA_INSET)
             } else {
                 // No band on the left and top: the panels own those edges and
                 // the shell surface already provides the margin. The free
@@ -3547,6 +3542,413 @@ mod tests {
         );
     }
 
+    /// W: the settings overlay receives real pointer events above the shell.
+    /// A rail item switches the page, a segmented control changes the value and
+    /// the in-field colour swatch opens its palette.
+    #[test]
+    fn settings_overlay_controls_receive_real_clicks() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.settings_overlay_open = true;
+            s.settings_overlay_wide = true;
+            s.settings.page = crate::ui::SettingsCategory::General;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let find = |text: &str| {
+            commands.iter().find_map(|command| match command {
+                RenderCommand::DrawText {
+                    text: drawn,
+                    origin,
+                    ..
+                } if drawn == text => Some(*origin),
+                _ => None,
+            })
+        };
+        let appearance = find("Appearance").expect("the Appearance rail item");
+        click(&mut root, &app, appearance + vec2f(6.0, 4.0));
+        assert_eq!(
+            state.borrow().settings.page,
+            crate::ui::SettingsCategory::Appearance,
+            "the rail click switches the page"
+        );
+
+        // Back to General; the Queued Messages segmented control flips.
+        let commands = render_element(&mut root, window(), &app);
+        let general = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "General" => Some(*origin),
+                _ => None,
+            })
+            .expect("the General rail item");
+        click(&mut root, &app, general + vec2f(6.0, 4.0));
+        let immediate = find_text_origin(&mut root, &app, "Send Immediately");
+        click(&mut root, &app, immediate + vec2f(6.0, 4.0));
+        assert!(
+            state.borrow().settings.send_immediately,
+            "the segmented control receives the click"
+        );
+
+        // Appearance's accent swatch sits at the hex field's leading edge.
+        let commands = render_element(&mut root, window(), &app);
+        let appearance = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Appearance" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Appearance rail item");
+        click(&mut root, &app, appearance + vec2f(6.0, 4.0));
+        let commands = render_element(&mut root, window(), &app);
+        let hex = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "#9a9a9a" => Some(*origin),
+                _ => None,
+            })
+            .expect("the accent hex field");
+        click(&mut root, &app, hex + vec2f(-24.0, 4.0));
+        assert_eq!(
+            *state.borrow().settings.color_palette_menu.borrow(),
+            Some(0),
+            "the in-field swatch opens the palette"
+        );
+
+        // Pick a palette colour from the anchored grid; the menu closes and a
+        // value is written next frame.
+        let commands = render_element(&mut root, window(), &app);
+        let palette = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Palette · accent" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the palette panel");
+        click(&mut root, &app, palette + vec2f(18.0, 86.0));
+        assert_eq!(
+            *state.borrow().settings.color_palette_menu.borrow(),
+            None,
+            "a palette swatch closes the popover"
+        );
+
+        // The theme select opens its list and a choice closes it again.
+        let commands = render_element(&mut root, window(), &app);
+        let theme = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Default base" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the colour theme select");
+        click(&mut root, &app, theme + vec2f(6.0, 4.0));
+        assert!(
+            state.borrow().settings.theme_select_open,
+            "the theme select opens its list"
+        );
+        let commands = render_element(&mut root, window(), &app);
+        let choice = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Goble Night" || text == "Tokyo Night" =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("a theme option");
+        click(&mut root, &app, choice + vec2f(6.0, 4.0));
+        assert!(
+            !state.borrow().settings.theme_select_open,
+            "choosing a theme closes the list"
+        );
+
+        // Narrow: at 700 pt the responsive layout hides the rail and the
+        // floating hamburger carries the pages instead.
+        let narrow = vec2f(700.0, 900.0);
+        let commands = render_element(&mut root, narrow, &app);
+        let hamburger = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "menu-01" && origin.y < 60.0 => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                let icons: Vec<_> = commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        RenderCommand::DrawIcon { name, origin, .. } => {
+                            Some((name.clone(), *origin))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                panic!("the narrow settings hamburger: {icons:?}");
+            });
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: hamburger,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: hamburger,
+                button: 0,
+            },
+        ] {
+            let _ = root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert!(
+            *state.borrow().settings_overlay_hamburger.borrow(),
+            "the narrow hamburger opens its page list"
+        );
+        let commands = render_element(&mut root, narrow, &app);
+        let shortcuts = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Shortcuts" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the hamburger's page list");
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: shortcuts + vec2f(6.0, 4.0),
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: shortcuts + vec2f(6.0, 4.0),
+                button: 0,
+            },
+        ] {
+            let _ = root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert_eq!(
+            state.borrow().settings.page,
+            crate::ui::SettingsCategory::Shortcuts,
+            "the narrow hamburger navigates"
+        );
+    }
+
+    fn find_text_origin(root: &mut Box<dyn Element>, app: &AppContext, needle: &str) -> Vector2F {
+        render_element(root, window(), app)
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == needle => Some(*origin),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the frame draws {needle}"))
+    }
+
+    /// V: the topbar title is a pill; clicking it edits inline in the same
+    /// casing, Enter commits the name and Escape cancels. The modal rename
+    /// dialog stays out of this path.
+    #[test]
+    fn the_topbar_title_pill_edits_inline() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.conversations = vec![goble_ui::ConversationEntry::new(
+                "title-id",
+                "Alpha title",
+                "",
+                "1d",
+            )];
+            s.selected_id = Some("title-id".to_string());
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let title = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Alpha title" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the topbar title pill");
+        click(&mut root, &app, title + vec2f(4.0, 4.0));
+        {
+            let s = state.borrow();
+            let rename = s.sidebar_rename.as_ref().expect("inline edit starts");
+            assert!(rename.inline, "the pill starts the inline editor");
+            assert_eq!(rename.draft, "Alpha title");
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.iter().any(|text| *text == "Rename conversation"),
+            "the modal dialog is suppressed: {texts:?}"
+        );
+
+        // Editing the draft and Enter commits through the shared rename path.
+        state.borrow_mut().sidebar_rename.as_mut().unwrap().draft = "Beta title".to_string();
+        let mut ctx = EventContext;
+        let _ = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Enter".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        {
+            let s = state.borrow();
+            assert!(s.sidebar_rename.is_none(), "Enter closes the inline editor");
+            assert_eq!(
+                s.conversations[0].name, "Beta title",
+                "the committed name replaces the old one"
+            );
+        }
+
+        // Escape cancels without keeping the draft.
+        let commands = render_element(&mut root, window(), &app);
+        let title = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Beta title" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the updated title pill");
+        click(&mut root, &app, title + vec2f(4.0, 4.0));
+        assert!(
+            state
+                .borrow()
+                .sidebar_rename
+                .as_ref()
+                .is_some_and(|rename| rename.inline),
+            "the second click starts the inline editor again: {:?}",
+            state.borrow().sidebar_rename
+        );
+        state.borrow_mut().sidebar_rename.as_mut().unwrap().draft = "Discarded".to_string();
+        let handled = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        let s = state.borrow();
+        assert!(
+            s.sidebar_rename.is_none(),
+            "Escape closes the editor (handled {handled}, rename {:?})",
+            s.sidebar_rename
+        );
+        assert_eq!(
+            s.conversations[0].name, "Beta title",
+            "Escape keeps the name"
+        );
+    }
+
+    /// U: Escape only dismisses the topmost overlay. It never opens, restores
+    /// or focuses a terminal/floating pane, however many times it is pressed.
+    #[test]
+    fn escape_dismisses_overlays_without_opening_stale_panes() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let _ = render_element(&mut root, window(), &app);
+        let before_id = state.borrow().spaces[0].root.max_id();
+        let before_terminals = state.borrow().terminal.borrow().sessions.len();
+        let mut ctx = EventContext;
+
+        // Settings is a surface over the shell: Escape closes it, and the pane
+        // tree/terminal registry are untouched.
+        state.borrow_mut().settings_overlay_open = true;
+        let _ = render_element(&mut root, window(), &app);
+        let _ = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(
+            !state.borrow().settings_overlay_open,
+            "Escape closes settings"
+        );
+        assert_eq!(
+            state.borrow().spaces[0].root.max_id(),
+            before_id,
+            "Escape opens no pane"
+        );
+        assert_eq!(
+            state.borrow().terminal.borrow().sessions.len(),
+            before_terminals,
+            "Escape starts no terminal"
+        );
+
+        // Repeated Escape with no overlay is inert too.
+        for _ in 0..4 {
+            let _ = root.dispatch_event(
+                &DispatchedEvent::KeyDown {
+                    key: "Escape".to_string(),
+                    modifiers: Default::default(),
+                },
+                &mut ctx,
+                &app,
+            );
+        }
+        assert_eq!(
+            state.borrow().spaces[0].root.max_id(),
+            before_id,
+            "repeated Escape never resurrects a terminal/floating pane"
+        );
+        assert_eq!(
+            state.borrow().terminal.borrow().sessions.len(),
+            before_terminals,
+            "repeated Escape starts no terminal session"
+        );
+
+        // The spotlight behaves the same way.
+        state.borrow_mut().spotlight.open = true;
+        state.borrow_mut().spotlight.focused = true;
+        let _ = render_element(&mut root, window(), &app);
+        let _ = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(
+            !state.borrow().spotlight.open,
+            "Escape closes the spotlight"
+        );
+        assert_eq!(
+            state.borrow().spaces[0].root.max_id(),
+            before_id,
+            "the spotlight's Escape opens no pane either"
+        );
+    }
+
     /// Q: the topbar Search opens the spotlight, which filters real
     /// conversations by query/scope, navigates with the keys and dismisses on
     /// Escape or an outside press.
@@ -3756,11 +4158,12 @@ mod tests {
         let close = hovered
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { name, origin, size, .. }
-                    if name == "x-close"
-                        && origin.y < crate::ui::chrome::CHROME_HEIGHT
-                        && origin.x > agent.x - 40.0
-                        && origin.x < agent.x + 140.0 =>
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "x-close"
+                    && origin.y < crate::ui::chrome::CHROME_HEIGHT
+                    && origin.x > agent.x - 40.0
+                    && origin.x < agent.x + 140.0 =>
                 {
                     Some(*origin + vec2f(*size / 2.0, *size / 2.0))
                 }
@@ -3770,7 +4173,9 @@ mod tests {
                 let icons: Vec<_> = hovered
                     .iter()
                     .filter_map(|command| match command {
-                        RenderCommand::DrawIcon { name, origin, .. } => Some((name.clone(), *origin)),
+                        RenderCommand::DrawIcon { name, origin, .. } => {
+                            Some((name.clone(), *origin))
+                        }
                         _ => None,
                     })
                     .collect();
@@ -3792,7 +4197,9 @@ mod tests {
         assert!(
             !state.borrow().side_tabs.contains(&SideTabKind::Agent),
             "the X closes the Side Question chip (agent {:?}, close {:?}, tabs {:?})",
-            agent, close, state.borrow().side_tabs
+            agent,
+            close,
+            state.borrow().side_tabs
         );
 
         // The + menu opens and offers the real tab kinds.

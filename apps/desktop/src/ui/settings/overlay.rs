@@ -147,6 +147,50 @@ fn overlay_content(
     {
         page_stack = page_stack.with_overlay(palette, vec2f(0.0, 0.0));
     }
+    // W: a narrow sheet keeps page navigation in one floating hamburger menu
+    // (the rail is hidden). It is not a header bar; the pages come from the
+    // same rail groups and dispatch the same Navigate action.
+    if narrow {
+        let mut pages = Vec::new();
+        for (_, group) in super::rail_groups() {
+            pages.extend(group);
+        }
+        let items: Vec<PopupMenuItem> = pages
+            .iter()
+            .map(|page| PopupMenuItem::new(page.label()))
+            .collect();
+        let open = state.settings_overlay_hamburger.clone();
+        let dispatch = actions.settings.dispatch.clone();
+        let close_menu = state.settings_overlay_hamburger.clone();
+        let trigger = TopbarButton::new(
+            Icon::new("menu-01")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(14.0)
+        .with_on_click({
+            let open = state.settings_overlay_hamburger.clone();
+            move || {
+                let next = !*open.borrow();
+                *open.borrow_mut() = next;
+            }
+        })
+        .finish();
+        let menu = PopupMenu::new(trigger, items)
+            .with_open(open)
+            .with_position(PopupMenuPosition::Below)
+            .with_max_width(220.0)
+            .with_on_select(move |index| {
+                if let Some(page) = pages.get(index).copied() {
+                    (dispatch.borrow_mut())(SettingsAction::Navigate(page));
+                }
+                *close_menu.borrow_mut() = false;
+            })
+            .finish();
+        page_stack = page_stack.with_overlay(menu, vec2f(10.0, 8.0));
+    }
     let page_column = page_stack.with_overlay(close_row, vec2f(0.0, 0.0)).finish();
 
     let mut row = Flex::row()

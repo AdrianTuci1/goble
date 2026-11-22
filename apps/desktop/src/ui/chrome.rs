@@ -12,10 +12,10 @@ use goble_ui::color::ColorU;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisSize, MenuId,
-    MenuPointer, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ScrollState,
-    Scrollable, SearchInput, SizeConstraint, Spacer, Stack, Text, Tooltip, TooltipPosition,
-    TopbarButton,
+    Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
+    MainAxisSize, MenuId, MenuPointer, PaintContext, Point, PopupMenu, PopupMenuItem,
+    PopupMenuPosition, ScrollState, Scrollable, SearchInput, SizeConstraint, Spacer, Stack, Text,
+    TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY};
 use goble_ui::geometry::{vec2f, PointF, RectF, Size2F, Vector2F};
@@ -297,16 +297,88 @@ pub fn build_chrome_row(
     .with_width(sidebar_width)
     .finish();
 
-    // The main section names the active conversation and nothing else: DSH's
-    // partitioned strip retired the folder crumb, so there is no "Not in
-    // project /" run before the name.
-    let title = Text::new(truncate_label(&active_conversation_name(state), 64))
-        .with_font_size(14.5)
-        .with_weight(FontWeight::Medium)
-        .with_theme_color(ColorToken::Text, app)
-        .with_max_lines(1)
+    // The main section names the active conversation in a rounded pill (V).
+    // Clicking it turns the same pill into an inline editor; the modal rename
+    // surface is suppressed for this inline mode.
+    let selected_id = state.selected_id.clone();
+    let inline_rename = state
+        .sidebar_rename
+        .as_ref()
+        .filter(|rename| rename.inline && Some(&rename.id) == selected_id.as_ref());
+    let title: Box<dyn Element> = if let Some(rename) = inline_rename {
+        let on_change = actions.on_session_rename_draft.clone();
+        let on_submit = actions.on_session_rename_commit.clone();
+        let on_cancel = actions.on_session_rename_cancel.clone();
+        let on_blur = actions.on_session_rename_commit.clone();
+        let input = TextInput::new()
+            .with_value(rename.draft.clone())
+            .with_placeholder("Conversation name")
+            .with_focused(rename.focused)
+            .with_select_all(true)
+            .with_full_width(true)
+            .with_on_change(move |value| (on_change.borrow_mut())(value))
+            .with_on_submit(move || (on_submit.borrow_mut())())
+            .with_on_focus_change(move |focused| {
+                if !focused {
+                    (on_blur.borrow_mut())();
+                }
+            })
+            .finish();
+        let editor = Container::new(input)
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Focus)))
+            .with_corner_radius(8.0)
+            .with_padding(EdgeInsets::new(2.0, 8.0, 2.0, 8.0))
+            .finish();
+        let editor = ConstrainedBox::new(editor).with_max_width(360.0).finish();
+        let key = actions.on_session_rename_commit.clone();
+        let cancel = actions.on_session_rename_cancel.clone();
+        KeyHandler::new(editor, move |pressed, modifiers| {
+            if modifiers.command || modifiers.ctrl || modifiers.alt {
+                return false;
+            }
+            match pressed {
+                "Enter" => {
+                    (key.borrow_mut())();
+                    true
+                }
+                "Escape" => {
+                    (cancel.borrow_mut())();
+                    true
+                }
+                _ => false,
+            }
+        })
+        .finish()
+    } else {
+        let name = active_conversation_name(state);
+        let on_start = actions.on_inline_title_rename.clone();
+        let id = selected_id.clone().unwrap_or_default();
+        let label = Text::new(truncate_label(&name, 64))
+            .with_font_size(14.5)
+            .with_weight(FontWeight::Medium)
+            .with_theme_color(ColorToken::Text, app)
+            .with_max_lines(1)
+            .finish();
+        let pill = HoverRow::new(
+            Container::new(label)
+                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+                .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
+                .with_corner_radius(8.0)
+                .finish(),
+        )
+        .with_on_click(move || (on_start.borrow_mut())(id.clone()))
         .finish();
-    let on_rename = actions.on_session_rename_start.clone();
+        let pill = Tooltip::new(pill, "Edit Conversation Title")
+            .with_position(TooltipPosition::Below)
+            .finish();
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(pill)
+            .with_child(Spacer::new().finish())
+            .finish()
+    };
+    let on_rename = actions.on_inline_title_rename.clone();
     let on_archive = actions.on_archive_conversation.clone();
     let on_copy = actions.on_copy_conversation_id.clone();
     let on_pin = actions.on_toggle_star.clone();
@@ -568,8 +640,8 @@ pub fn build_chrome_row(
             - 2.0 * crate::ui::shell::WORKSPACE_MARGIN
             - crate::ui::panes::PANE_AREA_INSET)
             .max(0.0);
-        let side_width =
-            content_width * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, content_width);
+        let side_width = content_width
+            * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, content_width);
         // The first frame (and a headless test) can build before the window
         // measures itself: fall back to the flexible section until the width is
         // known, so the chips are never laid out at zero width.
@@ -913,10 +985,7 @@ impl Element for TabStripScroller {
         let height = constraint.max.y.max(add_size.y);
         let viewport_width = (constraint.max.x - add_size.x - TAB_STRIP_ADD_GAP).max(0.0);
         self.scroll_size = self.scrollable.layout(
-            SizeConstraint::new(
-                vec2f(viewport_width, height),
-                vec2f(viewport_width, height),
-            ),
+            SizeConstraint::new(vec2f(viewport_width, height), vec2f(viewport_width, height)),
             ctx,
             app,
         );

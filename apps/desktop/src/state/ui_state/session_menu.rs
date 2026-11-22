@@ -123,6 +123,9 @@ pub struct SidebarRename {
     pub draft: String,
     pub focused: bool,
     pub error: Option<String>,
+    /// V: the topbar's inline title editor rather than the modal rename
+    /// dialog. Both write through the same durable commit path.
+    pub inline: bool,
 }
 
 /// The stop-and-archive confirmation's state: the conversation, the honest
@@ -240,6 +243,28 @@ impl UiState {
             draft: name,
             focused: true,
             error: None,
+            inline: false,
+        });
+    }
+
+    /// V: start the topbar title's inline edit. The same durable rename state
+    /// and commit path as the dialog, with `inline` telling the modal surface
+    /// to stay hidden.
+    pub fn begin_inline_rename(&mut self, id: &str) {
+        let Some(name) = self
+            .conversations
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.name.clone())
+        else {
+            return;
+        };
+        self.sidebar_rename = Some(SidebarRename {
+            id: id.to_string(),
+            draft: name,
+            focused: true,
+            error: None,
+            inline: true,
         });
     }
 

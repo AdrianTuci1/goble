@@ -190,6 +190,24 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "conversation-title-pill",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "conversation-title-hover",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "conversation-title-edit",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "spotlight",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -388,6 +406,12 @@ fn main() -> anyhow::Result<()> {
                         ),
                     );
                 }
+                if name.starts_with("conversation-title") {
+                    s.selected_id = Some("spot-1".to_string());
+                    if name == "conversation-title-edit" {
+                        s.begin_inline_rename("spot-1");
+                    }
+                }
                 if name.starts_with("spotlight") {
                     s.spotlight.open = true;
                     s.spotlight.focused = true;
@@ -521,11 +545,57 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+            if name == "conversation-title-hover" {
+                let commands = raster::render_commands(&mut root, size, &app);
+                if let Some(origin) = commands.iter().find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. }
+                        if text.starts_with("Logic Pro") && origin.y < 44.0 =>
+                    {
+                        Some(*origin)
+                    }
+                    _ => None,
+                }) {
+                    let _ = raster::render_element_to_png_at(
+                        &assets,
+                        &app,
+                        &mut root,
+                        size.x,
+                        size.y,
+                        1.0,
+                        origin + vec2f(16.0, 8.0),
+                        None,
+                        &path,
+                    );
+                }
+            }
             if name == "side-tabs-add" {
                 // The add menu is anchored on its trigger; settle one frame.
                 let _ = raster::render_element_to_png(
                     &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
                 );
+            }
+            if name == "conversation-title-hover" {
+                let commands = raster::render_commands(&mut root, size, &app);
+                if let Some(origin) = commands.iter().find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. }
+                        if text.starts_with("Logic Pro") && origin.y < 44.0 =>
+                    {
+                        Some(*origin)
+                    }
+                    _ => None,
+                }) {
+                    let _ = raster::render_element_to_png_at(
+                        &assets,
+                        &app,
+                        &mut root,
+                        size.x,
+                        size.y,
+                        1.0,
+                        origin + vec2f(16.0, 8.0),
+                        None,
+                        &path,
+                    );
+                }
             }
             if name == "spotlight-scope" || name == "spotlight-options" {
                 // The anchored menus lay out on the first frame and settle on
@@ -615,7 +685,7 @@ fn main() -> anyhow::Result<()> {
                 // the open panel is after every pane and overlay.
                 let commands = raster::render_commands(&mut root, size, &app);
                 raster::rasterize_to_png(&assets, &app, &commands, size, 2.0, None, &path)?;
-            } else if name != "side-tabs-hover" {
+            } else if name != "side-tabs-hover" && name != "conversation-title-hover" {
                 // The hover shot already carries its pointer; a final
                 // pointer-free pass would overwrite the revealed X.
                 raster::render_element_to_png(

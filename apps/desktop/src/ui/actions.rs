@@ -355,6 +355,8 @@ pub struct UiActions {
     pub on_toggle_star: Rc<RefCell<dyn FnMut(String)>>,
     /// Open the sidebar's "Rename conversation" dialog for a conversation.
     pub on_session_rename_start: Rc<RefCell<dyn FnMut(String)>>,
+    /// V: start the topbar's inline conversation-title edit.
+    pub on_inline_title_rename: Rc<RefCell<dyn FnMut(String)>>,
     /// The Rename dialog's draft changed.
     pub on_session_rename_draft: Rc<RefCell<dyn FnMut(String)>>,
     /// Commit the Rename dialog (Enter or its Rename button).

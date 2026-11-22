@@ -213,7 +213,6 @@ pub(crate) fn build_diff_pane(
         let hscroll = controls.diff_hscroll.clone();
         let visible = controls.diff_visible.clone();
         let sidebar = *controls.diff_sidebar.borrow();
-        column = column.with_child(Divider::horizontal().finish());
         if commit_open {
             column = column.with_child(commit_bar(
                 app,
@@ -315,30 +314,7 @@ pub(crate) fn build_review_tab(
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    let mut has_toolbar = false;
     if let (Some(Some(detail)), Some(controls)) = (detail, controls.as_ref()) {
-        let view = crate::state::review_for(&actions.review_views, pane_id);
-        let selected = controls.diff_selected.borrow().clone();
-        let expanded = controls.diff_expanded.borrow().clone();
-        column = column.with_child(review_controls(
-            app,
-            actions,
-            pane_id,
-            detail,
-            selected.as_deref(),
-            &expanded,
-            &view,
-            // One rail in the wide tab; a narrow panel gives the diff the
-            // width and leaves selection to the ReviewTab selector.
-            show_rail,
-            compact,
-            &CommitView {
-                open: commit_open,
-                menu_open: controls.diff_commit_menu_open.clone(),
-                status: controls.diff_git_status.borrow().clone(),
-            },
-        ));
-        has_toolbar = true;
         column = column.with_child(Divider::horizontal().finish());
         if commit_open {
             column = column.with_child(commit_bar(
@@ -395,7 +371,6 @@ pub(crate) fn build_review_tab(
             .finish(),
         );
     }
-    let _ = has_toolbar;
     Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .finish()
@@ -1260,6 +1235,14 @@ fn file_header(
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(6.0)
+            .with_child(
+                Text::new(reviewer::type_badge(&file.path))
+                    .with_font_family(FontFamily::Mono)
+                    .with_font_size(10.0)
+                    .with_weight(FontWeight::SemiBold)
+                    .with_theme_color(reviewer::badge_color(&file.path), app)
+                    .finish(),
+            )
             .with_child(
                 Text::new(name)
                     .with_font_size(13.0)

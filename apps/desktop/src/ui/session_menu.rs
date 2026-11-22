@@ -388,6 +388,10 @@ pub(crate) fn build_rename_dialog_surface(
     let Some(rename) = state.sidebar_rename.as_ref() else {
         return Dialog::new(Empty::new().finish()).with_open(false).finish();
     };
+    if rename.inline {
+        // V: the topbar pill is the editor; no modal over it.
+        return Dialog::new(Empty::new().finish()).with_open(false).finish();
+    }
     build_rename_dialog(
         app,
         RenameDialogState {

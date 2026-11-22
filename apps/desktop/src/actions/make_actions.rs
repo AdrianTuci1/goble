@@ -273,6 +273,7 @@ pub fn make_actions(
     let on_session_rename_commit = Rc::clone(&state);
     let desktop_session_rename_commit = desktop.clone();
     let on_session_rename_cancel = Rc::clone(&state);
+    let on_inline_title_rename = Rc::clone(&state);
     let on_fork_conversation_by_id = Rc::clone(&state);
     let desktop_fork_conversation = desktop.clone();
     let on_copy_conversation_id = Rc::clone(&state);
@@ -2596,6 +2597,9 @@ pub fn make_actions(
         })),
         on_session_rename_start: Rc::new(RefCell::new(move |id: String| {
             on_session_rename_start.borrow_mut().begin_rename(&id);
+        })),
+        on_inline_title_rename: Rc::new(RefCell::new(move |id: String| {
+            on_inline_title_rename.borrow_mut().begin_inline_rename(&id);
         })),
         on_session_rename_draft: Rc::new(RefCell::new(move |draft: String| {
             on_session_rename_draft.borrow_mut().rename_draft(draft);

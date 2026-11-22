@@ -191,6 +191,50 @@ impl Element for RootView {
         if self.guard_open_menu(event, app) {
             return true;
         }
+        // Overlay Escape is structural: the topmost surface closes and the
+        // event stops there. Without this, a settings sheet or spotlight whose
+        // own key handler was not the focus owner let Escape fall through to
+        // the shell, which is how a stale terminal surface could reappear.
+        if let DispatchedEvent::KeyDown { key, modifiers } = event {
+            if key == "Escape"
+                && !modifiers.command
+                && !modifiers.ctrl
+                && !modifiers.alt
+                && !modifiers.shift
+            {
+                let mut state = self.state.borrow_mut();
+                // V: the inline topbar title editor owns Escape and cancels
+                // without writing. The focused TextInput does not forward the
+                // key to its ancestor KeyHandler, so the structural overlay
+                // pass handles it here.
+                if state
+                    .sidebar_rename
+                    .as_ref()
+                    .is_some_and(|rename| rename.inline)
+                {
+                    state.cancel_rename();
+                    self.redraw_requested = true;
+                    return true;
+                }
+                if state.spotlight.open {
+                    if *state.spotlight.scope_menu_open.borrow() {
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                    } else if *state.spotlight.options_menu_open.borrow() {
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    } else {
+                        state.spotlight.open = false;
+                        state.spotlight.focused = false;
+                    }
+                    self.redraw_requested = true;
+                    return true;
+                }
+                if state.settings_overlay_open {
+                    state.settings_overlay_open = false;
+                    self.redraw_requested = true;
+                    return true;
+                }
+            }
+        }
         // Global shortcuts (warp-new style pane splitting + pane focus
         // navigation + the command palette). These are handled before the tree
         // so a focused composer cannot swallow the keys.

@@ -178,9 +178,11 @@ inline image message (`chat-parity-*`), the slash menu floating above an
 unchanged composer (`slash-menu-*`), the Review tab beside the main chat
 (`split-review-*`), the file viewer with Review beside it
 (`split-file-viewer-*`) and the narrow split (`split-review-narrow-*`). The
-review surface is a stacked/unified diff column on the left with the single
-"Files Changed" rail on its right; its file headers are text/badge led (fold
-chevron, bold name, muted directory, counts, File/Diff, Revert, copy). The
+review surface has no inner header band: directly under the one general topbar
+its stacked/unified diff column sits on the left (type badge, bold filename,
+muted directory, counts, fold chevron and inline stacked diff) and the single
+"Files Changed" rail on the right. The topbar's right edge ends in exactly the
+add-tab, maximize and panel toggles. The
 chat's changed-files card is the simpler T3 model: one collapsible bordered
 card on the chat background, "N files changed" + counts + chevron and a
 Review button, expanding to full-path rows with counts flush right; on narrow
@@ -194,7 +196,11 @@ evidence shows multiple chips, a hovered chip with its close X and the pinned
 no darker card fill, border, rounded casing, shadow or 4 px band; the only
 separation is the full-height 1 px main/side hairline. The topbar's two panel
 toggles use DSH's own `panel-left-outline` glyph and its mirrored right-hand
-twin. The Settings sheet uses a full-height
+twin. The active conversation title is a rounded pill that turns into an inline
+editor with a selected value and caret on click; Enter commits through the
+durable rename path, Escape cancels, and a hover tooltip reads "Edit
+Conversation Title". Narrow Settings keeps page navigation in one floating
+hamburger instead of the rail. The Settings sheet uses a full-height
 secondary rail (small muted heading, primary-text menu labels, no search field,
 no user footer, no row/section rules) and long 120 pt Interface Layout tiles
 with an 8 pt gap.

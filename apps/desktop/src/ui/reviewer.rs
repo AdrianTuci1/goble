@@ -1584,7 +1584,7 @@ fn short_dir(path: &str) -> String {
 
 /// The reference's file-type letter badge: h/c source, md, shell, JSON, YAML,
 /// README. Other text files fall back to their extension's first letter.
-fn type_badge(path: &str) -> String {
+pub(crate) fn type_badge(path: &str) -> String {
     let name = short_name(path);
     let lower = name.to_ascii_lowercase();
     if lower == "readme.md" {
@@ -1607,7 +1607,7 @@ fn type_badge(path: &str) -> String {
     }
 }
 
-fn badge_color(path: &str) -> ColorToken {
+pub(crate) fn badge_color(path: &str) -> ColorToken {
     let ext = short_name(path)
         .to_ascii_lowercase()
         .rsplit_once('.')

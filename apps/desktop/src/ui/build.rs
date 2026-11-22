@@ -58,7 +58,7 @@ const SIDE_SPLIT_MAX_RATIO: f32 = 0.75;
 
 /// Resolve the side panel's share of `content_width`, with the width-aware
 /// minimum applied on top of the `0.25..=0.75` ratio range.
-fn resolved_side_split_ratio(ratio: f32, content_width: f32) -> f32 {
+pub(crate) fn resolved_side_split_ratio(ratio: f32, content_width: f32) -> f32 {
     let ratio = if ratio.is_finite() { ratio } else { 0.5 }
         .clamp(SIDE_SPLIT_MIN_RATIO, SIDE_SPLIT_MAX_RATIO);
     if !content_width.is_finite() || content_width <= 0.0 {
@@ -349,13 +349,16 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
                 // with no gutter, while the card's left gutter
                 // (`PANE_AREA_INSET + PANE_INSET`) stays unchanged.
                 EdgeInsets::new(
-                    panes::PANE_AREA_INSET,
-                    panes::PANE_AREA_INSET,
+                    0.0,
+                    0.0,
                     -(panes::PANE_INSET + 1.0),
                     panes::PANE_AREA_INSET,
                 )
             } else {
-                EdgeInsets::uniform(panes::PANE_AREA_INSET)
+                // No band on the left and top: the panels own those edges and
+                // the shell surface already provides the margin. The free
+                // space is kept on the bottom and the right.
+                EdgeInsets::new(0.0, 0.0, panes::PANE_AREA_INSET, panes::PANE_AREA_INSET)
             };
             let panels = Padding::new(main, insets).finish();
             Container::new(panels)

@@ -552,9 +552,29 @@ pub fn build_chrome_row(
                 SECTION_VERTICAL_PADDING,
             ))
             .finish();
+        // The strip's panel-2 section takes exactly the width the side panel
+        // takes on the sheet, so dragging the split moves the topbar boundary
+        // with it. It mirrors the body: the sidebar (or its controls) on the
+        // left, the sheet margin, no left pane inset and the right one.
+        let body_sidebar_width = if sidebar_shown {
+            state.sidebar_width
+        } else {
+            0.0
+        };
+        let content_width = (state.window_size.x
+            - body_sidebar_width
+            - 2.0 * crate::ui::shell::WORKSPACE_MARGIN
+            - crate::ui::panes::PANE_AREA_INSET)
+            .max(0.0);
+        let side_width =
+            content_width * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, content_width);
         strip = strip
             .with_child(vertical_separator(app))
-            .with_child(Expanded::new(side_section).finish());
+            .with_child(
+                ConstrainedBox::new(side_section)
+                    .with_width(side_width)
+                    .finish(),
+            );
     }
     // The strip is the full bar height; each section carries the 2 pt quiet band
     // as its own top inset, so its controls center in the 40 pt content band.
@@ -766,11 +786,18 @@ const TAB_STRIP_CLOSE_GAP: f32 = 4.0;
 /// the selection changes again).
 struct TabStripScroller {
     scrollable: Scrollable,
+    add: Box<dyn Element>,
     widths: Vec<f32>,
     active: usize,
     tabs: usize,
     scroll: Rc<RefCell<ScrollState>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+    scroll_size: Vector2F,
 }
+
+/// The gap between the chips' viewport and the fixed `+` control.
+const TAB_STRIP_ADD_GAP: f32 = 4.0;
 
 impl TabStripScroller {
     fn new(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Self {
@@ -801,22 +828,27 @@ impl TabStripScroller {
         }
         let tabs = widths.len();
         let scroll = side_tab_scroll();
-        // Chips and the `+` are one row inside the viewport: the button is
-        // immediately beside the last chip and scrolls with it.
-        let row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(4.0)
-            .with_child(side_tabs::build_tab_strip(app, state, actions))
-            .with_child(side_tab_add_menu(app, state, actions))
-            .finish();
-        let scrollable = Scrollable::new(row, Axis::Horizontal).with_state(Rc::clone(&scroll));
+        // Only the chips live inside the clipped, scrollable viewport. The `+`
+        // control is a sibling OUTSIDE it: it keeps its place right beside the
+        // visible chips until the room runs out, and its add menu is never
+        // clipped by the strip's viewport (it used to scroll out of view and
+        // paint behind the window controls).
+        let scrollable = Scrollable::new(
+            side_tabs::build_tab_strip(app, state, actions),
+            Axis::Horizontal,
+        )
+        .with_state(Rc::clone(&scroll));
+        let add = side_tab_add_menu(app, state, actions);
         Self {
             scrollable,
+            add,
             widths,
             active,
             tabs,
             scroll,
+            size: None,
+            origin: None,
+            scroll_size: Vector2F::zero(),
         }
     }
 
@@ -858,21 +890,51 @@ impl Element for TabStripScroller {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let size = self.scrollable.layout(constraint, ctx, app);
-        self.reveal_selected(size.x);
+        let add_size = self.add.layout(
+            SizeConstraint::new(Vector2F::zero(), constraint.max),
+            ctx,
+            app,
+        );
+        let height = constraint.max.y.max(add_size.y);
+        let viewport_width = (constraint.max.x - add_size.x - TAB_STRIP_ADD_GAP).max(0.0);
+        self.scroll_size = self.scrollable.layout(
+            SizeConstraint::new(
+                vec2f(viewport_width, height),
+                vec2f(viewport_width, height),
+            ),
+            ctx,
+            app,
+        );
+        self.reveal_selected(self.scroll_size.x);
+        let size = vec2f(
+            (self.scroll_size.x + TAB_STRIP_ADD_GAP + add_size.x).min(constraint.max.x),
+            height,
+        );
+        self.size = Some(size);
         size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.scrollable.paint(origin, ctx, app);
+        let size = self.size.unwrap_or(Vector2F::zero());
+        let add_size = self.add.size().unwrap_or(Vector2F::zero());
+        self.add.paint(
+            vec2f(
+                origin.x + size.x - add_size.x,
+                origin.y + (size.y - add_size.y) / 2.0,
+            ),
+            ctx,
+            app,
+        );
     }
 
     fn size(&self) -> Option<Vector2F> {
-        self.scrollable.size()
+        self.size
     }
 
     fn origin(&self) -> Option<Point> {
-        self.scrollable.origin()
+        self.origin
     }
 
     fn dispatch_event(
@@ -881,7 +943,10 @@ impl Element for TabStripScroller {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
-        self.scrollable.dispatch_event(event, ctx, app)
+        if self.scrollable.dispatch_event(event, ctx, app) {
+            return true;
+        }
+        self.add.dispatch_event(event, ctx, app)
     }
 }
 

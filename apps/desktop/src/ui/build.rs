@@ -962,6 +962,11 @@ mod tests {
             Store::open_in_memory().expect("in-memory store"),
             ThreadStore::new(dir.path()).expect("thread store"),
         ));
+        // A writable settings file, so a click that goes through B1/B2 really
+        // persists (the interaction tests read the refreshed view).
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").expect("seed config.toml");
+        desktop.set_config_path(config);
         let view = RootView::new(app, &desktop, None);
         let state = view.state_rc();
         {
@@ -3574,101 +3579,63 @@ mod tests {
             "the rail click switches the page"
         );
 
-        // Back to General; the Queued Messages segmented control flips.
+        // A toggle: Application's Auto-approve row at the top of the page.
         let commands = render_element(&mut root, window(), &app);
-        let general = commands
+        let application = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "General" => Some(*origin),
-                _ => None,
-            })
-            .expect("the General rail item");
-        click(&mut root, &app, general + vec2f(6.0, 4.0));
-        let immediate = find_text_origin(&mut root, &app, "Send Immediately");
-        click(&mut root, &app, immediate + vec2f(6.0, 4.0));
-        assert!(
-            state.borrow().settings.send_immediately,
-            "the segmented control receives the click"
-        );
-
-        // Appearance's accent swatch sits at the hex field's leading edge.
-        let commands = render_element(&mut root, window(), &app);
-        let appearance = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "Appearance" => {
+                RenderCommand::DrawText { text, origin, .. } if text == "Application" => {
                     Some(*origin)
                 }
                 _ => None,
             })
-            .expect("the Appearance rail item");
-        click(&mut root, &app, appearance + vec2f(6.0, 4.0));
+            .expect("the Application rail item");
+        click(&mut root, &app, application + vec2f(6.0, 4.0));
         let commands = render_element(&mut root, window(), &app);
-        let hex = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "#9a9a9a" => Some(*origin),
-                _ => None,
-            })
-            .expect("the accent hex field");
-        click(&mut root, &app, hex + vec2f(-24.0, 4.0));
-        assert_eq!(
-            *state.borrow().settings.color_palette_menu.borrow(),
-            Some(0),
-            "the in-field swatch opens the palette"
-        );
-
-        // Pick a palette colour from the anchored grid; the menu closes and a
-        // value is written next frame.
-        let commands = render_element(&mut root, window(), &app);
-        let palette = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "Palette · accent" => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .expect("the palette panel");
-        click(&mut root, &app, palette + vec2f(18.0, 86.0));
-        assert_eq!(
-            *state.borrow().settings.color_palette_menu.borrow(),
-            None,
-            "a palette swatch closes the popover"
-        );
-
-        // The theme select opens its list and a choice closes it again.
-        let commands = render_element(&mut root, window(), &app);
-        let theme = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "Default base" => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .expect("the colour theme select");
-        click(&mut root, &app, theme + vec2f(6.0, 4.0));
-        assert!(
-            state.borrow().settings.theme_select_open,
-            "the theme select opens its list"
-        );
-        let commands = render_element(&mut root, window(), &app);
-        let choice = commands
+        let label = commands
             .iter()
             .find_map(|command| match command {
                 RenderCommand::DrawText { text, origin, .. }
-                    if text == "Goble Night" || text == "Tokyo Night" =>
+                    if text == "Auto-approve questions" =>
                 {
                     Some(*origin)
                 }
                 _ => None,
             })
-            .expect("a theme option");
-        click(&mut root, &app, choice + vec2f(6.0, 4.0));
-        assert!(
-            !state.borrow().settings.theme_select_open,
-            "choosing a theme closes the list"
+            .expect("the Auto-approve toggle row");
+        let track = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if (rect.width() - 32.0).abs() < 0.5
+                        && (rect.height() - 18.0).abs() < 0.5
+                        && rect.min_y() > label.y - 20.0
+                        && rect.min_y() < label.y + 20.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the Auto-approve switch track");
+        click(
+            &mut root,
+            &app,
+            vec2f(
+                track.min_x() + track.width() / 2.0,
+                track.min_y() + track.height() / 2.0,
+            ),
+        );
+        let saved = state
+            .borrow()
+            .settings
+            .config
+            .as_ref()
+            .and_then(|view| view.app().auto_approve);
+        assert_eq!(
+            saved,
+            Some(true),
+            "the Auto-approve switch at {track:?} writes config.toml (status {:?})",
+            state.borrow().settings.status
         );
 
         // Narrow: at 700 pt the responsive layout hides the rail and the

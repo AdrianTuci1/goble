@@ -288,7 +288,16 @@ impl UiState {
             return;
         };
         let title = rename.draft.trim().to_string();
-        if title.is_empty() {
+        // V: an empty or unchanged title keeps the previous name; the editor
+        // still closes because the user finished the gesture.
+        if title.is_empty()
+            || self
+                .conversations
+                .iter()
+                .find(|entry| entry.id == rename.id)
+                .is_some_and(|entry| entry.name == title)
+        {
+            self.sidebar_rename = None;
             return;
         }
         if let Some(desktop) = desktop {

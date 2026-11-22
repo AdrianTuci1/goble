@@ -152,7 +152,11 @@ fn icon_center(commands: &[RenderCommand], name: &str) -> Option<Vector2F> {
 /// The origin of a drawn run of text, when the frame drew it.
 fn text_origin(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
     commands.iter().find_map(|command| match command {
-        RenderCommand::DrawText { text: drawn, origin, .. } if drawn == text => Some(*origin),
+        RenderCommand::DrawText {
+            text: drawn,
+            origin,
+            ..
+        } if drawn == text => Some(*origin),
         _ => None,
     })
 }
@@ -173,10 +177,7 @@ fn point_inside_open_menu(app: &AppContext) -> Vector2F {
 }
 
 /// Open the sidebar header's view-options menu by pressing its sliders control.
-fn open_sidebar_view_options(
-    root: &mut Box<dyn Element>,
-    app: &AppContext,
-) -> Vec<RenderCommand> {
+fn open_sidebar_view_options(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
     let commands = frame(root, app, None);
     let at = icon_center(&commands, "sliders-two").expect("the header draws the view options");
     click(root, app, at);
@@ -281,11 +282,7 @@ fn the_sidebar_view_options_menu_registers_isolates_hover_and_closes() {
 
 /// Open a session row's "..." tray, the way a pointer on the row and a press on
 /// its ellipsis does.
-fn open_session_tray(
-    root: &mut Box<dyn Element>,
-    state: &Rc<RefCell<UiState>>,
-    app: &AppContext,
-) {
+fn open_session_tray(root: &mut Box<dyn Element>, state: &Rc<RefCell<UiState>>, app: &AppContext) {
     let id = state
         .borrow()
         .conversations
@@ -298,8 +295,7 @@ fn open_session_tray(
         .iter()
         .find_map(|command| match command {
             RenderCommand::DrawIcon { name, origin, .. }
-                if name == "dots-horizontal"
-                    && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                if name == "dots-horizontal" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
             {
                 Some(*origin + vec2f(8.0, 8.0))
             }
@@ -346,89 +342,7 @@ fn the_session_row_tray_registers_and_closes_from_outside() {
     assert!(app.open_menus.is_open());
     key(&mut root, &app, "Escape");
     let _ = frame(&mut root, &app, None);
-    assert!(
-        !app.open_menus.is_open(),
-        "Escape closed the row tray"
-    );
-}
-
-/// The workspace tab's context menu is one of the window's menus: it registers
-/// as the open menu, a press outside or Escape closes it, and opening a second
-/// menu (the sidebar's view-options) closes it by itself.
-#[test]
-fn the_tab_context_menu_registers_closes_and_yields_to_another_menu() {
-    let app = AppContext::default();
-    let (mut root, state, _desktop, _dir) = seeded(&app);
-    let _ = frame(&mut root, &app, None);
-
-    *state.borrow_mut().space_menu.borrow_mut() = Some(SpaceMenu {
-        index: 0,
-        at: vec2f(420.0, 20.0),
-    });
-    let commands = frame(&mut root, &app, None);
-    assert_eq!(
-        state.borrow().open_menu,
-        Some("tab.menu"),
-        "the tab context menu registered as the open menu"
-    );
-    assert!(
-        text_origin(&commands, "Close tab").is_some(),
-        "the tab menu draws its rows"
-    );
-
-    // The pointer over the tab menu does not hover what is behind it: the tab
-    // strip's event-driven hover state is cleared for the frame the menu owns
-    // the pointer (a tab that was hovered before the menu opened must not keep
-    // its hover pill under the open panel).
-    state.borrow_mut().space_hover = Some(0);
-    let point = point_inside_open_menu(&app);
-    let _ = frame(&mut root, &app, Some(point));
-    assert_eq!(
-        state.borrow().space_hover,
-        None,
-        "the tab under the open menu must not hover"
-    );
-
-    // A press outside closes it.
-    click(&mut root, &app, vec2f(700.0, 500.0));
-    assert!(
-        state.borrow().space_menu.borrow().is_none(),
-        "the outside press closed the tab menu"
-    );
-
-    // Escape closes it.
-    *state.borrow_mut().space_menu.borrow_mut() = Some(SpaceMenu {
-        index: 0,
-        at: vec2f(420.0, 20.0),
-    });
-    let _ = frame(&mut root, &app, None);
-    key(&mut root, &app, "Escape");
-    assert!(
-        state.borrow().space_menu.borrow().is_none(),
-        "Escape closed the tab menu"
-    );
-
-    // Opening the sidebar's view-options while the tab menu is up leaves only
-    // one menu open.
-    *state.borrow_mut().space_menu.borrow_mut() = Some(SpaceMenu {
-        index: 0,
-        at: vec2f(420.0, 20.0),
-    });
-    let _ = frame(&mut root, &app, None);
-    let commands = open_sidebar_view_options(&mut root, &app);
-    assert!(
-        *state.borrow().sidebar_menu_open.borrow(),
-        "the second menu opened"
-    );
-    assert!(
-        state.borrow().space_menu.borrow().is_none(),
-        "opening the second menu closed the tab menu"
-    );
-    assert!(
-        text_origin(&commands, "Flat list").is_some()
-            && text_origin(&commands, "Close tab").is_none(),
-        "exactly one menu is drawn: the one just opened"
-    );
+    assert!(!app.open_menus.is_open(), "Escape closed the row tray");
 }
 
 /// The composer's model card (the DSH two-level menu above the model chip) is

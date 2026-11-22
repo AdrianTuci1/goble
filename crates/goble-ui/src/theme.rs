@@ -39,7 +39,7 @@ impl Theme {
         Self {
             name: "dark",
             colors: ColorScheme {
-                bg: ColorU::hex(0x0e0e0e),
+                bg: ColorU::hex(0x161616),
                 surface: ColorU::hex(0x161616),
                 surface_raised: ColorU::hex(0x1e1e1e),
                 border: ColorU::hex(0x262626),
@@ -75,7 +75,7 @@ impl Theme {
         Self {
             name: "light",
             colors: ColorScheme {
-                bg: ColorU::hex(0xf5f5f5),
+                bg: ColorU::hex(0xffffff),
                 surface: ColorU::hex(0xffffff),
                 surface_raised: ColorU::hex(0xf0f0f0),
                 border: ColorU::hex(0xe0e0e0),
@@ -208,6 +208,14 @@ impl Theme {
     pub fn color(&self, token: ColorToken) -> ColorU {
         match token {
             ColorToken::Bg => self.bg.unwrap_or(self.colors.bg),
+            ColorToken::ContentBg => {
+                let bg = self.bg.unwrap_or(self.colors.bg);
+                if bg.r < 128 {
+                    bg.mix(&ColorU::new(0, 0, 0, 255), 0.45)
+                } else {
+                    bg
+                }
+            }
             ColorToken::Surface => self.surface.unwrap_or(self.colors.surface),
             ColorToken::SurfaceRaised => self.colors.surface_raised,
             ColorToken::Border => self.colors.border,
@@ -484,6 +492,10 @@ pub struct ColorScheme {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ColorToken {
     Bg,
+    /// The content material every pane/panel surface paints. It is the shell's
+    /// `Bg` pushed darker, so panels read black while the topbar and the
+    /// sidebar keep the grey `Surface`.
+    ContentBg,
     Surface,
     SurfaceRaised,
     Border,
@@ -748,7 +760,7 @@ mod tests {
     fn theme_default_is_dark() {
         let theme = Theme::default();
         assert_eq!(theme.name, "dark");
-        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x0e0e0e));
+        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x161616));
     }
 
     #[test]

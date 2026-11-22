@@ -23,6 +23,8 @@ use goble_core::llm::TokenUsage;
 use goble_core::ssh_command::SshSession;
 
 mod builder;
+mod changed_files_card;
+mod composer_overlay;
 mod element;
 mod sticky;
 mod surface;
@@ -115,6 +117,16 @@ pub struct ChatView {
     /// Drawn at the end of the transcript as DSH's usage pill, with its details
     /// panel a click away; accounting only, never a price.
     usage: TokenUsage,
+    /// The latest reported model call, when one exists.
+    usage_last_call: Option<TokenUsage>,
+    /// How many model calls reported usage.
+    usage_calls: u64,
+    /// The model's context window when the host knows it.
+    usage_context_window: Option<u64>,
+    /// The changed-files card's fold, app-owned so it survives the rebuild.
+    changed_files_open: Rc<RefCell<bool>>,
+    /// Opens the existing review pane from the turn's changed-files card.
+    on_review_changes: Option<Rc<RefCell<dyn FnMut()>>>,
     /// Whether the usage pill's details panel is open. App-owned so it survives
     /// the per-frame rebuild (the popover element is rebuilt every frame).
     usage_open: Rc<RefCell<bool>>,
@@ -168,6 +180,12 @@ pub struct ChatView {
     /// and their thinking levels) instead of one flat list. `None` keeps the
     /// flat band.
     composer_model_tray: Option<ComposerModelTray>,
+    /// The composer's attach (`+`) card: its app-owned open flag and keyboard
+    /// highlight. `None` on a view that leaves the cell with the composer's own
+    /// (short-lived) session — the app always passes one so the card survives
+    /// the per-frame rebuild.
+    composer_attach_menu_open: Option<Rc<RefCell<bool>>>,
+    composer_attach_menu_highlight: Option<Rc<RefCell<Option<usize>>>>,
     composer_harness_items: Vec<PopupMenuItem>,
     composer_harness_menu_open: Rc<RefCell<bool>>,
     on_select_harness_item: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
@@ -200,6 +218,10 @@ pub struct ChatView {
     composer_slash_items: Vec<SlashMenuItem>,
     composer_slash_index: Rc<RefCell<usize>>,
     composer_slash_dismissed: Rc<RefCell<bool>>,
+    /// The floating command list the last rebuild mounted. The view holds it so
+    /// its own dispatch can give the out-of-tree panel the first chance at a
+    /// pointer event, before the transcript's rows behind it.
+    composer_slash_overlay: Rc<RefCell<composer_overlay::OverlayPanelState>>,
     on_composer_slash_move: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_composer_slash_accept: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_composer_slash_dismiss: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -314,7 +336,12 @@ impl ChatView {
             composer_vim: None,
             composer_clipboard: None,
             composer_anchor: Rc::new(RefCell::new(None)),
+            changed_files_open: Rc::new(RefCell::new(false)),
+            on_review_changes: None,
             usage: TokenUsage::default(),
+            usage_last_call: None,
+            usage_calls: 0,
+            usage_context_window: None,
             usage_open: Rc::new(RefCell::new(false)),
             on_fork: None,
             composer_focused: false,
@@ -336,6 +363,8 @@ impl ChatView {
             composer_model_index: Rc::new(RefCell::new(0)),
             on_select_model_item: None,
             composer_model_tray: None,
+            composer_attach_menu_open: None,
+            composer_attach_menu_highlight: None,
             composer_harness_label: None,
             composer_harness_icon: None,
             composer_agent_harness: None,
@@ -363,6 +392,7 @@ impl ChatView {
             composer_slash_items: Vec::new(),
             composer_slash_index: Rc::new(RefCell::new(0)),
             composer_slash_dismissed: Rc::new(RefCell::new(false)),
+            composer_slash_overlay: Rc::new(RefCell::new(Default::default())),
             on_composer_slash_move: None,
             on_composer_slash_accept: None,
             on_composer_slash_dismiss: None,

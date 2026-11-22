@@ -122,6 +122,7 @@ pub(crate) fn icon_atlas_name(name: IconName) -> IconName {
         "left-panel-close" => "left-panel-close",
         "left-panel-open" => "left-panel-open",
         "dots" | "dots-horizontal" => "dots-horizontal",
+        "ellipsis" => "ellipsis",
         "trash" | "delete" => "trash-02",
         "paperclip" | "attach" => "paperclip",
         "send" => "send",

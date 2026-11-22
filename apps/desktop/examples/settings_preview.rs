@@ -247,12 +247,10 @@ fn main() -> anyhow::Result<()> {
     render_scene(&assets, &desktop, size, "appearance-select", |s| {
         s.settings_set_page(SettingsCategory::Appearance);
         s.settings.theme_select_open = true;
-        s.settings.color_target = 2;
     })?;
     render_scene(&assets, &desktop, size, "appearance-picker", |s| {
         s.settings_set_page(SettingsCategory::Appearance);
         s.settings.theme_select_open = false;
-        s.settings.color_target = 0;
         s.settings.region = SettingsRegion::Page;
         s.settings.row_index = 0;
     })?;
@@ -287,7 +285,15 @@ fn render_scene(
     name: &str,
     mutate: impl FnOnce(&mut UiState),
 ) -> anyhow::Result<()> {
-    render_scene_on(assets, desktop, size, name, SettingsCategory::Providers, 0.0, mutate)
+    render_scene_on(
+        assets,
+        desktop,
+        size,
+        name,
+        SettingsCategory::Providers,
+        0.0,
+        mutate,
+    )
 }
 
 /// Render a scene scrolled down the page (the CLI fold list sits below the

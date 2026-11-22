@@ -416,13 +416,15 @@ fn pane_cards(commands: &[RenderCommand], app: &AppContext) -> Vec<RectF> {
                     && rect.width() > 120.0
                     && rect.height() > 120.0
                     && rect.min_y() >= TOPBAR_HEIGHT
-                    && commands.iter().any(|other| matches!(
-                        other,
-                        RenderCommand::StrokeRect { rect: edge, color: edge_color, width, .. }
-                            if edge == rect
-                                && *edge_color == border
-                                && (*width - 1.0).abs() < 0.01
-                    )) =>
+                    && commands.iter().any(|other| {
+                        matches!(
+                            other,
+                            RenderCommand::StrokeRect { rect: edge, color: edge_color, width, .. }
+                                if edge == rect
+                                    && *edge_color == border
+                                    && (*width - 1.0).abs() < 0.01
+                        )
+                    }) =>
             {
                 Some(*rect)
             }
@@ -444,10 +446,12 @@ fn panel_outlined(commands: &[RenderCommand], app: &AppContext) -> bool {
             ..
         } if (*width - 1.0).abs() < 0.01
             && (*corner_radius - 6.0).abs() < 0.01
-            && !commands.iter().any(|other| matches!(
-                other,
-                RenderCommand::FillRect { rect: filled, .. } if filled == rect
-            )) =>
+            && !commands.iter().any(|other| {
+                matches!(
+                    other,
+                    RenderCommand::FillRect { rect: filled, .. } if filled == rect
+                )
+            }) =>
         {
             !pane_cards(commands, app)
                 .iter()
@@ -462,7 +466,10 @@ fn accent_marker(commands: &[RenderCommand], app: &AppContext) -> Option<Vector2
     let accent = app.theme.color(ColorToken::Accent);
     commands.iter().find_map(|command| match command {
         RenderCommand::DrawIcon {
-            origin, name, color, ..
+            origin,
+            name,
+            color,
+            ..
         } if name == "upper-left-triangle" && *color == accent => Some(*origin),
         _ => None,
     })
@@ -509,7 +516,11 @@ fn print_geometry(label: &str, commands: &[RenderCommand], app: &AppContext) {
     let cards = pane_cards(commands, app);
     println!(
         "[{label}] tab outline: {} (expected none); pane cards: {}",
-        if panel_outlined(commands, app) { "PRESENT" } else { "none" },
+        if panel_outlined(commands, app) {
+            "PRESENT"
+        } else {
+            "none"
+        },
         cards.len(),
     );
     if let Some(marker) = accent_marker(commands, app) {

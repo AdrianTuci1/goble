@@ -175,10 +175,7 @@ fn command_actions(
     );
     push("settings", Rc::new(RefCell::new(run(&actions.on_settings))));
     push("space", Rc::new(RefCell::new(run(&actions.on_add_space))));
-    push(
-        "split",
-        Rc::new(RefCell::new(run(&actions.on_split_right))),
-    );
+    push("split", Rc::new(RefCell::new(run(&actions.on_split_right))));
     push(
         "terminal",
         Rc::new(RefCell::new(run(&actions.on_new_terminal))),
@@ -199,10 +196,7 @@ fn command_actions(
             Rc::new(RefCell::new(move || (act.borrow_mut())(pane_id))),
         );
     }
-    push(
-        "projects",
-        Rc::new(RefCell::new(run(&actions.on_projects))),
-    );
+    push("projects", Rc::new(RefCell::new(run(&actions.on_projects))));
     push(
         "scheduled",
         Rc::new(RefCell::new(run(&actions.on_open_crons))),
@@ -223,9 +217,7 @@ fn command_actions(
         let dark_mode = state.settings_dark_mode;
         push(
             "theme",
-            Rc::new(RefCell::new(move || {
-                (toggle_dark.borrow_mut())(!dark_mode)
-            })),
+            Rc::new(RefCell::new(move || (toggle_dark.borrow_mut())(!dark_mode))),
         );
         let toggle_vim = actions.on_toggle_vim_mode.clone();
         let vim_mode = state.vim_mode;
@@ -484,11 +476,7 @@ pub fn mention_paths(dir: &str, limit: usize) -> Vec<String> {
     }
     directories.sort();
     files.sort();
-    directories
-        .into_iter()
-        .chain(files)
-        .take(limit)
-        .collect()
+    directories.into_iter().chain(files).take(limit).collect()
 }
 
 /// Build the Cmd+K command palette overlay. When `open` is false the overlay

@@ -192,7 +192,6 @@ impl SettingsRow {
     }
 
     fn build(&mut self, app: &AppContext) {
-        let bg = app.theme.color(ColorToken::Bg);
         let disabled_opacity = 0.64;
         let label_color = if self.disabled {
             dim(app, app.theme.color(ColorToken::Text), disabled_opacity)
@@ -202,9 +201,9 @@ impl SettingsRow {
         let hint_color = if self.disabled {
             dim(app, app.theme.color(ColorToken::Muted), disabled_opacity)
         } else {
-            // The description reads a step quieter than the label, in the same
-            // neutral pair the rest of the surface uses.
-            mix(app, ColorToken::Muted, ColorToken::Text, 0.15)
+            // The description is the muted pair: T3's `text-xs` under a
+            // 14/500 label.
+            app.theme.color(ColorToken::Muted)
         };
         let mut label_line: Vec<Box<dyn Element>> = Vec::new();
         if let Some(color) = self.swatch {
@@ -263,8 +262,8 @@ impl SettingsRow {
                 app.theme.color(token)
             };
             let line = Text::new(status.text.clone())
-                .with_font_size(11.0)
-                .with_line_height(1.45)
+                .with_font_size(SETTINGS_ROW_HINT_SIZE)
+                .with_line_height(SETTINGS_ROW_HINT_LINE_HEIGHT / SETTINGS_ROW_HINT_SIZE)
                 .with_color(color)
                 .with_max_lines(2)
                 .finish();
@@ -273,7 +272,7 @@ impl SettingsRow {
                 .finish();
             text_column.push(
                 crate::elements::Container::new(line)
-                    .with_padding(crate::elements::EdgeInsets::new(3.0, 0.0, 0.0, 0.0))
+                    .with_padding(crate::elements::EdgeInsets::new(2.0, 0.0, 0.0, 0.0))
                     .finish(),
             );
         }
@@ -309,7 +308,6 @@ impl SettingsRow {
                 SETTINGS_ROW_H_PADDING,
             ))
             .finish();
-        let _ = bg;
         let root: Box<dyn Element> = if self.focused {
             Box::new(FocusOutline::new(
                 padded,

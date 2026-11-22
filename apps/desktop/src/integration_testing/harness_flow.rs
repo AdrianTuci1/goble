@@ -83,7 +83,9 @@ fn run_chat_turn_appends_mock_reply() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
+        .run_chat_turn(
+            &chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None,
+        )
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 
@@ -114,7 +116,9 @@ fn run_chat_turn_emits_chat_updated() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
+        .run_chat_turn(
+            &chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None,
+        )
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 
@@ -295,6 +299,87 @@ fn send_sets_agent_busy_and_stop_clears() {
     );
 }
 
+/// A conversation opened from the sidebar's "New conversation" row starts under
+/// the placeholder; the first prompt sent through the composer names it as the
+/// turn starts — before the agent has replied — with the deterministic subject
+/// (the topic, not the message), and the refresh the title write's
+/// `chats:updated` triggers gives the sidebar row and the tab its name. With the
+/// mock provider there is no model route, so the title pass asks for nothing and
+/// the deterministic subject stands.
+#[test]
+fn a_sent_prompt_names_the_new_conversation_at_once() {
+    let (desktop, _dir) = common::desktop_state();
+    let (state, actions) = build(&desktop);
+    {
+        let mut s = state.borrow_mut();
+        s.settings_llm_provider = "mock".to_string();
+        s.settings_llm_api_key = "test-key".to_string();
+        s.settings_llm_model = "mock".to_string();
+        s.models = vec!["mock".to_string()];
+        s.selected_model = "mock".to_string();
+        s.show_llm_key_banner = false;
+        s.show_workspace_choice = false;
+    }
+
+    // The create row's click: a tab of its own over a conversation created
+    // under the placeholder.
+    (actions.on_create_submit.borrow_mut())();
+    let chat = {
+        let s = state.borrow();
+        s.pane_conversation_id(s.active_pane_id)
+            .expect("the new tab's conversation")
+    };
+    assert_eq!(
+        desktop.list_chats()[0].title,
+        goble_app::state::NEW_CONVERSATION_TITLE,
+        "a new conversation opens under the placeholder"
+    );
+
+    let rt = tokio::runtime::Runtime::new().expect("build runtime");
+    let _guard = rt.enter();
+    (actions.on_send_message.borrow_mut())("Arata un text colorat in chat".to_string());
+
+    // The name is written as the turn starts: no reply is persisted yet, and
+    // the title write has already reached the store. It is the prompt's topic,
+    // not the prompt handed back.
+    assert_eq!(
+        desktop
+            .list_chats()
+            .into_iter()
+            .find(|c| c.id == chat)
+            .map(|c| c.title),
+        Some("Text colorat in chat".to_string()),
+        "the first prompt names the conversation before the turn replies"
+    );
+    assert_ne!(
+        desktop
+            .list_chats()
+            .into_iter()
+            .find(|c| c.id == chat)
+            .map(|c| c.title),
+        Some("Arata un text colorat in chat".to_string()),
+        "the title is the subject, not the user's message"
+    );
+
+    // The `chats:updated` the write emits is drained into the sidebar list and
+    // the tab label; the pane bar reads the same card.
+    {
+        let mut s = state.borrow_mut();
+        s.refresh_conversations(&desktop);
+        s.refresh_space_labels();
+        let entry = s
+            .conversations
+            .iter()
+            .find(|entry| entry.id == chat)
+            .expect("the conversation's card");
+        assert_eq!(entry.name, "Text colorat in chat");
+        assert_eq!(
+            s.spaces[s.active_space].name, "Text colorat in chat",
+            "the tab label reads the subject the prompt named"
+        );
+    }
+}
+
 /// The harness turn emits a `chat:turn_finished` event when it completes, and
 /// its cancel slot is removed so `cancel_chat_turn` reports no running turn.
 #[test]
@@ -312,7 +397,9 @@ fn run_chat_turn_emits_turn_finished() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
+        .run_chat_turn(
+            &chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None,
+        )
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 

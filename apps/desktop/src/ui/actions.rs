@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use goble_ui::elements::LaneEdge;
@@ -6,11 +7,14 @@ use goble_ui::geometry::Vector2F;
 use goble_ui::SettingsPage;
 
 use super::color_picker;
+use super::file_menu::FileMenuAction;
 use super::pane::{FloatingDragMode, NavDir, PaneDropTarget, PaneRect};
 use super::tab_menu::TabMenuAction;
 use super::types::{
     AppTab, ArchivedFilter, OnboardingAction, SettingsCategory, SidebarView, WorkspaceRouting,
 };
+use crate::state::DiffReviewState;
+use crate::state::SideTabAction;
 
 /// Start a floating pane drag: the pane, the mode, the pointer where the press
 /// landed, and the space's pane area in pixels.
@@ -54,6 +58,18 @@ pub enum DiffPanelAction {
     Focus,
     /// Show or hide the file list.
     ToggleSidebar,
+    /// Switch the comparison between one column and side by side.
+    ToggleView,
+    /// Turn long-line wrapping on or off.
+    ToggleWrap,
+    /// Fold or unfold one directory of the changed-file tree.
+    ToggleDir(String),
+    /// Copy the current contents of one changed file to the clipboard. The
+    /// path is absolute; a file the platform cannot read leaves the clipboard
+    /// untouched and reports why in the pane's status line.
+    CopyContent(String),
+    /// Open a changed file in a file pane that floats over the space.
+    OpenFloating(String),
     /// Open or close the commit bar under the topbar.
     ToggleCommit,
     /// Hold the commit bar's message as it is typed.
@@ -132,9 +148,29 @@ pub enum AgentDashboardAction {
     ToggleGrouping,
 }
 
+/// One gesture the side panel's Agent tab sends to the host.
+///
+/// The tab is a real conversation agent with its own conversation id, so its
+/// composer cannot go through the active-pane callbacks: typing in it must not
+/// touch the active pane's draft, and sending must run the side conversation's
+/// turn even when the keyboard is in the main pane. The host owns the side
+/// pane's session under [`crate::state::SIDE_AGENT_PANE_ID`].
+pub enum SideChatAction {
+    /// The side composer's draft changed.
+    Draft(String),
+    /// The side composer gained or lost focus.
+    Focus(bool),
+    /// Submit the side draft: bind a new conversation on the first send, then
+    /// run the turn on the side pane's own conversation.
+    Send(String),
+    /// The side composer's attach control.
+    Attach,
+}
+
 /// Callbacks supplied by the host app for the main view. Created fresh on
 /// every rebuild; they mutate app-owned state, which is rendered back on the
 /// next frame.
+#[derive(Clone)]
 pub struct UiActions {
     pub on_search_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_search_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
@@ -145,6 +181,9 @@ pub struct UiActions {
     pub on_select_tab: Rc<RefCell<dyn FnMut(AppTab)>>,
     pub on_composer_change: Rc<RefCell<dyn FnMut(String)>>,
     pub on_composer_focus_change: Rc<RefCell<dyn FnMut(bool)>>,
+    /// The side panel Agent tab's composer: a conversation of its own, routed to
+    /// [`crate::state::SIDE_AGENT_PANE_ID`] instead of the active pane.
+    pub on_side_chat: Rc<RefCell<dyn FnMut(SideChatAction)>>,
     pub on_send_message: Rc<RefCell<dyn FnMut(String)>>,
     /// Send a line to the CLI agent running in a pane's pty: `(pane, text)`.
     /// This is the rich input of a TUI harness — the prompt goes to the agent's
@@ -245,10 +284,13 @@ pub struct UiActions {
     /// Turn one pane's harness mode on/off at the rich input (Warp-new style:
     /// Cmd+Enter activates the harness, Esc returns to the plain pty).
     pub on_set_pane_harness_mode: Rc<RefCell<dyn FnMut(u64, bool)>>,
-    /// Esc at a chat pane's agent view: the pane has no shell behind it, so the
-    /// way to a terminal is to make the pane one — same directory, conversation
-    /// kept for Cmd+Enter to reopen.
+    /// Esc at a chat pane's agent view: kept for the legacy call sites while
+    /// the dual-surface switch is retired.
     pub on_show_pane_terminal: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Toggle an agent pane's bottom terminal dock from the header icon.
+    pub on_toggle_terminal_dock: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Set the bottom terminal dock's height while its resize handle is dragged.
+    pub on_terminal_dock_height: Rc<RefCell<dyn FnMut(u64, f32)>>,
     /// Enter a conversation's agent view in a pane by clicking the card it left
     /// behind in the terminal (Warp-new style: the `EnterAgentView` block).
     pub on_open_agent_view: Rc<RefCell<dyn FnMut(u64, String)>>,
@@ -279,6 +321,12 @@ pub struct UiActions {
     /// it, and every row, field and action inside sends its own variant.
     pub on_agent_dashboard: Rc<RefCell<dyn FnMut(AgentDashboardAction)>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
+    pub on_close_settings_overlay: Rc<RefCell<dyn FnMut()>>,
+    /// Maximize the right overview panel over the main pane, or restore it.
+    pub on_toggle_side_panel_maximized: Rc<RefCell<dyn FnMut()>>,
+    /// One interaction in the right side panel's tab strip: select, close, add
+    /// or cycle a tab. The app state machine keeps the strip and its selection.
+    pub on_side_tab: Rc<RefCell<dyn FnMut(SideTabAction)>>,
     /// The settings tab's one dispatch: every rail row, control, field commit,
     /// dialog button and keyboard gesture the surface makes. The handler in
     /// `actions/settings_actions.rs` is the single call site for the
@@ -288,6 +336,13 @@ pub struct UiActions {
     pub on_toggle_sidebar: Rc<RefCell<dyn FnMut()>>,
     /// One interaction in the diff review pane, naming the pane it happened in.
     pub on_diff_panel: Rc<RefCell<dyn FnMut(u64, DiffPanelAction)>>,
+    /// A file row/card was right-clicked: `(path, copy_path, at)`. The app
+    /// stores the one open target; the next frame hangs the menu from `at`.
+    pub on_file_menu: Rc<RefCell<dyn FnMut(String, String, Vector2F)>>,
+    /// A row of the open file context menu was chosen.
+    pub on_file_menu_action: Rc<RefCell<dyn FnMut(FileMenuAction)>>,
+    /// The file context menu closed itself (outside press, Escape or a row).
+    pub on_file_menu_close: Rc<RefCell<dyn FnMut()>>,
     /// Toggle the sidebar conversation list between "a few cards" and the full,
     /// scrollable list.
     pub on_toggle_conversations_expanded: Rc<RefCell<dyn FnMut()>>,
@@ -300,6 +355,8 @@ pub struct UiActions {
     pub on_toggle_star: Rc<RefCell<dyn FnMut(String)>>,
     /// Open the sidebar's "Rename conversation" dialog for a conversation.
     pub on_session_rename_start: Rc<RefCell<dyn FnMut(String)>>,
+    /// V: start the topbar's inline conversation-title edit.
+    pub on_inline_title_rename: Rc<RefCell<dyn FnMut(String)>>,
     /// The Rename dialog's draft changed.
     pub on_session_rename_draft: Rc<RefCell<dyn FnMut(String)>>,
     /// Commit the Rename dialog (Enter or its Rename button).
@@ -311,6 +368,9 @@ pub struct UiActions {
     pub on_fork_conversation_by_id: Rc<RefCell<dyn FnMut(String)>>,
     /// Copy a conversation's raw id to the system clipboard and toast it.
     pub on_copy_conversation_id: Rc<RefCell<dyn FnMut(String)>>,
+    /// Copy one labelled value from a menu flyout (conversation name, id,
+    /// project name) to the clipboard and toast the result. `(what, value)`.
+    pub on_copy_menu_value: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Archive a conversation; live work opens the stop-and-archive confirm.
     pub on_archive_conversation: Rc<RefCell<dyn FnMut(String)>>,
     /// Restore an archived conversation.
@@ -327,7 +387,7 @@ pub struct UiActions {
     pub on_add_workspace: Rc<RefCell<dyn FnMut()>>,
     /// A workspace row's New-session control: start a conversation inside that
     /// workspace's directory (DSH's `ProjectRow` create action).
-    pub on_sidebar_workspace_new_session: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_sidebar_workspace_new_session: Rc<RefCell<dyn FnMut(String, String)>>,
     /// Open the "Rename workspace" dialog for the workspace over this path,
     /// with the title it currently shows.
     pub on_sidebar_workspace_rename_start: Rc<RefCell<dyn FnMut(String, String)>>,
@@ -355,6 +415,19 @@ pub struct UiActions {
     /// Hand a file path to the active pane's input, from a click in the project
     /// explorer or on a global-search result.
     pub on_explorer_file_click: Rc<RefCell<dyn FnMut(String)>>,
+    /// Open a file in a file pane and arrange the active space as floating
+    /// windows (DSH's "Open in floating panel"). The file pane opens first, so
+    /// the window the gesture is about is the one on top.
+    pub on_open_file_floating: Rc<RefCell<dyn FnMut(String)>>,
+    /// Dock one window floated over the active space's layout: the float goes
+    /// away and the pane returns to the layout it was opened over.
+    pub on_dock_float: Rc<RefCell<dyn FnMut(u64)>>,
+    /// Per-pane review view choices, shared with the element tree so unified /
+    /// split, wrapping, folded directories and the selector survive the
+    /// per-frame rebuild.
+    pub review_views: Rc<RefCell<HashMap<u64, DiffReviewState>>>,
+    /// Q: one dispatch for the topbar spotlight window.
+    pub on_spotlight: Rc<RefCell<dyn FnMut(crate::ui::spotlight::SpotlightAction)>>,
     /// Update the global search query and run it.
     pub on_global_search_change: Rc<RefCell<dyn FnMut(String)>>,
     /// Track focus of the global search field.
@@ -483,6 +556,14 @@ pub struct UiActions {
     pub on_sidebar_drag_move: Rc<RefCell<dyn FnMut(f32)>>,
     /// Finish a drag; the divider settles at the last width.
     pub on_sidebar_drag_end: Rc<RefCell<dyn FnMut()>>,
+    /// Begin dragging the shared main/side-panel boundary.
+    pub on_side_split_drag_start: Rc<RefCell<dyn FnMut()>>,
+    /// Move the shared boundary: the side panel's new share of the content
+    /// width, already clamped by the layout element to `0.25..=0.75` and to
+    /// the cards' minimum width.
+    pub on_side_split_drag_move: Rc<RefCell<dyn FnMut(f32)>>,
+    /// Finish the shared-boundary drag (mouse up anywhere).
+    pub on_side_split_drag_end: Rc<RefCell<dyn FnMut()>>,
     /// Begin dragging a pane's content-lane invisible edge: the pane, the
     /// pointer x, the edge grabbed, the content width it started at and the
     /// pane's available column width. Only that pane's width is written.
@@ -512,6 +593,14 @@ pub struct UiActions {
     pub on_float_restore: Rc<RefCell<dyn FnMut(u64)>>,
     /// Open the saved-host picker (Cmd+Shift+N).
     pub on_open_ssh_host_picker: Rc<RefCell<dyn FnMut()>>,
+    /// The Workspaces "+" menu's SSH row: open the "Open SSH Host" overlay.
+    pub on_open_ssh_target: Rc<RefCell<dyn FnMut()>>,
+    pub on_close_ssh_target: Rc<RefCell<dyn FnMut()>>,
+    pub on_ssh_target_change: Rc<RefCell<dyn FnMut(String)>>,
+    pub on_ssh_target_focus: Rc<RefCell<dyn FnMut(bool)>>,
+    pub on_ssh_choose_config: Rc<RefCell<dyn FnMut()>>,
+    pub on_ssh_target_connect: Rc<RefCell<dyn FnMut()>>,
+    pub on_ssh_pick_config_host: Rc<RefCell<dyn FnMut(usize)>>,
     /// Close the saved-host picker without opening anything.
     pub on_close_ssh_host_picker: Rc<RefCell<dyn FnMut()>>,
     /// Move the host picker's selection.

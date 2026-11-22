@@ -17,6 +17,6 @@ mod tests;
 pub use atlas::{AtlasEntry, TextAtlas};
 pub use cache::{invalidate_text_measure_cache, measure_cache_stats, MeasureCacheStats};
 pub use fonts::{
-    advance_width, font_covers, measure_text, measure_text_family, mono_advance, row_starts,
+    advance_width, advance_width_exact, font_covers, measure_text, measure_text_family, mono_advance, row_starts,
     wrapped_lines, FontWeight, TextMetrics, WrappedLine,
 };

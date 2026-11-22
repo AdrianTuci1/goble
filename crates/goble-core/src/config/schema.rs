@@ -285,6 +285,15 @@ pub const FIELDS: &[ConfigFieldSpec] = &[
         secret: false,
     },
     ConfigFieldSpec {
+        path: &["app", "send_immediately"],
+        label: "Send immediately",
+        description: "Send a prompt immediately while a turn runs instead of queueing it.",
+        kind: FieldKind::Bool,
+        default: Some("false"),
+        page: SettingsPage::General,
+        secret: false,
+    },
+    ConfigFieldSpec {
         path: &["app", "vim_mode"],
         label: "Vim mode",
         description: "Modal editing in the rich input.",
@@ -1360,6 +1369,7 @@ fn app_view(app: &crate::config::AppConfig) -> AppView {
         approval_mode: app.approval_mode.clone(),
         auto_approve: app.auto_approve,
         vim_mode: app.vim_mode,
+        send_immediately: app.send_immediately,
     }
 }
 

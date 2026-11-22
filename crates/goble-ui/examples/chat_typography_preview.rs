@@ -25,7 +25,8 @@ use goble_ui::elements::chat_content::{
     ChatFragment, ChatMessage, ChatRole, SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode,
     WorkDock, WorkGroup, WorkRow, WorkSection,
 };
-use goble_ui::elements::{AppContext, Element, ScrollState};
+use goble_ui::elements::{AppContext, Element, HoverChipLayer, ScrollState, Stack};
+use goble_ui::geometry::Vector2F;
 use goble_ui::theme::Theme;
 use goble_ui::{tool_fold_key, ChatView, TokenUsage};
 
@@ -160,6 +161,28 @@ fn scene() -> Box<dyn Element> {
             cached: Some(4_000),
             output: 2_100,
         })
+        .with_usage_detail(
+            Some(TokenUsage {
+                input: 7_200,
+                cached: Some(5_000),
+                output: 640,
+            }),
+            5,
+            Some(256_000),
+        )
+        // The usage dialog open, so the preview shows the DSH stat-dialog
+        // anatomy the owner asked for, not only the footer pill.
+        .with_usage_open(Rc::new(RefCell::new(true)))
+        .finish()
+}
+
+/// The transcript with the frame's last layer over it: the usage popover is
+/// queued during the transcript's paint, and the layer draws it above the
+/// scrollport (the app root does the same).
+fn scene_with_usage_layer() -> Box<dyn Element> {
+    Stack::new()
+        .with_children(vec![scene()])
+        .with_overlay(HoverChipLayer::new().finish(), Vector2F::zero())
         .finish()
 }
 
@@ -207,7 +230,7 @@ fn main() -> anyhow::Result<()> {
             raster::render_element_to_png(
                 &assets,
                 &app,
-                &mut scene(),
+                &mut scene_with_usage_layer(),
                 WIDTH,
                 HEIGHT,
                 scale,

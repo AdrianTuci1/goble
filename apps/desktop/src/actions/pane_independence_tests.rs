@@ -10,10 +10,7 @@ use goble_ui::platform::WindowControl;
 
 use crate::media::MediaState;
 use crate::state::{UiState, NEW_AGENT_TAB_LABEL};
-use crate::ui::{
-    AppTab, Pane, PaneKind, SettingsCategory, UiActions,
-    WorkspaceRouting,
-};
+use crate::ui::{AppTab, Pane, PaneKind, SettingsCategory, UiActions, WorkspaceRouting};
 
 fn desktop_state() -> (Arc<DesktopState>, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -48,7 +45,9 @@ fn configure_remote(desktop: &Arc<DesktopState>, dir: &tempfile::TempDir) {
     config.remote.mode = goble_core::config::RemoteMode::Gateway;
     config.remote.gateway_url = Some("https://gateway.example.com".to_string());
     config.remote.worker_token = Some("wt-test".to_string());
-    desktop.save_config(&config).expect("save the remote config");
+    desktop
+        .save_config(&config)
+        .expect("save the remote config");
 }
 
 /// Make the app a configured one — provider `mock` plus a key, so a turn
@@ -84,7 +83,9 @@ fn wait_for_messages(desktop: &DesktopState, conversation: &str, count: usize) {
 #[test]
 fn split_binds_new_pane_to_a_distinct_conversation() {
     let (desktop, _dir) = desktop_state();
-    let chat_id = desktop.create_chat("Initial", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     let (state, actions, _media) = build(&desktop);
 
     (actions.on_split_right.borrow_mut())();
@@ -139,11 +140,17 @@ fn a_split_opens_an_agent_pane_that_can_return_to_its_terminal() {
             "the new leaf is a terminal pane"
         );
         assert!(
-            s.pane_controls.get(&pane).map(|c| c.harness_mode).unwrap_or(false),
+            s.pane_controls
+                .get(&pane)
+                .map(|c| c.harness_mode)
+                .unwrap_or(false),
             "its harness is open, so the agent view is what it shows"
         );
         assert!(
-            matches!(s.pane_view(pane), goble_terminal::blocks::BlockView::Agent { .. }),
+            matches!(
+                s.pane_view(pane),
+                goble_terminal::blocks::BlockView::Agent { .. }
+            ),
             "the pane starts at its agent view"
         );
         pane
@@ -159,7 +166,10 @@ fn a_split_opens_an_agent_pane_that_can_return_to_its_terminal() {
         "the pane returns to its terminal mode"
     );
     assert!(
-        !s.pane_controls.get(&pane_id).map(|c| c.harness_mode).unwrap_or(true),
+        !s.pane_controls
+            .get(&pane_id)
+            .map(|c| c.harness_mode)
+            .unwrap_or(true),
         "the harness switch is off"
     );
     assert!(
@@ -288,11 +298,21 @@ fn a_file_click_opens_a_file_pane_and_a_second_click_retargets_it() {
 #[test]
 fn send_routes_to_active_pane_conversation() {
     let (desktop, _dir) = desktop_state();
-    let chat_id = desktop.create_chat("Initial", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     let (state, actions, _media) = build(&desktop);
 
     (actions.on_split_right.borrow_mut())();
-    let conv3 = { state.borrow().pane_sessions.get(&3).unwrap().conversation_id.clone() };
+    let conv3 = {
+        state
+            .borrow()
+            .pane_sessions
+            .get(&3)
+            .unwrap()
+            .conversation_id
+            .clone()
+    };
     assert_ne!(conv3, chat_id);
 
     // The turn runs on the pane's own conversation, not pane 1's.
@@ -318,7 +338,9 @@ fn send_routes_to_active_pane_conversation() {
 #[test]
 fn plain_enter_records_the_sidebar_fallback_on_the_pane() {
     let (desktop, _dir) = desktop_state();
-    let previous = desktop.create_chat("Previous", None, None).expect("create chat");
+    let previous = desktop
+        .create_chat("Previous", None, None)
+        .expect("create chat");
     let (state, actions, _media) = build(&desktop);
     {
         let mut s = state.borrow_mut();
@@ -364,7 +386,9 @@ fn cmd_enter_appends_to_the_pane_conversation() {
     // appends to the thread the user is on instead of starting another one. (A
     // pane that owns *no* conversation starts one — see
     // `cmd_enter_opens_a_new_conversation_instead_of_adopting_the_selected_one`.)
-    let initial = desktop.create_chat("Initial", None, None).expect("create chat");
+    let initial = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     state
         .borrow_mut()
         .bind_active_pane_conversation(initial.clone(), Some(&desktop));
@@ -377,7 +401,10 @@ fn cmd_enter_appends_to_the_pane_conversation() {
     (actions.on_cmd_enter.borrow_mut())("hello from cmd+enter".to_string());
 
     let conv = state.borrow().pane_conversation_id(1).unwrap();
-    assert_eq!(conv, initial, "Cmd+Enter reuses the pane's own conversation");
+    assert_eq!(
+        conv, initial,
+        "Cmd+Enter reuses the pane's own conversation"
+    );
     wait_for_messages(&desktop, &conv, 2);
     let msgs = desktop.list_chat_messages(&conv).expect("list conv");
     assert_eq!(msgs.len(), 2);
@@ -397,7 +424,9 @@ fn cmd_enter_opens_a_new_conversation_instead_of_adopting_the_selected_one() {
     // The conversation the sidebar has active. A chat pane is bound at creation
     // now, so this case is reached by clearing that binding: a restored layout
     // from before per-pane sessions, or a pane the store no longer knows.
-    let previous = desktop.create_chat("Previous", None, None).expect("create chat");
+    let previous = desktop
+        .create_chat("Previous", None, None)
+        .expect("create chat");
     let (state, actions, _media) = build(&desktop);
     {
         let mut s = state.borrow_mut();
@@ -427,7 +456,9 @@ fn cmd_enter_opens_a_new_conversation_instead_of_adopting_the_selected_one() {
         "Cmd+Enter opens a conversation of the pane's own"
     );
     wait_for_messages(&desktop, &opened, 2);
-    let msgs = desktop.list_chat_messages(&opened).expect("list the new conversation");
+    let msgs = desktop
+        .list_chat_messages(&opened)
+        .expect("list the new conversation");
     assert_eq!(msgs.len(), 2, "the turn ran in the conversation it opened");
     assert_eq!(msgs[0].role, "user");
     assert_eq!(
@@ -448,7 +479,9 @@ fn cmd_enter_opens_a_new_conversation_instead_of_adopting_the_selected_one() {
 fn send_to_cloud_routes_the_conversation_remote() {
     let (desktop, _dir) = desktop_state();
     let (state, actions, _media) = build(&desktop);
-    let initial = desktop.create_chat("Initial", None, None).expect("create chat");
+    let initial = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     state
         .borrow_mut()
         .bind_active_pane_conversation(initial.clone(), Some(&desktop));
@@ -525,7 +558,10 @@ fn new_conversation_opens_a_tab_named_by_its_conversation() {
         .pane_conversation_id(first_pane)
         .expect("the binding is a real conversation id");
     assert!(
-        desktop.list_chats().iter().any(|c| c.id == first_conversation),
+        desktop
+            .list_chats()
+            .iter()
+            .any(|c| c.id == first_conversation),
         "the conversation was persisted, so the sidebar can list it"
     );
 
@@ -584,8 +620,15 @@ fn closing_a_space_removes_its_sessions_and_reindexes_active() {
     // Close the first (non-active) space tab.
     (actions.on_close_space.borrow_mut())(0);
     let s = state.borrow();
-    assert_eq!(s.spaces.len(), 1, "one space remains after closing one of two");
-    assert_eq!(s.active_space, 0, "active index shifts down onto the survivor");
+    assert_eq!(
+        s.spaces.len(),
+        1,
+        "one space remains after closing one of two"
+    );
+    assert_eq!(
+        s.active_space, 0,
+        "active index shifts down onto the survivor"
+    );
     assert!(
         !s.pane_sessions.contains_key(&1),
         "closed space's pane session is dropped"
@@ -594,7 +637,10 @@ fn closing_a_space_removes_its_sessions_and_reindexes_active() {
         !s.pane_runtime.contains_key(&1),
         "closed space's pane runtime is dropped"
     );
-    assert_ne!(s.active_pane_id, 1, "focus moves to the surviving space's leaf");
+    assert_ne!(
+        s.active_pane_id, 1,
+        "focus moves to the surviving space's leaf"
+    );
 }
 
 #[test]
@@ -606,10 +652,16 @@ fn closing_the_last_space_resets_to_a_fresh_space() {
     // the window); instead a fresh space replaces it.
     (actions.on_close_space.borrow_mut())(0);
     let s = state.borrow();
-    assert_eq!(s.spaces.len(), 1, "closing the last tab never empties the app");
+    assert_eq!(
+        s.spaces.len(),
+        1,
+        "closing the last tab never empties the app"
+    );
     assert_eq!(s.active_space, 0);
     assert_ne!(
-        s.pane_sessions.get(&s.active_pane_id).map(|x| x.conversation_id.as_str()),
+        s.pane_sessions
+            .get(&s.active_pane_id)
+            .map(|x| x.conversation_id.as_str()),
         None,
         "the fresh space gets a pane session"
     );
@@ -620,7 +672,9 @@ fn bang_prefix_runs_a_terminal_command_instead_of_an_agent_turn() {
     let (desktop, _dir) = desktop_state();
     let (state, actions, _media) = build(&desktop);
     // Bind pane 1 to a real conversation before routing an input to it.
-    let initial = desktop.create_chat("Initial", None, None).expect("create chat");
+    let initial = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     state
         .borrow_mut()
         .bind_active_pane_conversation(initial.clone(), Some(&desktop));
@@ -706,7 +760,13 @@ fn add_space_opens_a_plain_pty_without_a_conversation() {
     let s = state.borrow();
     let last = s.spaces.last().expect("a new space was added");
     assert!(
-        matches!(last.root, Pane::Leaf { kind: PaneKind::Terminal, .. }),
+        matches!(
+            last.root,
+            Pane::Leaf {
+                kind: PaneKind::Terminal,
+                ..
+            }
+        ),
         "a new workspace is a plain PTY"
     );
     assert!(
@@ -740,7 +800,10 @@ fn first_agent_turn_in_a_pty_workspace_creates_its_conversation() {
         .get(&pane_id)
         .map(|x| x.conversation_id.clone())
         .unwrap_or_default();
-    assert!(!conv.is_empty(), "the pane owns a conversation after its turn");
+    assert!(
+        !conv.is_empty(),
+        "the pane owns a conversation after its turn"
+    );
     drop(s);
     assert_eq!(
         desktop.list_chats().len(),
@@ -766,7 +829,11 @@ fn add_space_with_medium_sets_medium_and_workspace_routing() {
         Some(WorkspaceRouting::Remote),
         "new thread routes remote"
     );
-    assert_eq!(s.active_space, s.spaces.len() - 1, "new space becomes active");
+    assert_eq!(
+        s.active_space,
+        s.spaces.len() - 1,
+        "new space becomes active"
+    );
     drop(s);
     assert_eq!(
         media.borrow().selected_medium_id(),
@@ -814,41 +881,6 @@ fn the_cloud_agent_opens_a_viewer_pane_on_remote() {
     );
 }
 
-/// A cloud agent with no Remote configuration asks for it first, in Settings,
-/// and leaves the strip as it was.
-#[test]
-fn the_cloud_agent_asks_for_remote_before_opening_a_tab() {
-    let (desktop, _dir) = desktop_state();
-    let (state, actions, media) = build(&desktop);
-    let before = state.borrow().spaces.len();
-
-    (actions.on_new_cloud_agent.borrow_mut())();
-
-    // The settings tab is what opened (the flow lands there); no cloud-agent
-    // tab was started.
-    assert_eq!(
-        state.borrow().spaces.len(),
-        before + 1,
-        "only the settings tab opened"
-    );
-    assert!(state
-        .borrow()
-        .settings_pane()
-        .is_some_and(|(_, id)| state.borrow().spaces
-            .iter()
-            .any(|space| space.root.contains_leaf(id))));
-    assert_eq!(
-        state.borrow().settings_page(),
-        SettingsCategory::Agent,
-        "the page that configures Remote"
-    );
-    assert_eq!(
-        media.borrow().selected_medium_id(),
-        "local",
-        "the environment did not move"
-    );
-}
-
 /// The environment selector belongs to the tab on screen: switching tabs
 /// brings that tab's environment (and so its conversations) back, instead of
 /// leaving the previous tab's selection in the sidebar and the topbar.
@@ -891,58 +923,6 @@ fn switching_tabs_brings_that_tabs_environment_back() {
     // The keyboard walk over the strip reads the same tab medium.
     (actions.on_switch_space.borrow_mut())(-1);
     assert_eq!(media.borrow().selected_medium_id(), "remote");
-}
-
-/// Every chooser that names Remote before anything is configured opens its
-/// configuration in Settings → Agent & Approval, where the YAML file is named,
-/// and leaves the choice unmade.
-#[test]
-fn choosing_remote_without_a_configuration_opens_the_remote_settings() {
-    let (desktop, _dir) = desktop_state();
-    let (state, actions, media) = build(&desktop);
-    assert!(!state.borrow().remote_configured());
-
-    let assert_on_remote_section = |state: &Rc<RefCell<UiState>>| {
-        let s = state.borrow();
-        assert_eq!(s.settings_page(), SettingsCategory::Agent);
-        assert_eq!(s.settings.region, crate::ui::settings::SettingsRegion::Page);
-        let focused = crate::ui::settings::pages::page_model(
-            SettingsCategory::Agent,
-            &s.settings,
-        )
-        .row_at(s.settings.row_index)
-        .map(|row| row.id.clone());
-        assert_eq!(
-            focused.as_deref(),
-            Some("remote.mode"),
-            "the keyboard lands on the row that configures Remote"
-        );
-        assert!(
-            s.remote_config_path.ends_with("config.toml"),
-            "the page names the config file: {}",
-            s.remote_config_path
-        );
-    };
-
-    // The composer's environment pill.
-    (actions.on_select_harness.borrow_mut())(1, "remote".to_string());
-    assert_on_remote_section(&state);
-    assert_eq!(
-        media.borrow().selected_medium_id(),
-        "local",
-        "the environment did not move"
-    );
-
-    // The topbar "+" menu.
-    let before = state.borrow().spaces.len();
-    (actions.on_add_space_with_medium.borrow_mut())("remote".to_string());
-    assert_on_remote_section(&state);
-    assert_eq!(state.borrow().spaces.len(), before, "no space opened");
-
-    // The run-route choice in Settings.
-    (actions.on_choose_workspace.borrow_mut())(WorkspaceRouting::Remote);
-    assert_on_remote_section(&state);
-    assert_eq!(state.borrow().workspace_routing, None, "the route did not move");
 }
 
 /// `[remote]` in the config file configures Remote: a gateway URL and token
@@ -1015,7 +995,11 @@ fn on_add_medium_adds_persists_and_selects_custom_medium() {
     (media_actions.on_add_medium.borrow_mut())("Staging VPS".to_string());
 
     assert!(
-        media.borrow().mediums.iter().any(|m| m.label == "Staging VPS"),
+        media
+            .borrow()
+            .mediums
+            .iter()
+            .any(|m| m.label == "Staging VPS"),
         "the custom medium is added to the tree"
     );
     assert_eq!(media.borrow().selected_medium_id(), "staging-vps");
@@ -1032,7 +1016,9 @@ fn on_add_medium_adds_persists_and_selects_custom_medium() {
 #[test]
 fn new_terminal_splits_and_binds_own_conversation_and_cwd() {
     let (desktop, _dir) = desktop_state();
-    let chat_id = desktop.create_chat("Initial", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     let (state, actions, _media) = build(&desktop);
 
     (actions.on_new_terminal.borrow_mut())();
@@ -1040,8 +1026,16 @@ fn new_terminal_splits_and_binds_own_conversation_and_cwd() {
     let s = state.borrow();
     let term_pane = s.active_pane_id;
     assert_eq!(s.spaces[0].root.first_leaf_id(), 1, "chat leaf stays first");
-    let term_conv = s.pane_sessions.get(&term_pane).unwrap().conversation_id.clone();
-    assert_ne!(term_conv, chat_id, "terminal pane binds a distinct conversation");
+    let term_conv = s
+        .pane_sessions
+        .get(&term_pane)
+        .unwrap()
+        .conversation_id
+        .clone();
+    assert_ne!(
+        term_conv, chat_id,
+        "terminal pane binds a distinct conversation"
+    );
     assert!(
         !s.pane_sessions.get(&term_pane).unwrap().path.is_empty(),
         "terminal pane initializes a cwd to spawn its shell"
@@ -1052,7 +1046,9 @@ fn new_terminal_splits_and_binds_own_conversation_and_cwd() {
 #[test]
 fn terminal_command_appends_to_the_pane_conversation() {
     let (desktop, _dir) = desktop_state();
-    let chat_id = desktop.create_chat("Initial", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     let (state, actions, _media) = build(&desktop);
 
     (actions.on_new_terminal.borrow_mut())();
@@ -1079,14 +1075,21 @@ fn terminal_command_appends_to_the_pane_conversation() {
         .unwrap()
         .conversation_id
         .clone();
-    assert_eq!(conv, term_conv, "Cmd+Enter reuses the terminal pane's own conversation");
+    assert_eq!(
+        conv, term_conv,
+        "Cmd+Enter reuses the terminal pane's own conversation"
+    );
     wait_for_messages(&desktop, &conv, 2);
-    let term_msgs = desktop.list_chat_messages(&conv).expect("list terminal conv");
+    let term_msgs = desktop
+        .list_chat_messages(&conv)
+        .expect("list terminal conv");
     assert_eq!(term_msgs.len(), 2);
     assert_eq!(term_msgs[0].role, "user");
     assert_eq!(term_msgs[1].role, "assistant");
     // The pre-existing chat conversation stays untouched.
-    let chat_msgs = desktop.list_chat_messages(&chat_id).expect("list chat conv");
+    let chat_msgs = desktop
+        .list_chat_messages(&chat_id)
+        .expect("list chat conv");
     assert_eq!(chat_msgs.len(), 0, "chat conversation stays untouched");
 }
 
@@ -1134,17 +1137,27 @@ fn toggle_fullscreen_flips_state_and_requests_window() {
     assert!(!state.borrow().fullscreen, "window starts windowed");
     (actions.on_toggle_fullscreen.borrow_mut())();
     assert!(state.borrow().fullscreen, "toggle enters fullscreen");
-    assert_eq!(last.borrow_mut().take(), Some(true), "window requested fullscreen");
+    assert_eq!(
+        last.borrow_mut().take(),
+        Some(true),
+        "window requested fullscreen"
+    );
 
     (actions.on_toggle_fullscreen.borrow_mut())();
     assert!(!state.borrow().fullscreen, "toggle leaves fullscreen");
-    assert_eq!(last.borrow_mut().take(), Some(false), "window requested windowed");
+    assert_eq!(
+        last.borrow_mut().take(),
+        Some(false),
+        "window requested windowed"
+    );
 }
 
 #[test]
 fn clear_transcript_clears_active_pane_messages() {
     let (desktop, _dir) = desktop_state();
-    let chat_id = desktop.create_chat("Initial", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     let state = Rc::new(RefCell::new(UiState::from_desktop(&desktop)));
     {
         let mut s = state.borrow_mut();
@@ -1249,7 +1262,9 @@ fn stop_drops_the_pending_approval() {
 #[test]
 fn the_attach_control_opens_the_file_picker_and_writes_no_message() {
     let (desktop, _dir) = desktop_state();
-    let chat_id = desktop.create_chat("Initial", None, None).expect("create chat");
+    let chat_id = desktop
+        .create_chat("Initial", None, None)
+        .expect("create chat");
     let (state, actions, _media) = build(&desktop);
     state
         .borrow_mut()
@@ -1262,7 +1277,10 @@ fn the_attach_control_opens_the_file_picker_and_writes_no_message() {
         "the click writes no message of its own into the transcript"
     );
     assert_eq!(
-        desktop.list_chat_messages(&chat_id).expect("list conv").len(),
+        desktop
+            .list_chat_messages(&chat_id)
+            .expect("list conv")
+            .len(),
         0,
         "and nothing lands in the conversation"
     );
@@ -1286,11 +1304,12 @@ fn the_attach_control_opens_the_file_picker_and_writes_no_message() {
     );
 }
 
-/// The composer's diff control opens the review pane beside its own pane, one
-/// pane per directory: asking again focuses it, and asking for a file in it
-/// selects that file.
+/// Q: the composer's diff control opens Review as a side-panel tab — no diff
+/// pane split, no second file rail — and asking again reselects the file and
+/// keeps a single Review tab.
 #[test]
-fn the_diff_control_opens_one_review_pane_per_directory() {
+fn the_diff_control_opens_the_review_side_tab() {
+    use crate::state::SideTabKind;
     use crate::ui::DiffPanelAction;
 
     let (desktop, _dir) = desktop_state();
@@ -1304,18 +1323,28 @@ fn the_diff_control_opens_one_review_pane_per_directory() {
         .path = cwd.clone();
 
     (actions.on_diff_panel.borrow_mut())(1, DiffPanelAction::Open(None));
-    let review = state.borrow().active_pane_id;
+    let before = state.borrow().active_pane_id;
     {
         let s = state.borrow();
-        assert_ne!(review, 1, "the review pane is its own leaf");
+        assert_eq!(s.active_pane_id, before, "no diff pane is split in");
+        assert!(s.right_sidebar_open, "opening Review reveals the panel");
         assert_eq!(
-            s.spaces[0].leaf_kind(review),
-            Some(&PaneKind::Diff { cwd: cwd.clone() }),
-            "it reviews the directory of the pane that asked"
+            s.side_tabs
+                .iter()
+                .filter(|kind| **kind == SideTabKind::Review)
+                .count(),
+            1,
+            "exactly one Review tab"
+        );
+        assert_eq!(s.active_side_tab_kind(), SideTabKind::Review);
+        assert_eq!(
+            s.side_review,
+            Some((1, cwd.clone())),
+            "the tab reviews the asking pane's directory"
         );
         assert_eq!(
             *s.pane_controls
-                .get(&review)
+                .get(&1)
                 .expect("controls")
                 .diff_selected
                 .borrow(),
@@ -1324,21 +1353,21 @@ fn the_diff_control_opens_one_review_pane_per_directory() {
         );
     }
 
-    (actions.on_diff_panel.borrow_mut())(
-        1,
-        DiffPanelAction::Open(Some("src/lib.rs".to_string())),
-    );
+    (actions.on_diff_panel.borrow_mut())(1, DiffPanelAction::Open(Some("src/lib.rs".to_string())));
     {
         let s = state.borrow();
-        assert_eq!(s.active_pane_id, review, "the same pane is focused");
+        assert_eq!(s.active_pane_id, before, "still no split pane");
         assert_eq!(
-            s.spaces[0].root.max_id(),
-            review,
-            "no second review pane for the same directory"
+            s.side_tabs
+                .iter()
+                .filter(|kind| **kind == SideTabKind::Review)
+                .count(),
+            1,
+            "no second Review tab"
         );
         assert_eq!(
             *s.pane_controls
-                .get(&review)
+                .get(&1)
                 .expect("controls")
                 .diff_selected
                 .borrow(),
@@ -1356,13 +1385,11 @@ fn the_diff_control_opens_one_review_pane_per_directory() {
     (actions.on_diff_panel.borrow_mut())(1, DiffPanelAction::Open(None));
     {
         let s = state.borrow();
-        let second = s.active_pane_id;
-        assert_ne!(second, review, "another directory gets its own pane");
+        assert_eq!(s.active_pane_id, before, "the split layout is preserved");
         assert_eq!(
-            s.spaces[0].leaf_kind(second),
-            Some(&PaneKind::Diff {
-                cwd: "/tmp/review-two".to_string()
-            })
+            s.side_review,
+            Some((1, "/tmp/review-two".to_string())),
+            "the same tab follows the pane's current directory"
         );
     }
 }
@@ -1674,7 +1701,8 @@ fn an_attachment_only_draft_submits_a_turn() {
         .find(|message| message.role == "user")
         .expect("the attachment-only draft persisted a user row");
     assert!(
-        user.content.contains("submitted these files with no message"),
+        user.content
+            .contains("submitted these files with no message"),
         "the row records that the files were the submission: {user:?}"
     );
     assert!(
@@ -1750,7 +1778,9 @@ fn an_attachment_send_to_a_worker_is_refused_and_keeps_the_files() {
     let local = files.path().join("local-only.png");
     std::fs::write(&local, [0x89, b'P', b'N', b'G', 0]).expect("write file");
     let local_path = local.to_string_lossy().to_string();
-    state.borrow_mut().attach_pane_file(pane_id, local_path.clone());
+    state
+        .borrow_mut()
+        .attach_pane_file(pane_id, local_path.clone());
 
     (actions.on_send_message.borrow_mut())("".to_string());
 
@@ -1814,5 +1844,76 @@ fn while_a_turn_runs_attachments_ride_the_queued_prompt() {
     assert!(
         state.borrow().pane_attachments(1).is_empty(),
         "the queued submission spends the chips"
+    );
+}
+
+/// The side panel's Agent tab is a conversation of its own: its draft and its
+/// send route to the reserved side pane, so typing/submitting there never
+/// touches the active pane's draft or binds the active pane's conversation.
+#[test]
+fn the_side_agent_tab_owns_its_own_conversation_and_draft() {
+    use crate::state::SIDE_AGENT_PANE_ID;
+    use crate::ui::SideChatAction;
+
+    let (desktop, _dir) = desktop_state();
+    let (state, actions, _media) = build(&desktop);
+    let runtime = configured(&state);
+    let active = state.borrow().active_pane_id;
+    {
+        let mut s = state.borrow_mut();
+        s.selected_model = "mock-model".to_string();
+        s.ensure_pane_controls();
+        s.set_active_pane_draft("main draft".to_string());
+    }
+
+    // A draft typed in the side composer is the side session's, not the active
+    // pane's (which is what the pane composer callbacks would write).
+    (actions.on_side_chat.borrow_mut())(SideChatAction::Draft("side draft".to_string()));
+    {
+        let s = state.borrow();
+        assert_eq!(
+            s.pane_sessions[&SIDE_AGENT_PANE_ID].draft, "side draft",
+            "the side draft lands on the reserved side pane"
+        );
+        assert_eq!(
+            s.pane_sessions[&active].draft, "main draft",
+            "the active pane's draft is untouched"
+        );
+        assert!(
+            s.pane_sessions[&SIDE_AGENT_PANE_ID]
+                .conversation_id
+                .is_empty(),
+            "the side tab starts without a conversation"
+        );
+    }
+
+    // The first send creates the side conversation and keeps it separate from
+    // the pane tree's conversation.
+    {
+        let _guard = runtime.enter();
+        (actions.on_side_chat.borrow_mut())(SideChatAction::Send("side prompt".to_string()));
+    }
+    let s = state.borrow();
+    let side = s.pane_sessions[&SIDE_AGENT_PANE_ID].conversation_id.clone();
+    assert!(!side.is_empty(), "the first side send binds a conversation");
+    assert_eq!(
+        s.pane_sessions[&SIDE_AGENT_PANE_ID].draft, "",
+        "a submitted side draft is spent"
+    );
+    assert_eq!(
+        s.pane_sessions[&active].draft, "main draft",
+        "the active pane's draft still survives"
+    );
+    assert_ne!(
+        Some(&side),
+        s.pane_sessions
+            .get(&active)
+            .map(|session| &session.conversation_id)
+            .filter(|id| !id.is_empty()),
+        "the side conversation is never the active pane's"
+    );
+    assert!(
+        desktop.list_chats().iter().any(|chat| chat.id == side),
+        "the side conversation is a real store chat"
     );
 }

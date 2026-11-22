@@ -336,11 +336,9 @@ impl Element for RowCell {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         self.row.paint(origin, ctx, app);
-        if self.rule_above {
-            if let (Some(size), Some(renderer)) = (self.size, ctx.renderer.as_mut()) {
-                renderer.fill_rect(rectf(origin.x, origin.y, size.x, 1.0), row_rule(app));
-            }
-        }
+        // L: settings carry no row separator rules; the card casing and the
+        // row spacing do the grouping.
+        let _ = (self.rule_above, self.size, app);
     }
 
     fn size(&self) -> Option<Vector2F> {

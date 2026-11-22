@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::elements::{
-    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, EventContext,
-    Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint, Text,
-    CARET_HEIGHT,
+    caret_beam, AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
+    EventContext, Fill, Flex, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint,
+    Text, CARET_HEIGHT,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, PointF, Vector2F};
@@ -25,6 +25,9 @@ pub struct TextInput {
     /// frame. A placeholder is still drawn as written — it is the call site's
     /// sentence, not the value.
     masked: bool,
+    /// V: the inline title editor starts with the whole value selected; the
+    /// first typed character replaces it and Backspace clears it.
+    select_all: bool,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_submit: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -42,6 +45,7 @@ impl TextInput {
             full_width: false,
             plain: false,
             masked: false,
+            select_all: false,
             on_change: None,
             on_focus_change: None,
             on_submit: None,
@@ -102,6 +106,13 @@ impl TextInput {
         self
     }
 
+    /// Start with the whole value selected: the run is filled with the
+    /// selection token and the first typed character replaces it.
+    pub fn with_select_all(mut self, select_all: bool) -> Self {
+        self.select_all = select_all;
+        self
+    }
+
     pub fn with_on_submit<F: FnMut() + 'static>(mut self, callback: F) -> Self {
         self.on_submit = Some(Rc::new(RefCell::new(callback)));
         self
@@ -143,15 +154,19 @@ impl TextInput {
         // The beam is taller than a line of text, so the row always reserves
         // its height: focusing the field paints the beam into the same band
         // instead of growing the field by the difference.
-        row = row.with_child(
-            Empty::new()
-                .with_size(vec2f(0.0, CARET_HEIGHT))
-                .finish(),
-        );
+        row = row.with_child(Empty::new().with_size(vec2f(0.0, CARET_HEIGHT)).finish());
         if self.focused && empty {
             row = row.with_child(caret_beam(app));
         }
-        row = row.with_child(text);
+        if self.focused && self.select_all && !empty {
+            row = row.with_child(
+                Container::new(text)
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Selection)))
+                    .finish(),
+            );
+        } else {
+            row = row.with_child(text);
+        }
         if self.focused && !empty {
             row = row.with_child(caret_beam(app));
         }
@@ -224,6 +239,7 @@ impl Element for TextInput {
                     if bounds.contains(PointF::new(position.x, position.y)) {
                         let was_focused = self.focused;
                         self.focused = true;
+                        self.select_all = false;
                         if !was_focused {
                             if let Some(cb) = self.on_focus_change.as_ref() {
                                 (cb.borrow_mut())(true);
@@ -245,13 +261,22 @@ impl Element for TextInput {
                     return false;
                 }
                 if key == "Backspace" {
-                    self.value.pop();
+                    if self.select_all {
+                        self.value.clear();
+                        self.select_all = false;
+                    } else {
+                        self.value.pop();
+                    }
                 } else if key == "Enter" {
                     if let Some(cb) = self.on_submit.as_ref() {
                         (cb.borrow_mut())();
                     }
                     return true;
                 } else if key.len() == 1 {
+                    if self.select_all {
+                        self.value.clear();
+                        self.select_all = false;
+                    }
                     self.value.push_str(key);
                 } else {
                     return false;
@@ -578,5 +603,48 @@ mod tests {
             )),
             "the prompt line draws its placeholder: {commands:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod select_all_tests {
+    use super::*;
+    use crate::event::DispatchedEvent;
+    use crate::geometry::vec2f;
+    use crate::render::RenderCommand;
+    use crate::test_util::render_element;
+
+    #[test]
+    fn select_all_highlights_the_run_and_typing_replaces_it() {
+        let app = AppContext::default();
+        let seen: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = seen.clone();
+        let mut input = TextInput::new()
+            .with_value("Alpha title")
+            .with_focused(true)
+            .with_select_all(true)
+            .with_on_change(move |value| sink.borrow_mut().push(value))
+            .finish();
+        let commands = render_element(&mut input, vec2f(400.0, 40.0), &app);
+        let selected = app.theme.color(ColorToken::Selection);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, rect, .. }
+                    if *color == selected && rect.width() > 40.0 && rect.height() < 30.0
+            )),
+            "the whole value is highlighted: {commands:?}"
+        );
+        let mut ctx = EventContext::default();
+        assert!(input.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "B".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert_eq!(seen.borrow().as_slice(), ["B"], "typing replaces the run");
     }
 }

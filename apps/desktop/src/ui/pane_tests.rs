@@ -7,7 +7,10 @@ use super::*;
 use std::collections::HashMap;
 
 fn chat_leaf(id: u64) -> Pane {
-    Pane::Leaf { id, kind: PaneKind::Chat }
+    Pane::Leaf {
+        id,
+        kind: PaneKind::Chat,
+    }
 }
 
 #[test]
@@ -76,8 +79,20 @@ fn split_creates_two_distinct_chat_leaves() {
     assert_ne!(space.root.first_leaf_id(), new_id);
     match &space.root {
         Pane::Split { first, second, .. } => {
-            assert!(matches!(**first, Pane::Leaf { kind: PaneKind::Chat, .. }));
-            assert!(matches!(**second, Pane::Leaf { kind: PaneKind::Chat, .. }));
+            assert!(matches!(
+                **first,
+                Pane::Leaf {
+                    kind: PaneKind::Chat,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                **second,
+                Pane::Leaf {
+                    kind: PaneKind::Chat,
+                    ..
+                }
+            ));
         }
         _ => panic!("expected a split"),
     }
@@ -171,7 +186,9 @@ fn master_stack_gives_the_first_pane_sixty_percent_and_stacks_the_rest() {
     let mut space = Space::new("S", chat_leaf(1));
     let mut next = 2;
     let second = space.split(1, SplitDir::Horizontal, &mut next).unwrap();
-    let third = space.split(second, SplitDir::Horizontal, &mut next).unwrap();
+    let third = space
+        .split(second, SplitDir::Horizontal, &mut next)
+        .unwrap();
     space.set_layout(LayoutKind::MasterStack);
 
     let regions = space.layout_regions();
@@ -222,7 +239,9 @@ fn switching_to_floating_gives_every_pane_a_rect_and_splits_and_closes_keep_it_c
     assert!(space.floating_rect(second).is_some());
 
     // A split in the floating layout gets a rect of its own.
-    let third = space.split(second, SplitDir::Horizontal, &mut next).unwrap();
+    let third = space
+        .split(second, SplitDir::Horizontal, &mut next)
+        .unwrap();
     assert_eq!(space.floating.len(), 3);
     assert!(space.floating_rect(third).is_some());
 
@@ -508,10 +527,7 @@ fn moving_a_pane_reinserts_the_same_leaf_beside_the_target() {
 
     assert!(space.move_pane(terminal, 1, DropSide::Left, &mut next));
     let Pane::Split {
-        dir,
-        first,
-        second,
-        ..
+        dir, first, second, ..
     } = &space.root
     else {
         panic!("the root is the split the move made");

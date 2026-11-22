@@ -33,6 +33,9 @@ pub struct Dialog {
     /// `width` is ignored.
     inset: Option<f32>,
     on_close: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
+    /// Whether Escape closes it. Off by default: the shortcuts panel and
+    /// onboarding handle Escape themselves before a dialog would.
+    close_on_escape: bool,
     size: Option<Vector2F>,
     origin: Option<Point>,
     panel_origin: Vector2F,
@@ -47,6 +50,7 @@ impl Dialog {
             width: DIALOG_DEFAULT_WIDTH,
             inset: None,
             on_close: None,
+            close_on_escape: false,
             size: None,
             origin: None,
             panel_origin: Vector2F::zero(),
@@ -68,6 +72,12 @@ impl Dialog {
     /// of being a centered box of `width`. `width` is then ignored.
     pub fn with_inset(mut self, inset: f32) -> Self {
         self.inset = Some(inset.max(0.0));
+        self
+    }
+
+    /// Close on Escape as well as on a backdrop click.
+    pub fn with_close_on_escape(mut self, close: bool) -> Self {
+        self.close_on_escape = close;
         self
     }
 
@@ -133,13 +143,13 @@ impl Element for Dialog {
         }
         let size = self.size.unwrap_or(Vector2F::zero());
         if let Some(renderer) = ctx.renderer.as_mut() {
-            let backdrop = RectF::new(
-                PointF::new(origin.x, origin.y),
-                Size2F::new(size.x, size.y),
-            );
+            let backdrop = RectF::new(PointF::new(origin.x, origin.y), Size2F::new(size.x, size.y));
             renderer.fill_rounded_rect(backdrop, BACKDROP_COLOR, 0.0);
         }
-        let child_origin = vec2f(origin.x + self.panel_origin.x, origin.y + self.panel_origin.y);
+        let child_origin = vec2f(
+            origin.x + self.panel_origin.x,
+            origin.y + self.panel_origin.y,
+        );
         self.child.paint(child_origin, ctx, app);
     }
 
@@ -169,12 +179,23 @@ impl Element for Dialog {
             None => return false,
         };
         let panel_bounds = RectF::new(
-            PointF::new(origin.x + self.panel_origin.x, origin.y + self.panel_origin.y),
+            PointF::new(
+                origin.x + self.panel_origin.x,
+                origin.y + self.panel_origin.y,
+            ),
             Size2F::new(self.panel_size.x, self.panel_size.y),
         );
         let cb = self.on_close.clone();
 
         match event {
+            DispatchedEvent::KeyDown { key, .. }
+                if self.close_on_escape && key == "Escape" =>
+            {
+                if let Some(cb) = cb.as_ref() {
+                    (cb.borrow_mut())();
+                }
+                true
+            }
             DispatchedEvent::MouseDown { position, .. }
             | DispatchedEvent::MouseUp { position, .. } => {
                 if panel_bounds.contains(PointF::new(position.x, position.y)) {
@@ -199,9 +220,7 @@ impl Element for Dialog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{
-        AppContext, Container, Fill, LayoutContext, PaintContext, Text,
-    };
+    use crate::elements::{AppContext, Container, Fill, LayoutContext, PaintContext, Text};
     use crate::event::DispatchedEvent;
     use crate::geometry::vec2f;
     use crate::render::RenderCommand;
@@ -217,7 +236,10 @@ mod tests {
         let mut element = Dialog::new(Text::new("hi").finish()).finish();
         let commands = render_element(&mut element, vec2f(400.0, 400.0), &app);
         let counts = command_counts(&commands);
-        assert_eq!(counts.fill_rect, 0, "closed dialog should paint no backdrop");
+        assert_eq!(
+            counts.fill_rect, 0,
+            "closed dialog should paint no backdrop"
+        );
     }
 
     #[test]
@@ -226,7 +248,9 @@ mod tests {
         let backdrop_color = crate::color::ColorU::new(0, 0, 0, 110);
         let mut element = Dialog::new(
             Container::new(Text::new("hi").finish())
-                .with_background(Fill::Solid(app.theme.color(crate::theme::ColorToken::Surface)))
+                .with_background(Fill::Solid(
+                    app.theme.color(crate::theme::ColorToken::Surface),
+                ))
                 .finish(),
         )
         .with_open(true)
@@ -234,9 +258,9 @@ mod tests {
         .finish();
         let commands = render_element(&mut element, vec2f(400.0, 400.0), &app);
 
-        let has_backdrop = commands.iter().any(|c| {
-            matches!(c, RenderCommand::FillRect { color, .. } if *color == backdrop_color)
-        });
+        let has_backdrop = commands.iter().any(
+            |c| matches!(c, RenderCommand::FillRect { color, .. } if *color == backdrop_color),
+        );
         assert!(has_backdrop, "open dialog should paint a dimmed backdrop");
 
         let counts = command_counts(&commands);
@@ -249,7 +273,9 @@ mod tests {
         let app = app();
         let mut element = Dialog::new(
             Container::new(Text::new("hi").finish())
-                .with_background(Fill::Solid(app.theme.color(crate::theme::ColorToken::Surface)))
+                .with_background(Fill::Solid(
+                    app.theme.color(crate::theme::ColorToken::Surface),
+                ))
                 .finish(),
         )
         .with_open(true)
@@ -303,6 +329,60 @@ mod tests {
         assert!(*closed.borrow(), "backdrop click should fire on_close");
     }
 
+    #[test]
+    fn escape_closes_only_when_asked() {
+        let app = app();
+        let closed = Rc::new(RefCell::new(false));
+        let closed_clone = closed.clone();
+        let mut element = Dialog::new(Text::new("hi").finish())
+            .with_open(true)
+            .with_width(200.0)
+            .with_close_on_escape(true)
+            .with_on_close(move || *closed_clone.borrow_mut() = true)
+            .finish();
+        element.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        element.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+        let mut ctx = crate::elements::EventContext::default();
+        let handled = element.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(handled, "the overlay consumes its Escape");
+        assert!(*closed.borrow(), "Escape asked the overlay to close");
+
+        // Without the flag the dialog leaves Escape to the surface (the
+        // shortcuts panel clears its filter before closing).
+        let mut plain = Dialog::new(Text::new("hi").finish())
+            .with_open(true)
+            .with_width(200.0)
+            .with_on_close(|| {})
+            .finish();
+        plain.layout(
+            SizeConstraint::loose(vec2f(400.0, 400.0)),
+            &mut LayoutContext::default(),
+            &app,
+        );
+        plain.paint(vec2f(0.0, 0.0), &mut PaintContext::default(), &app);
+        let handled = plain.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(!handled, "the default dialog does not eat Escape");
+    }
+
+    #[test]
     #[test]
     fn click_inside_panel_dispatches_to_child() {
         let app = app();

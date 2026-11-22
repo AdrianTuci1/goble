@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
+use super::tool_body::{elide_line, elided_len, MAX_BODY_BYTES, READ_TRUNCATION};
 use crate::elements::chat_content::{ToolCall, ToolDisplayMode};
 use crate::elements::{CrossAxisAlignment, Element, Flex, InlineText, TextSpan};
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::ToolCallStatus;
-use super::tool_body::{elide_line, elided_len, MAX_BODY_BYTES, READ_TRUNCATION};
 
 /// Lines an expanded read draws before the rest is elided. The element tree is
 /// rebuilt on every frame, so the body has to cost what is on screen and not

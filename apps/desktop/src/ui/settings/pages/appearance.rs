@@ -1,19 +1,23 @@
-//! Settings → Appearance: the palette, the five channel overrides (with the
-//! colour picker), the interface text scale, and the editor's save-on-close
-//! choice.
+//! Settings → Appearance: the colour-theme dropdown, the five channel
+//! overrides (each with a swatch that opens the palette), the interface text
+//! scale, and the editor's save-on-close choice.
 //!
-//! The palette choice is a real list: the row's trigger opens a menu of the
-//! presets (each with a swatch, its description and the current check), and the
-//! colour wheel below edits whichever channel the picker's buttons name. Both
-//! write `[theme]` through the same document editor as every other row, so the
-//! revision fence and the comment preservation hold here too.
+//! The theme row is a real `Select`: its trigger names the palette in force and
+//! the renderer draws an anchored menu of every preset (the current one checked)
+//! through the page-level overlay. Each channel row keeps the editable hex field
+//! and puts a colour square beside it; the square opens an anchored palette of
+//! the active theme's own colours plus the preset accents, with a hex entry and a
+//! reset. Every choice goes through the same document actions as the other
+//! rows (`SetSelect`, `SetText`, `Reset`), so the revision fence, comment
+//! preservation and file-backed truth hold here too. There is no HSV wheel.
 
 use goble_core::config::ConfigFile;
 use goble_ui::color::ColorU;
-use goble_ui::theme::ThemePreset;
+use goble_ui::theme::{Theme, ThemePreset};
 
 use super::super::fields;
-use super::super::model::{ActionModel, ControlModel, PageModel, RowModel, SectionModel};
+use super::super::model::{ActionModel, PageModel, RowModel, SectionModel};
+use super::super::render::color_palette;
 use super::super::state::{SettingsAction, SettingsUiState, StatusKind};
 use super::{problem_section, slider_row, text_row, toggle_row};
 
@@ -23,143 +27,63 @@ pub fn page(state: &SettingsUiState) -> PageModel {
         sections.push(problems);
     }
 
-    // The palette: one trigger row plus, while open, the presets as a list.
+    // The palette: a real select, rendered as a trigger + anchored menu by the
+    // page overlay. The options are the built-in default plus ThemePreset::ALL;
+    // selecting one writes `theme.preset` and drops the five channel overrides.
     let options = fields::palette_options();
     let selected = fields::palette_index(state);
-    let current = options
-        .get(selected)
-        .map(|(label, _)| label.clone())
-        .unwrap_or_else(|| "Default base".to_string());
-    let trigger = RowModel::new(
+    let labels: Vec<String> = options.iter().map(|(label, _)| label.clone()).collect();
+    let mut theme_row = RowModel::new(
         "theme.preset",
         "Colour theme",
-        "The palette this build starts from; the channels below can override any one of them.",
+        "The palette this build starts from; the channel rows below can override any one of them.",
     )
-    .buttons(vec![
-        ActionModel::new(current, SettingsAction::ToggleThemeSelect(!state.theme_select_open))
-            .with_icon("chevron-down")
-            .primary(),
-    ]);
-    let mut preset_rows = vec![trigger];
-    if state.theme_select_open {
-        for (index, (label, value)) in options.into_iter().enumerate() {
-            let description = value
-                .as_deref()
-                .and_then(ThemePreset::from_key)
-                .map(|preset| preset.description().to_string())
-                .unwrap_or_else(|| {
-                    "The built-in base: neutral surfaces, no overrides.".to_string()
-                });
-            let is_selected = index == selected;
-            let action = if is_selected {
-                ActionModel::new(
-                    "Selected",
-                    SettingsAction::ToggleThemeSelect(false),
-                )
-                .with_icon("check")
-            } else {
-                ActionModel::new(
-                    "Use",
-                    SettingsAction::SetSelect {
-                        path: "theme.preset".to_string(),
-                        index,
-                    },
-                )
-            };
-            let mut row = RowModel::new(format!("theme.preset.option.{index}"), label, description)
-                .buttons(vec![action])
-                .with_status(
-                    if is_selected {
-                        StatusKind::Success
-                    } else {
-                        StatusKind::Muted
-                    },
-                    if is_selected {
-                        "In use"
-                    } else {
-                        "Choose this palette"
-                    },
-                );
-            if let Some(swatch) = palette_swatch(index) {
-                row = row.with_swatch(swatch);
-            }
-            preset_rows.push(row);
-        }
+    .select("theme.preset", labels, selected);
+    if state.file_read_only() {
+        theme_row = theme_row.disabled();
     }
-    sections.push(
-        SectionModel::new("theme", "Colors & themes")
-            .with_description(
-                "A palette sets the base colours; the colour picker below overrides any one channel.",
-            )
-            .with_header_action(ActionModel::new(
-                "Restore defaults",
-                SettingsAction::ResetThemeColours,
-            ))
-            .with_rows(preset_rows),
-    );
+    let mut theme_section = SectionModel::new("theme", "Colors & themes")
+        .with_description(
+            "A palette sets the base colours; the channel rows below override any one of them.",
+        )
+        .with_row(theme_row);
+    if !state.file_read_only() {
+        theme_section = theme_section.with_header_action(ActionModel::new(
+            "Restore defaults",
+            SettingsAction::ResetThemeColours,
+        ));
+    }
+    sections.push(theme_section);
 
-    // The colour picker: which channel, then the wheel for it, then the raw
-    // hex of every channel (the picker's numeric readout and its input).
-    let target = state.color_target.min(channel_labels().len() - 1);
-    let mut channel_actions: Vec<ActionModel> = Vec::new();
-    for (index, (label, _, _)) in channel_labels().into_iter().enumerate() {
-        let action = ActionModel::new(
-            label,
-            SettingsAction::SetColorTarget(index),
+    // The five channels, each a real `[theme]` key. The hex field is the same
+    // text control every other page uses; the swatch next to it opens the
+    // anchored palette.
+    let mut channels = SectionModel::new("theme-channels", "Colour channels")
+        .with_description(
+            "Each channel is a #rrggbb override in [theme]. Unset a channel to use the palette's own colour.",
         );
-        channel_actions.push(if index == target {
-            action.primary()
-        } else {
-            action.with_ghost()
-        });
-    }
-    let channel = channel_labels()[target].1;
-    let picker_rows = vec![
-        RowModel::new(
-            "theme.color-target",
-            "Channel",
-            "Which theme channel the wheel edits.",
-        )
-        .buttons(channel_actions)
-        .with_status(StatusKind::Muted, format!("Editing: {channel}")),
-        RowModel::new(
-            "theme.color-wheel",
-            "Colour picker",
-            "Drag the ring for hue and the square for saturation/brightness. Writes [theme] on change.",
-        )
-        .with_control(ControlModel::ColorWheel {
-            channel: target,
-            label: channel.to_string(),
-            stored: fields::theme_text(state, channel_key(target)),
-        }),
-    ];
-    let mut picker = SectionModel::new("color-picker", "Colour picker").with_rows(picker_rows);
-    for (label, key, _) in channel_labels().into_iter() {
+    for (key, label, hint) in channel_rows() {
         let path = format!("theme.{key}");
         let stored = fields::theme_text(state, key);
         let value = stored.clone().unwrap_or_default();
-        let mut row = text_row(
-            state,
-            &path,
-            label,
-            "The channel's #rrggbb override; the picker writes it too.",
-            value,
-            "#rrggbb",
-        );
-        row = row.with_status(
+        let color = color_palette::channel_color(state, key);
+        let mut row = text_row(state, &path, label, hint, value, "#rrggbb").with_status(
             StatusKind::Muted,
-            stored
-                .clone()
-                .unwrap_or_else(|| "Not overridden".to_string()),
+            if stored.is_some() {
+                "Overridden in config.toml".to_string()
+            } else {
+                format!("Using the palette's {}", label.to_lowercase())
+            },
         );
-        if let Some(colour) = stored.as_deref().and_then(ColorU::from_hex) {
-            row = row.with_swatch(colour);
+        if stored.is_some() {
+            row = row.with_reset(SettingsAction::Reset { path: path.clone() });
         }
-        picker = picker.with_row(row.with_reset(SettingsAction::Reset {
-            path: format!("theme.{key}"),
-        }));
+        if state.file_read_only() {
+            row = row.disabled();
+        }
+        channels = channels.with_row(row);
     }
-    sections.push(picker);
+    sections.push(channels);
 
     sections.push(
         SectionModel::new("text", "Text")
@@ -191,29 +115,91 @@ pub fn page(state: &SettingsUiState) -> PageModel {
     PageModel::new(sections)
 }
 
-/// The five channels in picker order: `(label, stored key, ColorToken name)`.
-fn channel_labels() -> Vec<(&'static str, &'static str, goble_ui::theme::ColorToken)> {
-    use goble_ui::theme::ColorToken as T;
+/// The five channels in the order the page names them:
+/// `(stored key, label, hint)`.
+fn channel_rows() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
-        ("Primary", "primary", T::Text),
-        ("Secondary", "secondary", T::Muted),
-        ("Accent", "accent", T::Accent),
-        ("Background", "bg", T::Bg),
-        ("Surface", "surface", T::Surface),
+        (
+            "accent",
+            "Accent",
+            "The brand colour: focus rings, selected rows and primary actions.",
+        ),
+        ("primary", "Primary", "The main foreground text colour."),
+        (
+            "secondary",
+            "Secondary",
+            "The muted foreground for descriptions and status lines.",
+        ),
+        ("bg", "Background", "The window and page background."),
+        (
+            "surface",
+            "Surface",
+            "The raised surface behind cards and panes.",
+        ),
     ]
 }
 
-fn channel_key(index: usize) -> &'static str {
-    channel_labels()
-        .get(index)
-        .map(|(_, key, _)| *key)
-        .unwrap_or("accent")
+/// A palette's swatch: the preset's accent, or the built-in base's accent for
+/// the "Default base" choice.
+fn palette_swatch(state: &SettingsUiState, index: usize) -> Option<ColorU> {
+    let options = fields::palette_options();
+    if let Some(Some(value)) = options.get(index).map(|(_, value)| value.as_deref()) {
+        if let Some(preset) = ThemePreset::from_key(value) {
+            return Some(preset.accent());
+        }
+    }
+    Some(if fields::theme_bool(state, "dark", true) {
+        Theme::dark().accent_color()
+    } else {
+        Theme::light().accent_color()
+    })
 }
 
-/// A preset's swatch colour: the palette's accent, which is what distinguishes
-/// the five bases at a glance.
-fn palette_swatch(index: usize) -> Option<ColorU> {
-    let options = fields::palette_options();
-    let value = options.get(index)?.1.as_deref()?;
-    ThemePreset::from_key(value).map(|preset| preset.colors().focus)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::settings::model::ControlModel;
+
+    #[test]
+    fn the_theme_row_is_a_select_of_the_presets_and_the_wheel_is_gone() {
+        let state = SettingsUiState::default();
+        let model = page(&state);
+        let theme = model
+            .sections
+            .iter()
+            .flat_map(|section| section.rows.iter())
+            .find(|row| row.id == "theme.preset")
+            .expect("the theme row");
+        match &theme.control {
+            ControlModel::Select { path, options, .. } => {
+                assert_eq!(path, "theme.preset");
+                assert!(options.iter().any(|option| option == "Goble Night"));
+                assert!(options.iter().any(|option| option == "Tokyo Night"));
+            }
+            other => panic!("the theme row is a select, got {other:?}"),
+        }
+        assert!(
+            !model
+                .interactive_rows()
+                .iter()
+                .any(|row| row.id == "theme.color-wheel"),
+            "the HSV wheel is not on the page"
+        );
+        for key in ["accent", "primary", "secondary", "bg", "surface"] {
+            let row = model
+                .sections
+                .iter()
+                .flat_map(|section| section.rows.iter())
+                .find(|row| row.id == format!("theme.{key}"))
+                .unwrap_or_else(|| panic!("the {key} channel row"));
+            assert!(
+                row.swatch.is_none(),
+                "the {key} swatch lives inside its hex field, not beside the title"
+            );
+            assert!(
+                matches!(row.control, ControlModel::Text { .. }),
+                "the {key} row keeps a real hex field"
+            );
+        }
+    }
 }

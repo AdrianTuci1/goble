@@ -8,8 +8,8 @@
 //! fails here rather than only in a screenshot.
 
 use super::*;
-use crate::elements::chat_typography;
 use crate::elements::chat_content::{ChatFragment, ChatRole};
+use crate::elements::chat_typography;
 use crate::theme::{Density, Theme, ThemePreset};
 
 /// The first drawn run whose text starts with `prefix`, as
@@ -51,10 +51,7 @@ fn text_x(commands: &[RenderCommand], prefix: &str) -> f32 {
 }
 
 fn approx(what: &str, got: f32, want: f32) {
-    assert!(
-        (got - want).abs() < 1e-4,
-        "{what}: got {got}, want {want}"
-    );
+    assert!((got - want).abs() < 1e-4, "{what}: got {got}, want {want}");
 }
 
 /// A bubble with one fragment renders its paint commands at `width`.
@@ -87,7 +84,11 @@ fn every_chat_surface_draws_dsh_type() {
     );
     let (size, line, color, weight, run_family) = runmatching(&commands, "Salut");
     approx("assistant prose size", size, 14.0);
-    approx("assistant prose line height", line, chat_typography::BODY_LH);
+    approx(
+        "assistant prose line height",
+        line,
+        chat_typography::BODY_LH,
+    );
     assert_eq!(color, app.theme.color(ColorToken::Text), "assistant ink");
     assert_eq!(weight, FontWeight::Regular);
     assert_eq!(run_family, family);
@@ -107,42 +108,24 @@ fn every_chat_surface_draws_dsh_type() {
     assert_eq!(color, app.theme.color(ColorToken::Text), "user ink");
     assert_eq!(weight, FontWeight::Regular);
     assert_eq!(run_family, family);
-    let marker = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawIcon {
-                name, origin, size, ..
-            } if name == "prompt-arrow" => Some((*origin, *size)),
-            _ => None,
-        })
-        .expect("the user's row keeps its prompt marker");
-    let text_y = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawText {
-                origin,
-                text: drawn,
-                ..
-            } if drawn == "Salut, monde." => Some(origin.y),
-            _ => None,
-        })
-        .expect("the message is drawn");
     assert!(
-        (marker.0.y + marker.1 / 2.0 - (text_y + 14.0 * chat_typography::USER_LH / 2.0)).abs()
-            <= 1.0,
-        "the marker is centred on the 22 px user line, got {marker:?} for a line at {text_y}"
-    );
-    approx(
-        "the marker sits on the band's 16 px inset",
-        marker.0.x,
-        chat_typography::BAND_PADDING_X,
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+        )),
+        "the user's row carries no prompt marker any more"
     );
 
     // Reasoning: a 13 / 24 regular disclosure row over a 13 / 20 body, both in
     // the quiet ink and the prose family (no mono, no bold).
     let mut bubble = ChatMessageBubble::new(
         ChatRole::Assistant,
-        vec![ChatFragment::reasoning("c1:0", "contemplating", "weighing it", true)],
+        vec![ChatFragment::reasoning(
+            "c1:0",
+            "contemplating",
+            "weighing it",
+            true,
+        )],
     );
     let commands = paint_bubble(&mut bubble, &app);
     let (size, line, color, weight, run_family) = runmatching(&commands, "Thought");
@@ -179,9 +162,8 @@ fn every_chat_surface_draws_dsh_type() {
     assert_eq!(weight, FontWeight::Regular);
     assert_eq!(run_family, family);
 
-    // A tool row: 13 / 24, regular, quiet ink, prose family, Goble's `◆` kept.
-    // A tool no family folds (here `credentials`) stands on its own, so the row
-    // wears the single-call diamond.
+    // A tool row: 13 / 24, regular, quiet ink, prose family, and no leading
+    // glyph at all — DSH's plain nested text row.
     let (commands, _) = paint_tool_calls(vec![call(
         "credentials",
         r#"{"agent_id":"researcher"}"#,
@@ -189,16 +171,21 @@ fn every_chat_surface_draws_dsh_type() {
         Some("none"),
     )]);
     assert!(
-        commands.iter().any(|command| matches!(
+        !commands.iter().any(|command| matches!(
             command,
-            RenderCommand::DrawText { text, .. } if text == "◆"
+            RenderCommand::DrawText { text, .. }
+                if text.contains('◆') || text.contains('◈') || text.contains('❯')
         )),
-        "the tool row keeps Goble's diamond, got {commands:?}"
+        "the tool row draws no glyph, got {commands:?}"
     );
     let (size, line, color, weight, run_family) = runmatching(&commands, "credentials");
     approx("tool row size", size, 13.0);
     approx("tool row line", line, chat_typography::ROW_LH);
-    assert_eq!(color, app.theme.color(ColorToken::Muted), "a resting row is quiet");
+    assert_eq!(
+        color,
+        app.theme.color(ColorToken::Muted),
+        "a resting row is quiet"
+    );
     assert_eq!(weight, FontWeight::Regular, "the verb is no longer bold");
     assert_eq!(run_family, family, "the tool row is prose, not mono");
 
@@ -246,11 +233,12 @@ fn every_chat_surface_draws_dsh_type() {
     );
 }
 
-/// §6.2: the user and agent rows share the pane's width and left edge. The
-/// prompt marker is the only permitted difference between their text origins;
-/// neither row is right-aligned and neither is narrower than the other.
+/// The user bubble is DSH's inset, right-aligned surface. The row still spans
+/// the lane so the assistant rows and the sticky turn share one width axis, but
+/// the bubble inside it is capped, anchored to the trailing edge, rounded at 20
+/// and inset by 10 × 16. The agent's row stays flat and full-width.
 #[test]
-fn user_and_agent_rows_share_the_width_and_left_edge() {
+fn the_user_bubble_is_right_aligned_and_capped() {
     let app = AppContext::default();
     let width = 600.0;
 
@@ -262,10 +250,14 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
     );
 
     approx("the agent's row spans the pane", reply_size.x, width);
-    approx("the user's row spans the pane", message_size.x, width);
+    approx(
+        "the user's row still claims the lane",
+        message_size.x,
+        width,
+    );
 
-    // The user's band is the full pane edge to edge and square — no inset,
-    // no right-aligned capped bubble.
+    // A narrow lane takes DSH's 82% fallback rather than shrinking a prompt to
+    // a 70.2% column.
     let band = message
         .iter()
         .find_map(|command| match command {
@@ -273,13 +265,36 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
                 rect,
                 color,
                 corner_radius,
-            } if *color == app.theme.color(ColorToken::SurfaceRaised) => Some((*rect, *corner_radius)),
+            } if *color == app.theme.color(ColorToken::SurfaceRaised) => {
+                Some((*rect, *corner_radius))
+            }
             _ => None,
         })
-        .expect("the user's row paints its band");
-    approx("the user band's left edge", band.0.min_x(), 0.0);
-    approx("the user band's right edge", band.0.max_x(), width);
-    approx("the user band's radius", band.1, 0.0);
+        .expect("the user's row paints its bubble");
+    approx(
+        "the user bubble's right edge",
+        band.0.max_x(),
+        width - chat_typography::USER_BUBBLE_RIGHT_INSET,
+    );
+    approx(
+        "the narrow lane's 82% cap",
+        band.0.width(),
+        chat_typography::user_bubble_max_width(width),
+    );
+    approx("the user bubble's radius", band.1, 20.0);
+    // The long prompt wraps, so its height is a whole number of 14 / 22 lines
+    // plus the 10 px inset over and under.
+    let line = 14.0 * chat_typography::USER_LH;
+    let lines = ((band.0.height() - 2.0 * chat_typography::BAND_PADDING_Y) / line).round();
+    approx(
+        "the bubble's 10 px vertical inset",
+        band.0.height(),
+        lines * line + 2.0 * chat_typography::BAND_PADDING_Y,
+    );
+    assert!(
+        lines >= 2.0,
+        "the long prompt wraps inside its capped bubble"
+    );
     assert!(
         !reply.iter().any(|command| matches!(
             command,
@@ -289,7 +304,8 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
         "the agent's row draws no band of its own"
     );
 
-    // The text origins: the marker is the only difference.
+    // The agent keeps the transcript's 16 px left inset; the user's text starts
+    // one bubble inset in from the right-aligned bubble's edge.
     let reply_x = text_x(&reply, "Salut!");
     let message_x = text_x(&message, "Salut!");
     approx(
@@ -298,16 +314,38 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
         chat_typography::BAND_PADDING_X,
     );
     approx(
-        "the user's text starts one marker and one gap past the same inset",
+        "the user's text starts at the bubble's 16 px inset",
         message_x,
-        chat_typography::BAND_PADDING_X
-            + chat_typography::PROMPT_ARROW_SIZE
-            + chat_typography::PROMPT_ARROW_GAP,
+        band.0.min_x() + chat_typography::BAND_PADDING_X,
     );
 
-    // No right-aligned run: every painted text ends inside the row's own
-    // right inset, and no run starts near the pane's right edge.
-    for command in reply.iter().chain(message.iter()) {
+    // Every user run ends inside the bubble's own right inset; every agent run
+    // ends inside the pane. Nothing is painted past either.
+    for command in message.iter() {
+        if let RenderCommand::DrawText {
+            origin,
+            text,
+            font_size,
+            font_weight,
+            font_family,
+            font_italic,
+            ..
+        } = command
+        {
+            let advance = crate::platform::text_atlas::advance_width(
+                text,
+                *font_size,
+                *font_weight,
+                *font_family,
+                *font_italic,
+            );
+            assert!(
+                origin.x + advance <= band.0.max_x() - chat_typography::BAND_PADDING_X + 0.5,
+                "{text:?} is painted past the bubble's right inset"
+            );
+        }
+    }
+    for command in reply.iter() {
         if let RenderCommand::DrawText {
             origin,
             text,
@@ -332,20 +370,62 @@ fn user_and_agent_rows_share_the_width_and_left_edge() {
         }
     }
 
-    // The marker belongs to the user's row only.
+    // Neither row draws the retired prompt marker.
+    for commands in [&message, &reply] {
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+            )),
+            "no chat row draws a prompt marker"
+        );
+    }
+}
+
+/// On a full content lane the bubble takes DSH's 70.2% cap, so the 82% fallback
+/// is only the narrow-lane branch.
+#[test]
+fn a_full_lane_user_bubble_caps_at_seventy_point_two_percent() {
+    let app = AppContext::default();
+    let width = 920.0;
+    let (message, _) = paint_row(
+        ChatRole::User,
+        "A prompt long enough that its natural width would run past any sensible bubble cap on the widest content lane Goble draws.",
+        width,
+    );
+    let band = message
+        .iter()
+        .find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised) => {
+                Some((*rect, *corner_radius))
+            }
+            _ => None,
+        })
+        .expect("the user's row paints its bubble");
+    approx(
+        "the full lane's right edge",
+        band.0.max_x(),
+        width - chat_typography::USER_BUBBLE_RIGHT_INSET,
+    );
+    let cap = width * chat_typography::USER_BUBBLE_MAX_RATIO;
     assert!(
-        message.iter().any(|command| matches!(
-            command,
-            RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
-        )),
-        "the user's row keeps its marker"
+        band.0.width() <= cap + 0.01,
+        "the full lane's 70.2% cap: {} against {cap}",
+        band.0.width()
     );
     assert!(
-        !reply.iter().any(|command| matches!(
-            command,
-            RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
-        )),
-        "the agent's row draws no marker"
+        band.0.width() > cap * 0.9,
+        "the long prompt fills its cap rather than collapsing: {} against {cap}",
+        band.0.width()
+    );
+    approx(
+        "the user bubble's radius",
+        band.1,
+        chat_typography::USER_BUBBLE_RADIUS,
     );
 }
 
@@ -372,14 +452,13 @@ fn settings_remain_the_source_of_truth() {
         primary,
         "the prose ink follows the Appearance override"
     );
-    let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new()).with_tool_calls(vec![
-        call(
+    let mut bubble =
+        ChatMessageBubble::new(ChatRole::Assistant, Vec::new()).with_tool_calls(vec![call(
             "credentials",
             r#"{"agent_id":"researcher"}"#,
             ToolCallStatus::Finished,
             Some("none"),
-        ),
-    ]);
+        )]);
     let commands = paint_bubble_at(&mut bubble, &app, width);
     assert_eq!(
         runmatching(&commands, "credentials").2,
@@ -402,14 +481,13 @@ fn settings_remain_the_source_of_truth() {
             app.theme.color(ColorToken::Text),
             "the prose adopts the switched palette"
         );
-        let mut bubble = ChatMessageBubble::new(ChatRole::Assistant, Vec::new()).with_tool_calls(
-            vec![call(
+        let mut bubble =
+            ChatMessageBubble::new(ChatRole::Assistant, Vec::new()).with_tool_calls(vec![call(
                 "credentials",
                 r#"{"agent_id":"researcher"}"#,
                 ToolCallStatus::Finished,
                 Some("none"),
-            )],
-        );
+            )]);
         let commands = paint_bubble_at(&mut bubble, &app, width);
         assert_eq!(
             runmatching(&commands, "credentials").2,
@@ -506,9 +584,11 @@ fn chat_type_is_logical_px_so_the_settings_zoom_scales_it() {
         sizes.push((row_size.x, size, line));
     }
     assert!(
-        sizes.iter().all(|(row, size, line)| (*row - width).abs() < 0.01
-            && (*size - 14.0).abs() < 1e-6
-            && (*line - chat_typography::BODY_LH).abs() < 1e-6),
+        sizes
+            .iter()
+            .all(|(row, size, line)| (*row - width).abs() < 0.01
+                && (*size - 14.0).abs() < 1e-6
+                && (*line - chat_typography::BODY_LH).abs() < 1e-6),
         "the layout stays in logical px and the render pass applies the zoom, got {sizes:?}"
     );
 }
@@ -563,11 +643,10 @@ fn run_containing(commands: &[RenderCommand], needle: &str) -> (Vector2F, f32, f
         .unwrap_or_else(|| panic!("the run {needle:?} is drawn, got {commands:?}"))
 }
 
-/// A row's words' baseline equals its leading mark's baseline: the mark is a
-/// text run in the same 16 px cell painted at the row's top, so it must not be
-/// shifted by a padding. A tool row is DSH's 24 px high.
+/// A tool row is DSH's 24 px high and its words begin in the prose column:
+/// no leading mark, cell or gap shifts them.
 #[test]
-fn a_tool_row_is_twenty_four_high_and_its_mark_shares_the_baseline() {
+fn a_tool_row_is_twenty_four_high_with_no_leading_mark() {
     let app = AppContext::default();
     let call = call(
         "credentials",
@@ -592,20 +671,17 @@ fn a_tool_row_is_twenty_four_high_and_its_mark_shares_the_baseline() {
         24.0,
     );
 
-    let (mark_origin, mark_size, mark_lh) = run_containing(&commands, "◆");
     let (words_origin, words_size, words_lh) = run_containing(&commands, "credentials");
-    approx("the mark's font size", mark_size, 13.0);
     approx("the words' font size", words_size, 13.0);
     approx(
-        "the mark's line box is the 16 px cell",
-        mark_size * mark_lh,
-        chat_typography::LEADING_BOX,
+        "the words' line box is DSH's 24 px",
+        words_size * words_lh,
+        24.0,
     );
-    approx("the words' line box is DSH's 24 px", words_size * words_lh, 24.0);
     approx(
-        "the mark and the words share a baseline (same top, same size)",
-        mark_origin.y,
-        words_origin.y,
+        "the words start at the band's text origin",
+        words_origin.x,
+        chat_typography::BAND_PADDING_X,
     );
 }
 
@@ -638,7 +714,11 @@ fn prose_blocks_are_sixteen_apart_and_headings_carry_their_margin() {
     approx("h2 to the next paragraph", after - heading, 28.0 + 16.0);
     // h4's margins are the gap alone: 16 either side, its line box 24.
     approx("h2 paragraph to h4", fourth - after, 24.0 + 16.0);
-    approx("h4 to the next paragraph", after_fourth - fourth, 24.0 + 16.0);
+    approx(
+        "h4 to the next paragraph",
+        after_fourth - fourth,
+        24.0 + 16.0,
+    );
 }
 
 /// The fence's language banner draws on DSH's 18 px banner line, while the
@@ -652,11 +732,7 @@ fn the_code_banner_has_its_own_line_height() {
 
     let (_, banner_size, banner_lh) = run_containing(&commands, "rust");
     approx("the banner size", banner_size, 11.0);
-    approx(
-        "the banner line",
-        banner_size * banner_lh,
-        18.0,
-    );
+    approx("the banner line", banner_size * banner_lh, 18.0);
     let (_, body_size, body_lh) = run_containing(&commands, "let");
     approx("the body size", body_size, 11.0);
     approx("the body line", body_size * body_lh, 19.0);
@@ -718,9 +794,7 @@ fn the_reasoning_title_has_hover_ink() {
     let resting_title = resting
         .iter()
         .find_map(|command| match command {
-            RenderCommand::DrawText {
-                text, color, ..
-            } if text == "Thought" => Some(*color),
+            RenderCommand::DrawText { text, color, .. } if text == "Thought" => Some(*color),
             _ => None,
         })
         .expect("the reasoning title is drawn");
@@ -734,9 +808,7 @@ fn the_reasoning_title_has_hover_ink() {
     let hovered_title = hovered
         .iter()
         .find_map(|command| match command {
-            RenderCommand::DrawText {
-                text, color, ..
-            } if text == "Thought" => Some(*color),
+            RenderCommand::DrawText { text, color, .. } if text == "Thought" => Some(*color),
             _ => None,
         })
         .expect("the hovered reasoning title is drawn");

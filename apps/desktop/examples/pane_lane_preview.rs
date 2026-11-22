@@ -278,9 +278,7 @@ fn main() -> anyhow::Result<()> {
             state.borrow_mut().content_lane_prefs.insert(7, dragged);
         }
         let out = scene_png(scene);
-        raster::render_element_to_png(
-            &assets, &app, &mut root, size.x, size.y, SCALE, None, &out,
-        )?;
+        raster::render_element_to_png(&assets, &app, &mut root, size.x, size.y, SCALE, None, &out)?;
         print_geometry(&state, scene);
         println!("   -> {}", out.display());
     }

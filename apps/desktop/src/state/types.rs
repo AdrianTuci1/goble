@@ -409,7 +409,8 @@ impl PaneRuntime {
     /// Start the work dock's clock if it is not already running, so the dock's
     /// spinner advances from the pane's first live work.
     pub(crate) fn start_dock_clock(&mut self) {
-        self.work_started_at.get_or_insert_with(std::time::Instant::now);
+        self.work_started_at
+            .get_or_insert_with(std::time::Instant::now);
     }
 
     /// The work dock's spinner phase: the same period and frame order as the
@@ -665,6 +666,22 @@ pub struct PaneControls {
     /// opens — is up. App-owned like the flat menu's flag, so it survives the
     /// per-frame rebuild.
     pub model_tray_open: Rc<RefCell<bool>>,
+    /// Whether the composer's attach (`+`) card is up, and the row its keyboard
+    /// highlight is on. Both are app-owned because the composer is rebuilt
+    /// every frame; the card is DSH's menu surface above the `+`.
+    pub attach_menu_open: Rc<RefCell<bool>>,
+    pub attach_menu_highlight: Rc<RefCell<Option<usize>>>,
+    /// Whether the pane header's ellipsis menu is up. App-owned so it survives
+    /// the per-frame header rebuild.
+    pub header_menu_open: Rc<RefCell<bool>>,
+    /// Whether this agent pane's bottom terminal dock is open, and its height.
+    /// The dock is opened from the header's terminal icon (T3 Code's bottom
+    /// drawer), never by switching the pane's whole surface.
+    pub terminal_dock_open: bool,
+    pub terminal_dock_height: f32,
+    /// The dock's resize handle being dragged. The dock element is rebuilt each
+    /// frame, so the gesture has to live on the pane.
+    pub terminal_dock_dragging: Rc<RefCell<bool>>,
     /// The rows the tray's three columns are on. App-owned so the highlight the
     /// arrows and the pointer move survives the rebuild.
     pub model_tray_state: Rc<RefCell<goble_ui::ModelTrayState>>,
@@ -775,6 +792,12 @@ impl PaneControls {
             view: BlockView::Terminal,
             model_menu_open: Rc::new(RefCell::new(false)),
             model_tray_open: Rc::new(RefCell::new(false)),
+            attach_menu_open: Rc::new(RefCell::new(false)),
+            attach_menu_highlight: Rc::new(RefCell::new(None)),
+            header_menu_open: Rc::new(RefCell::new(false)),
+            terminal_dock_open: false,
+            terminal_dock_height: 240.0,
+            terminal_dock_dragging: Rc::new(RefCell::new(false)),
             model_tray_state: Rc::new(RefCell::new(goble_ui::ModelTrayState::default())),
             thinking: "on".to_string(),
             model_index: Rc::new(RefCell::new(0)),
@@ -792,7 +815,7 @@ impl PaneControls {
             diff_edit_focus: Rc::new(RefCell::new(None)),
             // The diffs are the point of the pane; the file list is an optional
             // rail the user opens from the topbar.
-            diff_sidebar: Rc::new(RefCell::new(false)),
+            diff_sidebar: Rc::new(RefCell::new(true)),
             diff_scroll: Rc::new(RefCell::new(ScrollState::smooth())),
             diff_list_scroll: Rc::new(RefCell::new(ScrollState::smooth())),
             diff_hscroll: Rc::new(RefCell::new(std::collections::BTreeMap::new())),

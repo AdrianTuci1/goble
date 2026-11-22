@@ -191,10 +191,7 @@ impl Element for ColorDots {
             *offset = x;
             x += DOT_BOX + gap;
         }
-        let size = vec2f(
-            (x - gap).max(DOT_BOX),
-            DOTS_TOP_GAP + DOT_BOX,
-        );
+        let size = vec2f((x - gap).max(DOT_BOX), DOTS_TOP_GAP + DOT_BOX);
         self.size = Some(size);
         size
     }
@@ -376,17 +373,34 @@ mod tests {
         );
         assert_eq!(
             labels(TabMenuTab { index: 0, ..tab() }),
-            vec!["Rename tab", "Reset tab name", "Close tab", "Close other tabs"],
+            vec![
+                "Rename tab",
+                "Reset tab name",
+                "Close tab",
+                "Close other tabs"
+            ],
             "the first tab has nowhere to move left"
         );
         assert_eq!(
-            labels(TabMenuTab { tabs: 1, index: 0, ..tab() }),
+            labels(TabMenuTab {
+                tabs: 1,
+                index: 0,
+                ..tab()
+            }),
             vec!["Rename tab", "Reset tab name", "Close tab"],
             "a lone tab has no other tabs to close"
         );
         assert_eq!(
-            labels(TabMenuTab { named: false, ..tab() }),
-            vec!["Rename tab", "Move Tab Left", "Close tab", "Close other tabs"],
+            labels(TabMenuTab {
+                named: false,
+                ..tab()
+            }),
+            vec![
+                "Rename tab",
+                "Move Tab Left",
+                "Close tab",
+                "Close other tabs"
+            ],
             "a tab that derived its own label has no typed name to reset"
         );
     }

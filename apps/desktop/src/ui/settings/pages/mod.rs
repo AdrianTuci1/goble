@@ -32,6 +32,7 @@ use super::model::{ActionModel, ControlModel, RowModel, SectionModel};
 use super::state::{SettingsAction, SettingsForm, SettingsUiState, StatusKind};
 
 pub use super::model::{ActionStyle, PageModel};
+pub use shortcuts::REMAP_UNAVAILABLE;
 
 /// The page model for `page`, from the projection the state holds.
 pub fn page_model(page: super::super::SettingsCategory, state: &SettingsUiState) -> PageModel {
@@ -282,13 +283,23 @@ pub fn control_text(row: &RowModel) -> String {
         } => options.get(*selected).cloned().unwrap_or_default(),
         ControlModel::Text { value, .. } => value.clone(),
         ControlModel::Slider { value, .. } => format_number(*value),
+        ControlModel::Segmented {
+            options, selected, ..
+        } => options.get(*selected).cloned().unwrap_or_default(),
         ControlModel::ReadOnly { text } => text.clone(),
+        ControlModel::KeyChips { keys, action } => {
+            let mut text = keys.join(" + ");
+            if let Some(action) = action {
+                text.push_str(" · ");
+                text.push_str(&action.label);
+            }
+            text
+        }
         ControlModel::Buttons(actions) => actions
             .iter()
             .map(|action| action.label.clone())
             .collect::<Vec<_>>()
             .join(" · "),
-        ControlModel::ColorWheel { label, .. } => label.clone(),
         ControlModel::None => String::new(),
     }
 }

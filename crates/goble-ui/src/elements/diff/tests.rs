@@ -1,6 +1,8 @@
 use crate::color::ColorU;
 use crate::elements::AppContext;
 use crate::elements::Element;
+use crate::elements::LayoutContext;
+use crate::elements::SizeConstraint;
 use crate::geometry::Vector2F;
 use crate::geometry::vec2f;
 use crate::render::RenderCommand;
@@ -356,4 +358,554 @@ fn hiding_line_numbers_drops_the_gutters() {
         "the gutter numbers must not be drawn, got {runs:?}"
     );
     assert!(runs.iter().any(|run| run == "    let x = 2;"));
+}
+
+// ---------------------------------------------------------------------------
+// DiffSpec: DSH's measurements are declared once, in public constants.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn diff_spec_carries_dshs_review_changed_files_and_line_tokens() {
+    use crate::elements::diff::DiffSpec;
+
+    assert_eq!(DiffSpec::REVIEW_HEADER_HEIGHT, 38.0);
+    assert_eq!(DiffSpec::REVIEW_SELECTOR_HEIGHT, 28.0);
+    assert_eq!(DiffSpec::REVIEW_TOOL_SIZE, 28.0);
+
+    assert_eq!(DiffSpec::CHANGED_FILES_HEADER_HEIGHT, 60.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_TILE, 40.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_TILE_RADIUS, 10.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_TITLE_SIZE, 13.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_TITLE_LINE_HEIGHT, 20.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_STAT_SIZE, 10.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_STAT_LINE_HEIGHT, 16.0);
+    assert_eq!(
+        (
+            DiffSpec::CHANGED_FILES_ROW_PAD_TOP,
+            DiffSpec::CHANGED_FILES_ROW_PAD_RIGHT,
+            DiffSpec::CHANGED_FILES_ROW_PAD_BOTTOM,
+            DiffSpec::CHANGED_FILES_ROW_PAD_LEFT,
+        ),
+        (7.0, 18.0, 7.0, 14.0)
+    );
+    assert_eq!(DiffSpec::CHANGED_FILES_PATH_SIZE, 12.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_COUNT_SIZE, 11.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_COUNT_LINE_HEIGHT, 18.0);
+    assert_eq!(DiffSpec::CHANGED_FILES_FOLD, 4);
+
+    assert_eq!(DiffSpec::DIFF_LINE_HEIGHT, 22.0);
+    assert_eq!(DiffSpec::gutter_width(DiffSpec::DIFF_FONT_SIZE), 42.0);
+    assert_eq!(DiffSpec::DIFF_MARKER_WIDTH, 3.0);
+    assert!((DiffSpec::sign_width(DiffSpec::DIFF_FONT_SIZE) - 14.4).abs() < 0.001);
+}
+
+// ---------------------------------------------------------------------------
+// FileDiffView: the reusable unified/split comparison.
+// ---------------------------------------------------------------------------
+
+fn commands_for(element: &mut Box<dyn Element>, width: f32) -> Vec<RenderCommand> {
+    let app = AppContext::default();
+    crate::test_util::render_element(element, vec2f(width, 2_000.0), &app)
+}
+
+fn text_runs(commands: &[RenderCommand]) -> Vec<(String, ColorU, f32)> {
+    commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText {
+                text,
+                color,
+                origin,
+                ..
+            } => Some((text.clone(), *color, origin.y)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn file_diff_view_draws_the_unified_gutters_markers_and_bands() {
+    let app = AppContext::default();
+    let hunks = parse_unified_diff(&sample_text());
+    let mut element: Box<dyn Element> = FileDiffView::new(hunks)
+        .with_layout(DiffLayout::Unified)
+        .with_language("src/lib.rs")
+        .finish();
+    let commands = commands_for(&mut element, 600.0);
+    let size = element.size().expect("a laid out comparison has a size");
+
+    // Two hunks: 2 headers (22 + 4 + 4), 8 body rows at 22, one 8 px hunk gap
+    // and the body's 8 + 16 vertical padding.
+    assert_eq!(
+        size.y,
+        8.0 + (30.0 * 2.0) + (22.0 * 8.0) + (8.0 * 2.0) + 16.0
+    );
+
+    let insert = app.theme.color(ColorToken::DiffInsertBg);
+    let delete = app.theme.color(ColorToken::DiffDeleteBg);
+    let bands: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == insert || *color == delete => {
+                Some(rect.width())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        bands.iter().any(|width| *width == size.x),
+        "changed rows paint the full comparison width, got {bands:?}"
+    );
+
+    let markers: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. }
+                if *color == app.theme.color(ColorToken::Success)
+                    || *color == app.theme.color(ColorToken::Error) =>
+            {
+                Some(rect.width())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        markers
+            .iter()
+            .any(|width| *width == DiffSpec::DIFF_MARKER_WIDTH),
+        "a changed row paints DSH's 3 px marker, got {markers:?}"
+    );
+
+    let texts = text_runs(&commands);
+    assert!(texts
+        .iter()
+        .any(|(text, _, _)| text == "@@ -1,3 +1,4 @@ fn main() {"));
+    assert!(texts.iter().any(|(text, _, _)| text == "+"));
+    assert!(texts.iter().any(|(text, _, _)| text == "-"));
+    assert!(texts.iter().any(|(text, _, _)| text == "1"));
+}
+
+#[test]
+fn file_diff_view_splits_into_two_cells_and_fills_empty_sides() {
+    let app = AppContext::default();
+    let hunks = parse_unified_diff(&sample_text());
+    let mut element: Box<dyn Element> = FileDiffView::new(hunks)
+        .with_layout(DiffLayout::Split)
+        .finish();
+    let commands = commands_for(&mut element, 600.0);
+
+    let text = |needle: &str| {
+        commands.iter().any(
+            |command| matches!(command, RenderCommand::DrawText { text, .. } if text == needle),
+        )
+    };
+    // The removed line has an old number and an empty new side; the added line
+    // the reverse. Context appears on both sides.
+    assert!(text("    let x = 1;"), "the removed line draws on the left");
+    assert!(text("    let x = 2;"), "the added line draws on the right");
+    assert!(text("fn main() {"));
+
+    let empty = ColorU::new(
+        app.theme.color(ColorToken::Hover).r,
+        app.theme.color(ColorToken::Hover).g,
+        app.theme.color(ColorToken::Hover).b,
+        128,
+    );
+    let empty_fills = commands
+        .iter()
+        .filter(
+            |command| matches!(command, RenderCommand::FillRect { color, .. } if *color == empty),
+        )
+        .count();
+    assert!(empty_fills > 0, "paired rows paint an empty side fill");
+}
+
+#[test]
+fn file_diff_view_wraps_and_doubles_the_row_height() {
+    let mut long = String::from("+");
+    for _ in 0..60 {
+        long.push_str("word ");
+    }
+    let diff = format!("--- a/long.txt\n+++ b/long.txt\n@@ -1 +1 @@\n-old\n{long}\n");
+    let hunks = parse_unified_diff(&diff);
+    let mut plain: Box<dyn Element> = FileDiffView::new(hunks.clone()).finish();
+    plain.layout(
+        SizeConstraint::loose(vec2f(320.0, 2_000.0)),
+        &mut LayoutContext::default(),
+        &AppContext::default(),
+    );
+    let plain_height = plain.size().expect("laid out").y;
+
+    let mut wrapped: Box<dyn Element> = FileDiffView::new(hunks).with_wrap(true).finish();
+    let commands = commands_for(&mut wrapped, 320.0);
+    let wrapped_height = wrapped.size().expect("laid out").y;
+    assert!(
+        wrapped_height > plain_height,
+        "wrapping a long line makes its row taller: plain {plain_height}, wrapped {wrapped_height}"
+    );
+    let drawn = text_runs(&commands).len();
+    assert!(
+        drawn > 5,
+        "the wrapped line is drawn as several visual lines, got {drawn} runs"
+    );
+}
+
+#[test]
+fn prepared_diff_prepares_split_rows_and_side_colours() {
+    let hunks = parse_unified_diff(&sample_text());
+    let prepared = PreparedDiff::new(&hunks, "src/lib.rs");
+    let split = prepared.split_rows();
+    assert!(
+        split.iter().any(|row| matches!(row, super::SplitDiffRow::Row(row) if row.left.is_some() && row.right.is_none())),
+        "a deletion pairs with an empty new side"
+    );
+    assert!(
+        split.iter().any(|row| matches!(row, super::SplitDiffRow::Row(row) if row.left.is_none() && row.right.is_some())),
+        "an addition pairs with an empty old side"
+    );
+    let (old, new) = prepared.highlighted_lines();
+    assert!(
+        !old.is_empty() || !new.is_empty(),
+        "the prepared sides carry coloured lines"
+    );
+}
+
+#[test]
+fn file_diff_view_paints_nothing_for_an_empty_comparison() {
+    let mut element: Box<dyn Element> = FileDiffView::new(Vec::new()).finish();
+    let commands = commands_for(&mut element, 400.0);
+    assert!(commands.is_empty());
+    assert_eq!(element.size(), Some(Vector2F::zero()));
+}
+
+// ---------------------------------------------------------------------------
+// Highlighted runs and wrapping: the drawn text must reconstruct the source.
+// ---------------------------------------------------------------------------
+
+fn context_hunk(text: &str) -> Vec<Hunk> {
+    vec![Hunk {
+        old_start: 1,
+        old_count: 1,
+        new_start: 1,
+        new_count: 1,
+        section: "fn build()".to_string(),
+        lines: vec![DiffLine {
+            kind: DiffLineKind::Context,
+            old_line: Some(1),
+            new_line: Some(1),
+            text: text.to_string(),
+        }],
+    }]
+}
+
+/// The body text commands of a one-line comparison, in paint order.
+fn body_text(commands: &[RenderCommand]) -> String {
+    commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if origin.y >= 30.0 => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_highlighter_reconstructs_the_source_line_byte_for_byte() {
+    let lines = [
+        "    let panes = build_panes(state);",
+        "        draw_new(pane);",
+        "        mark_visible(&pane);",
+        "    let value = compute(arg_one, arg_two);",
+        "fn build_reviewer(state: &ReviewState) -> Reviewer {",
+        "    for pane in panes.iter().filter(|pane| pane.visible) {",
+    ];
+    for line in lines {
+        let highlighted = crate::syntax::highlight(line, "rust").expect("rust resolves");
+        let joined: String = highlighted
+            .iter()
+            .flatten()
+            .map(|span| span.text.as_str())
+            .collect();
+        assert_eq!(joined, line, "highlight runs must spell the source line");
+    }
+}
+
+#[test]
+fn wrapped_highlighted_lines_reconstruct_the_source_exactly() {
+    let lines = [
+        "    let panes = build_panes(state);",
+        "        draw_new(pane);",
+        "    let value = compute(arg_one, arg_two);",
+        "fn build_reviewer(state: &ReviewState) -> Reviewer {",
+    ];
+    for line in lines {
+        for wrap in [false, true] {
+            for width in [90.0, 120.0, 180.0, 260.0, 320.0] {
+                let mut element: Box<dyn Element> = FileDiffView::new(context_hunk(line))
+                    .with_language("src/panes.rs")
+                    .with_wrap(wrap)
+                    .with_line_numbers(false)
+                    .finish();
+                let commands = commands_for(&mut element, width);
+                assert_eq!(
+                    body_text(&commands),
+                    line,
+                    "wrap={wrap} width={width} must draw the source line exactly"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn wrapped_highlighted_runs_keep_the_space_at_a_run_boundary() {
+    // `build_panes(state)` splits into several highlighted runs; at a width
+    // that folds between two of them, every run must still land on the source.
+    let line = "    let panes = build_panes(state);";
+    let mut element: Box<dyn Element> = FileDiffView::new(context_hunk(line))
+        .with_language("src/panes.rs")
+        .with_wrap(true)
+        .with_line_numbers(false)
+        .finish();
+    let commands = commands_for(&mut element, 160.0);
+    let rows: Vec<String> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if origin.y >= 30.0 => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(rows.len() > 1, "the line wraps into at least two rows: {rows:?}");
+    assert_eq!(rows.concat(), line);
+}
+
+// ---------------------------------------------------------------------------
+// One-sided comparisons: split collapses to one full-width column.
+// ---------------------------------------------------------------------------
+
+fn add_only_hunk() -> Vec<Hunk> {
+    vec![Hunk {
+        old_start: 0,
+        old_count: 0,
+        new_start: 1,
+        new_count: 2,
+        section: String::new(),
+        lines: vec![
+            DiffLine {
+                kind: DiffLineKind::Added,
+                old_line: None,
+                new_line: Some(1),
+                text: "        draw_new(pane);".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Added,
+                old_line: None,
+                new_line: Some(2),
+                text: "        mark_visible(&pane);".to_string(),
+            },
+        ],
+    }]
+}
+
+fn del_only_hunk() -> Vec<Hunk> {
+    vec![Hunk {
+        old_start: 1,
+        old_count: 2,
+        new_start: 0,
+        new_count: 0,
+        section: String::new(),
+        lines: vec![
+            DiffLine {
+                kind: DiffLineKind::Removed,
+                old_line: Some(1),
+                new_line: None,
+                text: "        draw_old(pane);".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Removed,
+                old_line: Some(2),
+                new_line: None,
+                text: "        legacy_footer();".to_string(),
+            },
+        ],
+    }]
+}
+
+fn two_sided_hunk() -> Vec<Hunk> {
+    vec![Hunk {
+        old_start: 1,
+        old_count: 1,
+        new_start: 1,
+        new_count: 1,
+        section: String::new(),
+        lines: vec![
+            DiffLine {
+                kind: DiffLineKind::Removed,
+                old_line: Some(1),
+                new_line: None,
+                text: "        draw_old(pane);".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Added,
+                old_line: None,
+                new_line: Some(1),
+                text: "        draw_new(pane);".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Added,
+                old_line: None,
+                new_line: Some(2),
+                text: "        mark_visible(&pane);".to_string(),
+            },
+        ],
+    }]
+}
+
+fn empty_fill(commands: &[RenderCommand], app: &AppContext) -> usize {
+    let hover = app.theme.color(ColorToken::Hover);
+    let empty = ColorU::new(hover.r, hover.g, hover.b, 128);
+    commands
+        .iter()
+        .filter(|command| matches!(command, RenderCommand::FillRect { color, .. } if *color == empty))
+        .count()
+}
+
+#[test]
+fn a_one_sided_split_collapses_to_one_full_width_column() {
+    let app = AppContext::default();
+    for (label, hunks, band) in [
+        (
+            "add-only",
+            add_only_hunk(),
+            app.theme.color(ColorToken::DiffInsertBg),
+        ),
+        (
+            "del-only",
+            del_only_hunk(),
+            app.theme.color(ColorToken::DiffDeleteBg),
+        ),
+    ] {
+        let view = FileDiffView::new(hunks)
+            .with_layout(DiffLayout::Split)
+            .with_language("src/panes.rs");
+        assert!(view.is_one_sided(), "{label} is one-sided");
+        let mut element: Box<dyn Element> = view.finish();
+        let commands = commands_for(&mut element, 500.0);
+        let width = element.size().expect("laid out").x;
+        assert_eq!(width, 500.0);
+        assert_eq!(
+            empty_fill(&commands, &app),
+            0,
+            "{label} must not paint an empty half: {commands:?}"
+        );
+        let bands: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. } if *color == band => {
+                    Some(rect.width())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            bands.iter().any(|band_width| *band_width == width),
+            "{label} paints its change band across the full width: {bands:?}"
+        );
+    }
+}
+
+#[test]
+fn a_two_sided_split_keeps_its_two_half_columns() {
+    let app = AppContext::default();
+    let view = FileDiffView::new(two_sided_hunk())
+        .with_layout(DiffLayout::Split)
+        .with_language("src/panes.rs");
+    assert!(!view.is_one_sided());
+    assert_eq!(view.resolved_layout(), DiffLayout::Split);
+    let mut element: Box<dyn Element> = view.finish();
+    let commands = commands_for(&mut element, 500.0);
+    let width = element.size().expect("laid out").x;
+    let insert = app.theme.color(ColorToken::DiffInsertBg);
+    let bands: Vec<f32> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == insert => Some(rect.width()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        bands.iter().any(|band_width| *band_width < width * 0.5),
+        "a two-sided add fills only its cell, not the row: {bands:?}"
+    );
+    assert!(
+        empty_fill(&commands, &app) > 0,
+        "a two-sided split still fills the empty half of a paired row"
+    );
+}
+
+/// The runs of one highlighted line must start at the exact pen position the
+/// rasterizer will have reached, not at the whole-pixel layout budget: the old
+/// `advance_width` rounded every glyph up, so each style boundary after the
+/// first drifted right by a fraction of a pixel per glyph and the preview read
+/// `build_panes (state );` instead of `build_panes(state);`. Concatenating the
+/// run texts cannot see that drift, so this asserts the geometry.
+#[test]
+fn adjacent_highlight_runs_start_at_the_exact_pen_advance() {
+    use crate::platform::text_atlas::{advance_width, advance_width_exact, FontWeight};
+    use crate::theme::FontFamily;
+
+    let line = "    let panes = build_panes(state);";
+    let mut element: Box<dyn Element> = FileDiffView::new(context_hunk(line))
+        .with_language("src/panes.rs")
+        .with_wrap(false)
+        .with_line_numbers(false)
+        .finish();
+    let commands = commands_for(&mut element, 420.0);
+    let mut runs: Vec<(f32, String)> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { origin, text, .. } if origin.y >= 30.0 => {
+                Some((origin.x, text.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    runs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(runs.len() > 2, "the line is highlighted in several runs: {runs:?}");
+
+    let mut rounded_differed = false;
+    for pair in runs.windows(2) {
+        let (x, text) = &pair[0];
+        let (next_x, next_text) = &pair[1];
+        let exact = advance_width_exact(
+            text,
+            super::DiffSpec::DIFF_FONT_SIZE,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        );
+        let rounded = advance_width(
+            text,
+            super::DiffSpec::DIFF_FONT_SIZE,
+            FontWeight::Regular,
+            FontFamily::Mono,
+            false,
+        );
+        assert!(
+            (next_x - (x + exact)).abs() < 0.01,
+            "run {next_text:?} starts at the exact pen position after {text:?}: \
+             expected {}, got {next_x}",
+            x + exact
+        );
+        rounded_differed |= rounded > exact;
+    }
+    assert!(
+        rounded_differed,
+        "the fixture must contain a boundary where the rounded budget \
+         overshoots, or this test cannot catch the corruption"
+    );
 }

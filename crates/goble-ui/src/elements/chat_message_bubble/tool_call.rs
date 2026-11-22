@@ -2,9 +2,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::tool_block_gesture::ToolBlockGesture;
+use super::tool_body::build_tool_call_body;
 use crate::color::ColorU;
-use crate::elements::chat_content::{tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, ToolCall, ToolDisplayMode};
-use crate::elements::running_indicator::SPINNER_FRAMES;
+use crate::elements::chat_content::{
+    tool_fold_key, ChatAction, InlineSpan as ModelSpan, InlineStyle, SubAgentRow, ToolCall,
+    ToolDisplayMode,
+};
 use crate::elements::chat_typography;
 use crate::elements::{
     resolve_inline_span, Chip, CrossAxisAlignment, Element, Empty, Expanded, Flex, HoverRow, Icon,
@@ -13,20 +17,6 @@ use crate::elements::{
 use crate::geometry::vec2f;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 use goble_core::harness::{subagent_subject, tool_row, ToolCallStatus, ToolKind};
-use super::tool_block_gesture::ToolBlockGesture;
-use super::tool_body::build_tool_call_body;
-
-/// The mark every tool row draws before its words, whatever its family or
-/// state: grok-build's filled diamond.
-const TOOL_MARK: &str = "◆ ";
-
-/// The mark an aggregated chain header draws: grok-build's dotted diamond,
-/// which tells a folded run apart from a single call at a glance.
-const VERB_GROUP_MARK: &str = "◈ ";
-
-/// The arrow a tool row shows while the pointer is over it. It takes the
-/// diamond's place in the same two columns, so the words never move.
-const HOVER_ARROW: &str = "❯ ";
 
 /// The prefix the app-owned fold map uses for a folded run, so a group's fold
 /// state never collides with the call that anchors the run.
@@ -70,14 +60,10 @@ pub(super) fn to_text_span(
         resolved = resolved.with_color(color);
     }
 
-    // Inline code that names a workspace file leads with the file type's icon
-    // and opens the file, the way a mention does in the editor.
+    // Inline code that names a workspace file still opens the file, but the
+    // run keeps DSH's plain code pill: no file-type icon leads it.
     if is_code {
         if let Some(path) = crate::elements::chat_content::inline_code_file_path(&text) {
-            let name = path.rsplit('/').next().unwrap_or(path);
-            resolved = resolved
-                .with_icon(crate::elements::file_icon_name(name))
-                .with_icon_color(app.theme.color(ColorToken::Muted));
             let on_action = on_action.clone();
             let path = path.to_string();
             resolved = resolved.with_on_click(move || {
@@ -87,14 +73,8 @@ pub(super) fn to_text_span(
             });
         }
     }
-
-    // A link leads with the link mark, so the run reads as a destination even
-    // when its label is a bare word.
-    if is_link {
-        resolved = resolved
-            .with_icon("link")
-            .with_icon_color(app.theme.color(ColorToken::Muted));
-    }
+    // A link keeps its own ink and underline-free run; DSH does not prefix a
+    // destination with a glyph.
 
     let InlineStyle::Link(url) = &span.style else {
         return resolved;
@@ -144,13 +124,6 @@ fn tool_subject_color(
         _ => app.theme.color(ColorToken::Text),
     };
     chat_typography::chat_ink_quiet(app)
-}
-
-/// A row's leading glyph in DSH's fixed 16 px cell: the mark is Goble's own
-/// (`◆`, `◈`, `❯`), drawn as a text run at the cell's own line height so its
-/// baseline is the row's words' baseline.
-fn leading_glyph(mark: &str, color: ColorU, app: &crate::elements::AppContext) -> Box<dyn Element> {
-    chat_typography::leading_text(mark, color, app)
 }
 
 /// A process-row run: the Settings family, so both a row's words and its
@@ -548,13 +521,9 @@ fn verb_group_header(
     } else {
         ColorToken::Muted
     });
-    // DSH's disclosure row: a 16 px leading box + 6 px gap, then the row's
-    // words at 13 / 24 in the quiet ink (hover / open reads primary).
-    let glyph = leading_glyph(
-        if active { HOVER_ARROW } else { VERB_GROUP_MARK },
-        base,
-        app,
-    );
+    // DSH's disclosure row: plain words at 13 / 24 in the quiet ink (hover /
+    // open reads primary). The group carries no glyph, only the chevron the
+    // expanded body reveals through its rows.
     let mut spans = vec![row_span(label.to_string(), base, app)];
     if failed > 0 {
         spans.push(row_span(
@@ -567,36 +536,53 @@ fn verb_group_header(
         .with_font_size(chat_typography::ROW_SIZE)
         .with_line_height(chat_typography::ROW_LH)
         .finish();
+    // DSH's disclosure: the aggregated run is the one tool row with a small
+    // trailing chevron (right closed, down open). A member call is plain text.
+    let chevron = Icon::new(if open {
+        "chevron-down"
+    } else {
+        "chevron-right"
+    })
+    .with_size(12.0)
+    .with_theme_color(
+        if active {
+            ColorToken::Text
+        } else {
+            ColorToken::Muted
+        },
+        app,
+    )
+    .finish();
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(chat_typography::GLYPH_GAP)
-        .with_child(glyph)
-        .with_child(Expanded::new(words).with_flex(1.0).finish())
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(6.0)
+        .with_child(words)
+        .with_child(chevron)
         .finish();
 
     let toggle = fold.clone();
     let key = key.to_string();
     let close_key = key.clone();
     HoverRow::new(row)
-    .with_quiet_hover()
-    .with_hover_key(hover.clone(), key.clone())
-    .with_on_click(move || {
-        let mut folds = toggle.borrow_mut();
-        let open = folds.get(&key).copied() == Some(ToolDisplayMode::Expanded);
-        folds.insert(
-            key.clone(),
-            if open {
-                ToolDisplayMode::Collapsed
-            } else {
-                ToolDisplayMode::Expanded
-            },
-        );
-    })
-    // A double click folds the chain back to its header however the two presses
-    // before it left the fold: the run closes, it does not walk on.
-    .with_on_double_click(collapse_on_double_click(fold, close_key))
-    .finish()
+        .with_quiet_hover()
+        .with_hover_key(hover.clone(), key.clone())
+        .with_on_click(move || {
+            let mut folds = toggle.borrow_mut();
+            let open = folds.get(&key).copied() == Some(ToolDisplayMode::Expanded);
+            folds.insert(
+                key.clone(),
+                if open {
+                    ToolDisplayMode::Collapsed
+                } else {
+                    ToolDisplayMode::Expanded
+                },
+            );
+        })
+        // A double click folds the chain back to its header however the two presses
+        // before it left the fold: the run closes, it does not walk on.
+        .with_on_double_click(collapse_on_double_click(fold, close_key))
+        .finish()
 }
 
 /// One call drawn on its own: its header and the body its own fold calls for.
@@ -771,9 +757,7 @@ pub(super) fn build_tool_call_rows(
         let member_hovered = {
             let hovered = hover.borrow();
             let hovered = hovered.as_deref();
-            member_keys
-                .iter()
-                .any(|key| hovered == Some(key.as_str()))
+            member_keys.iter().any(|key| hovered == Some(key.as_str()))
         };
         let (label, _running, failed) = verb_group_label(&tool_calls[start..end], start, fold);
         // The run's gesture is attached per segment rather than around the whole
@@ -949,19 +933,14 @@ pub(super) fn tool_call_header(
     // breaks inside the transcript's width, and an over-wide token breaks
     // inside it too, instead of being drawn past the pane's right edge.
     //
-    // DSH's tool row reads in one tertiary ink (hover / open reads primary),
-    // its verb at the row's regular weight; Goble's own diamond, dotted
-    // diamond and hover arrow keep their characters and their 16 px box.
+    // DSH's tool row is a plain nested text row: one tertiary ink (hover /
+    // open reads primary), its verb at the row's regular weight. No glyph,
+    // marker, dot or status icon leads it.
     let hovered = hover.borrow().as_deref() == Some(key);
     let active = chain_open || hovered || mode != ToolDisplayMode::Collapsed;
     let quiet = chat_typography::chat_ink_quiet(app);
     let primary = chat_typography::chat_ink(app);
     let text_ink = if active { primary } else { quiet };
-    let glyph = leading_glyph(
-        if active { HOVER_ARROW } else { TOOL_MARK },
-        text_ink,
-        app,
-    );
     // Deliberate deviation from DSH's `[title] gap8 [2×2 dot] gap8 [summary]`
     // split: Goble's row is one wrapping prose flow (a long path or command
     // breaks inside the pane instead of being truncated), and a fixed 2×2 box
@@ -1005,8 +984,6 @@ pub(super) fn tool_call_header(
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(chat_typography::GLYPH_GAP)
-        .with_child(glyph)
         .with_child(Expanded::new(words).with_flex(1.0).finish())
         .finish();
 
@@ -1014,17 +991,17 @@ pub(super) fn tool_call_header(
     let hover_key = key.to_string();
     let toggle_key = key.to_string();
     HoverRow::new(row)
-    .with_quiet_hover()
-    .with_hover_key(hover.clone(), hover_key)
-    .with_on_click(move || {
-        let mut folds = toggle.borrow_mut();
-        let current = folds.get(&toggle_key).copied().unwrap_or(fallback);
-        folds.insert(toggle_key.clone(), current.next());
-    })
-    // A double click closes the call the row opened, without stepping it on
-    // through `Truncated` and `Expanded` a third time.
-    .with_on_double_click(collapse_on_double_click(fold, key.to_string()))
-    .finish()
+        .with_quiet_hover()
+        .with_hover_key(hover.clone(), hover_key)
+        .with_on_click(move || {
+            let mut folds = toggle.borrow_mut();
+            let current = folds.get(&toggle_key).copied().unwrap_or(fallback);
+            folds.insert(toggle_key.clone(), current.next());
+        })
+        // A double click closes the call the row opened, without stepping it on
+        // through `Truncated` and `Expanded` a third time.
+        .with_on_double_click(collapse_on_double_click(fold, key.to_string()))
+        .finish()
 }
 
 /// A spawned child's card, in grok-build's shape: one small line whose leading
@@ -1040,27 +1017,23 @@ fn sub_agent_card(
     app: &crate::elements::AppContext,
 ) -> Box<dyn Element> {
     let running = record.is_running();
-    let (mark, token) = if running {
-        let count = SPINNER_FRAMES.len();
-        let index = (spinner_phase.rem_euclid(1.0) * count as f32) as usize;
-        (SPINNER_FRAMES[index.min(count - 1)], ColorToken::Warning)
-    } else {
-        record.status_affordance()
-    };
-    // DSH's sub-agent row: one 13 / 24 process line in the quiet ink, with the
-    // status mark keeping its own state colour (warn while running, the
-    // record's affordance once it ends).
+    let _ = (spinner_phase, record.status_affordance());
+    // DSH's sub-agent row: one 13 / 24 process line in the quiet ink. The
+    // status is stated in the words; no mark or icon leads the row.
     let quiet = chat_typography::chat_ink_quiet(app);
     let detail = sub_agent_detail(record, model);
     let mut spans = vec![
-        row_span(format!("{mark} "), app.theme.color(token), app),
         row_span("Agent ".to_string(), quiet, app),
         row_span(sub_agent_subject(record), quiet, app),
     ];
     if !detail.trim().is_empty() {
         // A running child's detail already opens with its own `·`; an ended
         // one's phrase gets one here, so every card reads as one line.
-        let separator = if detail.starts_with('·') { " " } else { " · " };
+        let separator = if detail.starts_with('·') {
+            " "
+        } else {
+            " · "
+        };
         spans.push(row_span(format!("{separator}{detail}"), quiet, app));
     }
     let line = InlineText::new(spans)

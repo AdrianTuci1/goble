@@ -480,9 +480,9 @@ fn a_conversation_command_runs_in_its_own_shell() {
     let terminal = state.terminal.borrow();
     let terminal_blocks = terminal.visible_blocks(pane_id, &BlockView::Terminal);
     assert!(
-        !terminal_blocks
-            .iter()
-            .any(|block| block.command.contains("AGENT-ONLY") || block.output.contains("AGENT-ONLY")),
+        !terminal_blocks.iter().any(
+            |block| block.command.contains("AGENT-ONLY") || block.output.contains("AGENT-ONLY")
+        ),
         "the terminal never sees the conversation's command; terminal blocks: {:?}",
         terminal_blocks
             .iter()
@@ -593,6 +593,17 @@ fn an_agent_turns_command_runs_in_the_agents_own_shell() {
             .iter()
             .map(|block| (block.command.clone(), block.output.clone()))
             .collect::<Vec<_>>()
+    );
+    // The reply to the tool call is sent by a *later* pump than the one that
+    // first shows the output. Keep pumping until the runner has its answer:
+    // joining first would stop the pump and let a command that already ran time
+    // out on its reply (the suite's load widens that window).
+    assert!(
+        wait_for(|| {
+            state.terminal.borrow_mut().pump_sessions();
+            runner.is_finished()
+        }),
+        "the agent command's reply reaches the runner"
     );
     let output = runner
         .join()

@@ -40,7 +40,9 @@ fn configure_remote(desktop: &Arc<DesktopState>, dir: &tempfile::TempDir) {
     config.remote.mode = goble_core::config::RemoteMode::Gateway;
     config.remote.gateway_url = Some("https://gateway.example.com".to_string());
     config.remote.worker_token = Some("wt-test".to_string());
-    desktop.save_config(&config).expect("save the remote config");
+    desktop
+        .save_config(&config)
+        .expect("save the remote config");
 }
 
 /// Configure a model key through the settings save action, as the LLM pane does.
@@ -378,7 +380,10 @@ fn returning_run_skips_onboarding_overlays_and_tip() {
     let (state, _actions) = build(&desktop);
     {
         let s = state.borrow();
-        assert!(s.onboarding_done, "returning run should know onboarding is done");
+        assert!(
+            s.onboarding_done,
+            "returning run should know onboarding is done"
+        );
         assert!(
             !s.show_llm_key_banner,
             "no key banner should auto-surface on a returning run"

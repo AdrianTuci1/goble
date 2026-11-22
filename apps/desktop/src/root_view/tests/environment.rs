@@ -164,10 +164,7 @@ fn environment_control_center(cmds: &[RenderCommand], name: &str) -> Option<(f32
             name: n,
             size,
             ..
-        } if n == name
-            && origin.x >= crate::ui::SIDEBAR_WIDTH
-            && (*size - 16.0).abs() < 0.01 =>
-        {
+        } if n == name && origin.x >= crate::ui::SIDEBAR_WIDTH && (*size - 16.0).abs() < 0.01 => {
             Some((origin.x + size / 2.0, origin.y + size / 2.0))
         }
         _ => None,
@@ -379,8 +376,8 @@ fn the_chosen_environment_is_remembered_on_the_conversation() {
 
     clear_overlays(&root.state_rc());
     let cmds = render(&mut root, &app, None);
-    let control =
-        environment_control_center(&cmds, "environment-cloud").expect("the environment control is drawn");
+    let control = environment_control_center(&cmds, "environment-cloud")
+        .expect("the environment control is drawn");
 
     // The control opens the host's menu, the same popup every other control
     // opens.
@@ -399,9 +396,9 @@ fn the_chosen_environment_is_remembered_on_the_conversation() {
     // line under the label: the app passes it, the casing cuts it.
     let texts = pane_texts(&cmds);
     assert!(
-        texts.iter().any(|t| t.starts_with("Clones this repo")
-            && t.ends_with('…')
-            && !t.contains('\n')),
+        texts
+            .iter()
+            .any(|t| t.starts_with("Clones this repo") && t.ends_with('…') && !t.contains('\n')),
         "the worker row describes what picking it does: {texts:?}"
     );
     let row = pane_text_positions(&cmds, "Local")
@@ -490,8 +487,8 @@ fn the_submitted_turn_carries_the_chosen_environment() {
 
     // Choose the pane's own environment through its control.
     let cmds = render(&mut root, &app, None);
-    let control =
-        environment_control_center(&cmds, "environment-cloud").expect("the environment control is drawn");
+    let control = environment_control_center(&cmds, "environment-cloud")
+        .expect("the environment control is drawn");
     click(&mut root, &app, control);
     let cmds = render(&mut root, &app, None);
     let row = pane_text_positions(&cmds, "Local")
@@ -505,9 +502,7 @@ fn the_submitted_turn_carries_the_chosen_environment() {
     // that follows is the pane's and not the window's: `send_agent_prompt` reads
     // the pane's environment (the same `pane_environment`), never the window's
     // selection.
-    root.media_state_rc()
-        .borrow_mut()
-        .select_medium("remote");
+    root.media_state_rc().borrow_mut().select_medium("remote");
     let medium = root
         .state_rc()
         .borrow()

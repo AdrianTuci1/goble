@@ -59,8 +59,13 @@ impl Handler for AppControlHandler {
         }
         let (reply, wait) = mpsc::sync_channel(1);
         self.ui
-            .send(PendingCommand { command, reply_to: reply })
-            .map_err(|_| ControlError::unavailable("the Goble window closed before the request arrived"))?;
+            .send(PendingCommand {
+                command,
+                reply_to: reply,
+            })
+            .map_err(|_| {
+                ControlError::unavailable("the Goble window closed before the request arrived")
+            })?;
         match wait.recv_timeout(UI_REPLY_TIMEOUT) {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => Err(ControlError::unavailable(
@@ -140,7 +145,14 @@ pub fn handle_ui_command(
             let space_id = space_id.unwrap_or(state.active_space);
             let target = target_pane_in_space(state, space_id)?;
             let kind = kind.unwrap_or(ControlPaneKind::Terminal);
-            split_pane(state, desktop, target, SplitAxis::Horizontal, Some(kind), cwd)
+            split_pane(
+                state,
+                desktop,
+                target,
+                SplitAxis::Horizontal,
+                Some(kind),
+                cwd,
+            )
         }
         Command::PanesSplit { pane_id, axis } => {
             split_pane(state, desktop, pane_id, axis, None, None)
@@ -152,8 +164,7 @@ pub fn handle_ui_command(
             state.active_space = space_id;
             state.focus_pane(pane_id);
             state.sync_active_view();
-            pane_info(state, space_id, pane_id)
-                .map(|pane| Payload::Pane { pane })
+            pane_info(state, space_id, pane_id).map(|pane| Payload::Pane { pane })
         }
         Command::PanesSend {
             pane_id,
@@ -174,13 +185,8 @@ pub fn handle_ui_command(
         Command::AgentsState { pane_id } => agents_state(state, pane_id),
         Command::AgentsPrompt { pane_id, text } => {
             space_of_pane(state, pane_id)?;
-            let started = crate::actions::prompt::send_agent_prompt(
-                state,
-                desktop,
-                media,
-                &text,
-                pane_id,
-            );
+            let started =
+                crate::actions::prompt::send_agent_prompt(state, desktop, media, &text, pane_id);
             Ok(Payload::Prompt {
                 prompt: PromptResult { pane_id, started },
             })
@@ -311,21 +317,15 @@ fn split_pane(
 
     let mut next_id = state.next_pane_id;
     let new_id = match kind {
-        Some(kind) => state.spaces[space_id].split_with_kind(
-            pane_id,
-            dir,
-            &mut next_id,
-            control_kind(kind),
-        ),
+        Some(kind) => {
+            state.spaces[space_id].split_with_kind(pane_id, dir, &mut next_id, control_kind(kind))
+        }
         None if matches!(target_kind, PaneKind::Chat | PaneKind::Terminal) => {
             state.spaces[space_id].split(pane_id, dir, &mut next_id)
         }
-        None => state.spaces[space_id].split_with_kind(
-            pane_id,
-            dir,
-            &mut next_id,
-            PaneKind::Terminal,
-        ),
+        None => {
+            state.spaces[space_id].split_with_kind(pane_id, dir, &mut next_id, PaneKind::Terminal)
+        }
     };
     let Some(new_id) = new_id else {
         return Err(ControlError::new(
@@ -446,7 +446,9 @@ fn resize_pane(
     rows: u16,
 ) -> Result<Payload, ControlError> {
     if cols == 0 || rows == 0 {
-        return Err(ControlError::invalid_request("cols and rows must be greater than zero"));
+        return Err(ControlError::invalid_request(
+            "cols and rows must be greater than zero",
+        ));
     }
     let space_id = space_of_pane(state, pane_id)?;
     if matches!(
@@ -489,16 +491,16 @@ fn switch_space(state: &mut UiState, space_id: usize) -> Result<Payload, Control
         .ok_or_else(|| ControlError::missing_space(space_id))
 }
 
-fn agents_state(
-    state: &UiState,
-    pane_id: Option<u64>,
-) -> Result<Payload, ControlError> {
+fn agents_state(state: &UiState, pane_id: Option<u64>) -> Result<Payload, ControlError> {
     let ids: Vec<u64> = match pane_id {
         Some(pane_id) => {
             space_of_pane(state, pane_id)?;
             vec![pane_id]
         }
-        None => all_panes(state).into_iter().map(|pane| pane.pane_id).collect(),
+        None => all_panes(state)
+            .into_iter()
+            .map(|pane| pane.pane_id)
+            .collect(),
     };
     let agents = ids
         .into_iter()
@@ -542,11 +544,7 @@ fn inbox_info(item: &crate::state::InboxItem) -> InboxInfo {
     }
 }
 
-fn ack_inbox(
-    state: &mut UiState,
-    id: Option<String>,
-    all: bool,
-) -> Result<Payload, ControlError> {
+fn ack_inbox(state: &mut UiState, id: Option<String>, all: bool) -> Result<Payload, ControlError> {
     if all {
         let mut acknowledged = 0;
         for item in &mut state.inbox {
@@ -578,13 +576,12 @@ fn layout_get(state: &UiState, space_id: usize) -> Result<Payload, ControlError>
         .spaces
         .get(space_id)
         .ok_or_else(|| ControlError::missing_space(space_id))?;
-    let active_pane_id = if state.active_space == space_id
-        && space.root.contains_leaf(state.active_pane_id)
-    {
-        state.active_pane_id
-    } else {
-        space.root.first_leaf_id()
-    };
+    let active_pane_id =
+        if state.active_space == space_id && space.root.contains_leaf(state.active_pane_id) {
+            state.active_pane_id
+        } else {
+            space.root.first_leaf_id()
+        };
     Ok(Payload::Layout {
         layout: LayoutInfo {
             space_id,
@@ -816,15 +813,11 @@ fn pty_client() -> Result<PtyClient, ControlError> {
     Ok(client)
 }
 
-fn pty_call(
-    client: &mut PtyClient,
-    request: PtyRequest,
-) -> Result<PtyMessage, ControlError> {
+fn pty_call(client: &mut PtyClient, request: PtyRequest) -> Result<PtyMessage, ControlError> {
     match client.request(request) {
-        Ok(PtyMessage::Error { message, .. }) => Err(ControlError::new(
-            ErrorCode::PtyUnavailable,
-            message,
-        )),
+        Ok(PtyMessage::Error { message, .. }) => {
+            Err(ControlError::new(ErrorCode::PtyUnavailable, message))
+        }
         Ok(message) => Ok(message),
         Err(error) => Err(ControlError::new(
             ErrorCode::PtyUnavailable,
@@ -865,13 +858,7 @@ mod tests {
     #[test]
     fn panes_list_reports_the_open_panes() {
         let mut state = state();
-        let payload = handle_ui_command(
-            &mut state,
-            None,
-            &media(),
-            Command::PanesList,
-        )
-        .unwrap();
+        let payload = handle_ui_command(&mut state, None, &media(), Command::PanesList).unwrap();
         match payload {
             Payload::Panes { panes } => {
                 assert_eq!(panes.len(), 1);
@@ -1006,10 +993,7 @@ mod tests {
             Payload::Layout { layout } => assert_eq!(layout.kind, LayoutKind::MasterStack),
             other => panic!("unexpected payload: {other:?}"),
         }
-        assert_eq!(
-            state.spaces[0].layout,
-            crate::ui::LayoutKind::MasterStack
-        );
+        assert_eq!(state.spaces[0].layout, crate::ui::LayoutKind::MasterStack);
 
         match handle_ui_command(
             &mut state,

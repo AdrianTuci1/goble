@@ -134,6 +134,8 @@ impl UiState {
     pub fn refresh_settings(&mut self, desktop: &DesktopState) {
         self.refresh_settings_theme(desktop);
         self.refresh_settings_files(desktop);
+        self.send_immediately =
+            crate::ui::settings::fields::app_bool(&self.settings, "send_immediately", false);
         // The Providers page's Accounts and Agent CLIs sections read the
         // catalog's PATH detection (a stat/resolve pass, no --version probe) so
         // a page opened from a restored layout is already populated. Only on
@@ -246,16 +248,8 @@ impl UiState {
             .map(|(name, agent)| RemoteAgentEntry::from_config(name, agent))
             .collect();
         self.remote_mode = config.remote.mode;
-        self.remote_gateway_url = config
-            .remote
-            .gateway_url()
-            .unwrap_or_default()
-            .to_string();
-        self.remote_gateway_token = config
-            .remote
-            .worker_token()
-            .unwrap_or_default()
-            .to_string();
+        self.remote_gateway_url = config.remote.gateway_url().unwrap_or_default().to_string();
+        self.remote_gateway_token = config.remote.worker_token().unwrap_or_default().to_string();
         self.remote_config_path = desktop
             .config_path()
             .or_else(|| {
@@ -388,8 +382,7 @@ impl UiState {
     /// a straight map. It exists so a page that names a schema field can be
     /// checked against the page the schema puts it on.
     pub fn settings_schema_page(&self) -> SchemaPage {
-        crate::ui::settings::schema_page(self.settings.page)
-            .unwrap_or(SchemaPage::General)
+        crate::ui::settings::schema_page(self.settings.page).unwrap_or(SchemaPage::General)
     }
 
     /// Navigate the settings tab from the rail's search: the query selects the

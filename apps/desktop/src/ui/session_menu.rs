@@ -60,10 +60,7 @@ pub(crate) struct ToastAction {
 
 #[cfg(test)]
 impl ToastAction {
-    pub(crate) fn new(
-        label: impl Into<String>,
-        run: impl FnMut() + 'static,
-    ) -> Self {
+    pub(crate) fn new(label: impl Into<String>, run: impl FnMut() + 'static) -> Self {
         Self {
             label: label.into(),
             run: toast_run(run),
@@ -153,22 +150,14 @@ pub(crate) fn build_rename_dialog(
         )
         .finish();
 
-    let modal = Modal::new(
-        state.title,
-        body.finish(),
-        Some(footer),
-        app,
-    );
-    let panel = KeyHandler::new(
-        Box::new(modal),
-        move |key: &str, _modifiers| {
-            if key == "Escape" {
-                (cancel_for_escape.borrow_mut())();
-                return true;
-            }
-            false
-        },
-    )
+    let modal = Modal::new(state.title, body.finish(), Some(footer), app);
+    let panel = KeyHandler::new(Box::new(modal), move |key: &str, _modifiers| {
+        if key == "Escape" {
+            (cancel_for_escape.borrow_mut())();
+            return true;
+        }
+        false
+    })
     .finish();
     Dialog::new(panel)
         .with_open(true)
@@ -312,16 +301,13 @@ pub(crate) fn build_archive_confirm(
         Some(footer),
         app,
     );
-    let panel = KeyHandler::new(
-        Box::new(modal),
-        move |key: &str, _modifiers| {
-            if key == "Escape" && !busy {
-                (cancel_for_escape.borrow_mut())();
-                return true;
-            }
-            false
-        },
-    )
+    let panel = KeyHandler::new(Box::new(modal), move |key: &str, _modifiers| {
+        if key == "Escape" && !busy {
+            (cancel_for_escape.borrow_mut())();
+            return true;
+        }
+        false
+    })
     .finish();
     Dialog::new(panel)
         .with_open(true)
@@ -400,10 +386,12 @@ pub(crate) fn build_rename_dialog_surface(
     actions: &UiActions,
 ) -> Box<dyn Element> {
     let Some(rename) = state.sidebar_rename.as_ref() else {
-        return Dialog::new(Empty::new().finish())
-            .with_open(false)
-            .finish();
+        return Dialog::new(Empty::new().finish()).with_open(false).finish();
     };
+    if rename.inline {
+        // V: the topbar pill is the editor; no modal over it.
+        return Dialog::new(Empty::new().finish()).with_open(false).finish();
+    }
     build_rename_dialog(
         app,
         RenameDialogState {
@@ -429,9 +417,7 @@ pub(crate) fn build_workspace_rename_dialog_surface(
     actions: &UiActions,
 ) -> Box<dyn Element> {
     let Some(rename) = state.sidebar_workspace_rename.as_ref() else {
-        return Dialog::new(Empty::new().finish())
-            .with_open(false)
-            .finish();
+        return Dialog::new(Empty::new().finish()).with_open(false).finish();
     };
     build_rename_dialog(
         app,
@@ -456,9 +442,7 @@ pub(crate) fn build_archive_confirm_surface(
     actions: &UiActions,
 ) -> Box<dyn Element> {
     let Some(confirm) = state.archive_confirm.as_ref() else {
-        return Dialog::new(Empty::new().finish())
-            .with_open(false)
-            .finish();
+        return Dialog::new(Empty::new().finish()).with_open(false).finish();
     };
     build_archive_confirm(
         app,

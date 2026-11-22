@@ -29,6 +29,7 @@ impl UiState {
         // and the shell-tool route read the same registry entry a freshly
         // opened pane fills.
         self.pane_ssh = saved.pane_ssh;
+        self.side_split_ratio = saved.side_split_ratio.clamp(0.25, 0.75);
         for (pane_id, binding) in &self.pane_ssh {
             if let Some(session) = &binding.session {
                 self.terminal
@@ -209,6 +210,7 @@ impl UiState {
             active_pane_id: self.active_pane_id,
             pane_sessions,
             pane_ssh: self.pane_ssh.clone(),
+            side_split_ratio: self.side_split_ratio,
         };
         if let Ok(json) = serde_json::to_string(&persisted) {
             if let Err(e) = desktop.set_ui_panes(&json) {
@@ -387,50 +389,14 @@ impl UiState {
     /// front. At most one is ever created: the lookup is by kind, so pressing
     /// the button again lands on the same tab however it is renamed.
     pub fn open_settings_tab(&mut self, desktop: Option<&DesktopState>) {
-        // The strip is drawn in `AppTab::Chat` only, so a press from another
-        // mode comes back to it — otherwise the tab it opened would sit off
-        // screen and nothing would appear to have happened.
+        // Settings is an overlay now, not a tab: every caller (sidebar, inbox,
+        // palette, setup) lands on the same floating sheet over the workspace.
         self.current_tab = AppTab::Chat;
-        if let Some((space, id)) = self.settings_pane() {
-            if self.active_space == space && self.active_pane_id == id {
-                // Already the pane the keyboard is in: nothing at all, not
-                // even a save.
-                return;
-            }
-            self.active_space = space;
-            self.active_pane_id = id;
-            self.focus_settings_pane();
-            self.sync_active_view();
-            if let Some(desktop) = desktop {
-                self.save_panes(desktop);
-            }
-            return;
-        }
-        let id = self.next_pane_id;
-        self.next_pane_id += 1;
-        self.spaces.push(Space::new(
-            "Settings",
-            Pane::Leaf {
-                id,
-                kind: PaneKind::Settings {
-                    page: SettingsCategory::Appearance,
-                },
-            },
-        ));
-        self.active_space = self.spaces.len() - 1;
-        self.active_pane_id = id;
-        self.focus_settings_pane();
-        // The pane has no session of its own (nothing in it runs a command), so
-        // the per-pane flags its body reads are seeded the way a restored
-        // tree's are.
-        self.pane_hover
-            .entry(id)
-            .or_insert_with(|| Rc::new(RefCell::new(false)));
-        self.ensure_pane_controls();
-        self.refresh_space_labels();
-        self.sync_active_view();
+        self.settings_overlay_open = true;
+        self.settings.region = crate::ui::settings::SettingsRegion::Rail;
+        self.settings.focused_field = None;
         if let Some(desktop) = desktop {
-            self.save_panes(desktop);
+            self.refresh_settings(desktop);
         }
     }
 

@@ -5,8 +5,8 @@ use std::time::SystemTime;
 use goble_terminal::blocks::BlockView;
 use goble_terminal::BlockOwner;
 use goble_ui::elements::{
-    AppContext, ComposerModelTray, Element, LaneEdge, ModelTrayHarness, ModelTrayModel,
-    PopupMenuItem,
+    AppContext, ComposerModelTray, CrossAxisAlignment, Element, Expanded, Flex, LaneEdge,
+    MainAxisSize, ModelTrayHarness, ModelTrayModel, PopupMenuItem,
 };
 use goble_ui::{ChatFragment, ChatMessage, ChatRole, ChatView, WorkSection};
 
@@ -15,8 +15,8 @@ use crate::state::PaneControls;
 
 use super::super::{UiActions, UiSnapshot};
 use super::{
-    build_agent_error, build_agent_header, build_sub_agent_child_view, chat_action_relay,
-    pane_session_snapshot, PaneChatSnapshot, PaneHeading,
+    build_agent_error, build_agent_header, build_sub_agent_child_view, build_terminal_dock,
+    chat_action_relay, pane_session_snapshot, PaneChatSnapshot, PaneHeading,
 };
 
 /// If `pane_id` has a live PTY session with output, draw its newest command as
@@ -192,7 +192,11 @@ fn composer_path(session: &PaneChatSnapshot) -> String {
 /// and act on the wrong conversation. These wrappers make the gesture name its
 /// own pane first, the same order the terminal bar already uses for its send
 /// and Cmd+Enter.
-fn in_pane<F>(activate: &Rc<RefCell<dyn FnMut(u64)>>, pane_id: u64, mut action: F) -> impl FnMut() + 'static
+fn in_pane<F>(
+    activate: &Rc<RefCell<dyn FnMut(u64)>>,
+    pane_id: u64,
+    mut action: F,
+) -> impl FnMut() + 'static
 where
     F: FnMut() + 'static,
 {
@@ -230,10 +234,10 @@ where
 /// the terminal pane's harness view — so its transcript carries the
 /// conversation's own terminal blocks rather than the pane's inline ones.
 ///
-/// `on_escape` is the transcript's Escape hook and the bar's `esc for terminal`
-/// hint: a terminal pane passes its return to the shell, a chat pane the switch
-/// that gives it a terminal to return to, and a pane with neither passes
-/// `None`.
+/// `on_escape` is the transcript's Escape hook. The chat pane passes `None`:
+/// its terminal is the bottom dock toggled from the header, never a second
+/// surface reached with Escape. A legacy terminal pane still passes its return
+/// to the shell.
 pub fn build_agent_chat(
     app: &AppContext,
     state: &UiSnapshot,
@@ -292,15 +296,12 @@ pub fn build_agent_chat(
     // `Bg`); the topbar and the work dock stay full-pane-width chrome bands and
     // never follow the adjustable width.
     let content_lane_pref = state.content_lane_prefs.get(&pane_id).copied();
-    let header = build_agent_header(
-        app,
-        state,
-        actions,
-        pane_id,
-        on_escape.clone(),
-        surface_harness,
-        Some(PaneHeading::Agent(heading)),
-    );
+    // The window's single chrome row owns the title and actions now; the panel
+    // starts directly under it with no second header row.
+    let header: Box<dyn Element> = goble_ui::elements::Empty::new()
+        .with_size(goble_ui::geometry::vec2f(0.0, 0.0))
+        .finish();
+    let _ = (&on_escape, surface_harness, heading);
 
     // The rich-input controls belong to this pane, not to the workspace: two
     // pty/agent panes side by side keep their own model, branch and dropdown
@@ -509,6 +510,11 @@ pub fn build_agent_chat(
         // The app-owned tool-call fold map: a folded call survives the rebuild.
         .with_tool_fold(state.tool_fold.clone())
         .with_tool_hover(state.tool_hover.clone())
+        .with_changed_files_open(session.changed_files_open.clone())
+        .with_on_review_changes({
+            let open = actions.on_diff_panel.clone();
+            move || (open.borrow_mut())(pane_id, crate::ui::DiffPanelAction::Open(None))
+        })
         // This pane's own filter bar state (seeded per pane before the
         // snapshot), so opening it in one pane leaves the siblings alone.
         .with_global_terminal_filter(state.terminal_global_filters.get(&pane_id).cloned())
@@ -610,11 +616,16 @@ pub fn build_agent_chat(
             (on_cmd_enter.borrow_mut())(text)
         }))
         // `⌘⌥↵`: the same submit, routed to the cloud medium.
-        .with_composer_on_send_to_cloud(in_pane_with(
-            &on_pane_activate,
-            pane_id,
-            move |text| (on_send_to_cloud.borrow_mut())(text),
-        ));
+        .with_composer_on_send_to_cloud(in_pane_with(&on_pane_activate, pane_id, move |text| {
+            (on_send_to_cloud.borrow_mut())(text)
+        }))
+        // The attach (`+`) card is app-owned like the model card: its open flag
+        // and highlighted row live on the pane's controls so the menu survives
+        // the per-frame rebuild.
+        .with_composer_attach_menu(
+            controls.attach_menu_open.clone(),
+            controls.attach_menu_highlight.clone(),
+        );
 
     // The pane's content lane: the transcript, hint strip and rich input are
     // centred inside THIS pane's width by the app's width axis, while the
@@ -626,13 +637,11 @@ pub fn build_agent_chat(
     // callback here: the host writes that pane's entry.
     let on_content_lane_start = {
         let start = actions.on_content_lane_drag_start.clone();
-        Rc::new(
-            RefCell::new(
-                move |pointer_x: f32, edge: LaneEdge, base_width: f32, column: f32| {
-                    (start.borrow_mut())(pane_id, pointer_x, edge, base_width, column)
-                },
-            ),
-        )
+        Rc::new(RefCell::new(
+            move |pointer_x: f32, edge: LaneEdge, base_width: f32, column: f32| {
+                (start.borrow_mut())(pane_id, pointer_x, edge, base_width, column)
+            },
+        ))
     };
     let pane_dragging = state.content_lane_drag_pane == Some(pane_id);
     chat = chat.with_content_lane(
@@ -718,6 +727,11 @@ pub fn build_agent_chat(
         let on_fork = actions.on_fork_conversation.clone();
         chat = chat
             .with_usage(session.usage)
+            .with_usage_detail(
+                session.usage_last_call,
+                session.usage_calls,
+                session.usage_context_window,
+            )
             .with_usage_open(session.usage_open.clone())
             .with_on_fork(move || (on_fork.borrow_mut())(pane_id));
     }
@@ -790,8 +804,7 @@ pub fn build_agent_chat(
     let draft_commands =
         crate::ui::palette::draft_commands(state, actions, &session.composer_draft);
     let draft_query = crate::ui::palette::draft_query(&session.composer_draft).unwrap_or_default();
-    let slash_filtered =
-        crate::ui::palette::matching_slash_commands(&draft_commands, &draft_query);
+    let slash_filtered = crate::ui::palette::matching_slash_commands(&draft_commands, &draft_query);
     let slash_items = crate::ui::palette::slash_items(&slash_filtered);
     let on_composer_insert = actions.on_composer_insert.clone();
     let mut chat = chat
@@ -820,7 +833,21 @@ pub fn build_agent_chat(
     //
     // The agent surface runs to the pane's edges: its own rows carry the
     // padding they need, and a gutter here read as a grey inset on both sides.
-    chat.finish()
+    let chat = chat.finish();
+    // The bottom terminal dock: T3 Code's drawer, opened from the header icon.
+    // It is a sibling under the whole chat view (transcript + composer), so the
+    // agent surface is never replaced by a second one.
+    if controls.terminal_dock_open && session.worker.is_none() {
+        let dock = build_terminal_dock(app, state, actions, pane_id, active);
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(Expanded::new(chat).finish())
+            .with_child(dock)
+            .finish()
+    } else {
+        chat
+    }
 }
 
 #[cfg(test)]
@@ -941,12 +968,10 @@ mod transcript_scroll_tests {
     }
 }
 
-/// R1: the pane's transcript is full-width rows, not pills. The app's own chat
-/// surface is rendered over a real store, so the geometry is asserted where the
-/// user sees it: the user's message is one square band running to the pane's
-/// edges with no box of its own behind the agent's reply, and the agent's row
-/// keeps the transcript's 10-15 px of padding. The user's row is led by the
-/// prompt marker, which sets its text one marker-width further right.
+/// The pane's transcript is full-width rows, not pills: the agent's reply
+/// paints no box, while the user's own message is DSH's capped bubble anchored
+/// to the pane's trailing edge. The app's own chat surface is rendered over a
+/// real store, so the geometry is asserted where the user sees it.
 #[cfg(test)]
 mod chat_geometry_tests {
     use super::*;
@@ -974,7 +999,7 @@ mod chat_geometry_tests {
     }
 
     #[test]
-    fn the_panes_transcript_paints_full_width_rows() {
+    fn the_panes_transcript_paints_a_right_aligned_user_bubble() {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = Arc::new(DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
@@ -998,13 +1023,20 @@ mod chat_geometry_tests {
             pane_run_origin(&commands, "Salut!").expect("the user's message is drawn");
         let (reply_x, _) =
             pane_run_origin(&commands, "Bine ai venit!").expect("the agent's reply is drawn");
-        assert!(
-            user_x > reply_x,
-            "the user's message starts at {user_x}, past the agent's reply at {reply_x}"
-        );
 
-        // The user's own message: the square band behind its text, running from
-        // the pane's left edge to its right.
+        // The pane's content column starts and ends past the shell, sidebar and
+        // frame insets.
+        let pane_left = crate::ui::shell::WORKSPACE_MARGIN
+            + crate::ui::SIDEBAR_WIDTH
+            + crate::ui::panes::PANE_AREA_INSET
+            + crate::ui::panes::PANE_INSET;
+        let pane_right = 1024.0
+            - crate::ui::shell::WORKSPACE_MARGIN
+            - crate::ui::panes::PANE_AREA_INSET
+            - crate::ui::panes::PANE_INSET;
+
+        // The user's own message: the rounded bubble behind its text, anchored
+        // to the pane's trailing edge and narrower than the row.
         let band = commands
             .iter()
             .find_map(|command| match command {
@@ -1022,47 +1054,42 @@ mod chat_geometry_tests {
                 }
                 _ => None,
             })
-            .expect("the user's message paints its band");
-        assert_eq!(band.1, 0.0, "the user's band has square corners");
+            .expect("the user's message paints its bubble");
         assert_eq!(
-            band.0.min_x(),
-            crate::ui::SIDEBAR_WIDTH
-                + crate::ui::panes::PANE_AREA_INSET
-                + crate::ui::panes::PANE_INSET,
-            "the agent surface runs to the pane's left edge, past the panel and frame insets"
+            band.1,
+            goble_ui::elements::chat_typography::USER_BUBBLE_RADIUS,
+            "the user's bubble carries DSH's 20 px radius"
         );
         assert_eq!(
             band.0.max_x(),
-            1024.0 - crate::ui::panes::PANE_AREA_INSET - crate::ui::panes::PANE_INSET,
-            "the agent surface runs to the pane's right edge, past the panel and frame insets"
+            pane_right,
+            "the user's bubble is right-aligned to the pane's trailing edge"
         );
-        let padded = reply_x - band.0.min_x();
         assert!(
-            (14.0..=17.0).contains(&padded),
-            "the agent's row keeps DSH's 16 px band inset, got {padded}"
+            band.0.min_x() > pane_left + 50.0,
+            "the bubble is capped, not a pane-wide band: {} against {pane_left}",
+            band.0.min_x()
         );
-
-        // The user's message opens with the prompt marker on its first line,
-        // inside the band, and the text starts past it.
-        let marker = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon {
-                    name, origin, size, ..
-                } if name == "prompt-arrow" => Some((*origin, *size)),
-                _ => None,
-            })
-            .expect("the user's message draws its prompt marker");
         assert!(
-            marker.0.x >= band.0.min_x() && marker.0.y >= band.0.min_y(),
-            "the marker sits inside the user's band: {:?} in {:?}",
-            marker.0,
+            (user_x - (band.0.min_x() + 16.0)).abs() < 0.01,
+            "the user's text keeps the bubble's 16 px inset: {user_x} against {:?}",
             band.0
         );
+
+        let padded = reply_x - pane_left;
         assert!(
-            user_x >= marker.0.x + marker.1 + 2.0,
-            "the user's text starts at {user_x}, past the marker ending at {}",
-            marker.0.x + marker.1
+            (11.0..=17.0).contains(&padded),
+            "the agent's row keeps its band inset after the top/left pane band was removed, got {padded}"
+        );
+
+        // No prompt marker anywhere: the user's row is a bubble, not a marker
+        // plus a band.
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
+            )),
+            "the user's message draws no prompt marker"
         );
     }
 }
@@ -1452,8 +1479,9 @@ mod agent_pill_tests {
 
         // The rows the transcript drew, as the runs they own. A pill is a
         // rounded box (or a border) drawn over the row its run belongs to.
+        // The user's rounded bubble is the deliberate exception to the no-pill
+        // rule, so the measured rows start at the agent's reply.
         let row_labels = [
-            "Fix the build",
             "Reading the sidebar, then the panes.",
             "Read src/sidebar.rs",
             "Edit src/panes.rs",
@@ -1472,29 +1500,13 @@ mod agent_pill_tests {
             "every row the lock measures must be drawn, got {rows:?}"
         );
 
-        // The pane's own split frame encloses every row: it is window chrome
-        // (a square border around the pane), not a row's box. Every other pill
-        // is the pane's to explain.
+        // The pane no longer paints a casing of its own: the shell's rounded
+        // workspace surface encloses the rows, so there is no pane frame to
+        // mistake for a row pill. Every remaining pill is a row's own box.
         let pills: Vec<goble_ui::RectF> = pill_rects(&commands)
             .into_iter()
             .filter(|pill| !rows.iter().all(|row| rect_contains(*pill, *row)))
             .collect();
-        let frame = pill_rects(&commands)
-            .into_iter()
-            .find(|pill| rows.iter().all(|row| rect_contains(*pill, *row)));
-        if let Some(frame) = frame {
-            // The frame is square: a rounded pane card would be chrome of its
-            // own, and the transcript rows must not sit inside one.
-            let filled_round = commands.iter().any(|command| {
-                matches!(command, RenderCommand::FillRect { rect, corner_radius, .. }
-                    if *rect == frame && *corner_radius > 0.0)
-            });
-            assert!(
-                !filled_round,
-                "the pane's own frame is square, got {frame:?}"
-            );
-        }
-
         for label in row_labels {
             let Some(origin) = pane_run_origin(&commands, label) else {
                 continue;
@@ -1727,7 +1739,13 @@ mod composer_wiring_tests {
         // The split opens a second pane and makes it the active one.
         (actions.on_split_right.borrow_mut())();
         assert_eq!(state.borrow().active_pane_id, 3, "the split pane is active");
-        (Box::new(root) as Box<dyn Element>, state, desktop, dir, actions)
+        (
+            Box::new(root) as Box<dyn Element>,
+            state,
+            desktop,
+            dir,
+            actions,
+        )
     }
 
     fn conversation(state: &Rc<RefCell<UiState>>, pane_id: u64) -> String {
@@ -1760,57 +1778,6 @@ mod composer_wiring_tests {
             key: "Enter".to_string(),
             modifiers: ModifiersState::none(),
         }
-    }
-
-    /// The rich input draws **no send control**: the owner removed the send
-    /// circle, so the pane's frame carries no `arrow-right` glyph and a press on
-    /// the bar cannot submit anything. The keyboard is the whole send gesture,
-    /// and the focused left pane's Enter still lands in its own conversation.
-    #[test]
-    fn the_rich_input_has_no_send_control_and_enter_sends_from_the_focused_pane() {
-        let (mut element, state, desktop, _dir, _actions) = split_window();
-        let app = app();
-        let pane_one_chat = conversation(&state, 1);
-        let pane_three_chat = conversation(&state, 3);
-        // The left pane's composer holds the caret; the split made pane three
-        // the active one, so the frame must show no send control in either.
-        {
-            let mut s = state.borrow_mut();
-            s.active_pane_id = 1;
-            s.composer_focused = true;
-        }
-        let commands = render(&mut element, &app);
-        assert!(
-            !commands.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. } if name == "arrow-right"
-            )),
-            "the rich input draws no send circle: {commands:?}"
-        );
-
-        // Enter is the send gesture: the draft goes to the pane the composer
-        // belongs to, not to the pane that was active a moment ago.
-        let runtime = tokio::runtime::Runtime::new().expect("build runtime");
-        let _guard = runtime.enter();
-        let mut ctx = EventContext;
-        assert!(
-            element.dispatch_event(&enter(), &mut ctx, &app),
-            "the focused composer takes Enter"
-        );
-        wait_for_messages(&desktop, &pane_one_chat, 2);
-        let pane_one = desktop
-            .list_chat_messages(&pane_one_chat)
-            .expect("list pane one's messages");
-        assert_eq!(pane_one.len(), 2, "pane one's turn ran in its own conversation");
-        assert_eq!(pane_one[0].role, "user");
-        assert_eq!(pane_one[0].content, "hello from pane one");
-        let pane_three = desktop
-            .list_chat_messages(&pane_three_chat)
-            .expect("list pane three's messages");
-        assert!(
-            pane_three.is_empty(),
-            "the other pane's conversation is untouched"
-        );
     }
 
     /// A keyboard submit from the composer that still holds the caret after the

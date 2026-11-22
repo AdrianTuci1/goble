@@ -141,13 +141,9 @@ fn section_data_with(
         meta = meta.with_duration(duration_text(duration));
     }
     Some(match output {
-        Some(lines) => TerminalData::for_section_lines(
-            command,
-            lines,
-            palette,
-            meta,
-            block_status(block),
-        ),
+        Some(lines) => {
+            TerminalData::for_section_lines(command, lines, palette, meta, block_status(block))
+        }
         None => TerminalData::for_section(command, &block.output, meta, block_status(block)),
     })
 }

@@ -1,6 +1,6 @@
 //! Element tests for the settings surface: the measured geometry from the
 //! parity document (rail 200, rows 32, card radius 12, label 14 / hint 12), the
-//! square switch, the write-only secret mask, and the dark/light token paths.
+//! rounded switch, the write-only secret mask, and the dark/light token paths.
 
 use crate::color::ColorU;
 
@@ -190,7 +190,7 @@ fn a_row_has_a_14px_label_and_a_12px_description() {
 /// A section is a 12px-radius card with a 1px border, and it draws exactly
 /// `n - 1` rules between `n` rows (none at the card's edges).
 #[test]
-fn a_section_card_has_a_12px_radius_and_one_rule_between_rows() {
+fn a_section_card_has_a_12px_radius_and_no_rules_between_rows() {
     let app = dark();
     let mut section: Box<dyn Element> = Box::new(
         SettingsSection::new("Interface")
@@ -212,7 +212,7 @@ fn a_section_card_has_a_12px_radius_and_one_rule_between_rows() {
         .into_iter()
         .filter(|(rect, _, _)| (rect.height() - 1.0).abs() < 0.01 && rect.width() > 600.0)
         .count();
-    assert_eq!(rules, 2, "n - 1 rules for n rows");
+    assert_eq!(rules, 0, "settings draw no row separator rules");
 }
 
 /// The card's fill and border come from tokens: the dark card sits on a dark
@@ -243,10 +243,10 @@ fn the_group_card_resolves_in_both_themes() {
     assert_ne!(dark_card, light_card, "the card fill follows the theme");
 }
 
-/// The switch is square: the track and the thumb paint with no corner radius,
-/// and the checked track is the accent.
+/// The switch is DSH/T3's rounded pill: a 32×18 full-radius track with a 14px
+/// circular thumb inset 2px. The checked track is the accent.
 #[test]
-fn the_switch_is_square() {
+fn the_switch_is_a_rounded_pill() {
     let app = dark();
     let mut toggle: Box<dyn Element> = Box::new(SettingsToggle::new(false));
     let commands = layout_and_paint(&mut toggle, &app, vec2f(100.0, 40.0));
@@ -255,8 +255,18 @@ fn the_switch_is_square() {
         .find(|(rect, _, _)| (rect.width() - SETTINGS_TOGGLE_WIDTH).abs() < 0.01)
         .expect("the track is 32 wide");
     assert!((track.0.height() - SETTINGS_TOGGLE_HEIGHT).abs() < 0.01);
-    assert_eq!(track.2, 0.0, "the square switch has right angles");
+    assert!(
+        (track.2 - SETTINGS_TOGGLE_HEIGHT / 2.0).abs() < 0.01,
+        "the track is a full-radius capsule"
+    );
     assert_eq!(toggle.size().unwrap(), vec2f(32.0, 18.0));
+
+    let knob = fills(&commands)
+        .into_iter()
+        .find(|(rect, _, _)| (rect.width() - 14.0).abs() < 0.01)
+        .expect("a 14px thumb");
+    assert!((knob.2 - 7.0).abs() < 0.01, "the thumb is circular");
+    assert!((knob.0.min_x() - 2.0).abs() < 0.01, "2px inset when off");
 
     let mut checked: Box<dyn Element> = Box::new(SettingsToggle::new(true));
     let commands = layout_and_paint(&mut checked, &app, vec2f(100.0, 40.0));
@@ -266,9 +276,13 @@ fn the_switch_is_square() {
             .any(|(_, color, _)| *color == app.theme.color(ColorToken::Accent)),
         "the checked track uses the accent token"
     );
+    let knob = fills(&commands)
+        .into_iter()
+        .find(|(rect, _, _)| (rect.width() - 14.0).abs() < 0.01)
+        .expect("a 14px thumb");
     assert!(
-        fills(&commands).iter().all(|(_, _, radius)| *radius == 0.0),
-        "no part of the square switch rounds"
+        (knob.0.max_x() - (SETTINGS_TOGGLE_WIDTH - 2.0)).abs() < 0.01,
+        "the checked thumb sits at the trailing 2px inset"
     );
 }
 
@@ -364,21 +378,82 @@ fn a_text_field_draws_its_value_inside_a_bordered_control() {
     );
 }
 
-/// The select cycles its options on a pointer press and runs the callback.
+/// The select opens an anchored menu on a press: every option draws, the
+/// current one is checked, and taking a row runs the change callback.
 #[test]
-fn the_select_cycles_on_a_press() {
+fn the_select_opens_an_anchored_menu_and_takes_a_row() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     let app = dark();
-    let chosen = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
+    let chosen = Rc::new(Cell::new(usize::MAX));
     let chosen_cb = chosen.clone();
     let mut select: Box<dyn Element> = Box::new(
         SettingsSelect::new(["Manual", "Plan", "Auto-review"])
             .with_selected(0)
+            .with_width(300.0)
             .with_on_change(move |index| chosen_cb.set(index)),
     );
-    let commands = layout_and_paint(&mut select, &app, vec2f(300.0, 40.0));
+    let commands = layout_and_paint(&mut select, &app, vec2f(400.0, 300.0));
     assert!(drawn(&commands, "Manual"));
     assert!(press(&mut select, &app, vec2f(20.0, 10.0)));
-    assert_eq!(chosen.get(), 1);
+    let commands = layout_and_paint(&mut select, &app, vec2f(400.0, 300.0));
+    assert!(drawn(&commands, "Plan"), "the menu lists every option");
+    assert!(drawn(&commands, "Auto-review"));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "check"
+        )),
+        "the current option carries a check"
+    );
+    // The panel is 6px below the trigger, then 6px inside its padding; the
+    // second 32px row is centred at 32 + 6 + 6 + 32 + 16.
+    assert!(press(&mut select, &app, vec2f(20.0, 94.0)));
+    assert_eq!(chosen.get(), 1, "the row runs the change callback");
+}
+
+/// An open select follows Up/Down and Enter, Escape closes it, and a press
+/// outside the panel dismisses it.
+#[test]
+fn the_select_follows_the_keyboard_and_dismisses_outside() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let app = dark();
+    let chosen = Rc::new(Cell::new(usize::MAX));
+    let chosen_cb = chosen.clone();
+    let open = Rc::new(RefCell::new(true));
+    let mut select: Box<dyn Element> = Box::new(
+        SettingsSelect::new(["Manual", "Plan", "Auto-review"])
+            .with_selected(0)
+            .with_width(300.0)
+            .with_open(open.clone())
+            .with_on_change(move |index| chosen_cb.set(index)),
+    );
+    let _ = layout_and_paint(&mut select, &app, vec2f(400.0, 300.0));
+    let key = |select: &mut Box<dyn Element>, key: &str| {
+        let mut ctx = crate::elements::EventContext::default();
+        select.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: key.to_string(),
+                modifiers: crate::event::ModifiersState::none(),
+            },
+            &mut ctx,
+            &app,
+        )
+    };
+    assert!(key(&mut select, "ArrowDown"));
+    assert!(key(&mut select, "Enter"));
+    assert_eq!(chosen.get(), 1, "Down moved to Plan and Enter took it");
+    assert!(!*open.borrow(), "Enter closes the menu");
+
+    let _ = layout_and_paint(&mut select, &app, vec2f(400.0, 300.0));
+    assert!(press(&mut select, &app, vec2f(20.0, 10.0)));
+    assert!(*open.borrow(), "a trigger press opens the menu");
+    let _ = layout_and_paint(&mut select, &app, vec2f(400.0, 300.0));
+    let _ = press(&mut select, &app, vec2f(390.0, 290.0));
+    assert!(!*open.borrow(), "a press outside the panel dismisses it");
 }
 
 /// A notice is a tinted card with its sentence, and an unavailable status line

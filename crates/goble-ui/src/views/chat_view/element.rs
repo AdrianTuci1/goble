@@ -51,6 +51,28 @@ impl Element for ChatView {
         ctx: &mut crate::elements::EventContext,
         app: &AppContext,
     ) -> bool {
+        // The slash-command card is painted by the frame's last layer, outside
+        // this tree, and it hangs over the transcript. Route a pointer event on
+        // the card to it before the transcript's rows behind it get a chance: a
+        // press on a command belongs to the command, not to a tool row under
+        // the card that dispatch order would otherwise reach first.
+        let pointer = match event {
+            DispatchedEvent::MouseDown { position, .. }
+            | DispatchedEvent::MouseUp { position, .. }
+            | DispatchedEvent::MouseMove { position } => Some(*position),
+            _ => None,
+        };
+        if let Some(position) = pointer {
+            let panel = self.composer_slash_overlay.borrow().panel_at(position);
+            if let Some(panel) = panel {
+                // The card owns every pointer event on its surface, even one
+                // its rows do not use (the casing between rows), so nothing
+                // behind it reacts to the same press.
+                panel.borrow_mut().dispatch_event(event, ctx, app);
+                return true;
+            }
+        }
+
         // Drag-to-copy over the transcript. The press freezes the rows the last
         // paint recorded, so the pointer keeps reading the text the user pressed
         // on while the stream moves. The events still reach the tree: a press on

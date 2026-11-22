@@ -44,7 +44,12 @@ pub fn build_medium_controls(
             media_actions,
             state.env_selector_open.clone(),
         ))
-        .with_child(build_add_space_menu(app, media, actions, state.add_space_menu_open.clone()))
+        .with_child(build_add_space_menu(
+            app,
+            media,
+            actions,
+            state.add_space_menu_open.clone(),
+        ))
         .finish()
 }
 
@@ -99,8 +104,7 @@ fn build_compact_medium_selector(
     let mut items = Vec::new();
     let mut ids = Vec::new();
     for m in &media.mediums {
-        let mut item =
-            PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
+        let mut item = PopupMenuItem::new(m.label.clone()).with_icon(medium_icon(&m.id));
         if m.id == media.selected_medium {
             item = item.selected();
         }
@@ -213,30 +217,26 @@ pub fn build_add_medium_dialog(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(spacing)
         .with_child(title)
-        .with_child(
-            Box::new(
-                Flex::column()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                    .with_spacing(sm)
-                    .with_child(
-                        Text::new("Environment name")
-                            .with_theme_color(ColorToken::Muted, app)
-                            .with_font_size(12.0)
-                            .finish(),
-                    )
-                    .with_child(input),
-            ),
-        )
-        .with_child(
-            Box::new(
-                Flex::row()
-                    .with_main_axis_alignment(MainAxisAlignment::End)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(spacing)
-                    .with_child(cancel)
-                    .with_child(add),
-            ),
-        )
+        .with_child(Box::new(
+            Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(sm)
+                .with_child(
+                    Text::new("Environment name")
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_font_size(12.0)
+                        .finish(),
+                )
+                .with_child(input),
+        ))
+        .with_child(Box::new(
+            Flex::row()
+                .with_main_axis_alignment(MainAxisAlignment::End)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(spacing)
+                .with_child(cancel)
+                .with_child(add),
+        ))
         .finish();
 
     let panel = Container::new(body)

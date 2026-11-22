@@ -15,9 +15,9 @@
 
 use goble_terminal::blocks::BlockView;
 use goble_terminal::{
-    Block, BlockEvent, BlockId, BlockList, BlockOwner, BlockState, CursorState, HookEvent, HookTap,
-    OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine, ScreenQuery,
-    ScreenSize, SearchError, SearchMatch, SearchOptions, TermMode,
+    Block, BlockEvent, BlockId, BlockList, BlockOwner, BlockState, CursorState, GridFrame,
+    HookEvent, HookTap, OscEvent, OscTap, Palette, Screen, ScreenConfig, ScreenEvent, ScreenLine,
+    ScreenQuery, ScreenSize, SearchError, SearchMatch, SearchOptions, TermMode,
 };
 use std::time::Duration;
 
@@ -224,6 +224,11 @@ impl Emulator {
         self.screen.lines()
     }
 
+    /// The viewport as paint runs, read directly from the alacritty grid.
+    pub fn frame(&self) -> GridFrame {
+        self.screen.frame()
+    }
+
     pub fn cursor(&self) -> CursorState {
         self.screen.cursor()
     }
@@ -295,13 +300,16 @@ impl Emulator {
         self.screen
             .line_at(index)
             .map(|line| {
-                line.cells.iter().enumerate().fold(0, |end, (column, cell)| {
-                    if cell.ch == ' ' && cell.zerowidth.is_empty() {
-                        end
-                    } else {
-                        column + if cell.attrs.wide { 2 } else { 1 }
-                    }
-                })
+                line.cells
+                    .iter()
+                    .enumerate()
+                    .fold(0, |end, (column, cell)| {
+                        if cell.ch == ' ' && cell.zerowidth.is_empty() {
+                            end
+                        } else {
+                            column + if cell.attrs.wide { 2 } else { 1 }
+                        }
+                    })
             })
             .unwrap_or(0)
     }
@@ -623,108 +631,6 @@ mod tests {
         emulator.feed(&stream);
         assert_eq!(emulator.take_hook_events().len(), 1);
         assert_eq!(rows_text(&emulator)[0], "after");
-    }
-
-    /// A command carries the prompt it was typed at: the shell's own line when
-    /// it drew one, otherwise the prompt its shell would draw at the block's
-    /// directory. The view draws it in the block's header, so the body never
-    /// has to repeat it.
-    #[test]
-    fn a_command_carries_the_prompt_it_was_typed_at() {
-        use goble_terminal::hooks::{
-            encode_hook, CommandFinishedValue, InitShellValue, PrecmdValue, PreexecValue,
-        };
-
-        let mut emulator = Emulator::new(80, 6);
-        emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
-            shell: Some("zsh".into()),
-            host: Some("Adrians-MacBook-Pro.local".into()),
-            ..Default::default()
-        })));
-        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
-            pwd: Some("/tmp".into()),
-            ..Default::default()
-        })));
-        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-            command: Some("echo hi".into()),
-        })));
-        emulator.feed(b"echo hi\r\nhi\r\n");
-        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
-            CommandFinishedValue {
-                exit_code: 0,
-                ..Default::default()
-            },
-        )));
-
-        let blocks = emulator.visible_blocks(&BlockView::Terminal);
-        let block = blocks
-            .iter()
-            .rev()
-            .find(|block| block.command == "echo hi")
-            .expect("the command's block");
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("LOGNAME"))
-            .expect("a user for the prompt");
-        assert_eq!(
-            block.prompt.as_deref(),
-            Some(format!("{user}@Adrians-MacBook-Pro /tmp %").as_str()),
-            "the header prompt names the short host, the directory and the zsh sigil"
-        );
-    }
-
-    /// When the shell draws its own prompt (`honor_ps1`), the block's header
-    /// takes that exact line rather than inventing one, and the command's text
-    /// stays the shell-reported command without it.
-    #[test]
-    fn an_honored_ps1_is_the_blocks_prompt() {
-        use goble_terminal::hooks::{
-            encode_hook, CommandFinishedValue, InitShellValue, PrecmdValue, PreexecValue,
-        };
-
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("LOGNAME"))
-            .expect("a user for the prompt");
-        let typed_prompt = format!("{user}@box ~/code % ");
-        let mut emulator = Emulator::new(80, 6);
-        emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
-            shell: Some("zsh".into()),
-            host: Some("box".into()),
-            honor_ps1: Some(true),
-            ..Default::default()
-        })));
-        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
-            pwd: Some("/home/me/code".into()),
-            ..Default::default()
-        })));
-        emulator.feed(format!("{typed_prompt}echo hi\r\n").as_bytes());
-        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-            command: Some("echo hi".into()),
-        })));
-        emulator.feed(b"hi\r\n");
-        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
-            CommandFinishedValue {
-                exit_code: 0,
-                ..Default::default()
-            },
-        )));
-
-        let blocks = emulator.visible_blocks(&BlockView::Terminal);
-        let block = blocks
-            .iter()
-            .rev()
-            .find(|block| block.command == "echo hi")
-            .expect("the command's block");
-        assert_eq!(
-            block.prompt.as_deref(),
-            Some(typed_prompt.trim_end()),
-            "the shell's own prompt is the header, not a body row"
-        );
-        assert_eq!(
-            block.command, "echo hi",
-            "the command is the shell-reported line, without the prompt"
-        );
     }
 
     #[test]

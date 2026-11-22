@@ -16,6 +16,7 @@ use super::{PaneChatSnapshot, UiSnapshot};
 
 mod agent;
 mod composer;
+mod dock;
 mod header;
 mod overlays;
 mod sub_agent;
@@ -23,6 +24,7 @@ mod workflow;
 
 pub(crate) use agent::build_agent_chat;
 pub(crate) use composer::{build_pending_approval, build_terminal_composer};
+pub(crate) use dock::build_terminal_dock;
 pub(crate) use header::{
     build_agent_header, build_agent_header_with, HeaderSlots, PaneHeading, HEADER_CONTROL_HEIGHT,
 };
@@ -99,6 +101,10 @@ pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneCha
             scroll: Rc::new(RefCell::new(goble_ui::ScrollState::following())),
             text_selection: Rc::new(RefCell::new(goble_ui::TranscriptSelection::default())),
             usage: Default::default(),
+            usage_last_call: None,
+            usage_calls: 0,
+            usage_context_window: None,
             usage_open: Rc::new(RefCell::new(false)),
+            changed_files_open: Rc::new(RefCell::new(false)),
         })
 }

@@ -3,15 +3,17 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
+use super::super::ChatMessageBubble;
+use super::*;
+use crate::elements::chat_content::{
+    tool_fold_key, ChatFragment, ChatRole, SubAgentRowStatus, ToolDisplayMode,
+};
 use crate::elements::SizeConstraint;
-use crate::elements::chat_content::{tool_fold_key, ChatFragment, ChatRole, SubAgentRowStatus, ToolDisplayMode};
 use crate::elements::{AppContext, LayoutContext, PaintContext, TerminalData, TerminalLine};
 use crate::geometry::vec2f;
 use crate::render::{RenderCommand, Renderer};
 use crate::theme::ColorToken;
 use goble_core::harness::ToolCallStatus;
-use super::*;
-use super::super::ChatMessageBubble;
 
 /// A sub-agent shows its own rows: its id, the input, then its output.
 #[test]
@@ -83,27 +85,22 @@ fn each_sub_agent_status_draws_its_own_line() {
         let record = record("conv-child-1", status, activity, elapsed, outcome);
         // A spawn call draws its own row, collapsed by default: no run has to be
         // opened to reach the child this transcript exists to name.
-        let (commands, _) = paint_sub_agent(
-            vec![call.clone()],
-            HashMap::from([(call.id, record)]),
-            None,
-        );
+        let (commands, _) =
+            paint_sub_agent(vec![call.clone()], HashMap::from([(call.id, record)]), None);
         let rows = drawn_row_texts(&commands);
         let row = rows
             .iter()
             .find(|row| row.contains("Agent "))
             .unwrap_or_else(|| panic!("status {status:?} draws its row, got {rows:?}"));
-        // One ruler row: the mark, the verb, the child and what it is doing,
-        // with no body and no card.
-        let expected_mark = if status == SubAgentRowStatus::Running {
-            // The first spinner frame at phase 0.
-            "◐"
-        } else {
-            "◆"
-        };
+        // One plain ruler row: the verb, the child and what it is doing, with
+        // no mark, status glyph, body or card.
         assert!(
-            row.starts_with(&format!("{expected_mark} Agent ")),
-            "status {status:?} names the spawned child behind its mark, got {row:?}"
+            row.starts_with("Agent "),
+            "status {status:?} names the spawned child with no leading mark, got {row:?}"
+        );
+        assert!(
+            !row.contains('◆') && !row.contains('◈') && !row.contains('❯'),
+            "status {status:?} draws no status glyph, got {row:?}"
         );
         assert!(
             row.contains("“audit the migration”"),
@@ -114,11 +111,9 @@ fn each_sub_agent_status_draws_its_own_line() {
             "status {status:?} must draw {line:?}, got {row:?}"
         );
         assert_eq!(
-            rows.iter()
-                .filter(|row| row.starts_with(&format!("{expected_mark} Agent ")))
-                .count(),
+            rows.iter().filter(|row| row.starts_with("Agent ")).count(),
             1,
-            "the call draws one marked row, got {rows:?}"
+            "the call draws one plain row, got {rows:?}"
         );
     }
 }
@@ -316,8 +311,7 @@ fn a_sub_agent_card_carries_its_open_and_stop_controls() {
     // has no controls.
     let (commands, _) = paint_sub_agent(vec![call], HashMap::new(), None);
     assert!(
-        icon_origin(&commands, "arrow-up").is_none()
-            && icon_origin(&commands, "x-close").is_none(),
+        icon_origin(&commands, "arrow-up").is_none() && icon_origin(&commands, "x-close").is_none(),
         "a row with no record draws no controls"
     );
 }
@@ -381,7 +375,7 @@ fn a_resting_row_carries_its_diamond() {
         let (commands, _) = paint_tool_calls(vec![call("ls", "{}", status, None)]);
         assert_eq!(
             drawn_row_texts(&commands),
-            vec!["◆ ls".to_string()],
+            vec!["ls".to_string()],
             "status {status:?} draws its diamond and the tool's own words"
         );
         let runs = text_runs(&commands);
@@ -405,10 +399,10 @@ fn a_resting_row_carries_its_diamond() {
         "a finished command folds into its chain header"
     );
     assert!(
-        text_runs(&commands)
+        !text_runs(&commands)
             .iter()
-            .any(|(text, _, _, _)| text == "◈"),
-        "a command's folded header wears the dotted diamond"
+            .any(|(text, _, _, _)| text == "◈" || text == "◆" || text == "❯"),
+        "a command's folded header carries no glyph"
     );
 }
 

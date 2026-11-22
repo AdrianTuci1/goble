@@ -2,8 +2,8 @@
 //! "what's running" status. Read-only, driven from [`crate::projects::ProjectsState`].
 
 use goble_ui::elements::{
-    AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Fill, Flex, Icon,
-    MainAxisSize, Rect, Scrollable, Spacer, Text, TopbarButton,
+    AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Fill, Flex,
+    Icon, MainAxisSize, Rect, Scrollable, Spacer, Text, TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -135,7 +135,13 @@ fn project_status(status: &str, app: &AppContext) -> (ColorToken, Box<dyn Elemen
         "scheduled" => (ColorToken::Warning, "scheduled"),
         _ => (ColorToken::Muted, "idle"),
     };
-    (color, Text::new(label).with_font_size(11.0).with_theme_color(ColorToken::Muted, app).finish())
+    (
+        color,
+        Text::new(label)
+            .with_font_size(11.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
 }
 
 /// Human label for a project card: prefer the directory, fall back to the id.

@@ -40,8 +40,14 @@ fn launching_reads_the_program_the_line_runs() {
         TuiAgent::launched_by("codex --full-auto"),
         Some(TuiAgent::Codex)
     );
-    assert_eq!(TuiAgent::launched_by("sudo npx codex"), Some(TuiAgent::Codex));
-    assert_eq!(TuiAgent::launched_by("env FOO=1 claude"), Some(TuiAgent::Claude));
+    assert_eq!(
+        TuiAgent::launched_by("sudo npx codex"),
+        Some(TuiAgent::Codex)
+    );
+    assert_eq!(
+        TuiAgent::launched_by("env FOO=1 claude"),
+        Some(TuiAgent::Claude)
+    );
     assert_eq!(
         TuiAgent::launched_by("/usr/local/bin/hermes --resume x"),
         Some(TuiAgent::Hermes)

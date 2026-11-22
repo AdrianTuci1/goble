@@ -20,24 +20,25 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::rc::Rc;
 
 use goble_ui::color::ColorU;
 use goble_ui::elements::{
     AppContext, Axis, Border, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
-    Diff, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, Icon, IconButton,
-    LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem,
-    PopupMenuPosition, Scrollable, SizeConstraint, Stack, Text, TextArea, TextInput, Tooltip,
-    TooltipPosition,
+    Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, Icon, IconButton,
+    KeyHandler, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu,
+    PopupMenuItem, PopupMenuPosition, ReviewTab, ReviewTabFile, Scrollable, SizeConstraint, Stack,
+    Text, TextArea, TextInput, Tooltip, TooltipPosition,
 };
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::platform::text_atlas::FontWeight;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
 
 use super::chat;
+use super::file_menu;
 use super::file_view::{DiffEditor, FileKeys};
 use super::pickers::{DiffDetail, DiffFileDetail};
+use super::reviewer;
 use super::{DiffPanelAction, UiActions, UiSnapshot};
 
 /// Width of the file list. The panel is a full pane, so the list stays a side
@@ -71,7 +72,9 @@ const COMPACT_COMMIT: f32 = 280.0;
 /// blocks above it: the file header and whichever body it draws. These are the
 /// heights those blocks are laid out at, and a test pins the editor's rows to
 /// the same box the field uses.
-const FILE_HEADER_HEIGHT: f32 = 30.0;
+/// DSH's changed-file card header: a 40pt file tile in a 60pt row.
+const FILE_HEADER_HEIGHT: f32 = 60.0;
+const FILE_TILE_SIZE: f32 = 40.0;
 /// The height of the review's controls bar under the pane's topbar, and of the
 /// hairline that separates the two. The bars are the pane's overlay chrome, so
 /// the content column reserves their heights to start below them.
@@ -137,7 +140,17 @@ pub(crate) fn build_diff_pane(
     // second bar under it, the way warp-new stacks its review panel.
     let slots = match detail {
         Some(Some(detail)) => chat::HeaderSlots {
-            leading: Some(review_title(app, detail, bar_width)),
+            leading: Some(review_title(
+                app,
+                actions,
+                pane_id,
+                detail,
+                controls
+                    .as_ref()
+                    .and_then(|controls| controls.diff_selected.borrow().clone())
+                    .as_deref(),
+                bar_width,
+            )),
             ..chat::HeaderSlots::default()
         },
         _ => chat::HeaderSlots::default(),
@@ -148,18 +161,27 @@ pub(crate) fn build_diff_pane(
     // menu opens down over the file list, and a menu painted with the content
     // would be covered by the cards under it.
     let toolbar = match (detail, controls.as_ref()) {
-        (Some(Some(_)), Some(controls)) => Some(review_controls(
-            app,
-            actions,
-            pane_id,
-            *controls.diff_sidebar.borrow(),
-            compact,
-            &CommitView {
-                open: commit_open,
-                menu_open: controls.diff_commit_menu_open.clone(),
-                status: controls.diff_git_status.borrow().clone(),
-            },
-        )),
+        (Some(Some(detail)), Some(controls)) => {
+            let view = crate::state::review_for(&actions.review_views, pane_id);
+            let selected = controls.diff_selected.borrow().clone();
+            let expanded = controls.diff_expanded.borrow().clone();
+            Some(review_controls(
+                app,
+                actions,
+                pane_id,
+                detail,
+                selected.as_deref(),
+                &expanded,
+                &view,
+                *controls.diff_sidebar.borrow(),
+                compact,
+                &CommitView {
+                    open: commit_open,
+                    menu_open: controls.diff_commit_menu_open.clone(),
+                    status: controls.diff_git_status.borrow().clone(),
+                },
+            ))
+        }
         _ => None,
     };
 
@@ -191,7 +213,6 @@ pub(crate) fn build_diff_pane(
         let hscroll = controls.diff_hscroll.clone();
         let visible = controls.diff_visible.clone();
         let sidebar = *controls.diff_sidebar.borrow();
-        column = column.with_child(Divider::horizontal().finish());
         if commit_open {
             column = column.with_child(commit_bar(
                 app,
@@ -204,26 +225,25 @@ pub(crate) fn build_diff_pane(
         }
         column = column.with_child(
             Expanded::new(
-                Container::new(
-                    body(
-                        app,
-                        actions,
-                        pane_id,
-                        detail,
-                        selected,
-                        expanded,
-                        editing,
-                        focus,
-                        editors,
-                        hscroll,
-                        visible,
-                        sidebar,
-                        state.active_pane_id == pane_id,
-                        controls.diff_scroll.clone(),
-                        controls.diff_list_scroll.clone(),
-                        controls.diff_revert_confirm.clone(),
-                    ),
-                )
+                Container::new(body(
+                    app,
+                    actions,
+                    pane_id,
+                    detail,
+                    selected,
+                    expanded,
+                    editing,
+                    focus,
+                    editors,
+                    hscroll,
+                    visible,
+                    sidebar,
+                    state.active_pane_id == pane_id,
+                    controls.diff_scroll.clone(),
+                    controls.diff_list_scroll.clone(),
+                    controls.diff_revert_confirm.clone(),
+                    controls.diff_commit_focus.clone(),
+                ))
                 .with_padding(EdgeInsets::new(sm, sm, sm, sm))
                 .finish(),
             )
@@ -267,6 +287,95 @@ pub(crate) fn build_diff_pane(
         .finish()
 }
 
+/// Q: the review surface as a side-panel tab. It draws the ReviewTab header
+/// (changed-file selector, counts, split/wrap) and the diff body — with its one
+/// file-list rail — but no pane topbar, because the panel's tab strip already
+/// owns that row. The data and controls are the active pane's, so Review needs
+/// no split pane and no second file column.
+pub(crate) fn build_review_tab(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    pane_id: u64,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let controls = state.pane_controls.get(&pane_id).cloned();
+    let detail = state.pane_diffs.get(&pane_id);
+    let read = detail.is_some();
+    let commit_open = controls
+        .as_ref()
+        .is_some_and(|controls| *controls.diff_commit_open.borrow());
+    // A narrow panel shows the diff alone: the ReviewTab selector in the
+    // header still chooses files, and the one rail is the wide-layout list.
+    let panel_width = (state.window_size.x * state.side_split_ratio).max(240.0);
+    let show_rail = panel_width >= 760.0;
+    let compact = panel_width < 900.0;
+
+    let mut column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    if let (Some(Some(detail)), Some(controls)) = (detail, controls.as_ref()) {
+        column = column.with_child(Divider::horizontal().finish());
+        if commit_open {
+            column = column.with_child(commit_bar(
+                app,
+                actions,
+                pane_id,
+                controls.diff_commit_message.clone(),
+                controls.diff_commit_focus.clone(),
+                controls.diff_git_status.clone(),
+            ));
+        }
+        let selected = controls.diff_selected.borrow().clone();
+        let expanded = controls.diff_expanded.borrow().clone();
+        let editing = controls.diff_editing.borrow().clone();
+        let editors = state.pane_diff_editors.get(&pane_id);
+        column = column.with_child(
+            Expanded::new(
+                Container::new(body(
+                    app,
+                    actions,
+                    pane_id,
+                    detail,
+                    selected,
+                    expanded,
+                    editing,
+                    controls.diff_edit_focus.clone(),
+                    editors,
+                    controls.diff_hscroll.clone(),
+                    controls.diff_visible.clone(),
+                    show_rail,
+                    true,
+                    controls.diff_scroll.clone(),
+                    controls.diff_list_scroll.clone(),
+                    controls.diff_revert_confirm.clone(),
+                    controls.diff_commit_focus.clone(),
+                ))
+                .with_padding(EdgeInsets::new(sm, sm, sm, sm))
+                .finish(),
+            )
+            .finish(),
+        );
+    } else {
+        let message = if read {
+            "No working tree here"
+        } else {
+            "Reading the changes…"
+        };
+        column = column.with_child(
+            Expanded::new(
+                Container::new(empty_state(app, message))
+                    .with_padding(EdgeInsets::uniform(sm))
+                    .finish(),
+            )
+            .finish(),
+        );
+    }
+    Container::new(column.finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .finish()
+}
+
 /// The commit bar and split button as one frame sees them. The open flag and
 /// the status are copies; the menu flag is the pane's own, because the popup
 /// toggles it when a press lands outside the panel.
@@ -278,11 +387,26 @@ struct CommitView {
 
 /// The topbar's leading content: the directory this review covers, its branch
 /// and its totals, in the order that fits the pane's current width.
-fn review_title(app: &AppContext, detail: &DiffDetail, width: f32) -> Box<dyn Element> {
+fn review_title(
+    app: &AppContext,
+    actions: &UiActions,
+    pane_id: u64,
+    detail: &DiffDetail,
+    selected: Option<&str>,
+    width: f32,
+) -> Box<dyn Element> {
     let root = crate::state::display_path(&detail.root);
     let mut title = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(6.0);
+    // DSH's review header leads with the file selector: every changed file is
+    // one press away, and the selected one's name is what the header says.
+    if !detail.files.is_empty() {
+        let view = crate::state::review_for(&actions.review_views, pane_id);
+        title = title.with_child(reviewer::file_selector(
+            app, actions, pane_id, detail, selected, &view,
+        ));
+    }
     if !root.is_empty() {
         let chars = if width < BRANCH_FROM {
             NARROW_ROOT_CHARS
@@ -320,10 +444,15 @@ fn review_title(app: &AppContext, detail: &DiffDetail, width: f32) -> Box<dyn El
 /// The review's second topbar: the file-list toggle at the leading edge and
 /// the commit split at the trailing one, with room between them for the last
 /// git job's word.
+#[allow(clippy::too_many_arguments)]
 fn review_controls(
     app: &AppContext,
     actions: &UiActions,
     pane_id: u64,
+    detail: &DiffDetail,
+    selected: Option<&str>,
+    expanded: &BTreeMap<String, bool>,
+    view: &crate::state::DiffReviewState,
     sidebar: bool,
     compact: bool,
     commit: &CommitView,
@@ -355,12 +484,33 @@ fn review_controls(
         compact,
     ));
 
+    // DSH's own review-tab header: the changed-file selector, the selected
+    // file's counts and the split/unified and wrap choices, composed from the
+    // shared goble-ui element rather than a second ad-hoc copy of the row.
+    let review_tab = review_tab_header(app, actions, pane_id, detail, selected, view);
+    let all_open = detail.files.iter().all(|file| file_open(file, expanded));
+    let on_fold = actions.on_diff_panel.clone();
+    let fold_paths: Vec<String> = detail.files.iter().map(|file| file.path.clone()).collect();
+    let fold_button = text_button(
+        app,
+        if all_open { "Fold all" } else { "Unfold all" },
+        move || {
+            for path in &fold_paths {
+                (on_fold.borrow_mut())(
+                    pane_id,
+                    DiffPanelAction::SetFileOpen(path.clone(), !all_open),
+                );
+            }
+        },
+    );
+    let _ = selected;
     let bar = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(6.0)
         .with_child(sidebar_button)
-        .with_child(Expanded::new(Empty::new().with_size(Vector2F::zero()).finish()).finish())
+        .with_child(Expanded::new(review_tab).finish())
+        .with_child(fold_button)
         .with_child(trailing.finish())
         .finish();
     // The row under the pane's topbar belongs to the panel's own surface, so
@@ -373,6 +523,83 @@ fn review_controls(
     )
     .with_height(TOOLBAR_HEIGHT)
     .finish()
+}
+
+/// The review tab's header row, built from the shared goble-ui element: its
+/// selector names the selected changed file, its counts are that file's, and
+/// its split/wrap controls report through the same pane actions the rest of
+/// the review uses.
+fn review_tab_header(
+    app: &AppContext,
+    actions: &UiActions,
+    pane_id: u64,
+    detail: &DiffDetail,
+    selected: Option<&str>,
+    view: &crate::state::DiffReviewState,
+) -> Box<dyn Element> {
+    let files: Vec<ReviewTabFile> = detail
+        .files
+        .iter()
+        .map(|file| ReviewTabFile {
+            path: file.path.clone(),
+            added: u64::from(file.added),
+            removed: u64::from(file.removed),
+            status: reviewer::status_of(file)
+                .letter()
+                .chars()
+                .next()
+                .unwrap_or('M'),
+        })
+        .collect();
+    let paths: Vec<String> = detail.files.iter().map(|file| file.path.clone()).collect();
+    let absolute: Vec<String> = detail
+        .files
+        .iter()
+        .map(|file| file.absolute_path.clone())
+        .collect();
+    let current = selected
+        .and_then(|selected| detail.files.iter().position(|file| file.path == selected))
+        .unwrap_or(0);
+    let selected_absolute = absolute.get(current).cloned();
+    let all_absolute = absolute.clone();
+
+    let on_select = actions.on_diff_panel.clone();
+    let select_paths = paths.clone();
+    let on_split = actions.on_diff_panel.clone();
+    let on_wrap = actions.on_diff_panel.clone();
+    let on_open = actions.on_diff_panel.clone();
+    let on_other = actions.on_diff_panel.clone();
+    let open_path = selected_absolute.clone();
+    let copy_paths = selected_absolute
+        .map(|path| vec![path])
+        .unwrap_or_else(|| all_absolute);
+
+    ReviewTab::new(files)
+        .with_selected(current)
+        .with_split(view.view.is_split())
+        .with_wrap(view.wrap)
+        .with_selector_open(view.selector_open.clone())
+        .with_selector_highlight(view.selector_highlight.clone())
+        .with_on_select(move |index| {
+            if let Some(path) = select_paths.get(index) {
+                (on_select.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())));
+            }
+        })
+        .with_on_toggle_split(move || {
+            (on_split.borrow_mut())(pane_id, DiffPanelAction::ToggleView);
+        })
+        .with_on_toggle_wrap(move || {
+            (on_wrap.borrow_mut())(pane_id, DiffPanelAction::ToggleWrap);
+        })
+        .with_on_open_file(move || {
+            if let Some(path) = open_path.clone() {
+                (on_open.borrow_mut())(pane_id, DiffPanelAction::OpenFile(path));
+            }
+        })
+        .with_on_other(move || {
+            (on_other.borrow_mut())(pane_id, DiffPanelAction::CopyPaths(copy_paths.clone()));
+        })
+        .finish()
 }
 
 /// A label cut to at most `max` characters, ending in an ellipsis when it was
@@ -466,7 +693,7 @@ impl Element for PathLabel {
             self.color,
             f32::INFINITY,
             PATH_LINE_HEIGHT,
-            FontWeight::Regular,
+            FontWeight::Medium,
             FontFamily::System,
             false,
         );
@@ -669,6 +896,7 @@ fn body(
     scroll: Rc<RefCell<goble_ui::ScrollState>>,
     list_scroll: Rc<RefCell<goble_ui::ScrollState>>,
     revert: Rc<RefCell<Option<String>>>,
+    commit_focus: Rc<RefCell<bool>>,
 ) -> Box<dyn Element> {
     if detail.files.is_empty() {
         return empty_state(app, "No open changes");
@@ -676,119 +904,91 @@ fn body(
     // A selected file the working tree no longer has leaves every file in the
     // view rather than an empty pane.
     let selected = selected.filter(|path| detail.files.iter().any(|file| file.path == *path));
+    let selected_path = selected.clone();
 
     let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    let view = crate::state::review_for(&actions.review_views, pane_id);
+    // R: the stacked diff is the left column; the single file-list rail is the
+    // narrow "Files Changed" column on the RIGHT. The diff column is not a
+    // second file list — each file opens inline under its own header.
+    let keyboard_expanded = expanded.clone();
+    let edit_focus = Rc::clone(&focus);
+    row = row.with_child(
+        Expanded::new(diff_list(
+            app, actions, pane_id, detail, selected, expanded, editing, focus, editors, hscroll,
+            visible, active, scroll, revert, &view,
+        ))
+        .finish(),
+    );
     if sidebar {
+        let _ = list_scroll;
         row = row
-            .with_child(file_list(
+            .with_child(divider(app))
+            .with_child(reviewer::files_changed_rail(
                 app,
                 actions,
                 pane_id,
                 detail,
-                selected.as_deref(),
-                list_scroll,
-            ))
-            .with_child(divider(app));
+                selected_path.as_deref(),
+            ));
     }
-    row = row.with_child(
-        Expanded::new(diff_list(
-            app, actions, pane_id, detail, selected, expanded, editing, focus, editors, hscroll,
-            visible, active, scroll, revert,
-        ))
-        .finish(),
-    );
-    row.finish()
-}
-
-fn file_list(
-    app: &AppContext,
-    actions: &UiActions,
-    pane_id: u64,
-    detail: &DiffDetail,
-    selected: Option<&str>,
-    scroll: Rc<RefCell<goble_ui::ScrollState>>,
-) -> Box<dyn Element> {
-    let mut column = Flex::column()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(1.0);
+    let row = row.finish();
+    if !active {
+        return row;
+    }
+    // The review owns Up/Down/Enter for its file list while the pane is the
+    // active one. A focused commit field, an in-place editor or the open file
+    // selector keep their keys: those surfaces are where the caret is.
+    let files: Vec<String> = detail.files.iter().map(|file| file.path.clone()).collect();
+    let open_state: Vec<(String, bool)> = detail
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file_open(file, &keyboard_expanded)))
+        .collect();
+    let selector_open = view.selector_open.clone();
     let on_diff = actions.on_diff_panel.clone();
-    if selected.is_some() {
-        column = column.with_child(
-            HoverRow::new(
-                Text::new("All changes")
-                    .with_font_size(12.0)
-                    .with_theme_color(ColorToken::Text, app)
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
-            .with_on_click(move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(None)))
-            .finish(),
-        );
-    }
-    for file in &detail.files {
-        let on_diff = actions.on_diff_panel.clone();
-        let path = file.path.clone();
-        column = column.with_child(
-            HoverRow::new(file_row(app, file))
-                .with_selected(selected == Some(file.path.as_str()))
-                .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
-                .with_on_click(move || {
-                    (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())))
-                })
-                .finish(),
-        );
-    }
-    ConstrainedBox::new(
-        Scrollable::new(
-            Container::new(column.finish())
-                .with_padding_right(8.0)
-                .finish(),
-            Axis::Vertical,
-        )
-        .with_state(scroll)
-        .finish(),
-    )
-    .with_width(LIST_WIDTH)
-    .finish()
-}
-
-/// One file-list row: the name over its directory, with the line counts at the
-/// trailing edge.
-fn file_row(app: &AppContext, file: &DiffFileDetail) -> Box<dyn Element> {
-    let path = Path::new(&file.path);
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(&file.path);
-    let dir = path.parent().and_then(|dir| dir.to_str()).unwrap_or("");
-    let mut labels = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(1.0)
-        .with_child(
-            Text::new(name)
-                .with_font_size(12.0)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        );
-    if !dir.is_empty() {
-        labels = labels.with_child(
-            Text::new(dir)
-                .with_font_size(10.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        );
-    }
-    Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.0)
-        .with_child(Expanded::new(labels.finish()).finish())
-        .with_child(file_counts(app, file.added, file.removed))
-        .finish()
+    Box::new(KeyHandler::new(row, move |key: &str, modifiers| {
+        if modifiers.command || modifiers.ctrl || modifiers.alt {
+            return false;
+        }
+        if *commit_focus.borrow() || edit_focus.borrow().is_some() || *selector_open.borrow() {
+            return false;
+        }
+        match key {
+            "ArrowDown" | "ArrowUp" => {
+                if files.is_empty() {
+                    return true;
+                }
+                let current = selected_path
+                    .as_ref()
+                    .and_then(|path| files.iter().position(|file| file == path));
+                let next = match (current, key) {
+                    (Some(index), "ArrowDown") => (index + 1).min(files.len() - 1),
+                    (Some(index), "ArrowUp") => index.saturating_sub(1),
+                    (None, "ArrowDown") => 0,
+                    (None, _) => files.len() - 1,
+                    _ => return true,
+                };
+                (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(files[next].clone())));
+                true
+            }
+            "Enter" => {
+                let Some(path) = selected_path.clone() else {
+                    return true;
+                };
+                let open = open_state
+                    .iter()
+                    .find(|(file, _)| *file == path)
+                    .map(|(_, open)| *open)
+                    .unwrap_or(false);
+                (on_diff.borrow_mut())(pane_id, DiffPanelAction::SetFileOpen(path, !open));
+                true
+            }
+            _ => false,
+        }
+    }))
 }
 
 /// Every changed file, folded or open and — for the files opened for editing —
@@ -814,6 +1014,7 @@ fn diff_list(
     active: bool,
     scroll: Rc<RefCell<goble_ui::ScrollState>>,
     revert: Rc<RefCell<Option<String>>>,
+    view: &crate::state::DiffReviewState,
 ) -> Box<dyn Element> {
     let (offset, viewport) = {
         let scroll = scroll.borrow();
@@ -872,6 +1073,7 @@ fn diff_list(
             active,
             editor_top,
             revert.borrow().as_deref() == Some(file.path.as_str()),
+            view,
         ));
         top = bottom;
     }
@@ -961,6 +1163,7 @@ fn file_block(
     active: bool,
     editor_top: f32,
     confirming_revert: bool,
+    view: &crate::state::DiffReviewState,
 ) -> Box<dyn Element> {
     let mut column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -977,16 +1180,27 @@ fn file_block(
     if open {
         column = column.with_child(file_body(
             app, actions, pane_id, file, editing, editor, scroll, hscroll, focus, active,
-            editor_top,
+            editor_top, view,
         ));
     }
     // Every file is its own box: the border is the file's bounds, and the gap
     // below it is the clear space before the next one.
-    let boxed = Container::new(column.finish())
+    let boxed: Box<dyn Element> = Container::new(column.finish())
         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
         .with_border(Border::all(1.0).with_border_fill(app.theme.color(ColorToken::Border)))
         .with_corner_radius(8.0)
         .finish();
+    // The whole card is the file's target: a right press anywhere on it opens
+    // the shared file context menu at the pointer.
+    let on_file_menu = actions.on_file_menu.clone();
+    let menu_path = file.absolute_path.clone();
+    let menu_copy_path = file.path.clone();
+    let boxed = file_menu::context_click(
+        boxed,
+        Rc::new(RefCell::new(move |at| {
+            (on_file_menu.borrow_mut())(menu_path.clone(), menu_copy_path.clone(), at);
+        })),
+    );
     Container::new(boxed)
         .with_padding(EdgeInsets::new(0.0, 0.0, 0.0, FILE_BOX_GAP))
         .finish()
@@ -1009,10 +1223,62 @@ fn file_header(
 ) -> Box<dyn Element> {
     let on_diff = actions.on_diff_panel.clone();
     let path = file.path.clone();
+    // DSH's changed-file header: a 40pt rounded tile beside a 13/20 medium
+    // path with a 10/16 mono stat line under it. The fold chevron stays at the
+    // leading edge so the card still folds from the header.
+    // R: bold filename, muted directory beside it (text/badge led header).
+    let (dir, name) = match file.path.rsplit_once('/') {
+        Some((dir, name)) => (dir.to_string(), name.to_string()),
+        None => (String::new(), file.path.clone()),
+    };
+    let title = {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.0)
+            .with_child(
+                Text::new(reviewer::type_badge(&file.path))
+                    .with_font_family(FontFamily::Mono)
+                    .with_font_size(10.0)
+                    .with_weight(FontWeight::SemiBold)
+                    .with_theme_color(reviewer::badge_color(&file.path), app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(name)
+                    .with_font_size(13.0)
+                    .with_weight(FontWeight::SemiBold)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_max_lines(1)
+                    .finish(),
+            );
+        if !dir.is_empty() {
+            row = row.with_child(
+                Text::new(dir)
+                    .with_font_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_max_lines(1)
+                    .finish(),
+            );
+        }
+        row.finish()
+    };
+    let titles = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(2.0)
+        .with_child(title)
+        .with_child(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(5.0)
+                .with_child(reviewer::header_status(app, file))
+                .with_child(file_counts(app, file.added, file.removed))
+                .finish(),
+        )
+        .finish();
     let mut left = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(6.0)
+        .with_spacing(10.0)
         .with_child(
             Icon::new(if open {
                 "chevron-down"
@@ -1023,17 +1289,7 @@ fn file_header(
             .with_theme_color(ColorToken::Muted, app)
             .finish(),
         )
-        // The path owns whatever room the controls leave: it stops before the
-        // copy button instead of painting under it, and fades into the card at
-        // the edge it was cut at.
-        .with_child(
-            Expanded::new(Box::new(PathLabel::new(
-                file.path.clone(),
-                app.theme.color(ColorToken::Text),
-                app.theme.color(ColorToken::Surface),
-            )))
-            .finish(),
-        );
+        .with_child(Expanded::new(titles).finish());
     // An editor's buffer says whether its text has been written back; the
     // counts above describe the change itself.
     if editing {
@@ -1064,69 +1320,52 @@ fn file_header(
         })
         .finish();
 
-    let on_copy = actions.on_diff_panel.clone();
+    // R: the header is text/badge led. Only the file/diff swap and a copy
+    // affordance stay beside the path; the old icon cluster is gone.
+    let on_new_row = actions.on_diff_panel.clone();
     let path = file.path.clone();
-    let copy_button = icon_button(app, "copy", "Copy path", move || {
-        (on_copy.borrow_mut())(pane_id, DiffPanelAction::CopyPaths(vec![path.clone()]))
-    });
-
-    // The diff is the body by default; this is the way to the file's text.
-    let on_edit = actions.on_diff_panel.clone();
-    let path = file.path.clone();
+    let _ = on_new_row;
+    let copy_button = {
+        let on_copy = actions.on_diff_panel.clone();
+        let copy_path = file.path.clone();
+        icon_button(app, "copy", "Copy path", move || {
+            (on_copy.borrow_mut())(pane_id, DiffPanelAction::CopyPaths(vec![copy_path.clone()]))
+        })
+    };
     let body_toggle = (!file.binary && !file.truncated).then(|| {
+        let on_edit = actions.on_diff_panel.clone();
+        let edit_path = file.path.clone();
         text_button(app, if editing { "Diff" } else { "File" }, move || {
             (on_edit.borrow_mut())(
                 pane_id,
-                DiffPanelAction::SetFileEditing(path.clone(), !editing),
+                DiffPanelAction::SetFileEditing(edit_path.clone(), !editing),
             )
         })
     });
-
-    let on_link = actions.on_diff_panel.clone();
-    let absolute = file.absolute_path.clone();
-    let link_button = icon_button(app, "link", "Copy link", move || {
-        (on_link.borrow_mut())(pane_id, DiffPanelAction::CopyLink(absolute.clone()))
-    });
-    let on_revert = actions.on_diff_panel.clone();
-    let path = file.path.clone();
-    let revert_button = icon_button(app, "undo", "Revert file", move || {
-        (on_revert.borrow_mut())(pane_id, DiffPanelAction::ConfirmRevert(path.clone()))
-    });
-    let on_open = actions.on_diff_panel.clone();
-    let absolute = file.absolute_path.clone();
-    let external_button = icon_button(app, "maximize-01", "Open in editor", move || {
-        (on_open.borrow_mut())(pane_id, DiffPanelAction::OpenExternal(absolute.clone()))
-    });
-
+    let revert_button = {
+        let on_revert = actions.on_diff_panel.clone();
+        let revert_path = file.path.clone();
+        text_button(app, "Revert", move || {
+            (on_revert.borrow_mut())(pane_id, DiffPanelAction::ConfirmRevert(revert_path.clone()))
+        })
+    };
     let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(4.0)
-        .with_child(Expanded::new(toggle).finish())
-        .with_child(copy_button)
-        .with_child(stat_badge(app, file.added, file.removed));
+        .with_spacing(6.0)
+        .with_child(Expanded::new(toggle).finish());
     if confirming_revert {
-        // A second press is the one that discards the change; the header asks
-        // in place, so no press on a narrow icon can throw work away alone.
-        let discard = Button::new(
-            Text::new("Revert")
-                .with_font_size(10.0)
-                .with_theme_color(ColorToken::Error, app)
-                .finish(),
-        )
-        .with_variant(ButtonVariant::Default)
-        .with_border_color(app.theme.color(ColorToken::Error))
-        .with_corner_radius(4.0)
-        .with_on_click({
-            let on_diff = actions.on_diff_panel.clone();
-            let path = file.path.clone();
-            move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::RevertFile(path.clone()))
-        })
-        .finish();
         let cancel = text_button(app, "Cancel", {
             let on_diff = actions.on_diff_panel.clone();
             move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::CancelRevert)
         });
+        let confirm = {
+            let on_revert = actions.on_diff_panel.clone();
+            let revert_path = file.path.clone();
+            text_button(app, "Revert", move || {
+                (on_revert.borrow_mut())(pane_id, DiffPanelAction::RevertFile(revert_path.clone()))
+            })
+        };
         row = row
             .with_child(
                 Text::new("Discard changes?")
@@ -1134,17 +1373,15 @@ fn file_header(
                     .with_theme_color(ColorToken::Error, app)
                     .finish(),
             )
-            .with_child(discard)
+            .with_child(confirm)
             .with_child(cancel);
     } else {
         if let Some(body_toggle) = body_toggle {
             row = row.with_child(body_toggle);
         }
-        row = row
-            .with_child(link_button)
-            .with_child(revert_button)
-            .with_child(external_button);
+        row = row.with_child(revert_button).with_child(copy_button);
     }
+    let _ = (&path, editing);
     ConstrainedBox::new(row.finish())
         .with_height(FILE_HEADER_HEIGHT)
         .finish()
@@ -1165,6 +1402,7 @@ fn file_body(
     focus: Rc<RefCell<Option<String>>>,
     active: bool,
     editor_top: f32,
+    view: &crate::state::DiffReviewState,
 ) -> Box<dyn Element> {
     if editing {
         let Some(editor) = editor else {
@@ -1194,16 +1432,19 @@ fn file_body(
     } else if file.hunks.is_empty() {
         note(app, "No textual changes")
     } else {
-        // The review's worker colours the cards in view beside the frame; this
-        // one draws whatever runs have already landed, so a large diff never
-        // stalls the paint.
-        let diff = Diff::from_prepared(Rc::clone(&file.hunks), file.prepared.clone())
-            .with_fill_width(true)
-            .with_viewport(scroll)
-            .finish();
-        let diff = Scrollable::new(diff, Axis::Horizontal)
-            .with_state(horizontal_state(&hscroll, &file.absolute_path))
-            .finish();
+        // The comparison is the app's own unified/split painter until the
+        // goble-ui `FileDiffView` feature lands; either way the view choice and
+        // wrapping are the pane's, not the element's. A wrapped comparison is
+        // laid out at the pane's width, so it needs no sideways region; an
+        // unwrapped one keeps its long lines one swipe away.
+        let diff = reviewer::comparison(file, view.view.is_split(), view.wrap, Rc::clone(&scroll));
+        let diff = if view.wrap {
+            diff
+        } else {
+            Scrollable::new(diff, Axis::Horizontal)
+                .with_state(horizontal_state(&hscroll, &file.absolute_path))
+                .finish()
+        };
         Container::new(diff)
             .with_padding(EdgeInsets::new(8.0, DIFF_PAD_TOP, 8.0, DIFF_PAD_BOTTOM))
             .finish()
@@ -1298,13 +1539,34 @@ fn icon_button(
     tooltip: &'static str,
     on_click: impl FnMut() + 'static,
 ) -> Box<dyn Element> {
+    icon_button_enabled(app, icon, tooltip, true, on_click)
+}
+
+/// The same icon control, drawn disabled when `enabled` is false: a press does
+/// nothing and the tooltip still names the action, which is the honest state
+/// for a file the working tree no longer has.
+fn icon_button_enabled(
+    app: &AppContext,
+    icon: &'static str,
+    tooltip: &'static str,
+    enabled: bool,
+    on_click: impl FnMut() + 'static,
+) -> Box<dyn Element> {
     let button = IconButton::new(
         Icon::new(icon)
             .with_size(13.0)
-            .with_theme_color(ColorToken::Muted, app)
+            .with_theme_color(
+                if enabled {
+                    ColorToken::Muted
+                } else {
+                    ColorToken::Border
+                },
+                app,
+            )
             .finish(),
     )
     .with_size(vec2f(22.0, 22.0))
+    .with_disabled(!enabled)
     .with_on_click(on_click)
     .finish();
     Tooltip::new(button, tooltip)
@@ -1383,19 +1645,24 @@ fn stat_badge(app: &AppContext, added: u32, removed: u32) -> Box<dyn Element> {
             .with_spacing(3.0)
             .with_child(
                 Text::new(format!("+{added}"))
+                    .with_font_family(FontFamily::Mono)
                     .with_font_size(10.0)
+                    .with_line_height(16.0 / 10.0)
                     .with_theme_color(ColorToken::Success, app)
                     .finish(),
             )
             .with_child(
                 Text::new("·")
+                    .with_font_family(FontFamily::Mono)
                     .with_font_size(10.0)
                     .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
             .with_child(
                 Text::new(format!("-{removed}"))
+                    .with_font_family(FontFamily::Mono)
                     .with_font_size(10.0)
+                    .with_line_height(16.0 / 10.0)
                     .with_theme_color(removed_color, app)
                     .finish(),
             )
@@ -1416,7 +1683,9 @@ fn file_counts(app: &AppContext, added: u32, removed: u32) -> Box<dyn Element> {
     if added > 0 {
         row = row.with_child(
             Text::new(format!("+{added}"))
-                .with_font_size(10.0)
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(11.0)
+                .with_line_height(18.0 / 11.0)
                 .with_theme_color(ColorToken::Success, app)
                 .finish(),
         );
@@ -1424,7 +1693,9 @@ fn file_counts(app: &AppContext, added: u32, removed: u32) -> Box<dyn Element> {
     if removed > 0 {
         row = row.with_child(
             Text::new(format!("-{removed}"))
-                .with_font_size(10.0)
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(11.0)
+                .with_line_height(18.0 / 11.0)
                 .with_theme_color(ColorToken::Error, app)
                 .finish(),
         );

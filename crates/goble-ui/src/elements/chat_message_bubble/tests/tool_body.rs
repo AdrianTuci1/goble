@@ -69,12 +69,13 @@ fn an_expanded_result_is_bounded_by_its_byte_cap() {
     let card = commands
         .iter()
         .find_map(|command| match command {
-            RenderCommand::FillRect { rect, color, corner_radius }
-                if *color == app.theme.color(ColorToken::SurfaceRaised)
-                    && (*corner_radius
-                        - crate::elements::chat_typography::card_radius(&app))
-                    .abs()
-                        < 0.01 =>
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == app.theme.color(ColorToken::SurfaceRaised)
+                && (*corner_radius - crate::elements::chat_typography::card_radius(&app)).abs()
+                    < 0.01 =>
             {
                 Some(*rect)
             }

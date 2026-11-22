@@ -87,17 +87,15 @@ pub(crate) fn build_worker_notice(
     // A pane that cannot connect because Remote has nowhere to run offers the
     // one thing that fixes it, instead of leaving the user with a dead end.
     if !state.remote_configured && matches!(worker.attach, PaneAttach::Failed { .. }) {
-        row = row
-            .with_child(Spacer::new().finish())
-            .with_child(
-                Button::new(Text::new("Open remote settings").finish())
-                    .with_variant(ButtonVariant::Primary)
-                    .with_on_click({
-                        let on_open = actions.on_open_remote_settings.clone();
-                        move || (on_open.borrow_mut())()
-                    })
-                    .finish(),
-            );
+        row = row.with_child(Spacer::new().finish()).with_child(
+            Button::new(Text::new("Open remote settings").finish())
+                .with_variant(ButtonVariant::Primary)
+                .with_on_click({
+                    let on_open = actions.on_open_remote_settings.clone();
+                    move || (on_open.borrow_mut())()
+                })
+                .finish(),
+        );
     }
     let row = row.finish();
     Container::new(row)

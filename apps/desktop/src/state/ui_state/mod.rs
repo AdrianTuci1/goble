@@ -5,7 +5,8 @@
 //! [`settings`], [`close`], [`mock`], [`spaces`], [`worker`]) as separate
 //! `impl UiState` blocks, which are the same block to the compiler as one.
 //! [`title`] is not one of them: the subject a conversation is named with is
-//! derived from the conversation, not held by the state machine.
+//! derived from its first prompt (the model-backed title request included), not
+//! held by the state machine.
 
 use super::*;
 
@@ -18,6 +19,7 @@ use crate::ui::settings::SettingsUiState;
 
 mod agents;
 mod close;
+mod file_menu;
 mod inbox;
 mod mock;
 mod onboarding;
@@ -25,16 +27,18 @@ mod pane_move;
 mod panes;
 mod refresh;
 mod responsive;
+mod reviewer;
 mod session;
 mod session_menu;
 mod settings;
 mod spaces;
 mod title;
 mod work_dock;
-mod workspace_rows;
 mod worker;
+mod workspace_rows;
 
 pub use agents::{PaneAgentState, TurnOutcome};
+pub use file_menu::{FileMenu, FileRevertTarget};
 pub use inbox::{InboxItem, InboxKind};
 pub use onboarding::{ONBOARDING_STEPS, ONBOARDING_USAGE};
 pub use pane_move::{PaneDrag, PaneDrop, PaneMove};
@@ -42,21 +46,37 @@ pub use responsive::{
     pane_slot_min_width, Responsive, PANE_MIN_WIDTH, RESPONSIVE_HYSTERESIS,
     SECONDARY_PANEL_BREAKPOINT, SIDEBAR_AUTO_COLLAPSE,
 };
+pub use reviewer::{review_for, DiffReviewState, DiffViewMode};
 pub use session_menu::{ArchiveConfirm, SidebarRename, ToastKind, ToastNotice};
-pub use title::prompt_subject;
+pub use title::{deterministic_subject, generate_and_store_title, spawn_title_generation};
 pub use workspace_rows::{SidebarWorkspace, SidebarWorkspaceRename};
 
 /// The title a conversation gets when it is created without a subject of its
 /// own. It is a placeholder, not a subject: a tab whose agent holds such a
-/// conversation still reads [`NEW_AGENT_TAB_LABEL`], and the agent replaces it
-/// with a subject derived from the conversation ([`title`]) once it has
-/// answered in it.
+/// conversation still reads [`NEW_AGENT_TAB_LABEL`], and the conversation's
+/// first prompt replaces it with a subject ([`title`]) — the model-generated
+/// title when a provider answers, the deterministic topic phrase otherwise.
 pub const NEW_CONVERSATION_TITLE: &str = "New conversation";
 
 /// The label a tab whose pane holds an agent draws while that agent's
 /// conversation has no subject yet. Once the conversation has one, the tab
 /// reads the subject instead (see [`UiState::space_label`]).
 pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
+
+/// The reserved pane id the side panel's Agent tab owns.
+///
+/// The side panel is a second surface beside the pane tree, but its Agent tab
+/// is a real conversation agent: it has its own store conversation (created on
+/// its first prompt), its own draft, transcript, model and turn events. A
+/// reserved id outside the pane tree gives it exactly the same per-pane
+/// machinery ([`UiState::pane_sessions`], `pane_runtime`, `pane_chat`) without
+/// appearing as a leaf, so the active pane's chat is never reused.
+pub const SIDE_AGENT_PANE_ID: u64 = u64::MAX - 1;
+
+/// The subject a fresh side-panel agent conversation starts under. It is a
+/// placeholder like [`NEW_CONVERSATION_TITLE`], replaced by the first prompt's
+/// subject through the same title path a pane's conversation uses.
+pub const SIDE_AGENT_TITLE: &str = "New side question";
 
 /// The name a fresh cloud agent draws while its conversation has no subject
 /// yet: a viewer pane starts on the worker, and the surface that opens for it
@@ -93,6 +113,70 @@ pub struct SpacePressRun {
 pub struct SpaceMenu {
     pub index: usize,
     pub at: goble_ui::Vector2F,
+}
+
+/// One tab in the right side panel. The panel opens on [`Overview`]; the "+"
+/// menu adds the other four, and each draws the active pane's own surface.
+///
+/// [`Overview`]: Self::Overview
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideTabKind {
+    /// The original panel: search, the pane's real actions, its sub-agents and
+    /// its background work.
+    Overview,
+    /// The active pane's agent chat, with its transcript and composer.
+    Agent,
+    /// The file the active pane shows, when that pane is a file view.
+    Files,
+    /// The active pane's live shell, in the panel instead of a pane leaf.
+    Terminal,
+    /// The active pane's live work items and their descriptions.
+    TaskOutput,
+    /// The active pane's working-tree review: the changed-file rail and the
+    /// diff, inside the panel like Terminal and Side Question (Q).
+    Review,
+}
+
+impl SideTabKind {
+    /// The title the tab chip and the panel header draw.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Agent => "Side Question",
+            Self::Files => "Files",
+            Self::Terminal => "Terminal",
+            Self::TaskOutput => "Task output",
+            Self::Review => "Review",
+        }
+    }
+
+    /// The tab chip's glyph.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Overview => "message-plus-square",
+            Self::Agent => "message-plus-square",
+            Self::Files => "file",
+            Self::Terminal => "terminal",
+            Self::TaskOutput => "terminal-input",
+            Self::Review => "file",
+        }
+    }
+}
+
+/// One interaction in the right side panel's tab strip. The strip is rebuilt
+/// every frame, so every callback sends a value here and the app state machine
+/// answers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideTabAction {
+    /// Make the tab at this index the panel's surface.
+    Select(usize),
+    /// Close the tab at this index, selecting a neighbour when it was active.
+    Close(usize),
+    /// Add this kind (or show it when it is already a tab).
+    Add(SideTabKind),
+    /// Move by this many tabs, wrapping at both ends. A horizontal swipe sends
+    /// `-1` (next) or `1` (previous).
+    Cycle(i32),
 }
 
 #[derive(Clone)]
@@ -279,6 +363,11 @@ pub struct UiState {
     /// from the provider-reported usage of its own model calls (`chat:usage`).
     /// Accounting only; nothing here is a price.
     pub conversation_usage: HashMap<String, goble_ui::TokenUsage>,
+    /// The most recent model call's reported usage per conversation, and how
+    /// many calls have reported one. The usage dialog shows the last call
+    /// beside the session total; the host reports per call, not per turn.
+    pub conversation_last_usage: HashMap<String, goble_ui::TokenUsage>,
+    pub conversation_usage_calls: HashMap<String, u64>,
     /// Custom theme color overrides as `#rrggbb` hex, set via the color wheel
     /// pickers in Settings→Appearance. `None` uses the theme's built-in color.
     pub theme_primary: Option<String>,
@@ -331,6 +420,19 @@ pub struct UiState {
     pub sidebar_dragging: bool,
     pub sidebar_drag_origin_x: f32,
     pub sidebar_drag_start_width: f32,
+    /// The right side panel's share of the content width while it is open and
+    /// unmaximized: the panel gets `side_split_ratio` of the width the left
+    /// sidebar leaves, the main card gets the rest. `0.5` is the equal split.
+    ///
+    /// Persisted with the pane layout (`PersistedPaneState::side_split_ratio`,
+    /// clamped to `0.25..=0.75` on restore), so the split the user dragged
+    /// survives a restart. The value lives in app state (not the frame) so a
+    /// drag survives the per-frame element rebuild, and it is restored across
+    /// per-frame rebuilds and pane/space switches in one run.
+    pub side_split_ratio: f32,
+    /// Whether the shared main/side-panel boundary is being dragged. Carried in
+    /// app state so the per-frame element rebuild keeps the drag alive.
+    pub side_split_dragging: bool,
     /// The user's committed content width, per pane: the pane whose invisible
     /// content-lane edge they dragged lays its content out at that width
     /// (clamped into the pane by the lane's own resolver every frame). A pane
@@ -472,6 +574,8 @@ pub struct UiState {
     /// Scroll offsets of the project explorer's and the global search's lists.
     pub explorer_scroll: Rc<RefCell<ScrollState>>,
     pub global_search_scroll: Rc<RefCell<ScrollState>>,
+    /// Q: the centered spotlight window opened by the topbar Search.
+    pub spotlight: crate::ui::spotlight::SpotlightState,
     /// Whether the topbar workspace frame is in inline-rename mode (entered by
     /// double-clicking the tab, or from its menu's "Rename tab" row).
     pub space_rename_editing: bool,
@@ -503,6 +607,10 @@ pub struct UiState {
     /// outside its panel clears it (`on_space_menu_close`), because only the app
     /// outlives the frame that press happened in.
     pub space_menu: Rc<RefCell<Option<SpaceMenu>>>,
+    /// The file row/card context menu that is open, if any: the path it acts
+    /// on and the point it hangs from. App-owned because the tree is rebuilt
+    /// every frame.
+    pub file_menu: Rc<RefCell<Option<FileMenu>>>,
     /// Per-card interaction state (hover / delete menu), owned here so it
     /// survives the per-frame element rebuild. Keyed by conversation id.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
@@ -585,6 +693,50 @@ pub struct UiState {
     /// Whether the Cmd+Shift+N host picker is up and the row it highlights.
     pub ssh_host_picker_open: bool,
     pub ssh_host_picker_index: usize,
+    /// The "Open SSH Host" overlay opened from the Workspaces "+" menu: its
+    /// draft target, focus, chosen config, parsed hosts and honest error.
+    pub ssh_target_open: bool,
+    pub ssh_target_draft: String,
+    pub ssh_target_focused: bool,
+    pub ssh_config_path: String,
+    pub ssh_config_hosts: Vec<goble_core::ssh_hosts::SshHost>,
+    pub ssh_target_error: Option<String>,
+    /// Whether the Workspaces header's add menu is up.
+    pub sidebar_add_menu_open: Rc<RefCell<bool>>,
+    /// The chat transcript's changed-files card fold, shared across rebuilds.
+    pub changed_files_open: Rc<RefCell<bool>>,
+    /// The settings overlay (not a pane): open flag and the hamburger's state
+    /// in the narrow window.
+    pub settings_overlay_open: bool,
+    pub settings_overlay_hamburger: Rc<RefCell<bool>>,
+    /// Whether the settings sheet floats (wide) or fills the window (narrow).
+    pub settings_overlay_wide: bool,
+    /// The chrome row's Overview popover.
+    pub chrome_overview_open: Rc<RefCell<bool>>,
+    pub chrome_more_open: Rc<RefCell<bool>>,
+    /// Whether the right overview panel is maximized over the main pane.
+    pub side_panel_maximized: bool,
+    /// The tabs the right side panel shows, in strip order. It always starts on
+    /// [`SideTabKind::Overview`]; the "+" menu appends the active pane's other
+    /// surfaces. The app machine keeps it non-empty (see
+    /// [`UiState::ensure_side_tabs`]).
+    pub side_tabs: Vec<SideTabKind>,
+    /// The pane + working directory a Review side tab shows. The tab reads the
+    /// pane's own diff controls and `pane_diffs[pane]`, so opening Review does
+    /// not split a diff pane into the layout.
+    pub side_review: Option<(u64, String)>,
+    /// The index in [`Self::side_tabs`] the panel is showing. Kept in range by
+    /// the side-tab methods; a stale value falls back to Overview.
+    pub active_side_tab: usize,
+    /// Whether the side panel's "+" menu is open. Shared with the popup so its
+    /// open state survives the per-frame element rebuild.
+    pub side_tab_add_menu_open: Rc<RefCell<bool>>,
+    /// Horizontal swipe travel accumulated by the side panel's content wrapper
+    /// (in logical points). Owned here because the wrapper is rebuilt every
+    /// frame; one thresholded swipe moves exactly one tab.
+    pub side_swipe_accum: Rc<RefCell<f32>>,
+    /// Send a prompt immediately while a turn runs instead of queueing it.
+    pub send_immediately: bool,
     /// A saved host whose session just ended, offered for reconnect: the pane
     /// it ran in and the entry's name. Cleared by reconnecting or dismissing.
     pub ssh_reconnect_prompt: Option<(u64, String)>,
@@ -600,6 +752,11 @@ pub struct UiState {
     /// dropdown open flags), keyed by pane id so two pty/agent panes in the
     /// same workspace never share them.
     pub pane_controls: HashMap<u64, PaneControls>,
+    /// Per-pane review view choices (unified/split, wrapping, the folded
+    /// directories of the changed-file tree, and the header selector's state),
+    /// keyed by pane id. Shared with the UI so they survive the per-frame
+    /// element rebuild.
+    pub diff_reviews: Rc<RefCell<HashMap<u64, DiffReviewState>>>,
     /// Per-pane transcript scroll offset, keyed by pane id. Owned here (not on
     /// the element, which is rebuilt every frame) so a pane's scrollback
     /// position and its follow-the-stream state survive the rebuild.

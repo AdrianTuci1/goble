@@ -68,10 +68,7 @@ pub fn directory_rows(cwd: &str) -> Vec<DirectoryRow> {
             if name.starts_with('.') {
                 continue;
             }
-            let is_dir = entry
-                .file_type()
-                .map(|kind| kind.is_dir())
-                .unwrap_or(false);
+            let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
             if !is_dir {
                 continue;
             }
@@ -401,8 +398,8 @@ fn absorb_diff(bytes: &[u8], sections: &mut BTreeMap<String, RawDiffSection>) {
             continue;
         };
         if path.is_empty() {
-            if let Some(found) = diff_header_path(line, "+++ ")
-                .or_else(|| diff_header_path(line, "--- "))
+            if let Some(found) =
+                diff_header_path(line, "+++ ").or_else(|| diff_header_path(line, "--- "))
             {
                 *path = found;
             }
@@ -432,10 +429,13 @@ fn diff_header_path(line: &str, prefix: &str) -> Option<String> {
 
 /// The checked-out branch, or empty for a repository with no commit.
 fn branch_name(root: &Path) -> String {
-    git_output(&root.to_string_lossy(), &["rev-parse", "--abbrev-ref", "HEAD"])
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|branch| !branch.is_empty() && branch != "HEAD")
-        .unwrap_or_default()
+    git_output(
+        &root.to_string_lossy(),
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    .filter(|branch| !branch.is_empty() && branch != "HEAD")
+    .unwrap_or_default()
 }
 
 /// An untracked file as a new-file hunk. A binary or oversized file keeps its
@@ -491,7 +491,7 @@ fn untracked_detail(root: &Path, path: &str) -> GitDiffFile {
 }
 
 /// The repository root `cwd` sits in, or `None` outside a work tree.
-fn repo_root(cwd: &str) -> Option<PathBuf> {
+pub(crate) fn repo_root(cwd: &str) -> Option<PathBuf> {
     if cwd.trim().is_empty() {
         return None;
     }
@@ -943,7 +943,10 @@ mod tests {
             vec!["Alpha", "zeta", PARENT_LABEL],
             "directories only, case-insensitively sorted, parent last"
         );
-        assert!(rows[0].path.ends_with("/Alpha"), "rows carry absolute paths");
+        assert!(
+            rows[0].path.ends_with("/Alpha"),
+            "rows carry absolute paths"
+        );
     }
 
     #[test]
@@ -958,7 +961,10 @@ mod tests {
         let rows = directory_rows("/Users/example/project");
         let parent = rows.last().expect("a parent row");
         assert_eq!(parent.path, "/Users/example");
-        assert_eq!(resolve("/Users/example/project", &parent.path), "/Users/example");
+        assert_eq!(
+            resolve("/Users/example/project", &parent.path),
+            "/Users/example"
+        );
     }
 
     #[test]
@@ -967,7 +973,10 @@ mod tests {
             change_directory_command("/Users/me/My Project"),
             "cd '/Users/me/My Project'"
         );
-        assert_eq!(checkout_branch_command("feature/x"), "git checkout 'feature/x'");
+        assert_eq!(
+            checkout_branch_command("feature/x"),
+            "git checkout 'feature/x'"
+        );
         assert_eq!(
             checkout_branch_command("it's"),
             r"git checkout 'it'\''s'",
@@ -1124,7 +1133,10 @@ mod tests {
 
         let untracked = &detail.files[0];
         assert_eq!((untracked.added, untracked.removed), (2, 0));
-        let hunk = untracked.hunks.first().expect("a synthesized new-file hunk");
+        let hunk = untracked
+            .hunks
+            .first()
+            .expect("a synthesized new-file hunk");
         assert_eq!((hunk.old_start, hunk.new_start), (0, 1));
         assert!(
             hunk.lines

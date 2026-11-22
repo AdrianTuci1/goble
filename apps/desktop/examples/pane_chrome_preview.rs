@@ -21,6 +21,12 @@
 //!   edges; left: the sidebar), and each tab outline keeps its own inset
 //!   relative to its slot. The SURFACE, unlike the slots, paints that whole
 //!   frame: its fill starts on the body origin, not 4 px inside it;
+//! - the CARD CORNERS: every pane card is cut to its 6 pt radius on all four
+//!   corners — the four corner spandrels read as the panel surface, not as
+//!   square card pixels — and the focused pane's accent triangle is clipped to
+//!   the card's rounded top-left corner (no accent pixel outside the radius).
+//!   Read off the rendered pixels and saved as 10x corner zooms for each card
+//!   of the 1- and 2-pane scenes, in the dark and light themes;
 //! - the RESIZE affordance: no thin divider rule is drawn at a split boundary
 //!   or at the sidebar edge — idle or while dragging — and the only affordance
 //!   is the resize cursor over the invisible grab band;
@@ -51,6 +57,7 @@ use std::sync::Arc;
 
 use goble_app::root_view::RootView;
 use goble_app::state::{PaneSession, UiState};
+use goble_app::terminal::TerminalSession;
 use goble_app::ui::shell::{TOPBAR_BOTTOM_BAND, TOPBAR_HEIGHT};
 use goble_app::ui::{Pane, PaneKind, Space, SplitDir};
 use goble_core::harness::ToolCallStatus;
@@ -86,10 +93,12 @@ enum Scene {
     /// width: shown above 768, gone below it (the responsive second step).
     Panel1600,
     Panel760,
+    /// The agent pane with its bottom terminal dock open (T3 Code's drawer).
+    Dock,
 }
 
 impl Scene {
-    fn all() -> [Self; 11] {
+    fn all() -> [Self; 12] {
         [
             Self::OnePane,
             Self::TwoPanes,
@@ -102,6 +111,7 @@ impl Scene {
             Self::Responsive760,
             Self::Panel1600,
             Self::Panel760,
+            Self::Dock,
         ]
     }
 
@@ -115,6 +125,7 @@ impl Scene {
             Self::Responsive900 => vec2f(900.0, 900.0),
             Self::Responsive760 | Self::Panel760 => vec2f(760.0, 900.0),
             Self::Panel1600 => vec2f(1600.0, 900.0),
+            Self::Dock => vec2f(1600.0, 900.0),
         }
     }
 
@@ -131,6 +142,7 @@ impl Scene {
             Self::Responsive760 => "responsive-760.png",
             Self::Panel1600 => "panel-1600.png",
             Self::Panel760 => "panel-760.png",
+            Self::Dock => "panel-chrome-dock.png",
         }
     }
 
@@ -159,6 +171,7 @@ impl Scene {
             }
             Self::Panel1600 => "agent panel open at 1600: the secondary surface is shown",
             Self::Panel760 => "agent panel open at 760: the secondary surface leaves the view",
+            Self::Dock => "agent pane with its bottom terminal dock open",
         }
     }
 }
@@ -290,6 +303,7 @@ fn build_scene(
                 // visible and measurable.
                 s.right_sidebar_open = true;
             }
+            Scene::Dock => {}
         }
         // A pane snapshot is what makes the pane draw its own chat view (and
         // with it the work dock); every scene gives its panes one.
@@ -300,10 +314,27 @@ fn build_scene(
             s.content_lane_prefs.insert(pane_id, 700.0);
         }
         s.pane_sessions.entry(pane_id).or_insert_with(chat_session);
+        if scene == Scene::Dock {
+            // The app's own path opens a real PTY; a headless example has no
+            // daemon to start, so it seeds the drawer with a representative
+            // screen and renders the same surface.
+            assert!(
+                s.toggle_terminal_dock(pane_id),
+                "the agent pane offers its header terminal dock"
+            );
+            s.set_terminal_dock_height(pane_id, 260.0);
+            s.terminal.borrow_mut().sessions.insert(
+                pane_id,
+                TerminalSession::preview_screen(
+                    "$ cargo test -p goble-ui --lib\r\n                     test result: ok. 916 passed; 0 failed\r\n                     $ git status --short\r\n                     ?? functii.py\r\n$ ",
+                ),
+            );
+        }
         let runtime = s.pane_runtime.entry(pane_id).or_default();
-        runtime
-            .in_flight_tools
-            .insert("call-1".to_string(), work_call("call-1", "cargo test -p goble-ui"));
+        runtime.in_flight_tools.insert(
+            "call-1".to_string(),
+            work_call("call-1", "cargo test -p goble-ui"),
+        );
         runtime.in_flight_tools.insert(
             "call-2".to_string(),
             work_call("call-2", "cargo test -p goble-app"),
@@ -312,8 +343,16 @@ fn build_scene(
     Ok((root, state, dir))
 }
 
-fn paint_frame(app: &AppContext, root: &mut Box<dyn Element>, size: Vector2F) -> Vec<RenderCommand> {
-    let _ = root.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), app);
+fn paint_frame(
+    app: &AppContext,
+    root: &mut Box<dyn Element>,
+    size: Vector2F,
+) -> Vec<RenderCommand> {
+    let _ = root.layout(
+        SizeConstraint::loose(size),
+        &mut LayoutContext::default(),
+        app,
+    );
     let mut ctx = PaintContext::new(Renderer::new());
     root.paint(vec2f(0.0, 0.0), &mut ctx, app);
     ctx.renderer
@@ -325,11 +364,7 @@ fn paint_frame(app: &AppContext, root: &mut Box<dyn Element>, size: Vector2F) ->
 /// Run one more paint of the already-built frame with the pointer at `pointer`,
 /// so the cursor requests the tree makes are observable, and return the cursor
 /// the platform was asked for.
-fn probe_cursor(
-    app: &AppContext,
-    root: &mut Box<dyn Element>,
-    pointer: Vector2F,
-) -> CursorKind {
+fn probe_cursor(app: &AppContext, root: &mut Box<dyn Element>, pointer: Vector2F) -> CursorKind {
     let mut ctx = PaintContext::new(Renderer::new());
     ctx.cursor_inside = true;
     ctx.cursor_position = pointer;
@@ -435,20 +470,243 @@ fn main() -> anyhow::Result<()> {
     let app = AppContext::default();
 
     for scene in Scene::all() {
-        let (mut root, state, _dir) = build_scene(&app, scene)?;
-        let size = scene.size();
-        // One frame lays the app out (the snapshot needs it), the next is the
-        // frame measured and painted.
-        let _ = paint_frame(&app, &mut root, size);
-        let commands = paint_frame(&app, &mut root, size);
-        println!("\n== {:?} — {}", scene, scene.label());
-        print_geometry(&state, &commands, &app, size);
-        print_panel_surface_pixels(&state, &commands, &app, size);
-        print_cursor_probes(&app, &mut root, &state, size);
+        render_scene(&app, &assets, scene, "")?;
+    }
+    // The light theme's pane cards: the rounded edge and the clipped triangle
+    // follow the theme's own `Surface`/`Border` tokens, so the 1- and 2-pane
+    // corner scenes are rendered in the other theme too.
+    let mut light = AppContext::default();
+    light.theme = goble_ui::theme::Theme::light();
+    for scene in [Scene::OnePane, Scene::TwoPanes, Scene::Dock] {
+        render_scene(&light, &assets, scene, "-light")?;
+    }
+    Ok(())
+}
 
-        let out = Path::new(OUT_DIR).join(scene.file());
-        raster::render_element_to_png(&assets, &app, &mut root, size.x, size.y, SCALE, None, &out)?;
-        println!("   -> {}", out.display());
+/// Build, measure and rasterize one scene, with `suffix` appended to its PNG
+/// stem (the light-theme pass uses it so it does not overwrite the dark one).
+fn render_scene(
+    app: &AppContext,
+    assets: &raster::PreviewAssets,
+    scene: Scene,
+    suffix: &str,
+) -> anyhow::Result<()> {
+    let (mut root, state, _dir) = build_scene(app, scene)?;
+    let size = scene.size();
+    // One frame lays the app out (the snapshot needs it), the next is the
+    // frame measured and painted.
+    let _ = paint_frame(app, &mut root, size);
+    let commands = paint_frame(app, &mut root, size);
+    println!("\n== {:?}{suffix} — {}", scene, scene.label());
+    print_geometry(&state, &commands, app, size);
+    print_panel_surface_pixels(&state, &commands, app, size);
+    print_cursor_probes(app, &mut root, &state, size);
+
+    let stem = scene.file().trim_end_matches(".png");
+    let out = Path::new(OUT_DIR).join(format!("{stem}{suffix}.png"));
+    raster::render_element_to_png(assets, app, &mut root, size.x, size.y, SCALE, None, &out)?;
+    println!("   -> {}", out.display());
+    // The card corners, read off the rendered pixels: each corner's spandrel is
+    // the panel surface (not a square card pixel) and the focused pane's accent
+    // triangle stays inside the rounded corner.
+    print_card_corners(&state, app, &out)?;
+    save_corner_zooms(scene, &out, &state)?;
+    Ok(())
+}
+
+/// The pane card's radius, mirrored from `ui::panes::WINDOW_CORNER_RADIUS` (it
+/// is crate-private in the app, and an example is its own crate).
+const CARD_RADIUS: f32 = 6.0;
+
+/// How many points a corner zoom shows either side of the corner, and how far
+/// it magnifies them.
+const CORNER_CROP: u32 = 36;
+const CORNER_ZOOM: u32 = 10;
+
+/// The RGB at the pixel a point falls in.
+fn pixel_at(pixels: &image::RgbaImage, x: f32, y: f32) -> [u8; 3] {
+    let px = pixels
+        .get_pixel(x.floor().max(0.0) as u32, y.floor().max(0.0) as u32)
+        .0;
+    [px[0], px[1], px[2]]
+}
+
+/// Whether a rendered pixel is the theme colour, within the renderer's
+/// anti-aliasing and linear-light blend tolerance.
+fn near(pixel: [u8; 3], color: goble_ui::ColorU) -> bool {
+    pixel[0].abs_diff(color.r) <= 6
+        && pixel[1].abs_diff(color.g) <= 6
+        && pixel[2].abs_diff(color.b) <= 6
+}
+
+/// Measure the pane cards' four corners in the scene's rendered PNG: every
+/// corner spandrel must be the panel's `Surface` (a square corner would leave
+/// the card's `Bg` there), the pixels just inside each rounded path must be the
+/// card content, and the focused pane's accent triangle must have no pixel
+/// outside its rounded top-left corner. Fails the preview if a corner is square.
+fn print_card_corners(
+    state: &Rc<RefCell<UiState>>,
+    app: &AppContext,
+    png: &Path,
+) -> anyhow::Result<()> {
+    // While a sheet is open its scrim covers the frame, so the colours read off
+    // the pixels are the scrim's blend, not the card's corner material: the
+    // scenes without a sheet are the ones measured (as for the surface pixels).
+    {
+        let s = state.borrow();
+        if s.right_sidebar_open || s.crons_open {
+            println!("   card corners: not measured — a secondary sheet's scrim covers the frame");
+            return Ok(());
+        }
+    }
+    let pixels = image::open(png)?.to_rgba8();
+    let name = png
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("frame.png")
+        .trim_end_matches(".png");
+    let surface = app.theme.color(ColorToken::Surface);
+    let bg = app.theme.color(ColorToken::Bg);
+    let accent = app.theme.color(ColorToken::Accent);
+    let frames = pane_bounds(state);
+    let mut rounded = 0;
+    let mut square = Vec::new();
+    for (id, card) in &frames {
+        let radius = CARD_RADIUS.min(card.width() * 0.5).min(card.height() * 0.5);
+        let focused = *id == state.borrow().active_pane_id;
+        // The corner spandrels: outside the rounded path, inside the card rect.
+        for (corner, x, y) in [
+            ("tl", card.min_x(), card.min_y()),
+            ("tr", card.max_x() - 1.0, card.min_y()),
+            ("bl", card.min_x(), card.max_y() - 1.0),
+            ("br", card.max_x() - 1.0, card.max_y() - 1.0),
+        ] {
+            let at = pixel_at(&pixels, x, y);
+            if near(at, surface) {
+                rounded += 1;
+            } else {
+                square.push(format!("pane {id} {corner} {at:?}"));
+            }
+        }
+        // Inside the rounded path at the bottom corners: still the card fill.
+        let inside_bl = pixel_at(&pixels, card.min_x() + radius, card.max_y() - radius);
+        let inside_br = pixel_at(&pixels, card.max_x() - radius, card.max_y() - radius);
+        let inside = near(inside_bl, bg) && near(inside_br, bg);
+        // The focus marker: inside the rounded top-left corner, never outside.
+        let marker_inside = pixel_at(
+            &pixels,
+            card.min_x() + radius * 0.5,
+            card.min_y() + radius * 0.5,
+        );
+        let outside_accent = accent_pixels_outside_corner(&pixels, *card, radius, accent);
+        println!(
+            "   corner zoom {name} pane {id} (card x {:.1}..{:.1} y {:.1}..{:.1}, r={radius:.1}): \
+             spandrels {} ({}) | inside bottom corners {} | marker inside {:?} | accent px outside the radius {} | focused {}",
+            card.min_x(),
+            card.max_x(),
+            card.min_y(),
+            card.max_y(),
+            if square.is_empty() { "surface".to_string() } else { format!("{:?}", square) },
+            if square.is_empty() { "rounded" } else { "SQUARE" },
+            if inside {
+                "Bg".to_string()
+            } else {
+                format!("{inside_bl:?}/{inside_br:?}")
+            },
+            marker_inside,
+            outside_accent,
+            focused,
+        );
+        if focused {
+            anyhow::ensure!(
+                near(marker_inside, accent),
+                "pane {id}: the focus marker does not paint inside the card's rounded corner"
+            );
+            anyhow::ensure!(
+                outside_accent == 0,
+                "pane {id}: {outside_accent} accent pixels sit outside the rounded corner"
+            );
+        }
+        anyhow::ensure!(
+            inside,
+            "pane {id}: the bottom corners' inside pixels are not the card fill"
+        );
+        anyhow::ensure!(
+            square.is_empty(),
+            "pane {id}: square card pixels: {square:?}"
+        );
+    }
+    if frames.is_empty() {
+        anyhow::bail!("no pane card was drawn in {}", png.display());
+    }
+    println!(
+        "   card corners ({name}): {rounded} spandrels rounded, {} square",
+        square.len()
+    );
+    Ok(())
+}
+
+/// The accent pixels of a card's top-left corner square that lie outside its
+/// rounded path.
+fn accent_pixels_outside_corner(
+    pixels: &image::RgbaImage,
+    card: RectF,
+    radius: f32,
+    accent: goble_ui::ColorU,
+) -> usize {
+    let cx = card.min_x() + radius;
+    let cy = card.min_y() + radius;
+    let reach = radius.ceil() as u32 + 4;
+    let mut outside = 0;
+    for dy in 0..reach {
+        for dx in 0..reach {
+            let x = card.min_x().floor() as u32 + dx;
+            let y = card.min_y().floor() as u32 + dy;
+            let px = pixels.get_pixel(x, y).0;
+            if !near([px[0], px[1], px[2]], accent) {
+                continue;
+            }
+            let distance = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            if distance > radius {
+                outside += 1;
+            }
+        }
+    }
+    outside
+}
+
+/// Save a magnified crop of each pane card's four corners for the 1-pane and
+/// 2-pane scenes, so the rounding (and the clipped triangle corner) can be
+/// inspected as an image.
+fn save_corner_zooms(scene: Scene, png: &Path, state: &Rc<RefCell<UiState>>) -> anyhow::Result<()> {
+    if !matches!(scene, Scene::OnePane | Scene::TwoPanes) {
+        return Ok(());
+    }
+    let pixels = image::open(png)?.to_rgba8();
+    let stem = png.file_stem().and_then(|s| s.to_str()).unwrap_or("pane");
+    for (id, card) in pane_bounds(state) {
+        for (corner, x, y) in [
+            ("tl", card.min_x(), card.min_y()),
+            ("tr", card.max_x(), card.min_y()),
+            ("bl", card.min_x(), card.max_y()),
+            ("br", card.max_x(), card.max_y()),
+        ] {
+            let x0 = (x.floor() as i64 - (CORNER_CROP as i64 / 2))
+                .clamp(0, (pixels.width() - CORNER_CROP) as i64) as u32;
+            let y0 = (y.floor() as i64 - (CORNER_CROP as i64 / 2))
+                .clamp(0, (pixels.height() - CORNER_CROP) as i64) as u32;
+            let crop =
+                image::imageops::crop_imm(&pixels, x0, y0, CORNER_CROP, CORNER_CROP).to_image();
+            let zoom = image::imageops::resize(
+                &crop,
+                CORNER_CROP * CORNER_ZOOM,
+                CORNER_CROP * CORNER_ZOOM,
+                image::imageops::FilterType::Nearest,
+            );
+            let out = Path::new(OUT_DIR).join(format!("{stem}-corner-{corner}-pane{id}.png"));
+            zoom.save(&out)?;
+            println!("   corner zoom -> {}", out.display());
+        }
     }
     Ok(())
 }
@@ -487,9 +745,9 @@ fn print_geometry(
         }
         _ => None,
     });
-    let panel_drawn = commands.iter().any(|command| {
-        matches!(command, RenderCommand::DrawText { text, .. } if text == "Agent panel")
-    });
+    let panel_drawn = commands.iter().any(
+        |command| matches!(command, RenderCommand::DrawText { text, .. } if text == "Agent panel"),
+    );
     let frames = pane_bounds(state);
     println!(
         "\n   responsive: window {:.0} | sidebar collapsed? {} | secondary hidden? {} | focused only? {}",
@@ -571,23 +829,21 @@ fn print_geometry(
             uniform
         );
         // The surface the panels are rendered on is the sidebar's `Surface`.
-        let backdrop = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::FillRect {
-                    rect,
-                    color,
-                    corner_radius,
-                } if *color == surface
-                    && *corner_radius == 0.0
-                    && rect.min_y() > TOPBAR_HEIGHT
-                    && rect.width() > window.x / 2.0
-                    && rect.height() > window.y / 2.0 =>
-                {
-                    Some((*rect, *color))
-                }
-                _ => None,
-            });
+        let backdrop = commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == surface
+                && *corner_radius == 0.0
+                && rect.min_y() > TOPBAR_HEIGHT
+                && rect.width() > window.x / 2.0
+                && rect.height() > window.y / 2.0 =>
+            {
+                Some((*rect, *color))
+            }
+            _ => None,
+        });
         if let Some((backdrop_rect, backdrop_color)) = backdrop {
             // The sidebar fill stops at the sidebar's width; the collapsed-
             // sidebar frame's panel fill reaches the window's right edge, so it
@@ -670,22 +926,22 @@ fn print_geometry(
 
             // The tab outline keeps its 3 pt inset relative to its slot.
             let outline = commands.iter().find_map(|command| match command {
-            RenderCommand::StrokeRect {
-                rect,
-                color,
-                width,
-                corner_radius,
-            } if (*width - 1.0).abs() < 0.01
-                && (*corner_radius - 6.0).abs() < 0.01
-                && (*color == app.theme.color(ColorToken::Accent)
-                    || *color == app.theme.color(ColorToken::Border))
-                && rect.min_x() <= header.min_x() + 3.5
-                && rect.max_x() >= header.max_x() - 3.5 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        });
+                RenderCommand::StrokeRect {
+                    rect,
+                    color,
+                    width,
+                    corner_radius,
+                } if (*width - 1.0).abs() < 0.01
+                    && (*corner_radius - 6.0).abs() < 0.01
+                    && (*color == app.theme.color(ColorToken::Accent)
+                        || *color == app.theme.color(ColorToken::Border))
+                    && rect.min_x() <= header.min_x() + 3.5
+                    && rect.max_x() >= header.max_x() - 3.5 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            });
             if let Some(outline) = outline {
                 println!(
                     "     tab outline: x {:.1}..{:.1} y {:.1}..{:.1} | slot inset L {:.1} T {:.1} R {:.1} B {:.1}",
@@ -706,9 +962,9 @@ fn print_geometry(
         let close = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, size, .. } if name == "x-close" => {
-                    Some((origin.x + size / 2.0, origin.y + size / 2.0))
-                }
+                RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "x-close" => Some((origin.x + size / 2.0, origin.y + size / 2.0)),
                 _ => None,
             })
             .filter(|(x, y)| *y >= pane.min_y() && *y <= pane.min_y() + TOPBAR_HEIGHT)
@@ -808,9 +1064,7 @@ fn print_geometry(
             )
         })
         .count();
-    println!(
-        "   pane card / outline strokes (frames, not resize rules): {frames}"
-    );
+    println!("   pane card / outline strokes (frames, not resize rules): {frames}");
     let surfaces = commands
         .iter()
         .filter(|command| {
@@ -882,10 +1136,7 @@ fn print_panel_surface_pixels(
             sidebar_probe == Some(surface),
         )
     } else {
-        (
-            "collapsed (theme Surface reference)".to_string(),
-            true,
-        )
+        ("collapsed (theme Surface reference)".to_string(), true)
     };
 
     // The four edges of the pane area, right across the inset frame: 1.5 px
@@ -948,10 +1199,15 @@ fn print_panel_surface_pixels(
             _ => None,
         });
         only_cards_bg &= card_fill == Some(bg);
-        cards.push(format!("pane {id} {}", color_hex(card_fill.unwrap_or(surface))));
+        cards.push(format!(
+            "pane {id} {}",
+            color_hex(card_fill.unwrap_or(surface))
+        ));
     }
     let surface_index = commands.iter().position(|command| match command {
-        RenderCommand::FillRect { rect, color, .. } => *color == surface && rect.width() > window.x / 2.0,
+        RenderCommand::FillRect { rect, color, .. } => {
+            *color == surface && rect.width() > window.x / 2.0
+        }
         _ => false,
     });
     let stray: Vec<RectF> = surface_index

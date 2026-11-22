@@ -14,19 +14,6 @@ use goble_ui::platform::WindowControl;
 use goble_ui::theme::ThemePreset;
 use goble_ui::{ChatMessage, ChatRole};
 
-use crate::media::MediaState;
-use crate::state::{
-    default_pane_path, routing_to_str, DiffGitResult, InboxKind, SpaceMenu, SpacePressRun, UiState,
-    MULTI_CLICK_INTERVAL_MS, NEW_CONVERSATION_TITLE,
-};
-use crate::terminal::{classify_input, InputClass};
-use crate::ui::color_picker::ColorTarget;
-use crate::ui::{
-    AgentDashboardAction, AppTab, ArchivedFilter, CronEntry, DiffPanelAction, FloatingDrag,
-    FloatingDragMode, LayoutKind, NavDir, OnboardingAction, Pane, PaneKind, SettingsCategory,
-    SidebarView, Space, SplitDir, TabMenuAction, UiActions, WorkspaceRouting,
-};
-
 use super::pane_ops::{
     close_space_at, ensure_pane_hover, open_diff_pane, open_file_pane, open_pane_harness,
     open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
@@ -35,7 +22,20 @@ use super::prompt::{
     run_terminal_command, send_agent_prompt, send_agent_prompt_with_attachments,
     send_sub_agent_prompt,
 };
+use crate::media::MediaState;
+use crate::state::{
+    default_pane_path, routing_to_str, DiffGitResult, InboxKind, SideTabAction, SpaceMenu,
+    SpacePressRun, UiState, MULTI_CLICK_INTERVAL_MS, NEW_CONVERSATION_TITLE,
+};
+use crate::terminal::{classify_input, InputClass};
+use crate::ui::color_picker::ColorTarget;
 use crate::ui::pickers::{change_directory_command, checkout_branch_command};
+use crate::ui::{
+    AgentDashboardAction, AppTab, ArchivedFilter, CronEntry, DiffPanelAction, FileMenuAction,
+    FloatingDrag, FloatingDragMode, LayoutKind, NavDir, OnboardingAction, Pane, PaneKind,
+    SettingsCategory, SideChatAction, SidebarView, Space, SplitDir, TabMenuAction, UiActions,
+    WorkspaceRouting,
+};
 
 /// Answer the question the pane's turn is suspended on, resuming it through the
 /// harness. The pane reports Working until the turn's next event lands, so the
@@ -193,6 +193,19 @@ fn flush_queued_prompt(
     ) {
         log::warn!("run_chat_turn (queued) failed: {e}");
     } else {
+        // A prompt submitted from the queue names the conversation the same way
+        // a typed one does: only a conversation still under the placeholder is
+        // named (and only that one asks the model for a subject), so a queued
+        // second prompt leaves the first one's subject alone.
+        if state.name_conversation_from_prompt(&chat_id, &prompt, desktop) {
+            crate::state::spawn_title_generation(
+                desktop,
+                &chat_id,
+                &prompt,
+                &state.settings_llm_provider,
+                &model,
+            );
+        }
         state.begin_turn(pane_id);
         state.agent_busy = true;
     }
@@ -204,7 +217,10 @@ fn flush_queued_prompt(
 /// reaches the UI as the `remote:deploy` event the service emits.
 fn spawn_remote_deploy(desktop: Arc<DesktopState>, agent: String, project: Option<String>) {
     tokio::spawn(async move {
-        match desktop.deploy_remote_agent(project.as_deref(), &agent).await {
+        match desktop
+            .deploy_remote_agent(project.as_deref(), &agent)
+            .await
+        {
             Ok(sandbox) => log::info!(
                 "remote agent `{agent}` deployed into {} · {}",
                 sandbox.provider,
@@ -243,6 +259,10 @@ pub fn make_actions(
     let on_toggle_sidebar = Rc::clone(&state);
     let on_diff_panel = Rc::clone(&state);
     let desktop_diff_panel = desktop.clone();
+    let on_file_menu = Rc::clone(&state);
+    let on_file_menu_action = Rc::clone(&state);
+    let on_file_menu_close = Rc::clone(&state);
+    let desktop_file_menu = desktop.clone();
     let on_toggle_conversations_expanded = Rc::clone(&state);
     let on_select_sidebar_view = Rc::clone(&state);
     let on_toggle_section = Rc::clone(&state);
@@ -253,9 +273,11 @@ pub fn make_actions(
     let on_session_rename_commit = Rc::clone(&state);
     let desktop_session_rename_commit = desktop.clone();
     let on_session_rename_cancel = Rc::clone(&state);
+    let on_inline_title_rename = Rc::clone(&state);
     let on_fork_conversation_by_id = Rc::clone(&state);
     let desktop_fork_conversation = desktop.clone();
     let on_copy_conversation_id = Rc::clone(&state);
+    let on_copy_menu_value = Rc::clone(&state);
     let on_archive_conversation = Rc::clone(&state);
     let desktop_archive_conversation = desktop.clone();
     let on_unarchive_conversation = Rc::clone(&state);
@@ -281,6 +303,16 @@ pub fn make_actions(
     let on_toast_dismiss = Rc::clone(&state);
     let on_toggle_explorer_dir = Rc::clone(&state);
     let on_explorer_file_click = Rc::clone(&state);
+    let on_open_file_floating = Rc::clone(&state);
+    let desktop_open_file_floating = desktop.clone();
+    let on_dock_float = Rc::clone(&state);
+    let desktop_dock_float = desktop.clone();
+    // The review pane's own view choices are app-owned cells shared with the
+    // UI; clone the handle once, before any action closure borrows the state.
+    let review_views = {
+        let state = state.borrow();
+        Rc::clone(&state.diff_reviews)
+    };
     let on_global_search_change = Rc::clone(&state);
     let on_global_search_focus_change = Rc::clone(&state);
     let on_workspace_click = Rc::clone(&state);
@@ -293,6 +325,7 @@ pub fn make_actions(
     let on_select_conversation = Rc::clone(&state);
     let on_select_tab = Rc::clone(&state);
     let on_composer_change = Rc::clone(&state);
+    let on_side_chat = Rc::clone(&state);
     let on_slash_move = Rc::clone(&state);
     let on_slash_close = Rc::clone(&state);
     let on_slash_dismiss = Rc::clone(&state);
@@ -339,10 +372,15 @@ pub fn make_actions(
     let on_fork_conversation = Rc::clone(&state);
     let on_set_harness_mode = Rc::clone(&state);
     let on_show_pane_terminal = Rc::clone(&state);
+    let on_toggle_terminal_dock = Rc::clone(&state);
+    let on_terminal_dock_height = Rc::clone(&state);
     let on_open_agent_view = Rc::clone(&state);
     let on_send_queued = Rc::clone(&state);
     let on_dismiss_queued = Rc::clone(&state);
     let on_settings = Rc::clone(&state);
+    let on_close_settings_overlay = Rc::clone(&state);
+    let on_toggle_side_panel_maximized = Rc::clone(&state);
+    let on_side_tab = Rc::clone(&state);
     let on_inbox = Rc::clone(&state);
     let on_close_inbox = Rc::clone(&state);
     let on_inbox_move = Rc::clone(&state);
@@ -417,6 +455,9 @@ pub fn make_actions(
     let on_sidebar_drag_start = Rc::clone(&state);
     let on_sidebar_drag_move = Rc::clone(&state);
     let on_sidebar_drag_end = Rc::clone(&state);
+    let on_side_split_drag_start = Rc::clone(&state);
+    let on_side_split_drag_move = Rc::clone(&state);
+    let on_side_split_drag_end = Rc::clone(&state);
     let on_content_lane_drag_start = Rc::clone(&state);
     let on_content_lane_drag_move = Rc::clone(&state);
     let on_content_lane_drag_end = Rc::clone(&state);
@@ -429,6 +470,13 @@ pub fn make_actions(
     let on_float_minimize = Rc::clone(&state);
     let on_float_restore = Rc::clone(&state);
     let on_open_ssh_host_picker = Rc::clone(&state);
+    let on_open_ssh_target = Rc::clone(&state);
+    let on_close_ssh_target = Rc::clone(&state);
+    let on_ssh_target_change = Rc::clone(&state);
+    let on_ssh_target_focus = Rc::clone(&state);
+    let on_ssh_choose_config = Rc::clone(&state);
+    let on_ssh_target_connect = Rc::clone(&state);
+    let on_ssh_pick_config_host = Rc::clone(&state);
     let on_close_ssh_host_picker = Rc::clone(&state);
     let on_ssh_host_move = Rc::clone(&state);
     let on_ssh_host_pick = Rc::clone(&state);
@@ -510,6 +558,8 @@ pub fn make_actions(
     let desktop_create = desktop.clone();
     let desktop_select = desktop.clone();
     let desktop_send = desktop.clone();
+    let desktop_side_chat = desktop.clone();
+    let desktop_side_split_end = desktop.clone();
     let desktop_cmd_enter = desktop.clone();
     let desktop_send_to_cloud = desktop.clone();
     let desktop_stop = desktop.clone();
@@ -559,6 +609,7 @@ pub fn make_actions(
     let desktop_float_minimize = desktop.clone();
     let desktop_float_restore = desktop.clone();
     let desktop_ssh_host = desktop.clone();
+    let desktop_ssh_target = desktop.clone();
     let desktop_ssh_reconnect = desktop.clone();
     let desktop_file_view = desktop.clone();
     let desktop_open_config = desktop.clone();
@@ -640,12 +691,14 @@ pub fn make_actions(
     let desktop_pane_drop = desktop.clone();
     let desktop_agent_delete = desktop.clone();
     let media_send = Rc::clone(&media);
+    let media_side_chat = Rc::clone(&media);
     let media_cmd_enter = Rc::clone(&media);
     let media_send_to_cloud = Rc::clone(&media);
     let media_send_queued = Rc::clone(&media);
     let media_split_right = Rc::clone(&media);
     let media_split_down = Rc::clone(&media);
     let media_ssh_host = Rc::clone(&media);
+    let media_ssh_target = Rc::clone(&media);
     let media_new_terminal = Rc::clone(&media);
     let media_term_cmd = Rc::clone(&media);
     let media_add_space = Rc::clone(&media);
@@ -725,16 +778,15 @@ pub fn make_actions(
                 goble_core::config::SetupTarget::Remote,
             );
         }));
-    let action_setup_hub_with_agent: Rc<RefCell<dyn FnMut()>> =
-        Rc::new(RefCell::new(move || {
-            let mut state = on_setup_hub_with_agent.borrow_mut();
-            open_setup_conversation(
-                &mut state,
-                desktop_setup_hub_with_agent.as_ref(),
-                &media_setup_hub_with_agent,
-                goble_core::config::SetupTarget::Hub,
-            );
-        }));
+    let action_setup_hub_with_agent: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+        let mut state = on_setup_hub_with_agent.borrow_mut();
+        open_setup_conversation(
+            &mut state,
+            desktop_setup_hub_with_agent.as_ref(),
+            &media_setup_hub_with_agent,
+            goble_core::config::SetupTarget::Hub,
+        );
+    }));
     // Remote is configured on the Settings page it belongs to. Every chooser
     // that names it before anything is configured opens that page with the
     // keyboard on the form, so there is one place to configure and one shape
@@ -920,7 +972,168 @@ pub fn make_actions(
     // The steppers run through the actions that own their bounds and, for the
     // font, the shared zoom cell; the rest belongs to the state.
 
+    let on_spotlight = {
+        let state = Rc::clone(&state);
+        let desktop = desktop.clone();
+        Rc::new(RefCell::new(
+            move |action: crate::ui::spotlight::SpotlightAction| {
+                use crate::ui::spotlight::{filtered_conversations, SpotlightAction};
+                let mut state = state.borrow_mut();
+                match action {
+                    SpotlightAction::Open => {
+                        state.spotlight.open = true;
+                        state.spotlight.focused = true;
+                        state.spotlight.selected = 0;
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::Close => {
+                        state.spotlight.open = false;
+                        state.spotlight.focused = false;
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::Escape => {
+                        if *state.spotlight.scope_menu_open.borrow() {
+                            *state.spotlight.scope_menu_open.borrow_mut() = false;
+                        } else if *state.spotlight.options_menu_open.borrow() {
+                            *state.spotlight.options_menu_open.borrow_mut() = false;
+                        } else {
+                            state.spotlight.open = false;
+                            state.spotlight.focused = false;
+                        }
+                    }
+                    SpotlightAction::Query(query) => {
+                        state.spotlight.query = query;
+                        state.spotlight.selected = 0;
+                    }
+                    SpotlightAction::Scope(scope) => {
+                        state.spotlight.scope = scope;
+                        state.spotlight.selected = 0;
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::Sort(sort) => {
+                        state.spotlight.sort = sort;
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::ToggleFilter(filter) => {
+                        match filter {
+                            crate::ui::spotlight::SpotlightFilter::Unread => {
+                                state.spotlight.only_unread = !state.spotlight.only_unread
+                            }
+                            crate::ui::spotlight::SpotlightFilter::Archived => {
+                                state.spotlight.only_archived = !state.spotlight.only_archived
+                            }
+                            crate::ui::spotlight::SpotlightFilter::Automations => {
+                                state.spotlight.only_automations = !state.spotlight.only_automations
+                            }
+                        }
+                        state.spotlight.selected = 0;
+                    }
+                    SpotlightAction::ToggleScopeMenu => {
+                        let open = *state.spotlight.scope_menu_open.borrow();
+                        *state.spotlight.scope_menu_open.borrow_mut() = !open;
+                        *state.spotlight.options_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::ToggleOptionsMenu => {
+                        let open = *state.spotlight.options_menu_open.borrow();
+                        *state.spotlight.options_menu_open.borrow_mut() = !open;
+                        *state.spotlight.scope_menu_open.borrow_mut() = false;
+                    }
+                    SpotlightAction::Select(index) => state.spotlight.selected = index,
+                    SpotlightAction::Move(delta) => {
+                        let len = match state.spotlight.scope {
+                            crate::ui::spotlight::SpotlightScope::Conversations => {
+                                filtered_conversations(&state.conversations, &state.spotlight).len()
+                            }
+                            crate::ui::spotlight::SpotlightScope::Projects => {
+                                crate::ui::spotlight::filtered_projects(
+                                    &state.conversations,
+                                    &state.spotlight.query,
+                                )
+                                .len()
+                            }
+                            crate::ui::spotlight::SpotlightScope::Commands => {
+                                crate::ui::spotlight::commands().len()
+                            }
+                            crate::ui::spotlight::SpotlightScope::Files => {
+                                state.global_search_rows.len()
+                            }
+                        };
+                        if len == 0 {
+                            state.spotlight.selected = 0;
+                        } else {
+                            let next = (state.spotlight.selected as i64 + delta as i64)
+                                .rem_euclid(len as i64)
+                                as usize;
+                            state.spotlight.selected = next;
+                        }
+                    }
+                    SpotlightAction::Activate => match state.spotlight.scope {
+                        crate::ui::spotlight::SpotlightScope::Conversations => {
+                            let rows =
+                                filtered_conversations(&state.conversations, &state.spotlight);
+                            let id = rows
+                                .get(state.spotlight.selected)
+                                .map(|entry| entry.id.clone());
+                            state.spotlight.open = false;
+                            state.spotlight.focused = false;
+                            if let Some(id) = id {
+                                state.open_conversation_from_sidebar(id, desktop.as_deref());
+                            }
+                        }
+                        crate::ui::spotlight::SpotlightScope::Commands => {
+                            let query = state.spotlight.query.to_lowercase();
+                            let rows: Vec<(String, String)> = crate::ui::spotlight::commands()
+                                .into_iter()
+                                .filter(|(name, description)| {
+                                    query.is_empty()
+                                        || name.to_lowercase().contains(&query)
+                                        || description.to_lowercase().contains(&query)
+                                })
+                                .map(|(name, description)| {
+                                    (name.to_string(), description.to_string())
+                                })
+                                .collect();
+                            let name = rows
+                                .get(state.spotlight.selected)
+                                .map(|(name, _)| name.clone());
+                            state.spotlight.open = false;
+                            state.spotlight.focused = false;
+                            match name.as_deref() {
+                                Some("Toggle sidebar") => {
+                                    state.sidebar_visible = !state.sidebar_visible;
+                                }
+                                Some("Open Settings") => {
+                                    state.open_settings_tab(None);
+                                    state.settings_overlay_open = true;
+                                }
+                                Some("Review changes") => {
+                                    let pane = state.active_pane_id;
+                                    let file = None;
+                                    crate::actions::pane_ops::open_diff_pane(
+                                        &mut state,
+                                        pane,
+                                        file,
+                                        desktop.as_ref(),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        crate::ui::spotlight::SpotlightScope::Projects
+                        | crate::ui::spotlight::SpotlightScope::Files => {
+                            state.spotlight.open = false;
+                            state.spotlight.focused = false;
+                        }
+                    },
+                }
+            },
+        )) as Rc<RefCell<dyn FnMut(crate::ui::spotlight::SpotlightAction)>>
+    };
     UiActions {
+        review_views,
+        on_spotlight,
         on_search_change: Rc::new(RefCell::new(move |value: String| {
             on_search_change.borrow_mut().search_query = value;
         })),
@@ -1016,6 +1229,73 @@ pub fn make_actions(
         on_composer_focus_change: Rc::new(RefCell::new(move |focused: bool| {
             on_composer_focus_change.borrow_mut().composer_focused = focused;
         })),
+        // The side panel's Agent tab is a real conversation of its own, keyed by
+        // the reserved side pane id: its draft, attachments and turn live on
+        // that session, never on the active pane's. The first prompt binds a new
+        // conversation (named like any other from the prompt), so the side tab
+        // starts empty instead of showing the main pane's chat.
+        on_side_chat: Rc::new(RefCell::new(move |action: SideChatAction| {
+            let mut state = on_side_chat.borrow_mut();
+            let pane_id = crate::state::SIDE_AGENT_PANE_ID;
+            match action {
+                SideChatAction::Draft(value) => {
+                    state.pane_sessions.entry(pane_id).or_default().draft = value;
+                    // The draft is the slash menu's query: typing restarts the
+                    // menu and brings it back after Escape, exactly as it does
+                    // in a pane's composer.
+                    *state.pane_controls_mut(pane_id).slash_index.borrow_mut() = 0;
+                    *state
+                        .pane_controls_mut(pane_id)
+                        .slash_dismissed
+                        .borrow_mut() = false;
+                }
+                SideChatAction::Focus(_focused) => {
+                    // Focus is per element tree: the frame that draws the side
+                    // composer is the one that owns its caret, so there is no
+                    // app-wide flag to flip here.
+                }
+                SideChatAction::Attach => {
+                    if let Some(path) = goble_ui::platform::current::pick_file() {
+                        state.attach_pane_file(pane_id, path);
+                    }
+                }
+                SideChatAction::Send(text) => {
+                    let attachments = state.pane_attachments(pane_id);
+                    if text.trim().is_empty() && attachments.is_empty() {
+                        return;
+                    }
+                    // The side tab owns a conversation of its own: the first
+                    // send creates it, and later sends keep appending to it.
+                    // It never adopts the sidebar's selection the way an
+                    // unbound pane's fallback does.
+                    if state.can_run_agent_turn(pane_id) && !state.pane_owns_conversation(pane_id) {
+                        state.bind_pane_new_conversation_titled(
+                            pane_id,
+                            crate::state::SIDE_AGENT_TITLE,
+                            desktop_side_chat.as_deref(),
+                        );
+                    }
+                    let ran = send_agent_prompt_with_attachments(
+                        &mut state,
+                        desktop_side_chat.as_ref(),
+                        &media_side_chat,
+                        &text,
+                        pane_id,
+                        &attachments,
+                    );
+                    // The side composer is not the active pane's, so the
+                    // helper's active-pane draft clear does not reach it.
+                    if ran {
+                        state
+                            .pane_sessions
+                            .entry(pane_id)
+                            .or_default()
+                            .draft
+                            .clear();
+                    }
+                }
+            }
+        })),
         // The TUI pane's rich input: the line goes to the CLI agent's own
         // stdin (with the per-agent delivery warp-new uses), so a harness keeps
         // its native screen and its own conversation while goble supplies the
@@ -1047,7 +1327,7 @@ pub fn make_actions(
                 state.retitle_unnamed_harness_conversation(
                     &conversation_id,
                     harness,
-                    crate::state::prompt_subject(&text),
+                    crate::state::deterministic_subject(&text),
                     desktop,
                 );
             }
@@ -1116,7 +1396,7 @@ pub fn make_actions(
                 // has nowhere to put them, and they belong to the next
                 // agent turn instead of being silently eaten here.
                 state.set_active_pane_draft(String::new());
-                    return;
+                return;
             }
             // Everything else is an agent prompt. An attachment-only draft has no
             // text to classify; the files are the whole submission.
@@ -1137,13 +1417,7 @@ pub fn make_actions(
                 if prompt.trim().is_empty() {
                     return;
                 }
-                answer_pending_ask(
-                    &mut state,
-                    desktop_send.as_ref(),
-                    pane_id,
-                    &prompt,
-                    None,
-                );
+                answer_pending_ask(&mut state, desktop_send.as_ref(), pane_id, &prompt, None);
                 state.set_active_pane_draft(String::new());
                 return;
             }
@@ -1163,6 +1437,12 @@ pub fn make_actions(
                 let rt = state.pane_runtime.entry(pane_id).or_default();
                 rt.queued_prompt = Some(queued_prompt.clone());
                 state.queued_prompt = Some(queued_prompt);
+                if state.send_immediately {
+                    // The Execution preference: the prompt is queued and then
+                    // flushed immediately, cancelling the running turn through
+                    // the same path as the second-Enter "Send now" gesture.
+                    flush_queued_prompt(&mut state, desktop_send.as_ref(), &media_send);
+                }
                 state.set_active_pane_draft(String::new());
                 state.pane_attachments.remove(&pane_id);
                 return;
@@ -1455,48 +1735,42 @@ pub fn make_actions(
         // A message typed in a child view goes to that child's own
         // conversation, not to the pane's parent conversation: see
         // `send_sub_agent_prompt`.
-        on_send_sub_agent_message: Rc::new(RefCell::new(
-            move |pane_id: u64, text: String| {
-                let mut state = on_send_sub_agent_message.borrow_mut();
-                let Some(child_id) = state
-                    .sub_agent_views
-                    .get(&pane_id)
-                    .map(|view| view.child_id.clone())
-                else {
-                    return;
-                };
-                if send_sub_agent_prompt(
-                    &mut state,
-                    desktop_send_sub_agent_message.as_ref(),
-                    &media_send_sub_agent_message,
-                    pane_id,
-                    &child_id,
-                    &text,
-                ) {
-                    // The line ran, so the draft it was typed in is spent; the
-                    // app-owned cell is what the next frame rebuilds the
-                    // child's composer from.
-                    if let Some(view) = state.sub_agent_views.get(&pane_id) {
-                        *view.draft.borrow_mut() = String::new();
-                        *view.caret.borrow_mut() = 0;
-                    }
+        on_send_sub_agent_message: Rc::new(RefCell::new(move |pane_id: u64, text: String| {
+            let mut state = on_send_sub_agent_message.borrow_mut();
+            let Some(child_id) = state
+                .sub_agent_views
+                .get(&pane_id)
+                .map(|view| view.child_id.clone())
+            else {
+                return;
+            };
+            if send_sub_agent_prompt(
+                &mut state,
+                desktop_send_sub_agent_message.as_ref(),
+                &media_send_sub_agent_message,
+                pane_id,
+                &child_id,
+                &text,
+            ) {
+                // The line ran, so the draft it was typed in is spent; the
+                // app-owned cell is what the next frame rebuilds the
+                // child's composer from.
+                if let Some(view) = state.sub_agent_views.get(&pane_id) {
+                    *view.draft.borrow_mut() = String::new();
+                    *view.caret.borrow_mut() = 0;
                 }
-            },
-        )),
-        on_toggle_work_section: Rc::new(RefCell::new(
-            move |section: goble_ui::WorkSection| {
-                on_toggle_work_section
-                    .borrow_mut()
-                    .toggle_work_section(section);
-            },
-        )),
-        on_show_all_work_section: Rc::new(RefCell::new(
-            move |section: goble_ui::WorkSection| {
-                on_show_all_work_section
-                    .borrow_mut()
-                    .show_all_work_section(section);
-            },
-        )),
+            }
+        })),
+        on_toggle_work_section: Rc::new(RefCell::new(move |section: goble_ui::WorkSection| {
+            on_toggle_work_section
+                .borrow_mut()
+                .toggle_work_section(section);
+        })),
+        on_show_all_work_section: Rc::new(RefCell::new(move |section: goble_ui::WorkSection| {
+            on_show_all_work_section
+                .borrow_mut()
+                .show_all_work_section(section);
+        })),
         on_open_workflow_run: Rc::new(RefCell::new(move |pane_id: u64, run_id: String| {
             on_open_workflow_run
                 .borrow_mut()
@@ -1637,6 +1911,17 @@ pub fn make_actions(
                     state.save_panes(desktop);
                 }
             }
+        })),
+        // The header's terminal icon opens the pane's bottom dock instead of
+        // switching the whole pane to a shell. The first open starts a real PTY
+        // in the pane's own directory.
+        on_toggle_terminal_dock: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_toggle_terminal_dock.borrow_mut();
+            state.toggle_terminal_dock(pane_id);
+        })),
+        on_terminal_dock_height: Rc::new(RefCell::new(move |pane_id: u64, height: f32| {
+            let mut state = on_terminal_dock_height.borrow_mut();
+            state.set_terminal_dock_height(pane_id, height);
         })),
         // A click on the card a conversation left behind in the terminal enters
         // that conversation's agent view; the harness input comes with it, the
@@ -2017,10 +2302,7 @@ pub fn make_actions(
                         open_diff_pane(&mut state, pane_id, file, desktop_diff_panel.as_ref());
                     }
                     DiffPanelAction::Select(file) => {
-                        let controls = state.pane_controls_mut(pane_id);
-                        *controls.diff_selected.borrow_mut() = file;
-                        *controls.diff_edit_focus.borrow_mut() = None;
-                        controls.diff_scroll.borrow_mut().reset();
+                        state.select_diff_file(pane_id, file);
                     }
                     DiffPanelAction::SetFileOpen(path, open) => {
                         let controls = state.pane_controls_mut(pane_id);
@@ -2054,6 +2336,32 @@ pub fn make_actions(
                         let sidebar = controls.diff_sidebar.clone();
                         let open = *sidebar.borrow();
                         *sidebar.borrow_mut() = !open;
+                    }
+                    DiffPanelAction::ToggleView => {
+                        state.toggle_diff_view(pane_id);
+                    }
+                    DiffPanelAction::ToggleWrap => {
+                        state.toggle_diff_wrap(pane_id);
+                    }
+                    DiffPanelAction::ToggleDir(path) => {
+                        state.toggle_diff_dir(pane_id, &path);
+                    }
+                    DiffPanelAction::CopyContent(path) => {
+                        // The comparison is a snapshot of the working tree, so
+                        // copying the file reads it now rather than copying the
+                        // selected diff's text: "Copy content" means the file,
+                        // the way DSH's review copy does.
+                        let controls = state.pane_controls_mut(pane_id);
+                        match std::fs::read_to_string(&path) {
+                            Ok(text) => crate::clipboard::copy_text(&text),
+                            Err(error) => {
+                                *controls.diff_git_status.borrow_mut() =
+                                    Some((format!("Cannot copy {path}: {error}"), false));
+                            }
+                        }
+                    }
+                    DiffPanelAction::OpenFloating(path) => {
+                        state.open_file_in_floating(path, desktop_diff_panel.as_deref());
                     }
                     DiffPanelAction::ToggleCommit => {
                         state.focus_pane(pane_id);
@@ -2171,6 +2479,61 @@ pub fn make_actions(
                 }
             },
         )),
+        // The file row/card context menu. Opening stores the one target; the
+        // tree rebuilds the panel from it, and every row comes back here.
+        on_file_menu: Rc::new(RefCell::new(
+            move |path: String, copy_path: String, at: Vector2F| {
+                on_file_menu
+                    .borrow_mut()
+                    .open_file_menu(path, copy_path, at);
+            },
+        )),
+        on_file_menu_close: Rc::new(RefCell::new(move || {
+            on_file_menu_close.borrow_mut().dismiss_file_menu();
+        })),
+        on_file_menu_action: Rc::new(RefCell::new(move |action: FileMenuAction| {
+            let mut state = on_file_menu_action.borrow_mut();
+            let Some(target) = state.file_menu.borrow().clone() else {
+                return;
+            };
+            state.dismiss_file_menu();
+            match action {
+                FileMenuAction::Open => {
+                    open_file_pane(&mut state, target.path, desktop_file_menu.as_ref());
+                }
+                FileMenuAction::OpenFloating => {
+                    state.open_file_in_floating(target.path, desktop_file_menu.as_deref());
+                }
+                FileMenuAction::CopyPath => {
+                    crate::clipboard::copy_text(&target.copy_path);
+                }
+                FileMenuAction::Revert => {
+                    let Some(revert) = target.revert else {
+                        return;
+                    };
+                    // The review pane that owns the repository is the one that
+                    // shows the job's outcome; a menu opened over the explorer
+                    // still reverts, it just has no card to update.
+                    let result = state
+                        .spaces
+                        .iter()
+                        .find_map(|space| space.diff_leaf_for(&revert.repo))
+                        .map(|pane_id| {
+                            let controls = state.pane_controls(pane_id);
+                            *controls.diff_git_status.borrow_mut() =
+                                Some((format!("Reverting {}…", revert.git_path), true));
+                            controls.diff_git_result.clone()
+                        })
+                        .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(None)));
+                    spawn_git_job(revert.repo, GitJob::Revert(revert.git_path), result);
+                }
+                FileMenuAction::OpenEditor => {
+                    if let Err(error) = crate::state::open_local_path(&target.path) {
+                        log::warn!("open {} in the editor: {error}", target.path);
+                    }
+                }
+            }
+        })),
         on_toggle_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_sidebar.borrow_mut();
             // Below the responsive breakpoint the toggle re-expands the
@@ -2235,6 +2598,9 @@ pub fn make_actions(
         on_session_rename_start: Rc::new(RefCell::new(move |id: String| {
             on_session_rename_start.borrow_mut().begin_rename(&id);
         })),
+        on_inline_title_rename: Rc::new(RefCell::new(move |id: String| {
+            on_inline_title_rename.borrow_mut().begin_inline_rename(&id);
+        })),
         on_session_rename_draft: Rc::new(RefCell::new(move |draft: String| {
             on_session_rename_draft.borrow_mut().rename_draft(draft);
         })),
@@ -2256,7 +2622,14 @@ pub fn make_actions(
             }
         })),
         on_copy_conversation_id: Rc::new(RefCell::new(move |id: String| {
-            on_copy_conversation_id.borrow_mut().copy_conversation_id(&id);
+            on_copy_conversation_id
+                .borrow_mut()
+                .copy_conversation_id(&id);
+        })),
+        on_copy_menu_value: Rc::new(RefCell::new(move |what: String, value: String| {
+            on_copy_menu_value
+                .borrow_mut()
+                .copy_menu_value(&what, &value);
         })),
         on_archive_conversation: Rc::new(RefCell::new(move |id: String| {
             on_archive_conversation
@@ -2277,7 +2650,9 @@ pub fn make_actions(
             on_archive_cancel.borrow_mut().cancel_archive();
         })),
         on_archived_filter_change: Rc::new(RefCell::new(move |filter: ArchivedFilter| {
-            on_archived_filter_change.borrow_mut().set_archived_filter(filter);
+            on_archived_filter_change
+                .borrow_mut()
+                .set_archived_filter(filter);
         })),
         // The Workspaces header's "+": pick a directory in the platform's own
         // panel and adopt it as a Workspace (DSH's add-workspace flow: the
@@ -2296,32 +2671,50 @@ pub fn make_actions(
         // A workspace row's New-session control: a conversation in that
         // workspace's directory, so its card lands under the workspace's folder
         // group (which is the directory's last segment).
-        on_sidebar_workspace_new_session: Rc::new(RefCell::new(move |path: String| {
-            let mut state = on_sidebar_workspace_new_session.borrow_mut();
-            create_conversation_space(
-                &mut state,
-                &media_sidebar_workspace_new_session,
-                desktop_sidebar_workspace_new_session.as_ref(),
-                NEW_CONVERSATION_TITLE,
-                None,
-            );
-            let pane_id = state.active_pane_id;
-            state.set_active_pane_path(path.clone());
-            if let Some(desktop) = desktop_sidebar_workspace_new_session.as_deref() {
-                if let Some(conversation_id) = state.pane_conversation_id(pane_id) {
-                    if let Err(error) = desktop.set_chat_working_dir(&conversation_id, &path) {
-                        log::warn!("set_chat_working_dir({conversation_id}) failed: {error}");
-                    }
+        on_sidebar_workspace_new_session: Rc::new(RefCell::new(
+            move |path: String, target: String| {
+                let mut state = on_sidebar_workspace_new_session.borrow_mut();
+                if target.starts_with("ssh:") {
+                    let Some(host) = state.ssh_workspace_host(&target) else {
+                        state.show_toast(crate::state::ToastKind::RemoteUnavailable);
+                        return;
+                    };
+                    let media = media_sidebar_workspace_new_session.borrow();
+                    open_ssh_host_pane(
+                        &mut state,
+                        desktop_sidebar_workspace_new_session.as_ref(),
+                        &media,
+                        &host,
+                    );
+                    return;
                 }
-                state.refresh_from_desktop(desktop);
-                state.save_panes(desktop);
-            }
-        })),
-        on_sidebar_workspace_rename_start: Rc::new(RefCell::new(move |path: String, title: String| {
-            on_sidebar_workspace_rename_start
-                .borrow_mut()
-                .begin_workspace_rename(&path, &title);
-        })),
+                create_conversation_space(
+                    &mut state,
+                    &media_sidebar_workspace_new_session,
+                    desktop_sidebar_workspace_new_session.as_ref(),
+                    NEW_CONVERSATION_TITLE,
+                    None,
+                );
+                let pane_id = state.active_pane_id;
+                state.set_active_pane_path(path.clone());
+                if let Some(desktop) = desktop_sidebar_workspace_new_session.as_deref() {
+                    if let Some(conversation_id) = state.pane_conversation_id(pane_id) {
+                        if let Err(error) = desktop.set_chat_working_dir(&conversation_id, &path) {
+                            log::warn!("set_chat_working_dir({conversation_id}) failed: {error}");
+                        }
+                    }
+                    state.refresh_from_desktop(desktop);
+                    state.save_panes(desktop);
+                }
+            },
+        )),
+        on_sidebar_workspace_rename_start: Rc::new(RefCell::new(
+            move |path: String, title: String| {
+                on_sidebar_workspace_rename_start
+                    .borrow_mut()
+                    .begin_workspace_rename(&path, &title);
+            },
+        )),
         on_sidebar_workspace_rename_draft: Rc::new(RefCell::new(move |draft: String| {
             on_sidebar_workspace_rename_draft
                 .borrow_mut()
@@ -2370,6 +2763,19 @@ pub fn make_actions(
         on_explorer_file_click: Rc::new(RefCell::new(move |path: String| {
             let mut state = on_explorer_file_click.borrow_mut();
             open_file_pane(&mut state, path, desktop_file_view.as_ref());
+        })),
+        // DSH's "Open in floating panel": the file pane opens first (beside the
+        // active pane, or as a chip in the file pane already in front), then the
+        // active space arranges every leaf as a floating window.
+        on_open_file_floating: Rc::new(RefCell::new(move |path: String| {
+            let mut state = on_open_file_floating.borrow_mut();
+            state.open_file_in_floating(path, desktop_open_file_floating.as_deref());
+        })),
+        // The docked side of the same choice: the one floated window returns to
+        // the layout it was opened over, still in the pane tree.
+        on_dock_float: Rc::new(RefCell::new(move |pane_id: u64| {
+            let mut state = on_dock_float.borrow_mut();
+            state.dock_floating_pane(pane_id, desktop_dock_float.as_deref());
         })),
         on_global_search_change: Rc::new(RefCell::new(move |value: String| {
             let mut state = on_global_search_change.borrow_mut();
@@ -2523,17 +2929,46 @@ pub fn make_actions(
             state.space_rename_focused = false;
             state.space_rename_draft.clear();
         })),
-        // The settings tab: one space whose root is a settings leaf, opened
-        // once and brought to the front on every later press. It is a tab in
-        // `AppTab::Chat`, so the press comes back to the chat mode the strip is
-        // drawn in.
+        // Settings is an overlay now, not a pane: opening it reads the files
+        // again (they stay the source of truth) and floats the sheet over the
+        // workspace without taking a tab.
         on_settings: Rc::new(RefCell::new(move || {
             let mut state = on_settings.borrow_mut();
-            state.open_settings_tab(desktop_settings.as_deref());
-            // The files are the source of truth: opening the tab reads them
-            // again, so a hand edit made since the last visit shows up.
+            state.settings_overlay_open = true;
             if let Some(desktop) = desktop_settings.as_deref() {
                 state.refresh_settings(desktop);
+            }
+        })),
+        on_close_settings_overlay: Rc::new(RefCell::new(move || {
+            on_close_settings_overlay.borrow_mut().settings_overlay_open = false;
+        })),
+        on_toggle_side_panel_maximized: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_side_panel_maximized.borrow_mut();
+            state.side_panel_maximized = !state.side_panel_maximized;
+        })),
+        // The side panel's tab strip. Selecting, closing, adding and the
+        // horizontal swipe all land here; the state machine keeps the strip
+        // non-empty and the selection in range.
+        on_side_tab: Rc::new(RefCell::new(move |action: SideTabAction| {
+            let mut state = on_side_tab.borrow_mut();
+            state.ensure_side_tabs();
+            match action {
+                SideTabAction::Select(index) => state.select_side_tab(index),
+                SideTabAction::Close(index) => state.close_side_tab(index),
+                SideTabAction::Add(kind) => state.add_side_tab(kind),
+                SideTabAction::Cycle(step) => state.cycle_side_tab(step),
+            }
+            // The Terminal tab mounts the live grid: make sure the active
+            // pane's PTY exists before that surface reads it (the dock starts
+            // it on open; a tab can be opened without the dock).
+            if state.active_side_tab_kind() == crate::state::SideTabKind::Terminal {
+                let pane_id = state.active_pane_id;
+                let cwd = state
+                    .pane_sessions
+                    .get(&pane_id)
+                    .map(|session| session.path.clone())
+                    .unwrap_or_default();
+                state.terminal.borrow_mut().ensure_session(pane_id, &cwd);
             }
         })),
         on_onboarding: action_onboarding.clone(),
@@ -2668,6 +3103,11 @@ pub fn make_actions(
         on_toggle_right_sidebar: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_right_sidebar.borrow_mut();
             state.right_sidebar_open = !state.right_sidebar_open;
+            // Opening the panel lands on Overview, the surface the default
+            // opens on, whichever tab was showing when it was collapsed.
+            if state.right_sidebar_open {
+                state.open_side_panel();
+            }
         })),
         // Toggle the agent/window borderless fullscreen. The fullscreen flag is
         // app-owned so it survives the per-frame rebuild; the platform window
@@ -2787,12 +3227,30 @@ pub fn make_actions(
         on_sidebar_drag_end: Rc::new(RefCell::new(move || {
             on_sidebar_drag_end.borrow_mut().sidebar_dragging = false;
         })),
+        // The shared main/side-panel boundary. The element resolves the
+        // pointer to a ratio of the measured content width and clamps it to
+        // the cards' minimum widths, so the handler only stores the answer.
+        on_side_split_drag_start: Rc::new(RefCell::new(move || {
+            on_side_split_drag_start.borrow_mut().side_split_dragging = true;
+        })),
+        on_side_split_drag_move: Rc::new(RefCell::new(move |ratio: f32| {
+            let mut state = on_side_split_drag_move.borrow_mut();
+            if ratio.is_finite() {
+                state.side_split_ratio = ratio.clamp(0.25, 0.75);
+            }
+        })),
+        on_side_split_drag_end: Rc::new(RefCell::new(move || {
+            let mut state = on_side_split_drag_end.borrow_mut();
+            state.side_split_dragging = false;
+            // The ratio lives in the persisted pane layout: committing it on
+            // drag end is what makes the split survive a restart. Saving on
+            // every move would write the file once per pixel.
+            if let Some(desktop) = desktop_side_split_end.as_ref() {
+                state.save_panes(desktop);
+            }
+        })),
         on_content_lane_drag_start: Rc::new(RefCell::new(
-            move |pane_id: u64,
-                  pointer_x: f32,
-                  edge: LaneEdge,
-                  base_width: f32,
-                  column: f32| {
+            move |pane_id: u64, pointer_x: f32, edge: LaneEdge, base_width: f32, column: f32| {
                 let mut state = on_content_lane_drag_start.borrow_mut();
                 state.content_lane_drag_pane = Some(pane_id);
                 state.content_lane_drag_origin_x = pointer_x;
@@ -2805,10 +3263,9 @@ pub fn make_actions(
                 // Freeze this pane's live width where the drag grabbed it:
                 // without a preference the ratio would keep resolving under
                 // the pointer. Only this pane's entry is written.
-                state.content_lane_prefs.insert(
-                    pane_id,
-                    resolve_content_width(column, Some(base_width)),
-                );
+                state
+                    .content_lane_prefs
+                    .insert(pane_id, resolve_content_width(column, Some(base_width)));
                 state.content_lane_dragging = true;
             },
         )),
@@ -2988,6 +3445,50 @@ pub fn make_actions(
         })),
         // Cmd+Shift+N: read the saved hosts, then show the picker. The read
         // happens on open so an edit to hosts.toml is seen without a restart.
+        on_open_ssh_target: Rc::new(RefCell::new(move || {
+            on_open_ssh_target.borrow_mut().open_ssh_target();
+        })),
+        on_close_ssh_target: Rc::new(RefCell::new(move || {
+            on_close_ssh_target.borrow_mut().close_ssh_target();
+        })),
+        on_ssh_target_change: Rc::new(RefCell::new(move |draft: String| {
+            on_ssh_target_change
+                .borrow_mut()
+                .set_ssh_target_draft(draft);
+        })),
+        on_ssh_target_focus: Rc::new(RefCell::new(move |focused: bool| {
+            on_ssh_target_focus
+                .borrow_mut()
+                .set_ssh_target_focus(focused);
+        })),
+        on_ssh_choose_config: Rc::new(RefCell::new(move || {
+            let Some(path) = goble_ui::platform::current::pick_file() else {
+                return;
+            };
+            on_ssh_choose_config.borrow_mut().choose_ssh_config(path);
+        })),
+        on_ssh_target_connect: {
+            let desktop = desktop_ssh_target.clone();
+            let media = Rc::clone(&media_ssh_target);
+            Rc::new(RefCell::new(move || {
+                let mut state = on_ssh_target_connect.borrow_mut();
+                if let Some(host) = state.connect_ssh_target(desktop.as_deref()) {
+                    let media = media.borrow();
+                    open_ssh_host_pane(&mut state, desktop.as_ref(), &media, &host);
+                }
+            }))
+        },
+        on_ssh_pick_config_host: {
+            let desktop = desktop_ssh_target.clone();
+            let media = Rc::clone(&media_ssh_target);
+            Rc::new(RefCell::new(move |index: usize| {
+                let mut state = on_ssh_pick_config_host.borrow_mut();
+                if let Some(host) = state.pick_ssh_config_host(index, desktop.as_deref()) {
+                    let media = media.borrow();
+                    open_ssh_host_pane(&mut state, desktop.as_ref(), &media, &host);
+                }
+            }))
+        },
         on_open_ssh_host_picker: Rc::new(RefCell::new(move || {
             let mut state = on_open_ssh_host_picker.borrow_mut();
             state.reload_saved_hosts();
@@ -3344,7 +3845,10 @@ pub fn make_actions(
             state.begin_remote_deploy(&agent);
             // The environment's project, when it names a durable one: the
             // service takes the only project when nothing is named.
-            let selected = media_new_cloud_agent.borrow().selected_project_id().to_string();
+            let selected = media_new_cloud_agent
+                .borrow()
+                .selected_project_id()
+                .to_string();
             let project = desktop
                 .list_projects()
                 .into_iter()
@@ -3888,8 +4392,15 @@ fn create_conversation_space(
     state.active_pane_id = id;
     state.workspace_routing = Some(WorkspaceRouting::from_routing(routing));
     ensure_pane_hover(state, id);
+    // A new conversation starts unbound: the project is chosen explicitly from
+    // the composer's project pill, so it lands under "Not in project" until
+    // then. A workspace row's New session sets its path immediately after.
     let project_id = media.borrow().default_project_for_medium(&medium_id);
-    let path = default_pane_path(&project_id, desktop_state);
+    let path = if title == NEW_CONVERSATION_TITLE {
+        String::new()
+    } else {
+        default_pane_path(&project_id, desktop_state)
+    };
     state.set_active_pane_path(path.clone());
     state.bind_pane_new_conversation_titled(id, title, desktop_state);
     if let Some(conversation_id) = state.pane_conversation_id(id) {

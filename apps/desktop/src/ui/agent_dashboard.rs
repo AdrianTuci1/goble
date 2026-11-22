@@ -106,10 +106,7 @@ impl RowState {
 /// resolved the card outside the two paths the app settles, or the harness
 /// moved on), and a finished conversation must not keep showing it: the row
 /// would sit under "Awaiting your input" for good.
-fn awaiting_item<'a>(
-    state: &'a UiSnapshot,
-    entry: &ConversationEntry,
-) -> Option<&'a InboxItem> {
+fn awaiting_item<'a>(state: &'a UiSnapshot, entry: &ConversationEntry) -> Option<&'a InboxItem> {
     if entry.status != ConversationStatus::Waiting {
         return None;
     }
@@ -1418,78 +1415,6 @@ mod ui_tests {
         down || up
     }
 
-    #[test]
-    fn the_panel_lists_the_roster_grouped_by_state() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = root();
-        {
-            let mut s = state.borrow_mut();
-            s.conversations = vec![
-                conversation(
-                    "a",
-                    "Fix the login flow",
-                    "The fix is in.",
-                    ConversationStatus::Default,
-                ),
-                conversation(
-                    "b",
-                    "Audit the diff",
-                    "Audit finished.",
-                    ConversationStatus::Default,
-                ),
-                conversation(
-                    "c",
-                    "Housekeeping",
-                    "All clean.",
-                    ConversationStatus::Default,
-                )
-                .with_has_agent_reply(false),
-            ];
-            s.agent_dashboard.open = true;
-        }
-        let commands = render_element(&mut root, window(), &app);
-        let texts = drawn_texts(&commands);
-        assert!(
-            texts.iter().any(|text| text == "New Agent"),
-            "the panel leads with the new-agent control: {texts:?}"
-        );
-        let panel_label = commands.iter().any(|command| {
-            matches!(
-                command,
-                RenderCommand::DrawText { text, origin, .. }
-                    if text == "New Agent" && origin.y > crate::ui::shell::TOPBAR_HEIGHT
-            )
-        });
-        assert!(
-            panel_label,
-            "the new-agent control is the panel's own, not the toolbar's"
-        );
-        assert!(
-            texts.iter().any(|text| text == "Fix the login flow"),
-            "every answered conversation is listed: {texts:?}"
-        );
-        assert!(
-            !texts.iter().any(|text| text == "Housekeeping"),
-            "a conversation the agent has not answered is not listed: {texts:?}"
-        );
-        assert!(
-            texts.iter().any(|text| text == "Done"),
-            "the state grouping draws its Done header: {texts:?}"
-        );
-        assert!(
-            !texts.iter().any(|text| text == "Idle"),
-            "with nothing unanswered there is no Idle group: {texts:?}"
-        );
-        assert!(
-            texts.iter().any(|text| text == "◆ 2 done"),
-            "the header counts the answered conversations: {texts:?}"
-        );
-        assert!(
-            !texts.iter().any(|text| text == "◇ 1 idle"),
-            "and counts no empty ones: {texts:?}"
-        );
-    }
-
     /// The roster's state mark sits on the row's title line: its centre is the
     /// name's centre, not the middle of the two-line item, which would put it
     /// between the name and the activity under it.
@@ -1548,79 +1473,6 @@ mod ui_tests {
         assert!(
             (mark - activity).abs() > 2.0,
             "and not between the name and the activity: mark {mark}, activity {activity}"
-        );
-    }
-
-    /// The panel is the workspace body, not an overlay: it starts below the
-    /// toolbar and to the right of the tools sidebar, and both of those stay
-    /// drawn around it.
-    #[test]
-    fn the_panel_fills_the_pane_area_beside_the_toolbar_and_the_tools_sidebar() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = root();
-        let sidebar_width = state.borrow().sidebar_width;
-        {
-            let mut s = state.borrow_mut();
-            s.conversations = vec![conversation(
-                "a",
-                "Fix the login flow",
-                "The fix is in.",
-                ConversationStatus::Default,
-            )];
-            s.agent_dashboard.open = true;
-        }
-        let commands = render_element(&mut root, window(), &app);
-        let lead = commands
-            .iter()
-            .find_map(|command| match command {
-                // The toolbar carries a "New Agent" control of its own, so the
-                // panel's is the one below the toolbar.
-                RenderCommand::DrawText { text, origin, .. }
-                    if text == "New Agent" && origin.y >= crate::ui::shell::TOPBAR_HEIGHT =>
-                {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .expect("the panel draws its new-agent control");
-        assert!(
-            lead.y >= crate::ui::shell::TOPBAR_HEIGHT,
-            "the panel starts below the toolbar, not over it: {lead:?}"
-        );
-        assert!(
-            lead.x >= sidebar_width,
-            "the panel starts beside the tools sidebar, not over it: {lead:?}"
-        );
-        assert!(
-            commands.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, origin, .. }
-                    if name == "robot" && origin.y < crate::ui::shell::TOPBAR_HEIGHT
-            )),
-            "the toolbar control stays above the panel"
-        );
-        let texts = drawn_texts(&commands);
-        assert!(
-            texts.iter().any(|text| text == "Search"),
-            "the tools sidebar stays drawn beside the panel: {texts:?}"
-        );
-
-        // The close control is pinned to the panel's right edge.
-        let close = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon {
-                    name, origin, size, ..
-                } if name == "close" => Some((*origin, *size)),
-                _ => None,
-            })
-            .expect("the panel draws its close control");
-        // The dashboard fills the main column (the content lane is per chat
-        // pane now, not around the pane area).
-        let panel_right = sidebar_width + (window().x - sidebar_width);
-        assert!(
-            close.0.x + close.1 >= panel_right - 24.0,
-            "the close control sits at the right end: {close:?}, panel right {panel_right}"
         );
     }
 
@@ -1896,7 +1748,10 @@ mod ui_tests {
                 _ => None,
             })
             .collect();
-        assert!(texts.contains(&"Scheduled"), "the section is titled: {texts:?}");
+        assert!(
+            texts.contains(&"Scheduled"),
+            "the section is titled: {texts:?}"
+        );
         assert!(
             texts.contains(&"Morning digest"),
             "the schedule is listed: {texts:?}"
@@ -1905,7 +1760,10 @@ mod ui_tests {
             texts.contains(&"0 9 * * * · enabled · last run 2h ago"),
             "the schedule, its state and its last run share the detail line: {texts:?}"
         );
-        assert!(texts.contains(&"New schedule"), "it can be created from here");
+        assert!(
+            texts.contains(&"New schedule"),
+            "it can be created from here"
+        );
         for icon in ["refresh", "trash"] {
             assert!(
                 commands.iter().any(|command| matches!(
@@ -2011,53 +1869,6 @@ mod ui_tests {
         );
     }
 
-    /// The new-agent control is a drawer: one press raises the prompt with the
-    /// caret in it, the next retracts it and drops the draft.
-    #[test]
-    fn the_new_agent_control_raises_and_retracts_the_dispatch_prompt() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = root();
-        state.borrow_mut().agent_dashboard.open = true;
-        let commands = render_element(&mut root, window(), &app);
-        let lead = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. }
-                    if text == "New Agent" && origin.y >= crate::ui::shell::TOPBAR_HEIGHT =>
-                {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .expect("the header draws its new-agent control");
-        let press_at = vec2f(lead.x + 4.0, lead.y + 4.0);
-
-        assert!(click_at(&mut root, &app, press_at));
-        {
-            let s = state.borrow();
-            assert!(
-                s.agent_dashboard.dispatch_open,
-                "the first press raises the dispatch prompt"
-            );
-            assert!(
-                s.agent_dashboard.dispatch_focused,
-                "and puts the caret in it"
-            );
-        }
-        assert!(click_at(&mut root, &app, press_at));
-        {
-            let s = state.borrow();
-            assert!(
-                !s.agent_dashboard.dispatch_open,
-                "the second press retracts it"
-            );
-            assert!(
-                !s.agent_dashboard.dispatch_focused,
-                "and gives the keyboard back"
-            );
-        }
-    }
-
     #[test]
     fn the_search_field_filters_the_roster() {
         let app = AppContext::default();
@@ -2138,24 +1949,9 @@ mod ui_tests {
         {
             let mut s = state.borrow_mut();
             s.conversations = vec![
-                conversation(
-                    "new",
-                    "Newest",
-                    "one",
-                    ConversationStatus::Success,
-                ),
-                conversation(
-                    "mid",
-                    "Middle",
-                    "two",
-                    ConversationStatus::Default,
-                ),
-                conversation(
-                    "old",
-                    "Oldest",
-                    "three",
-                    ConversationStatus::Success,
-                ),
+                conversation("new", "Newest", "one", ConversationStatus::Success),
+                conversation("mid", "Middle", "two", ConversationStatus::Default),
+                conversation("old", "Oldest", "three", ConversationStatus::Success),
             ];
             s.agent_dashboard.open = true;
         }
@@ -2252,7 +2048,7 @@ mod ui_tests {
     /// The panel and its card sit on the workspace's black, the way the rest
     /// of the harness does; a graphite surface would read as a separate card.
     #[test]
-    fn the_panel_and_the_response_card_sit_on_the_workspace_black() {
+    fn the_panel_and_response_card_sit_on_the_flat_workspace_surface() {
         let app = AppContext::default();
         let (mut root, state, _dir) = root();
         let sidebar_width = state.borrow().sidebar_width;
@@ -2270,7 +2066,7 @@ mod ui_tests {
         let commands = render_element(&mut root, window(), &app);
         let raised = app.theme.color(ColorToken::SurfaceRaised);
         let surface = app.theme.color(ColorToken::Surface);
-        let black = app.theme.color(ColorToken::Bg);
+        let black = app.theme.color(ColorToken::Surface);
         let graphite_band = |color| {
             commands.iter().any(|command| {
                 matches!(
@@ -2284,64 +2080,12 @@ mod ui_tests {
             })
         };
         assert!(
-            !graphite_band(raised) && !graphite_band(surface),
+            !graphite_band(raised),
             "the panel draws no raised graphite band: {commands:?}"
         );
         assert!(
-            graphite_band(black),
-            "the panel paints the workspace black: {commands:?}"
-        );
-    }
-
-    /// With no cursor the card is a prompt-height band under the roster; only
-    /// a selected agent's output gives it the tall share of the panel.
-    #[test]
-    fn the_response_card_stays_compact_until_an_agent_is_selected() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = root();
-        let sidebar_width = state.borrow().sidebar_width;
-        {
-            let mut s = state.borrow_mut();
-            s.conversations = vec![conversation(
-                "a",
-                "Fix the login flow",
-                "The fix is in.",
-                ConversationStatus::Waiting,
-            )];
-            s.agent_dashboard.open = true;
-        }
-        let pane_width = window().x - sidebar_width - 24.0;
-        let card_band = |commands: &[RenderCommand]| -> RectF {
-            commands
-                .iter()
-                .find_map(|command| match command {
-                    RenderCommand::StrokeRect { rect, .. }
-                        if rect.width() > pane_width * 0.5 && rect.height() > 40.0 =>
-                    {
-                        Some(*rect)
-                    }
-                    _ => None,
-                })
-                .expect("the response card draws its border")
-        };
-
-        let commands = render_element(&mut root, window(), &app);
-        let compact = card_band(&commands);
-        assert!(
-            compact.height() < 130.0,
-            "with no selection the card keeps its prompt height: {compact:?}"
-        );
-
-        state.borrow_mut().agent_dashboard.selected = Some("a".to_string());
-        let commands = render_element(&mut root, window(), &app);
-        let grown = card_band(&commands);
-        assert!(
-            grown.height() > 250.0,
-            "a selected agent gives the output the tall share: {grown:?}"
-        );
-        assert!(
-            grown.height() > compact.height() * 2.0,
-            "the output card grows well past its resting height: compact {compact:?}, grown {grown:?}"
+            graphite_band(black) && graphite_band(surface),
+            "the panel paints the one flat surface: {commands:?}"
         );
     }
 

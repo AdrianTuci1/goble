@@ -275,6 +275,46 @@ pub(super) fn advance_width_uncached(
     family: FontFamily,
     italic: bool,
 ) -> f32 {
+    advance_width_impl(text, font_size, weight, family, italic, true)
+}
+
+/// The advance a run's pen actually travels, with the per-glyph rounding the
+/// rasterizer uses left in place.
+///
+/// [`advance_width`] rounds every glyph up to a whole pixel so a measured run
+/// fits fontdue's own line-breaking budget. That is right for laying out a
+/// paragraph, but wrong for chaining separately drawn runs on one line: the
+/// renderer places each glyph at fontdue's fractional `glyph.x`, so a run
+/// measured with the rounded advances starts up to a pixel per glyph too far
+/// right — a style boundary in a diff then reads as an inserted space. This is
+/// the same sum without the per-glyph rounding, for run origins.
+pub fn advance_width_exact(
+    text: &str,
+    font_size: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+) -> f32 {
+    let key = cache::AdvanceKey::new_exact(text, font_size, weight, family, italic);
+    if let Some(advance) = cache::lookup_advance(&key) {
+        return advance;
+    }
+    let advance = advance_width_impl(text, font_size, weight, family, italic, false);
+    cache::store_advance(key, advance);
+    advance
+}
+
+/// The shared fontdue pass behind [`advance_width`] and
+/// [`advance_width_exact`]; `round_up` selects the whole-pixel budget versus
+/// the rasterizer's raw pen advance.
+fn advance_width_impl(
+    text: &str,
+    font_size: f32,
+    weight: FontWeight,
+    family: FontFamily,
+    italic: bool,
+    round_up: bool,
+) -> f32 {
     let Some(font_set) = font_set() else {
         return text.chars().count() as f32 * font_size * 0.6;
     };
@@ -286,15 +326,19 @@ pub(super) fn advance_width_uncached(
         .iter()
         .map(|glyph| {
             // A control character is laid out with no advance by fontdue; every
-            // other glyph advances by its own, rounded up to a whole pixel.
+            // other glyph advances by its own, rounded up to a whole pixel when
+            // budgeting room for a whole run.
             if glyph.char_data.is_control() {
                 0.0
             } else {
-                chain[glyph.font_index]
+                let advance = chain[glyph.font_index]
                     .metrics_indexed(glyph.key.glyph_index, glyph.key.px)
-                    .advance_width
-                    .ceil()
-                    .max(0.0)
+                    .advance_width;
+                if round_up {
+                    advance.ceil().max(0.0)
+                } else {
+                    advance.max(0.0)
+                }
             }
         })
         .sum()

@@ -110,17 +110,21 @@ pub enum ControlModel {
         max: f32,
         step: f32,
     },
+    /// A two-or-more-way segmented switch. The selected index is the live
+    /// value; a choice dispatches the same settings write a select would.
+    Segmented {
+        path: String,
+        options: Vec<String>,
+        selected: usize,
+        disabled: bool,
+    },
     /// A value the page reports but does not edit.
     ReadOnly { text: String },
-    /// The Appearance page's HSV colour wheel for one theme channel. The app's
-    /// renderer draws `ui::color_picker::ColorWheel` and reports changes through
-    /// `SettingsAction::SetColor`.
-    ColorWheel {
-        /// Index into `color_picker::COLOR_TARGET_ORDER`.
-        channel: usize,
-        label: String,
-        /// The file's `[theme] <channel>` override, if it has one.
-        stored: Option<String>,
+    /// A grouped key-chip pill, with an optional trailing action drawn as an
+    /// icon button (the Shortcuts page's read-only bindings and trash).
+    KeyChips {
+        keys: Vec<String>,
+        action: Option<ActionModel>,
     },
     /// The row's actions, in draw order. `Enter` runs the first one.
     Buttons(Vec<ActionModel>),
@@ -133,9 +137,12 @@ impl ControlModel {
         match self {
             ControlModel::Toggle { disabled, .. }
             | ControlModel::Select { disabled, .. }
+            | ControlModel::Segmented { disabled, .. }
             | ControlModel::Text { disabled, .. } => !disabled,
             ControlModel::Slider { .. } => true,
-            ControlModel::ColorWheel { .. } => true,
+            ControlModel::KeyChips { action, .. } => {
+                action.as_ref().is_some_and(|action| !action.disabled)
+            }
             ControlModel::ReadOnly { .. } | ControlModel::None => false,
             ControlModel::Buttons(actions) => actions.iter().any(|action| !action.disabled),
         }
@@ -218,6 +225,23 @@ impl RowModel {
         self
     }
 
+    /// A segmented on/off (or wider) choice whose value is written through
+    /// `path` — `app.send_immediately` in General's Execution section.
+    pub fn segmented(
+        mut self,
+        path: impl Into<String>,
+        options: Vec<String>,
+        selected: usize,
+    ) -> Self {
+        self.control = ControlModel::Segmented {
+            path: path.into(),
+            selected: selected.min(options.len().saturating_sub(1)),
+            options,
+            disabled: self.disabled,
+        };
+        self
+    }
+
     pub fn secret(
         mut self,
         id: impl Into<String>,
@@ -258,6 +282,15 @@ impl RowModel {
         self
     }
 
+    /// A grouped key-chip control: the chords in one rounded pill, plus an
+    /// optional trailing icon action. The action is honest about what the build
+    /// can do — the Shortcuts page's trash reports that remapping is absent
+    /// rather than deleting the binding.
+    pub fn key_chips(mut self, keys: Vec<String>, action: Option<ActionModel>) -> Self {
+        self.control = ControlModel::KeyChips { keys, action };
+        self
+    }
+
     pub fn buttons(mut self, actions: Vec<ActionModel>) -> Self {
         self.control = ControlModel::Buttons(actions);
         self
@@ -269,7 +302,7 @@ impl RowModel {
     }
 
     /// Set the row's control directly, for a control the builder methods do not
-    /// cover (the colour wheel).
+    /// cover.
     pub fn with_control(mut self, control: ControlModel) -> Self {
         self.control = control;
         self
@@ -300,6 +333,17 @@ impl RowModel {
                 selected,
                 ..
             } => ControlModel::Select {
+                path,
+                options,
+                selected,
+                disabled: true,
+            },
+            ControlModel::Segmented {
+                path,
+                options,
+                selected,
+                ..
+            } => ControlModel::Segmented {
                 path,
                 options,
                 selected,
@@ -338,7 +382,12 @@ impl RowModel {
                 selected,
                 ..
             } => {
-                if options.is_empty() {
+                if path == "theme.preset" {
+                    // The theme row is a real dropdown, not a cycle: Enter puts
+                    // its menu up (the renderer's anchored panel); the menu
+                    // itself commits through `SetSelect`.
+                    Some(SettingsAction::ToggleThemeSelect(true))
+                } else if options.is_empty() {
                     None
                 } else {
                     Some(SettingsAction::SetSelect {
@@ -348,7 +397,23 @@ impl RowModel {
                 }
             }
             ControlModel::Text { id, .. } => Some(SettingsAction::CommitField { id: id.clone() }),
-            ControlModel::Slider { .. } | ControlModel::ColorWheel { .. } => None,
+            ControlModel::Segmented {
+                path,
+                options,
+                selected,
+                disabled,
+            } => {
+                if *disabled || options.is_empty() {
+                    None
+                } else {
+                    Some(segment_action(path, (*selected + 1) % options.len()))
+                }
+            }
+            ControlModel::Slider { .. } => None,
+            ControlModel::KeyChips { action, .. } => action
+                .as_ref()
+                .filter(|action| !action.disabled)
+                .map(|action| action.action.clone()),
             ControlModel::Buttons(actions) => actions
                 .iter()
                 .find(|action| !action.disabled)
@@ -371,7 +436,9 @@ impl RowModel {
                 selected,
                 disabled,
             } => {
-                if *disabled || options.is_empty() {
+                if path == "theme.preset" || *disabled || options.is_empty() {
+                    // The theme menu owns Left/Right while it is open; a closed
+                    // row does not silently cycle the palette.
                     return None;
                 }
                 let count = options.len() as i64;
@@ -394,8 +461,72 @@ impl RowModel {
                     value: next,
                 })
             }
+            ControlModel::Segmented {
+                path,
+                options,
+                selected,
+                disabled,
+            } => {
+                if *disabled || options.is_empty() {
+                    return None;
+                }
+                let count = options.len() as i64;
+                let next = (*selected as i64 + delta as i64).rem_euclid(count) as usize;
+                Some(segment_action(path, next))
+            }
             _ => None,
         }
+    }
+}
+
+/// The write a segmented choice dispatches. `app.send_immediately` keeps its
+/// dedicated action (the composer reads the same flag), while every other
+/// segmented path is a normal select write.
+pub fn segment_action(path: &str, index: usize) -> SettingsAction {
+    if path == "app.send_immediately" {
+        SettingsAction::SetSendImmediately(index != 0)
+    } else {
+        SettingsAction::SetSelect {
+            path: path.to_string(),
+            index,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_segmented_row_toggles_between_its_choices() {
+        let row = RowModel::new("execution.queued", "Queued Messages", "").segmented(
+            "app.send_immediately",
+            vec!["Queue".to_string(), "Send Immediately".to_string()],
+            0,
+        );
+        assert!(row.control.is_interactive());
+        assert_eq!(
+            row.primary_action(),
+            Some(SettingsAction::SetSendImmediately(true))
+        );
+        assert_eq!(
+            row.adjust_action(1),
+            Some(SettingsAction::SetSendImmediately(true))
+        );
+
+        let row = row.segmented(
+            "app.send_immediately",
+            vec!["Queue".to_string(), "Send Immediately".to_string()],
+            1,
+        );
+        assert_eq!(
+            row.primary_action(),
+            Some(SettingsAction::SetSendImmediately(false))
+        );
+        assert_eq!(
+            row.adjust_action(-1),
+            Some(SettingsAction::SetSendImmediately(false))
+        );
     }
 }
 
@@ -486,15 +617,76 @@ impl SectionModel {
     }
 }
 
+/// Which page-level search a [`PageSearch`] drives. The actions live on the
+/// model rather than in the renderer, so the page and its keys share one
+/// definition of what typing in the field means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageSearchKind {
+    Shortcuts,
+}
+
+impl PageSearchKind {
+    pub fn change_action(self, value: String) -> SettingsAction {
+        match self {
+            PageSearchKind::Shortcuts => SettingsAction::ShortcutsSearch(value),
+        }
+    }
+
+    pub fn focus_action(self, focused: bool) -> SettingsAction {
+        match self {
+            PageSearchKind::Shortcuts => SettingsAction::ShortcutsSearchFocus(focused),
+        }
+    }
+
+    pub fn clear_action(self) -> SettingsAction {
+        match self {
+            PageSearchKind::Shortcuts => SettingsAction::ShortcutsClearSearch,
+        }
+    }
+}
+
+/// A search field at the top of a page, above its sections. The value and the
+/// caret's focus are app-owned (the tree is rebuilt every frame).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageSearch {
+    pub id: String,
+    pub value: String,
+    pub placeholder: String,
+    pub focused: bool,
+    pub kind: PageSearchKind,
+}
+
+impl PageSearch {
+    pub fn shortcuts(value: impl Into<String>, focused: bool) -> Self {
+        Self {
+            id: "shortcuts-search".to_string(),
+            value: value.into(),
+            placeholder: "Search shortcuts...".to_string(),
+            focused,
+            kind: PageSearchKind::Shortcuts,
+        }
+    }
+}
+
 /// One page: its sections plus the header line under the title.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageModel {
     pub sections: Vec<SectionModel>,
+    /// A page-level search field drawn above the sections.
+    pub search: Option<PageSearch>,
 }
 
 impl PageModel {
     pub fn new(sections: Vec<SectionModel>) -> Self {
-        Self { sections }
+        Self {
+            sections,
+            search: None,
+        }
+    }
+
+    pub fn with_search(mut self, search: PageSearch) -> Self {
+        self.search = Some(search);
+        self
     }
 
     /// The interactive rows, in draw order — the page's focus order. A folded

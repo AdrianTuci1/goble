@@ -278,6 +278,8 @@ pub struct AppConfig {
     /// Whether the rich input is in modal (vim) editing mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vim_mode: Option<bool>,
+    /// Send a prompt immediately while a turn runs instead of queueing it.
+    pub send_immediately: Option<bool>,
 }
 
 impl AppConfig {

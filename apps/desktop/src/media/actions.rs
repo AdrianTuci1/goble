@@ -35,10 +35,11 @@ pub fn make_media_actions(
         // session and pointing the active pane's cwd at the session's path.
         on_select_session: Rc::new(RefCell::new(
             move |medium_id: String, project_id: String, session_id: String| {
-                if on_select_session
-                    .borrow_mut()
-                    .select_session(&medium_id, &project_id, &session_id)
-                {
+                if on_select_session.borrow_mut().select_session(
+                    &medium_id,
+                    &project_id,
+                    &session_id,
+                ) {
                     let path = on_select_session.borrow().selected_session_path();
                     let mut ui = ui_select_session.borrow_mut();
                     ui.set_active_pane_path(path);

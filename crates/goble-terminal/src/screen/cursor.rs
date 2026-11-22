@@ -10,7 +10,7 @@ pub enum CursorShape {
     Hidden,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CursorState {
     /// Row within the viewport.
     pub line: usize,

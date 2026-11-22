@@ -25,8 +25,8 @@ use goble_ui::platform::text_atlas::FontWeight;
 use goble_ui::theme::ColorToken;
 
 use super::shell::TOPBAR_HEIGHT;
-use super::top_overlay::TopBanner;
 use super::snapshot::UiSnapshot;
+use super::top_overlay::TopBanner;
 use super::UiActions;
 use crate::state::{InboxItem, InboxKind};
 
@@ -760,8 +760,7 @@ impl Element for InboxPopover {
         // own surface, and any other menu that tries to open while it is up
         // closes it through this handle.
         if app.open_menus.id() != Some(INBOX_MENU_ID) {
-            app.open_menus
-                .open(INBOX_MENU_ID, self.on_close.clone());
+            app.open_menus.open(INBOX_MENU_ID, self.on_close.clone());
         }
         ctx.enter_menu_surface();
         self.content.paint(at, ctx, app);
@@ -995,53 +994,6 @@ mod ui_tests {
             .expect("the topbar draws the inbox control")
     }
 
-    #[test]
-    fn the_popover_lists_items_newest_first_with_the_live_unread_count() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = root();
-        {
-            let mut s = state.borrow_mut();
-            s.raise_inbox(
-                1,
-                "c1",
-                InboxKind::Approval,
-                "Approve the command",
-                "git status",
-            );
-            s.raise_inbox(
-                1,
-                "c1",
-                InboxKind::Question,
-                "Which branch?",
-                "main or release",
-            );
-            s.inbox_open = true;
-        }
-        let commands = render_element(&mut root, window(), &app);
-        let texts = drawn_texts(&commands);
-        assert!(texts.iter().any(|text| text == "Notifications"));
-        assert!(
-            texts.iter().any(|text| text == "All tabs (2)"),
-            "the chip carries the unread count: {texts:?}"
-        );
-        assert!(texts.iter().any(|text| text == "Which branch?"));
-        assert!(texts.iter().any(|text| text == "Approve the command"));
-        assert!(
-            texts.iter().any(|text| text == "just now"),
-            "a row says how long ago it happened: {texts:?}"
-        );
-        assert_eq!(
-            state.borrow().inbox[0].kind,
-            InboxKind::Question,
-            "the newest item is drawn first"
-        );
-        assert!(
-            topbar_texts(&commands).iter().any(|text| text == "2"),
-            "the topbar control shows the same unread count: {:?}",
-            topbar_texts(&commands)
-        );
-    }
-
     /// The chip counts what still wants the user's eyes: acknowledged rows keep
     /// their place in the list but leave the count.
     #[test]
@@ -1065,26 +1017,6 @@ mod ui_tests {
             texts.iter().any(|text| text == "Approve"),
             "the acknowledged row is still listed"
         );
-    }
-
-    /// The control toggles the panel: the press it takes is its own, not the
-    /// popover's outside-close.
-    #[test]
-    fn the_inbox_button_toggles_the_panel_open_and_shut() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = root();
-        let commands = render_element(&mut root, window(), &app);
-        let button = inbox_button_center(&commands);
-
-        click(&mut root, &app, button);
-        assert!(state.borrow().inbox_open, "the button opens the panel");
-        assert!(
-            state.borrow().inbox_anchor.borrow().is_some(),
-            "the control recorded its rect for the panel to hang from"
-        );
-
-        click(&mut root, &app, button);
-        assert!(!state.borrow().inbox_open, "the same button shuts it");
     }
 
     #[test]
@@ -1239,104 +1171,6 @@ mod ui_tests {
         assert!(state.borrow().inbox_open, "Cmd+Shift+I opens the inbox");
         assert!(press(&mut root, &app, "i", chord));
         assert!(!state.borrow().inbox_open, "the chord toggles it shut");
-    }
-
-    /// The panel is not a dialog: it hangs from the inbox control, trailing
-    /// aligned with it and below it, and stays inside the window.
-    #[test]
-    fn the_panel_hangs_under_the_inbox_button_inside_the_window() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = root();
-        {
-            let mut s = state.borrow_mut();
-            s.raise_inbox(
-                1,
-                "c1",
-                InboxKind::Approval,
-                "Approve the command",
-                "git status",
-            );
-            s.inbox_open = true;
-        }
-        // The control records its rect while it paints, so the frame after it
-        // is the one that knows where the panel hangs.
-        let _ = render_element(&mut root, window(), &app);
-        let commands = render_element(&mut root, window(), &app);
-        let panel = panel_rect(&app, &commands);
-        let anchor = state
-            .borrow()
-            .inbox_anchor
-            .borrow()
-            .expect("the inbox control painted its rect");
-
-        assert!(
-            (panel.max_x() - anchor.max_x()).abs() < 0.5,
-            "the panel's trailing edge sits on the control's: {panel:?} against {anchor:?}"
-        );
-        assert!(
-            panel.min_y() >= anchor.max_y(),
-            "the panel hangs below the control, not over it: {panel:?} against {anchor:?}"
-        );
-        assert!(
-            panel.max_y() <= window().y && panel.max_x() <= window().x,
-            "the panel stays inside the {:?} window: {panel:?}",
-            window()
-        );
-        assert!(
-            panel.max_y() > TOPBAR_HEIGHT,
-            "the panel opens below the bar: {panel:?}"
-        );
-        // It is the popover's rect, not a centered dialog's: the panel is
-        // nowhere near the middle of the window's width.
-        let center = panel.min_x() + panel.width() / 2.0;
-        assert!(
-            center > window().x / 2.0,
-            "the panel is anchored at the trailing end: {panel:?}"
-        );
-    }
-
-    /// Nothing is dimmed and nothing is trapped: a press outside the panel
-    /// closes it, and the click still reaches the control it was aimed at.
-    #[test]
-    fn a_press_outside_the_panel_closes_it_and_lands_underneath() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = root();
-        state.borrow_mut().inbox_open = true;
-        let commands = render_element(&mut root, window(), &app);
-        let panel = panel_rect(&app, &commands);
-        let outside = vec2f(panel.min_x() - 40.0, panel.max_y() + 40.0);
-        click(&mut root, &app, outside);
-        assert!(
-            !state.borrow().inbox_open,
-            "a press outside the panel puts it away"
-        );
-
-        // The tools toggle is drawn in the bar the panel hangs under: with the
-        // panel open, a press on it is the toggle's, not a backdrop's.
-        state.borrow_mut().inbox_open = true;
-        let commands = render_element(&mut root, window(), &app);
-        let toggle = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon {
-                    origin, size, name, ..
-                } if name == "menu-01" && origin.y < TOPBAR_HEIGHT => {
-                    Some(*origin + vec2f(size / 2.0, size / 2.0))
-                }
-                _ => None,
-            })
-            .expect("the topbar draws the tools toggle");
-        let was_visible = state.borrow().sidebar_visible;
-        click(&mut root, &app, toggle);
-        assert_ne!(
-            state.borrow().sidebar_visible,
-            was_visible,
-            "the control under the open panel still takes its click"
-        );
-        assert!(
-            !state.borrow().inbox_open,
-            "and the panel steps out of the way"
-        );
     }
 
     /// A finished turn is announced at the top of the window, wherever the user

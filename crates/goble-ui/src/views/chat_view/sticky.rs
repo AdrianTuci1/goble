@@ -29,17 +29,14 @@ use crate::elements::{
     AppContext, ChatMessage, ChatRole, Element, LayoutContext, PaintContext, Point, SizeConstraint,
 };
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{measure_text_family, FontWeight};
+use crate::platform::text_atlas::{advance_width, measure_text_family, FontWeight};
 use crate::theme::ColorToken;
 
-/// The prompt marker that leads the user's own message, its room before the
-/// text, and the paragraph size of the row. They mirror the constants of
+/// The paragraph size of the pinned row. It mirrors the constants of
 /// [`ChatMessageBubble`](crate::elements::ChatMessageBubble)'s user row so the
 /// pinned line is the size and shape of the message it pins; the sticky turn's
 /// tests compare the pin against that row's own render commands, which is what
 /// keeps the two in step.
-const PROMPT_ARROW_SIZE: f32 = chat_typography::PROMPT_ARROW_SIZE;
-const PROMPT_ARROW_GAP: f32 = chat_typography::PROMPT_ARROW_GAP;
 const MESSAGE_FONT_SIZE: f32 = chat_typography::BODY_SIZE;
 const MESSAGE_LINE_HEIGHT: f32 = chat_typography::USER_LH;
 
@@ -210,13 +207,6 @@ impl StickyHeader {
     fn height(_app: &AppContext) -> f32 {
         MESSAGE_FONT_SIZE * MESSAGE_LINE_HEIGHT + 2.0 * chat_typography::BAND_PADDING_Y
     }
-
-    /// Where the marker and the text sit inside the band, as the user's row
-    /// lays them out: the marker is centred on the first line's box and the
-    /// text starts one marker and one gap past it.
-    fn marker_top() -> f32 {
-        chat_typography::prompt_marker_top()
-    }
 }
 
 impl Element for StickyHeader {
@@ -270,18 +260,30 @@ impl Element for StickyHeader {
         let pad_x = chat_typography::BAND_PADDING_X;
         let pad_y = chat_typography::BAND_PADDING_Y;
         let family = chat_typography::chat_font(app);
-        renderer.fill_rect(
-            rectf(origin.x, top, size.x, size.y),
+        let cap = chat_typography::user_bubble_max_width(size.x);
+        // Match the advance InlineText uses to size the prompt's bubble, not
+        // the ink extent (which is a hair narrower than the room the run takes).
+        let measured = advance_width(
+            &self.text,
+            MESSAGE_FONT_SIZE,
+            FontWeight::Regular,
+            family,
+            false,
+        );
+        // The pin mirrors the prompt's right-aligned bubble: only as wide as
+        // its first line (capped like the bubble) and anchored to the lane's
+        // trailing edge.
+        let band_width = (measured + pad_x * 2.0).min(cap).min(size.x).max(0.0);
+        let band_x = origin.x + size.x - band_width;
+        // The pinned band mirrors the user's rounded bubble: no prompt marker,
+        // so the first line starts at the band's own text inset.
+        renderer.fill_rounded_rect(
+            rectf(band_x, top, band_width, size.y),
             app.theme.color(ColorToken::SurfaceRaised),
+            chat_typography::USER_BUBBLE_RADIUS,
         );
-        renderer.draw_icon(
-            vec2f(origin.x + pad_x, top + pad_y + Self::marker_top()),
-            "prompt-arrow",
-            PROMPT_ARROW_SIZE,
-            app.theme.color(ColorToken::Accent),
-        );
-        let text_x = origin.x + pad_x + PROMPT_ARROW_SIZE + PROMPT_ARROW_GAP;
-        let available = (size.x - pad_x - PROMPT_ARROW_SIZE - PROMPT_ARROW_GAP - pad_x).max(0.0);
+        let text_x = band_x + pad_x;
+        let available = (band_width - pad_x * 2.0).max(0.0);
         if available > 0.0 {
             let line = elide_to_width(&self.text, available, family);
             renderer.draw_text_with_font(
@@ -298,9 +300,9 @@ impl Element for StickyHeader {
         }
         renderer.fill_rect(
             rectf(
-                origin.x,
+                band_x,
                 top + size.y - DIVIDER_HEIGHT,
-                size.x,
+                band_width,
                 DIVIDER_HEIGHT,
             ),
             app.theme.color(ColorToken::Border),
@@ -388,13 +390,13 @@ fn elide_to_width(text: &str, max_width: f32, family: crate::theme::FontFamily) 
 }
 
 /// The rect of the pinned strip in a frame's commands, when one was drawn: the
-/// user's grey band across the pane at the top of the transcript, with the rule
-/// the pin draws under it.
+/// user's grey bubble anchored to the pane's trailing edge at the top of the
+/// transcript, with the rule the pin draws under it.
 ///
 /// The fill alone is not the pin's signature: a user row draws the same fill at
-/// the same width, and a one-line message's band is exactly the strip's height.
-/// The rule inside the band's bottom edge is what tells the two apart — no
-/// transcript row draws a border.
+/// the same trailing edge, and a one-line message's band is exactly the strip's
+/// height. The rule inside the band's bottom edge is what tells the two apart —
+/// no transcript row draws a border.
 #[cfg(test)]
 pub(super) fn painted_strip(
     commands: &[crate::render::RenderCommand],
@@ -406,13 +408,15 @@ pub(super) fn painted_strip(
     let band = app.theme.color(ColorToken::SurfaceRaised);
     let rule = app.theme.color(ColorToken::Border);
     let height = StickyHeader::height(app);
-    let full_width = |rect: &crate::geometry::RectF| (rect.width() - width).abs() < 0.01;
+    let right_aligned = |rect: &crate::geometry::RectF| {
+        (rect.max_x() - width).abs() < 0.01 && rect.width() <= width + 0.01
+    };
     commands.iter().enumerate().find_map(|(index, command)| {
         let RenderCommand::FillRect { rect, color, .. } = command else {
             return None;
         };
         if *color != band
-            || !full_width(rect)
+            || !right_aligned(rect)
             || (rect.height() - height).abs() >= 0.01
             || rect.min_y().abs() >= 0.01
         {
@@ -422,7 +426,8 @@ pub(super) fn painted_strip(
             matches!(later,
                 RenderCommand::FillRect { rect: line, color, .. }
                     if *color == rule
-                        && full_width(line)
+                        && (line.width() - rect.width()).abs() < 0.01
+                        && (line.max_x() - rect.max_x()).abs() < 0.01
                         && (line.height() - DIVIDER_HEIGHT).abs() < 0.01
                         && (line.min_y() - (rect.max_y() - DIVIDER_HEIGHT)).abs() < 0.01)
         });

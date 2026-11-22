@@ -23,6 +23,10 @@ const BLOCKED_TOAST: Duration = Duration::from_secs(6);
 /// A transient notice raised by a session-menu action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToastKind {
+    /// A menu flyout's labelled value reached the clipboard.
+    Copied { what: String },
+    /// The clipboard helper refused a menu flyout's value.
+    CopyFailed { what: String },
     /// The conversation id reached the clipboard.
     ConversationIdCopied,
     /// No OS clipboard helper took the id (the in-process copy still holds it).
@@ -39,12 +43,18 @@ pub enum ToastKind {
     /// Show in Finder reports the same failure instead of pretending the
     /// folder opened).
     RevealFailed,
+    /// A remote workspace's SSH target could not be resolved, so its session
+    /// cannot be opened here. The notice says so rather than opening a local
+    /// shell and pretending it is remote.
+    RemoteUnavailable,
 }
 
 impl ToastKind {
     /// The sentence the toast draws.
     pub fn message(&self) -> String {
         match self {
+            Self::Copied { what } => format!("{what} copied"),
+            Self::CopyFailed { what } => format!("Couldn’t copy the {what}."),
             Self::ConversationIdCopied => "Conversation ID copied".to_string(),
             Self::ConversationIdCopyFailed => "Couldn’t copy the conversation ID.".to_string(),
             Self::Archived { .. } => "Conversation archived.".to_string(),
@@ -54,6 +64,10 @@ impl ToastKind {
             }
             Self::ArchiveFailed => "Couldn’t archive the conversation.".to_string(),
             Self::RevealFailed => "Couldn’t show the folder in Finder.".to_string(),
+            Self::RemoteUnavailable => {
+                "This remote workspace is not available: its SSH target could not be resolved."
+                    .to_string()
+            }
         }
     }
 
@@ -66,6 +80,7 @@ impl ToastKind {
                 | Self::ArchivedNotOpenable
                 | Self::ArchiveFailed
                 | Self::RevealFailed
+                | Self::RemoteUnavailable
         )
     }
 
@@ -79,11 +94,15 @@ impl ToastKind {
 
     fn hold(&self) -> Duration {
         match self {
-            Self::ConversationIdCopied | Self::ConversationIdCopyFailed => SHORT_TOAST,
+            Self::ConversationIdCopied
+            | Self::ConversationIdCopyFailed
+            | Self::Copied { .. }
+            | Self::CopyFailed { .. } => SHORT_TOAST,
             Self::Archived { .. } | Self::StoppedAndArchived { .. } => ARCHIVE_TOAST,
-            Self::ArchivedNotOpenable | Self::ArchiveFailed | Self::RevealFailed => {
-                BLOCKED_TOAST
-            }
+            Self::ArchivedNotOpenable
+            | Self::ArchiveFailed
+            | Self::RevealFailed
+            | Self::RemoteUnavailable => BLOCKED_TOAST,
         }
     }
 }
@@ -104,6 +123,9 @@ pub struct SidebarRename {
     pub draft: String,
     pub focused: bool,
     pub error: Option<String>,
+    /// V: the topbar's inline title editor rather than the modal rename
+    /// dialog. Both write through the same durable commit path.
+    pub inline: bool,
 }
 
 /// The stop-and-archive confirmation's state: the conversation, the honest
@@ -182,6 +204,28 @@ impl UiState {
         });
     }
 
+    /// Copy one labelled menu value (the More menu's Copy flyout) and say so.
+    /// The toast names the value, so the confirmation is honest about what the
+    /// clipboard now holds; a refused copy keeps the failure visible.
+    pub fn copy_menu_value(&mut self, what: &str, value: &str) {
+        if value.trim().is_empty() {
+            self.show_toast(ToastKind::CopyFailed {
+                what: what.to_ascii_lowercase(),
+            });
+            return;
+        }
+        let copied = crate::clipboard::copy_text_checked(value);
+        self.show_toast(if copied {
+            ToastKind::Copied {
+                what: what.to_string(),
+            }
+        } else {
+            ToastKind::CopyFailed {
+                what: what.to_ascii_lowercase(),
+            }
+        });
+    }
+
     // -- rename -------------------------------------------------------------
 
     /// Open the Rename dialog for `id`, seeded with the title the row shows.
@@ -199,6 +243,28 @@ impl UiState {
             draft: name,
             focused: true,
             error: None,
+            inline: false,
+        });
+    }
+
+    /// V: start the topbar title's inline edit. The same durable rename state
+    /// and commit path as the dialog, with `inline` telling the modal surface
+    /// to stay hidden.
+    pub fn begin_inline_rename(&mut self, id: &str) {
+        let Some(name) = self
+            .conversations
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.name.clone())
+        else {
+            return;
+        };
+        self.sidebar_rename = Some(SidebarRename {
+            id: id.to_string(),
+            draft: name,
+            focused: true,
+            error: None,
+            inline: true,
         });
     }
 
@@ -222,7 +288,16 @@ impl UiState {
             return;
         };
         let title = rename.draft.trim().to_string();
-        if title.is_empty() {
+        // V: an empty or unchanged title keeps the previous name; the editor
+        // still closes because the user finished the gesture.
+        if title.is_empty()
+            || self
+                .conversations
+                .iter()
+                .find(|entry| entry.id == rename.id)
+                .is_some_and(|entry| entry.name == title)
+        {
+            self.sidebar_rename = None;
             return;
         }
         if let Some(desktop) = desktop {
@@ -439,11 +514,7 @@ impl UiState {
     }
 
     /// The click guard for an archived row: refuse to open it and say why.
-    pub fn open_conversation_from_sidebar(
-        &mut self,
-        id: String,
-        desktop: Option<&DesktopState>,
-    ) {
+    pub fn open_conversation_from_sidebar(&mut self, id: String, desktop: Option<&DesktopState>) {
         if self.conversation_is_archived(&id) {
             self.show_toast(ToastKind::ArchivedNotOpenable);
             return;

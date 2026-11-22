@@ -86,7 +86,9 @@ fn an_answered_question_draws_as_the_agents_tool_call() {
         "the answer is the call's result, not a message of its own"
     );
     assert!(
-        !messages.iter().any(|message| message.role == ChatRole::User),
+        !messages
+            .iter()
+            .any(|message| message.role == ChatRole::User),
         "the reply is not a message the user sent"
     );
     let calls = &messages[0].tool_calls;

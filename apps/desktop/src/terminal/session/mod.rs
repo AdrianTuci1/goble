@@ -208,6 +208,17 @@ impl TerminalSession {
         }
     }
 
+    /// A screen with no pty behind it, for the headless preview harnesses: the
+    /// drawer's real PTY path is exercised by the app and the terminal tests,
+    /// while an example has no daemon to start and should still render the
+    /// surface it is documenting.
+    #[doc(hidden)]
+    pub fn preview_screen(text: &str) -> Self {
+        let mut emulator = Emulator::new(80, 24);
+        emulator.feed(text.as_bytes());
+        Self::with_emulator(emulator)
+    }
+
     /// A session around a screen with a shell started behind it, the shape
     /// [`Self::spawn`] builds: a unit test has no pty to start a shell in.
     #[cfg(test)]

@@ -46,7 +46,13 @@ pub(super) fn open_ssh_host_pane(
     media: &MediaState,
     host: &HostEntry,
 ) {
-    split_active_pane(state, SplitDir::Vertical, desktop, media, PaneKind::Terminal);
+    split_active_pane(
+        state,
+        SplitDir::Vertical,
+        desktop,
+        media,
+        PaneKind::Terminal,
+    );
     let pane_id = state.active_pane_id;
     let cwd = state
         .pane_sessions
@@ -167,6 +173,9 @@ pub(super) fn open_diff_pane(
     file: Option<String>,
     desktop: Option<&Arc<DesktopState>>,
 ) {
+    // Q: Review is a side-panel tab, not a diff pane split into the layout.
+    // The review reads the source pane's own directory and controls; opening it
+    // focuses that pane, seeds the file selection and reveals the panel.
     let cwd = state
         .pane_sessions
         .get(&source)
@@ -176,43 +185,12 @@ pub(super) fn open_diff_pane(
     if cwd.trim().is_empty() {
         return;
     }
-    let space_idx = state.active_space;
-    let Some(space) = state.spaces.get(space_idx) else {
-        return;
-    };
-    if let Some(id) = space.diff_leaf_for(&cwd) {
-        state.focus_pane(id);
-        let controls = state.pane_controls_mut(id);
-        *controls.diff_selected.borrow_mut() = file;
-        controls.diff_scroll.borrow_mut().reset();
-        if let Some(desktop) = desktop {
-            state.save_panes(desktop);
-        }
-        return;
-    }
-    let anchor = if space.root.contains_leaf(source) {
-        source
-    } else {
-        state.active_pane_id
-    };
-    let Some(space) = state.spaces.get_mut(space_idx) else {
-        return;
-    };
-    let Some(new_id) = space.split_with_kind(
-        anchor,
-        SplitDir::Horizontal,
-        &mut state.next_pane_id,
-        PaneKind::Diff { cwd },
-    ) else {
-        return;
-    };
-    state.focus_pane(new_id);
-    ensure_pane_hover(state, new_id);
-    {
-        let controls = state.pane_controls_mut(new_id);
-        *controls.diff_selected.borrow_mut() = file;
-    }
-    state.sync_active_view();
+    state.focus_pane(source);
+    state.select_diff_file(source, file);
+    *state.pane_controls_mut(source).diff_refresh.borrow_mut() += 1;
+    state.side_review = Some((source, cwd));
+    state.add_side_tab(crate::state::SideTabKind::Review);
+    state.right_sidebar_open = true;
     if let Some(desktop) = desktop {
         state.save_panes(desktop);
     }
@@ -322,7 +300,10 @@ pub(super) fn close_space_at(state: &mut UiState, index: usize, desktop: Option<
         state.next_pane_id += 1;
         // Nobody named this space: its tab label is derived from what it holds,
         // so it reads the agent label until its conversation has a subject.
-        state.spaces.push(Space::unnamed(Pane::Leaf { id, kind: PaneKind::Chat }));
+        state.spaces.push(Space::unnamed(Pane::Leaf {
+            id,
+            kind: PaneKind::Chat,
+        }));
         state.active_space = 0;
         state.active_pane_id = id;
         ensure_pane_hover(state, id);
@@ -392,7 +373,11 @@ mod tests {
             "a second file adds no pane"
         );
         assert_eq!(
-            state.pane_open_files.get(&pane).cloned().unwrap_or_default(),
+            state
+                .pane_open_files
+                .get(&pane)
+                .cloned()
+                .unwrap_or_default(),
             vec![first, second],
             "the pane holds both files, the shown one last"
         );

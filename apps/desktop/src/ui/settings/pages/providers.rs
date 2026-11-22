@@ -133,10 +133,11 @@ fn accounts_section(state: &SettingsUiState) -> SectionModel {
                 "Local agent CLIs",
                 "Detection has not run yet: the service scans PATH from the catalog.",
             )
-            .buttons(vec![
-                ActionModel::new("Scan PATH", SettingsAction::RefreshHarnesses)
-                    .with_icon("refresh"),
-            ])
+            .buttons(vec![ActionModel::new(
+                "Scan PATH",
+                SettingsAction::RefreshHarnesses,
+            )
+            .with_icon("refresh")])
             .with_status(
                 StatusKind::Muted,
                 "Scan PATH to list the harnesses this machine has installed.",
@@ -388,22 +389,24 @@ fn agent_cli_folds(state: &SettingsUiState) -> Vec<SectionModel> {
             .map(|view| view.sections.harnesses.clone())
             .unwrap_or_default();
         if fallback.is_empty() {
-            return vec![SectionModel::new("harnesses-empty", "No agent CLIs").with_row(
-                RowModel::new(
-                    "harnesses-empty.scan",
-                    "Detection has not run",
-                    "Scan PATH with the catalog's harness commands.",
-                )
-                .buttons(vec![ActionModel::new(
-                    "Scan PATH",
-                    SettingsAction::RefreshHarnesses,
-                )
-                .with_icon("refresh")])
-                .with_status(
-                    StatusKind::Muted,
-                    "The scan resolves each CLI on PATH; it installs nothing.",
+            return vec![
+                SectionModel::new("harnesses-empty", "No agent CLIs").with_row(
+                    RowModel::new(
+                        "harnesses-empty.scan",
+                        "Detection has not run",
+                        "Scan PATH with the catalog's harness commands.",
+                    )
+                    .buttons(vec![ActionModel::new(
+                        "Scan PATH",
+                        SettingsAction::RefreshHarnesses,
+                    )
+                    .with_icon("refresh")])
+                    .with_status(
+                        StatusKind::Muted,
+                        "The scan resolves each CLI on PATH; it installs nothing.",
+                    ),
                 ),
-            )];
+            ];
         }
         return fallback
             .iter()
@@ -552,8 +555,11 @@ fn cli_section(
                 SettingsAction::EditHarness(harness_id.to_string()),
             )
             .with_icon("edit"),
-            ActionModel::new("Open config.toml", SettingsAction::OpenFile(ConfigFile::Config))
-                .with_icon("file"),
+            ActionModel::new(
+                "Open config.toml",
+                SettingsAction::OpenFile(ConfigFile::Config),
+            )
+            .with_icon("file"),
         ])
         .with_status(
             if installed {
@@ -629,7 +635,10 @@ fn model_row(state: &SettingsUiState, model: &ModelView) -> RowModel {
     row
 }
 
-pub(super) fn model_form_section(state: &SettingsUiState, form: &super::super::state::ModelForm) -> SectionModel {
+pub(super) fn model_form_section(
+    state: &SettingsUiState,
+    form: &super::super::state::ModelForm,
+) -> SectionModel {
     let title = match &form.editing {
         Some(slug) => format!("Edit model · {slug}"),
         None => "Add model".to_string(),

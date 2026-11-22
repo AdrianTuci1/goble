@@ -1,4 +1,3 @@
-
 /// The web URL schemes the app is willing to hand to the OS opener. A link
 /// that arrived in a transcript is untrusted input, so only these two are
 /// accepted.

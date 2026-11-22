@@ -595,10 +595,7 @@ impl UiState {
     ) -> Option<String> {
         let desktop = desktop?;
         let messages = desktop.list_chat_messages(source_id).unwrap_or_default();
-        let source = desktop
-            .list_chats()
-            .into_iter()
-            .find(|c| c.id == source_id);
+        let source = desktop.list_chats().into_iter().find(|c| c.id == source_id);
         let title = source
             .as_ref()
             .map(|c| format!("Fork of {}", c.title))
@@ -818,11 +815,25 @@ impl UiState {
                     scroll: self.pane_scroll(*pane_id),
                     text_selection: self.pane_transcript_selection(*pane_id),
                     usage_open: self.pane_usage_open(*pane_id),
+                    changed_files_open: self.changed_files_open.clone(),
                     usage: self
                         .conversation_usage
                         .get(&session.conversation_id)
                         .copied()
                         .unwrap_or_default(),
+                    usage_last_call: self
+                        .conversation_last_usage
+                        .get(&session.conversation_id)
+                        .copied(),
+                    usage_calls: self
+                        .conversation_usage_calls
+                        .get(&session.conversation_id)
+                        .copied()
+                        .unwrap_or(0),
+                    // The host's model configuration owns the window; the
+                    // snapshot does not read it here, so the dialog says the
+                    // number is unknown rather than inventing one.
+                    usage_context_window: None,
                 },
             );
         }
@@ -908,6 +919,18 @@ impl UiState {
     /// Ensure every rendered leaf pane has a controls entry, so the composer
     /// always reads a stable per-pane value rather than the window globals.
     pub fn ensure_pane_controls(&mut self) {
+        // The side panel's Agent tab is a conversation agent of its own, not a
+        // second view of the active pane: give it the same per-pane session and
+        // runtime entries a leaf pane has (its conversation id stays empty
+        // until its first prompt starts one), so its draft, transcript and
+        // turn events are independent.
+        self.pane_sessions
+            .entry(SIDE_AGENT_PANE_ID)
+            .or_insert_with(|| PaneSession {
+                path: self.composer_path.clone(),
+                ..PaneSession::default()
+            });
+        self.pane_runtime.entry(SIDE_AGENT_PANE_ID).or_default();
         let mut ids = Vec::new();
         for space in &self.spaces {
             collect_leaf_pane_ids(&space.root, &mut ids);

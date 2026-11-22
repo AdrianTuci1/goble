@@ -49,10 +49,18 @@ fn the_selected_layout_and_its_floating_rects_survive_a_restart() {
     let placed = PaneRect::new(0.25, 0.15, 0.5, 0.4);
     state.spaces[0].set_floating_rect(3, placed);
     state.spaces[0].minimize_pane(3);
+    // The side split is part of the same persisted layout: a drag that ended
+    // before the save must come back at the same ratio.
+    state.side_split_ratio = 0.68;
     state.save_panes(&desktop);
 
     let mut restored = UiState::mock();
     restored.restore_panes(&desktop);
+    assert!(
+        (restored.side_split_ratio - 0.68).abs() < 0.001,
+        "the side split ratio survives a restart: {}",
+        restored.side_split_ratio
+    );
     assert_eq!(restored.spaces[0].layout, LayoutKind::Floating);
     assert_eq!(restored.spaces[0].root.leaf_count(), 3, "no pane is lost");
     assert_eq!(restored.spaces[0].floating_rect(3), Some(placed));

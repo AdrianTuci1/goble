@@ -89,7 +89,17 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("cancelled", "cancelled.svg"),
     icon_bytes!("left-panel-close", "left-panel-close.svg"),
     icon_bytes!("left-panel-open", "left-panel-open.svg"),
+    // DSH's own panel glyph (`panel-left-outline`), mirrored for the right
+    // panel: the topbar's open/closed states use the real artwork, not a
+    // custom look-alike.
+    icon_bytes!("panel-left-outline", "panel-left-outline.svg"),
+    icon_bytes!("panel-right-outline", "panel-right-outline.svg"),
     icon_bytes!("dots-horizontal", "dots-horizontal.svg"),
+    // The vertical kebab (side panel's own actions) and the older horizontal
+    // ellipsis name the topbar's More control asks for. Both files exist; the
+    // atlas has to know them, or the renderer falls back to `x-close`.
+    icon_bytes!("dots-vertical", "dots-vertical.svg"),
+    icon_bytes!("ellipsis", "ellipsis.svg"),
     icon_bytes!("trash-02", "trash-02.svg"),
     icon_bytes!("paperclip", "paperclip.svg"),
     icon_bytes!("send", "send.svg"),
@@ -148,7 +158,10 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("harness-fast-agent", "harness-fast-agent.svg"),
     icon_bytes!("harness-fx", "harness-fx.svg"),
     icon_bytes!("harness-gemini", "harness-gemini.svg"),
-    icon_bytes!("harness-github-copilot-cli", "harness-github-copilot-cli.svg"),
+    icon_bytes!(
+        "harness-github-copilot-cli",
+        "harness-github-copilot-cli.svg"
+    ),
     icon_bytes!("harness-gjc", "harness-gjc.svg"),
     icon_bytes!("harness-glm-acp-agent", "harness-glm-acp-agent.svg"),
     icon_bytes!("harness-goble", "harness-goble.svg"),
@@ -665,9 +678,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} is registered"))
                 .1
         };
-        let raster = |name: &str| {
-            rasterize_icon(icon(name)).unwrap_or_else(|| panic!("{name} rasterizes"))
-        };
+        let raster =
+            |name: &str| rasterize_icon(icon(name)).unwrap_or_else(|| panic!("{name} rasterizes"));
         for name in ["database", "branch", "arrow-right"] {
             let (alpha, width, height) = raster(name);
             assert!(width > 0 && height > 0, "{name} rasterized to an empty box");
@@ -755,9 +767,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} is registered"))
                 .1
         };
-        let raster = |name: &str| {
-            rasterize_icon(bytes(name)).unwrap_or_else(|| panic!("{name} rasterizes"))
-        };
+        let raster =
+            |name: &str| rasterize_icon(bytes(name)).unwrap_or_else(|| panic!("{name} rasterizes"));
         let ink = |alpha: &[u8], width: u32, x: u32, y: u32| -> bool {
             alpha[(y * width + x) as usize] > 0
         };
@@ -773,16 +784,14 @@ mod tests {
             "the computer's screen is a frame, not a filled box"
         );
         assert!(
-            (height * 3 / 4..height)
-                .any(|y| ink(&alpha, width, width / 2, y)),
+            (height * 3 / 4..height).any(|y| ink(&alpha, width, width / 2, y)),
             "the computer's stand reaches the bottom of the box"
         );
 
         let (alpha, width, height) = raster("environment-cloud");
         assert!(alpha.iter().any(|&a| a > 0), "the cloud draws ink");
         assert!(
-            (height / 3..height / 2)
-                .any(|y| (0..width).any(|x| ink(&alpha, width, x, y))),
+            (height / 3..height / 2).any(|y| (0..width).any(|x| ink(&alpha, width, x, y))),
             "the cloud's middle band is drawn"
         );
         assert!(
@@ -814,7 +823,13 @@ mod tests {
     #[test]
     fn the_session_menu_icons_rasterize() {
         let mut found = 0;
-        for name in ["edit", "archive", "unarchive", "archive-off", "archive-check"] {
+        for name in [
+            "edit",
+            "archive",
+            "unarchive",
+            "archive-off",
+            "archive-check",
+        ] {
             let (_, bytes) = ICON_FILES
                 .iter()
                 .find(|(icon, _)| *icon == name)

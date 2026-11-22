@@ -152,11 +152,7 @@ fn opening_the_agent_view_switches_a_bound_pane_into_agent_mode() {
             .with_harness("claude")
             .with_directory("/Users/me/Projects/goble"),
     );
-    state
-        .pane_sessions
-        .entry(1)
-        .or_default()
-        .conversation_id = "launch-1".to_string();
+    state.pane_sessions.entry(1).or_default().conversation_id = "launch-1".to_string();
 
     state.open_harness_agent_view(1);
 

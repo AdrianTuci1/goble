@@ -10,6 +10,7 @@
 
 pub mod ansi;
 mod block;
+mod changed_files;
 mod file_mention;
 mod fragment;
 mod message;
@@ -21,6 +22,7 @@ mod tool_call;
 mod tests;
 
 pub use block::{group_fragments_into_blocks, ChatBlock, InlineSpan, InlineStyle};
+pub use changed_files::{changed_files_for_message, ChangedFile, ChangedFiles};
 pub use file_mention::inline_code_file_path;
 pub use fragment::{ChatFragment, ChatFragmentKind, ListItem};
 pub use message::{ChatAction, ChatMessage, ChatRole};

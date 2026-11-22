@@ -354,7 +354,35 @@ pub fn render_to_png(
     background: Option<ColorU>,
     out: &Path,
 ) -> anyhow::Result<()> {
-    let commands = render_commands(element, canvas, app);
+    render_to_png_with_cursor(assets, app, element, canvas, scale, background, None, out)
+}
+
+/// Like [`render_to_png`], but paints with the pointer at `cursor` so hover
+/// affordances (a tab's close X) appear in the shot. `None` is the headless
+/// pointer-free frame.
+pub fn render_to_png_with_cursor(
+    assets: &PreviewAssets,
+    app: &AppContext,
+    element: &mut Box<dyn Element>,
+    canvas: Vector2F,
+    scale: f32,
+    background: Option<ColorU>,
+    cursor: Option<Vector2F>,
+    out: &Path,
+) -> anyhow::Result<()> {
+    let _ = layout_size(element, canvas, app);
+    let renderer = Renderer::new();
+    let mut paint_ctx = PaintContext::new(renderer);
+    if let Some(cursor) = cursor {
+        paint_ctx.cursor_position = cursor;
+        paint_ctx.cursor_inside = true;
+    }
+    element.paint(vec2f(0.0, 0.0), &mut paint_ctx, app);
+    let commands = paint_ctx
+        .renderer
+        .take()
+        .map(|renderer| renderer.commands().to_vec())
+        .unwrap_or_default();
     rasterize_to_png(assets, app, &commands, canvas, scale, background, out)
 }
 
@@ -385,6 +413,32 @@ pub fn render_element_to_png(
         vec2f(width, height),
         scale,
         background,
+        out,
+    )
+}
+
+/// Render one element with the pointer at `cursor` (window coordinates), so a
+/// hover-only affordance is present in the preview.
+#[allow(clippy::too_many_arguments)]
+pub fn render_element_to_png_at(
+    assets: &PreviewAssets,
+    app: &AppContext,
+    element: &mut Box<dyn Element>,
+    width: f32,
+    height: f32,
+    scale: f32,
+    cursor: Vector2F,
+    background: Option<ColorU>,
+    out: &Path,
+) -> anyhow::Result<()> {
+    render_to_png_with_cursor(
+        assets,
+        app,
+        element,
+        vec2f(width, height),
+        scale,
+        background,
+        Some(cursor),
         out,
     )
 }

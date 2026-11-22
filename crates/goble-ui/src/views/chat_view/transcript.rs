@@ -1,31 +1,29 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::elements::chat_content::{changed_files_for_message, ChatRole};
 use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind, ToolDisplayMode};
 use crate::elements::chat_message_bubble::{tool_fold_targets, ToolFoldTarget};
 use crate::elements::chat_typography;
-use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::popup_menu::POPUP_PANEL_RADIUS;
+use crate::elements::terminal_block::{terminal_filter_bar, TerminalFilter};
 use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
-    Container, ContentLane, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex,
-    HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, QuickActionButton,
-    Scrollable, ShortcutHints, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
-    TurnStatusFooter,
+    Container, ContentLane, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
+    Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
+    QuickActionButton, Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
+    TurnStatus, TurnStatusFooter,
 };
 use crate::geometry::Vector2F;
 use crate::platform::text_atlas::FontWeight;
-use crate::theme::{ColorToken, SpacingToken};
+use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
+use super::changed_files_card::build_changed_files_card;
+use super::composer_overlay::ComposerOverlay;
 use super::sticky::StickyTurn;
 use super::usage_popover::UsagePopover;
 use super::ChatView;
-
-/// How much lower the instruction strip sits than the block's own inset put
-/// it: the strip belongs to the input under it, and the caps read as that
-/// input's row only when they hug the input card under them.
-pub(super) const STRIP_RISE: f32 = 6.0;
 
 /// What the whole-transcript filter bar's field says when it is empty.
 const TRANSCRIPT_FILTER_PLACEHOLDER: &str = "Filter terminal output";
@@ -109,7 +107,12 @@ pub(super) fn cache_hit_percent(cached: u64, input: u64) -> Option<String> {
 /// One label/value row of the usage panel: DSH's two-column detail grid, the
 /// label in the muted tier at the leading edge and the exact count in the text
 /// tier at the trailing one.
-fn usage_row(app: &AppContext, label: &str, value: String) -> Box<dyn Element> {
+fn usage_row_mono(
+    app: &AppContext,
+    label: &str,
+    value: String,
+    emphasis: bool,
+) -> Box<dyn Element> {
     Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -119,17 +122,57 @@ fn usage_row(app: &AppContext, label: &str, value: String) -> Box<dyn Element> {
             Text::new(label)
                 .with_theme_color(ColorToken::Muted, app)
                 .with_font_family(chat_typography::chat_font(app))
-                .with_font_size(chat_typography::SMALL_SIZE)
-                .with_line_height(chat_typography::SMALL_LH)
+                .with_font_size(12.0)
+                .with_line_height(18.0 / 12.0)
                 .finish(),
         )
         .with_child(
             Text::new(value)
-                .with_theme_color(ColorToken::Text, app)
-                .with_font_family(chat_typography::chat_font(app))
-                .with_font_size(chat_typography::SMALL_SIZE)
-                .with_line_height(chat_typography::SMALL_LH)
+                .with_theme_color(
+                    if emphasis {
+                        ColorToken::Text
+                    } else {
+                        ColorToken::Muted
+                    },
+                    app,
+                )
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(12.0)
+                .with_line_height(18.0 / 12.0)
+                .with_weight(if emphasis {
+                    FontWeight::Medium
+                } else {
+                    FontWeight::Regular
+                })
                 .finish(),
+        )
+        .finish()
+}
+
+/// A section heading inside the usage card ("Last call"), with DSH's small
+/// rule above it.
+fn usage_section_heading(app: &AppContext, title: &str) -> Box<dyn Element> {
+    Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(
+            Padding::new(
+                Divider::horizontal().finish(),
+                EdgeInsets::new(0.0, 8.0, 0.0, 6.0),
+            )
+            .finish(),
+        )
+        .with_child(
+            Padding::new(
+                Text::new(title)
+                    .with_theme_color(ColorToken::Text, app)
+                    .with_font_family(chat_typography::chat_font(app))
+                    .with_font_size(12.0)
+                    .with_line_height(18.0 / 12.0)
+                    .with_weight(FontWeight::Medium)
+                    .finish(),
+                EdgeInsets::new(0.0, 0.0, 0.0, 4.0),
+            )
+            .finish(),
         )
         .finish()
 }
@@ -279,9 +322,11 @@ mod failure_tests {
 
 impl ChatView {
     /// The slash-command list, when the draft the composer holds is a command:
-    /// the items the host filtered for that draft, drawn over the whole input
-    /// block. `None` when the draft is not a command (or Escape put the list
-    /// away), so a closed list takes no space at all.
+    /// the items the host filtered for that draft, anchored above the composer
+    /// on the frame's last-painted layer (see
+    /// [`ComposerOverlay`](super::composer_overlay::ComposerOverlay)). `None`
+    /// when the draft is not a command (or Escape put the list away), so a
+    /// closed list takes no space at all.
     fn slash_menu(&self) -> Option<Box<dyn Element>> {
         // The approval card owns the keyboard while it waits, so the command
         // list has no query to follow and draws nothing.
@@ -648,20 +693,14 @@ impl ChatView {
         *self.usage_open.borrow_mut() = false;
     }
 
-    /// The details panel the footer pill opens, DSH's stat-dialog anatomy on
-    /// Goble's accounting: a title row carrying the exact billed total, a 1px
-    /// rule, then the rows the provider's counts can fill.
-    ///
-    /// DSH's headline is the call size (`totalTokens`); Goble keeps its
-    /// existing cache-aware meter, so the headline is `spend()` — what the
-    /// conversation paid for — and the call size is demoted to the `Total` row
-    /// so no DSH information is lost. `Consumed` is the same Goble-only row
-    /// stated plainly. Rows DSH can show but Goble does not track (provider /
-    /// model routes, cache write, the reasoning subset) are omitted rather than
-    /// drawn as zeros, and a provider without cache accounting gets the plain
-    /// `Input` label instead of a cache split.
+    /// The details panel the footer pill opens, DSH's stat-dialog anatomy:
+    /// a 16pt casing, a 12/18 section heading with the exact headline on the
+    /// right, the hairline under it, then the label/value grid with tabular
+    /// mono values. Session totals and the latest reported call are separate
+    /// sections; anything the host does not report is `—`, never a zero.
     fn build_usage_panel(&self, app: &AppContext) -> Box<dyn Element> {
         let usage = &self.usage;
+        let total = usage.total();
         let title = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -678,27 +717,27 @@ impl ChatView {
                             .finish(),
                     )
                     .with_child(
-                        Text::new("Turn usage")
+                        Text::new("Session usage")
                             .with_theme_color(ColorToken::Text, app)
                             .with_font_family(chat_typography::chat_font(app))
-                            .with_font_size(chat_typography::SMALL_SIZE)
-                            .with_line_height(chat_typography::SMALL_LH)
+                            .with_font_size(12.0)
+                            .with_line_height(18.0 / 12.0)
                             .with_weight(FontWeight::Medium)
                             .finish(),
                     )
                     .finish(),
             )
             .with_child(
-                Text::new(group_digits(usage.spend()))
+                Text::new(group_digits(total))
                     .with_theme_color(ColorToken::Text, app)
-                    .with_font_family(chat_typography::chat_font(app))
-                    .with_font_size(chat_typography::SMALL_SIZE)
-                    .with_line_height(chat_typography::SMALL_LH)
+                    .with_font_family(FontFamily::Mono)
+                    .with_font_size(12.0)
+                    .with_line_height(18.0 / 12.0)
+                    .with_weight(FontWeight::Medium)
                     .finish(),
             )
             .finish();
 
-        // DSH's `titleRule`: a hairline between the heading and the rows.
         let rule = Padding::new(
             Divider::horizontal().finish(),
             EdgeInsets::new(0.0, 8.0, 0.0, 10.0),
@@ -708,27 +747,135 @@ impl ChatView {
         let mut rows = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_spacing(6.0);
+        rows = rows.with_child(usage_row_mono(
+            app,
+            "Model",
+            self.composer_model_label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| "—".to_string()),
+            false,
+        ));
+
+        // Context: the latest call's prompt against the model's window. Both
+        // halves are required for a share; without the configured window the
+        // number is honestly unknown (the host does not report it).
+        let context = match (self.usage_last_call, self.usage_context_window) {
+            (Some(last), Some(window)) if window > 0 => {
+                let used = last.input.min(window);
+                let percent = used as f64 / window as f64 * 100.0;
+                format!(
+                    "{} / {} · {:.1}%",
+                    compact_tokens(used),
+                    compact_tokens(window),
+                    percent
+                )
+            }
+            _ => "—".to_string(),
+        };
+        rows = rows.with_child(usage_row_mono(app, "Context", context, false));
+        rows = rows.with_child(usage_row_mono(
+            app,
+            "Calls",
+            if self.usage_calls == 0 {
+                "—".to_string()
+            } else {
+                group_digits(self.usage_calls)
+            },
+            false,
+        ));
+
         if let Some(cached) = usage.cached {
-            // A reported cache split says how much of the prompt the provider
-            // served from its cache. `cached: Some(0)` is a reported miss and
-            // reads 0%; `None` omits the whole split.
             if usage.input > 0 {
                 if let Some(percent) = cache_hit_percent(cached, usage.input) {
-                    rows = rows.with_child(usage_row(app, "Cache hit", percent));
+                    rows = rows.with_child(usage_row_mono(app, "Cache hit", percent, false));
                 }
             }
-            rows = rows.with_child(usage_row(
+            rows = rows.with_child(usage_row_mono(
                 app,
-                "Uncached input",
+                "Input (uncached)",
                 group_digits(usage.input.saturating_sub(cached)),
+                false,
             ));
-            rows = rows.with_child(usage_row(app, "Cached input", group_digits(cached)));
+            rows = rows.with_child(usage_row_mono(
+                app,
+                "Cache read",
+                group_digits(cached),
+                false,
+            ));
         } else {
-            rows = rows.with_child(usage_row(app, "Input", group_digits(usage.input)));
+            rows = rows.with_child(usage_row_mono(
+                app,
+                "Input",
+                group_digits(usage.input),
+                false,
+            ));
         }
-        rows = rows.with_child(usage_row(app, "Output", group_digits(usage.output)));
-        rows = rows.with_child(usage_row(app, "Consumed", group_digits(usage.spend())));
-        rows = rows.with_child(usage_row(app, "Total", group_digits(usage.total())));
+        rows = rows.with_child(usage_row_mono(
+            app,
+            "Output",
+            group_digits(usage.output),
+            false,
+        ));
+        rows = rows.with_child(usage_row_mono(
+            app,
+            "Session total",
+            group_digits(total),
+            true,
+        ));
+
+        if let Some(last) = self.usage_last_call {
+            rows = rows.with_child(
+                Padding::new(
+                    Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_child(usage_section_heading(app, "Last call"))
+                        .with_child(usage_row_mono(
+                            app,
+                            "Input",
+                            group_digits(last.input),
+                            false,
+                        ))
+                        .with_child(usage_row_mono(
+                            app,
+                            "Cached",
+                            last.cached
+                                .map(group_digits)
+                                .unwrap_or_else(|| "—".to_string()),
+                            false,
+                        ))
+                        .with_child(usage_row_mono(
+                            app,
+                            "Output",
+                            group_digits(last.output),
+                            false,
+                        ))
+                        .with_child(usage_row_mono(
+                            app,
+                            "Total",
+                            group_digits(last.total()),
+                            true,
+                        ))
+                        .finish(),
+                    EdgeInsets::new(0.0, 8.0, 0.0, 0.0),
+                )
+                .finish(),
+            );
+        }
+
+        let note = if self.usage_calls == 0 {
+            "No model call has reported usage yet."
+        } else if self.usage_context_window.is_none() {
+            "Counts are reported per model call; per-turn attribution and the context window are not reported by this host."
+        } else {
+            "Counts are reported per model call; per-turn attribution is not reported by this host."
+        };
+        let note = Text::new(note)
+            .with_theme_color(ColorToken::Muted, app)
+            .with_font_family(chat_typography::chat_font(app))
+            .with_font_size(11.0)
+            .with_line_height(16.0 / 11.0)
+            .finish();
 
         Container::new(
             Flex::column()
@@ -736,6 +883,7 @@ impl ChatView {
                 .with_child(title)
                 .with_child(rule)
                 .with_child(rows.finish())
+                .with_child(Padding::new(note, EdgeInsets::new(0.0, 12.0, 0.0, 0.0)).finish())
                 .finish(),
         )
         .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
@@ -804,6 +952,10 @@ impl ChatView {
     /// the floating bar.
     pub(super) fn rebuild(&mut self, app: &AppContext, header_height: f32) {
         let spacing = app.theme.spacing_px(SpacingToken::Md);
+        // This frame's overlay is built below (when the draft is a command).
+        // Clear the previous frame's panel now, so a dismissed list can never
+        // keep taking pointer events through the view's dispatch.
+        *self.composer_slash_overlay.borrow_mut() = Default::default();
 
         // The pane's chrome is its own full-width band, OUTSIDE the content
         // lane: the topbar (the height the floating bar takes) and the work
@@ -897,6 +1049,36 @@ impl ChatView {
                 }
                 let bubble = bubble.finish();
                 message_column = message_column.with_child(sticky.probe(index, bubble));
+            }
+            // DSH closes a completed assistant turn with its changed-files
+            // card. The counts come from the turn's own recorded tool diffs, so
+            // a turn that changed nothing draws no card; a running turn has no
+            // closing card yet.
+            if !matches!(self.turn_status, TurnStatus::Busy { .. }) {
+                let last_assistant = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == ChatRole::Assistant);
+                if let Some(summary) = last_assistant
+                    .and_then(changed_files_for_message)
+                    .filter(|summary| !summary.is_empty())
+                {
+                    if let Some(on_review) = self.on_review_changes.clone() {
+                        message_column = message_column.with_child(
+                            Padding::new(
+                                build_changed_files_card(
+                                    app,
+                                    &summary,
+                                    self.changed_files_open.clone(),
+                                    on_review,
+                                ),
+                                EdgeInsets::new(20.0, 0.0, 20.0, 0.0),
+                            )
+                            .finish(),
+                        );
+                    }
+                }
             }
             // A failed turn says why under the messages it belongs to. The
             // inbox names the conversation; the transcript carries the reason,
@@ -1113,13 +1295,11 @@ impl ChatView {
             // While a turn is in flight the status row above the input carries
             // the one Stop control; an idle input keeps it in its action row.
             .with_stop_visible(self.composer_stop_visible && !self.turn_status.is_in_flight())
-            // The rich input is built the same way in both surfaces: the
-            // context row (harness, directory, branch, attach) rides above the
-            // editor, where it describes the draft, and the pane's instructions
-            // are drawn by the pane above the input it describes. A terminal
-            // pane's bar is built from this same widget in this same order, so
-            // switching a pane between the shell and its agent view moves
-            // nothing but the text in the editor.
+            // The rich input is one card on both surfaces, and the owner's
+            // instruction row is a fixed line **under** it, right-aligned. A
+            // terminal pane's bar is built from this same widget in this same
+            // order, so switching a pane between the shell and its agent view
+            // moves nothing but the text in the editor.
             .with_context_above_editor(true)
             // The agent bar is the pane's bottom surface, like the shell bar:
             // it spans the pane instead of carrying a gutter of its own, so
@@ -1151,6 +1331,20 @@ impl ChatView {
             });
         if let Some(placeholder) = self.composer_placeholder.clone() {
             composer = composer.with_placeholder(placeholder);
+        }
+        // The pane's instructions are the composer's own fixed row under the
+        // card, aligned to its trailing edge: they can never change the card's
+        // height, and the view no longer stacks a separate strip above it.
+        if !self.composer_hints.is_empty() {
+            composer = composer.with_hints(self.composer_hints.clone());
+        }
+        // The attach (`+`) card's app-owned open flag and highlight, so the
+        // card survives the per-frame rebuild.
+        if let Some(open) = self.composer_attach_menu_open.clone() {
+            composer = composer.with_attach_menu_open(open);
+        }
+        if let Some(highlight) = self.composer_attach_menu_highlight.clone() {
+            composer = composer.with_attach_menu_highlight(highlight);
         }
         if let Some(label) = self.composer_model_label.clone() {
             composer = composer.with_model_label(label);
@@ -1241,8 +1435,7 @@ impl ChatView {
                 move |idx| (cb.borrow_mut())(idx),
             );
             composer = composer.with_dir_menu_scroll(self.composer_dir_menu_scroll.clone());
-            composer =
-                composer.with_dir_menu_highlight(self.composer_dir_menu_highlight.clone());
+            composer = composer.with_dir_menu_highlight(self.composer_dir_menu_highlight.clone());
         }
         if let Some(cb) = self.on_select_branch_item.clone() {
             composer = composer
@@ -1307,19 +1500,11 @@ impl ChatView {
             // is the pane's only typing surface. The turn-status row (with its
             // Stop) stays, because the turn is still in flight.
             let waiting = self.composer_proposal.is_some() || self.pending_ask.is_some();
-            if !waiting {
-                if let Some(menu) = self
-                    .slash_menu()
-                    .or_else(|| self.model_tray())
-                    .or_else(|| self.model_menu())
-                {
-                    column = column.with_child(menu);
-                }
-            }
-            // The live turn-status row takes the instruction strip's slot while
-            // a turn is in flight — the waiting text is what the bar is doing,
-            // and the row also carries the turn's Stop — instead of stacking
-            // above it. An idle pane keeps the strip and pays no status height.
+            // The live turn-status row takes the instruction strip's old slot
+            // while a turn is in flight — the waiting text is what the bar is
+            // doing, and the row also carries the turn's Stop. An idle pane
+            // pays no status height: the composer's own fixed row under the
+            // card carries the hints now.
             if self.turn_status.is_in_flight() {
                 let mut footer = TurnStatusFooter::new(self.turn_status.clone());
                 if self.composer_stop_visible {
@@ -1328,28 +1513,19 @@ impl ChatView {
                     }
                 }
                 column = column.with_child(footer.finish());
-            } else if !waiting && !self.composer_hints.is_empty() {
-                let md = app.theme.spacing_px(SpacingToken::Md);
-                let sm = app.theme.spacing_px(SpacingToken::Sm);
-                let strip = ShortcutHints::new(self.composer_hints.clone()).finish(app);
-                // The strip's caps sit a few points under the transcript's last
-                // row: the gestures belong to the input below them, and the gap
-                // is what reads them as the input's own row rather than as the
-                // conversation's tail.
-                //
-                // The block is pinned to the input card under it (the
-                // transcript above it is the flex child that takes the slack),
-                // so the caps' height above the card is decided by the inset
-                // *beneath* them and not by the gap above: `sm - STRIP_RISE`
-                // puts them six points lower than `sm` alone did, with the
-                // block's own height unchanged.
-                column = column.with_child(
-                    Padding::new(
-                        strip,
-                        EdgeInsets::new(md, 4.0 + STRIP_RISE, md, sm - STRIP_RISE),
-                    )
-                    .finish(),
-                );
+            }
+            // The command list is the one band that no longer takes a row in
+            // this column. It is an overlay anchored above the composer: the
+            // `ComposerOverlay` lays the composer out exactly as the closed
+            // column does and queues the panel on the frame's last-painted
+            // layer, so opening it neither shrinks the transcript nor moves the
+            // composer (or the caret inside it). The model tray / flat list keep
+            // their in-flow slot, and the draft's command list still wins it.
+            let slash_panel = if waiting { None } else { self.slash_menu() };
+            if !waiting && slash_panel.is_none() {
+                if let Some(menu) = self.model_tray().or_else(|| self.model_menu()) {
+                    column = column.with_child(menu);
+                }
             }
             // No rule between the content and the card: the floating rich
             // input is the pane's bottom surface and the content simply ends
@@ -1362,6 +1538,16 @@ impl ChatView {
             // the answer settles it. The turn-status row stays as the mark
             // that the turn is suspended.
             if !waiting {
+                let composer: Box<dyn Element> = match slash_panel {
+                    Some(panel) => ComposerOverlay::new(composer, Some(panel))
+                        // Keep the exact anchor the in-flow band had: the
+                        // column's own gap now belongs to the overlay instead
+                        // of to a row that pushed the composer.
+                        .with_gap(spacing)
+                        .with_shared_state(self.composer_slash_overlay.clone())
+                        .finish(),
+                    None => composer,
+                };
                 column = column.with_child(composer);
             }
         }
@@ -1371,7 +1557,7 @@ impl ChatView {
         // `md` gap the chrome used to contribute to the column is this
         // container's own top padding, so the lane's background covers it too.
         let content: Box<dyn Element> = Container::new(column.finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+            .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
             .with_padding(EdgeInsets::new(
                 0.0,
                 if chrome.is_some() { spacing } else { 0.0 },

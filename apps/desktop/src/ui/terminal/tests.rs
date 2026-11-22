@@ -267,13 +267,21 @@ fn a_command_block_renders_identically_in_the_transcript_and_the_pane() {
         .find(|(text, _, _, _)| text.starts_with("Run"))
         .expect("the tool row is drawn");
     assert_eq!(row.3, 13.0, "the tool row is DSH's 13 px tier");
-    assert_eq!(row.2, goble_ui::theme::FontFamily::System, "the row is prose");
+    assert_eq!(
+        row.2,
+        goble_ui::theme::FontFamily::System,
+        "the row is prose"
+    );
     let body = bubble_runs
         .iter()
         .find(|(text, _, _, _)| text == "hi")
         .expect("the body is drawn");
     assert_eq!(body.3, 11.0, "the body is DSH's 11 px code tier");
-    assert_eq!(body.2, goble_ui::theme::FontFamily::Mono, "the body stays mono");
+    assert_eq!(
+        body.2,
+        goble_ui::theme::FontFamily::Mono,
+        "the body stays mono"
+    );
 }
 
 /// R5: a command block is drawn from the block's lifecycle, never from a
@@ -665,6 +673,123 @@ fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
     );
 }
 
+/// The shell pane's rich input is the pane's bottom band, not a floating card:
+/// its outer box runs the pane's full width (zero side inset), ends at the pane's
+/// bottom edge, is square on top and carries the pane card's own radius on its
+/// bottom corners, while the inner input segment keeps its own rounding. The
+/// agent composer in the same window keeps its floating card — a gutter on every
+/// side — so the two surfaces differ exactly where the owner asked them to.
+#[test]
+fn the_shells_composer_is_the_panes_bottom_band() {
+    use goble_ui::elements::chat_composer::{
+        COMPOSER_BAR_RESERVED_HEIGHT, COMPOSER_CARD_GUTTER, COMPOSER_CARD_INSET,
+        COMPOSER_CARD_RADIUS, COMPOSER_CARD_RESERVED_HEIGHT, COMPOSER_INPUT_RADIUS,
+    };
+    use goble_ui::theme::ColorToken;
+
+    let app = AppContext::default();
+    let surface = app.theme.color(ColorToken::Surface);
+    let raised = app.theme.color(ColorToken::SurfaceRaised);
+    let pane_bg = app.theme.color(ColorToken::Bg);
+    let radius = crate::ui::panes::WINDOW_CORNER_RADIUS;
+    let fills = |commands: &[RenderCommand], color: ColorU, corner_radius: f32, min_height: f32| {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect {
+                    rect,
+                    color: painted,
+                    corner_radius: painted_radius,
+                } if *painted == color
+                    && (painted_radius - corner_radius).abs() < 0.01
+                    && rect.height() >= min_height =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // The shell pane: the band is the Surface fill with the pane's radius that
+    // spans the whole pane card width. The pane card itself is the Bg fill with
+    // the same radius.
+    let (mut shell, _state, _dir) = shell_root();
+    let shell_commands = render_element(&mut shell, vec2f(1024.0, 768.0), &app);
+    let pane = fills(&shell_commands, pane_bg, radius, 300.0)
+        .into_iter()
+        .max_by(|a, b| a.width().total_cmp(&b.width()))
+        .expect("the shell pane card paints");
+    let band = fills(&shell_commands, surface, radius, 100.0)
+        .into_iter()
+        .find(|rect| (rect.height() - COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.5)
+        .unwrap_or_else(|| {
+            panic!("the shell's bottom band paints at the composer height {COMPOSER_BAR_RESERVED_HEIGHT}: {shell_commands:?}")
+        });
+    assert!(
+        (band.min_x() - pane.min_x()).abs() < 0.5 && (band.width() - pane.width()).abs() < 0.5,
+        "the band runs the pane's full width from edge to edge: {band:?} in {pane:?}"
+    );
+    assert!(
+        (band.max_y() - pane.max_y()).abs() < 0.5,
+        "the band ends at the pane's bottom edge, no floating margin: {band:?} in {pane:?}"
+    );
+    assert!(
+        (band.height() - COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.5,
+        "the band keeps the terminal/agent composer height: {:?}",
+        band
+    );
+    // The top edge is square: a square strip of the band's own tone squares the
+    // rounded box's top corners, one pane radius tall.
+    assert!(
+        fills(&shell_commands, surface, 0.0, radius - 0.5)
+            .iter()
+            .any(|rect| {
+                (rect.min_x() - band.min_x()).abs() < 0.5
+                    && (rect.width() - band.width()).abs() < 0.5
+                    && (rect.min_y() - band.min_y()).abs() < 0.5
+                    && (rect.height() - radius).abs() < 0.5
+            }),
+        "the band's top edge is square against the output: {shell_commands:?}"
+    );
+    // The inner input segment keeps its radius and its casing inset: it
+    // stretched with the band, it did not become a square box.
+    let input = fills(&shell_commands, raised, COMPOSER_INPUT_RADIUS, 60.0)
+        .into_iter()
+        .next()
+        .expect("the shell's input segment paints");
+    assert!(
+        (input.min_x() - band.min_x() - COMPOSER_CARD_INSET).abs() < 0.5
+            && (input.width() - (band.width() - COMPOSER_CARD_INSET * 2.0)).abs() < 0.5,
+        "the input segment keeps its {COMPOSER_CARD_INSET}pt casing inside the band: {input:?} in {band:?}"
+    );
+
+    // The agent composer is unchanged: the floating card is still a rounded
+    // `Surface` box, inset by the surface gutter, and it never paints the band's
+    // full-width shape.
+    let (mut chat, _chat_dir) = chat_root();
+    let chat_commands = render_element(&mut chat, vec2f(1024.0, 768.0), &app);
+    assert!(
+        !fills(&chat_commands, surface, radius, 100.0)
+            .iter()
+            .any(|rect| (rect.height() - COMPOSER_BAR_RESERVED_HEIGHT).abs() < 0.5),
+        "the agent surface draws no bottom band"
+    );
+    let card = fills(&chat_commands, surface, COMPOSER_CARD_RADIUS, 100.0)
+        .into_iter()
+        .next()
+        .expect("the agent composer card paints");
+    assert!(
+        card.min_x() - pane.min_x() >= COMPOSER_CARD_GUTTER - 0.5
+            && pane.max_x() - card.max_x() >= COMPOSER_CARD_GUTTER - 0.5,
+        "the agent card keeps its surface gutter on both sides: {card:?} in {pane:?}"
+    );
+    assert!(
+        (card.height() - (COMPOSER_CARD_RESERVED_HEIGHT - COMPOSER_CARD_GUTTER)).abs() < 0.5,
+        "the agent card is the card's own height, without the fixed instruction row: {card:?}"
+    );
+}
+
 /// A TUI agent — codex, claude, pi, grok, hermes — paints its own input on the
 /// alternate screen. The pane's rich input steps aside for it, so the program
 /// owns the whole pane and the keys; when it exits, the shell's bar returns.
@@ -672,8 +797,7 @@ fn the_shells_composer_sits_at_the_bottom_of_the_pane() {
 fn the_rich_input_steps_aside_while_a_full_screen_agent_owns_the_pane() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
-    let placeholder =
-        goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
+    let placeholder = goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     assert!(
         pane_has(&pane_runs(&mut root, &app), &placeholder),
         "a shell pane draws its rich input"
@@ -802,8 +926,7 @@ fn an_inline_cli_agent_keeps_the_rich_input_below_its_screen() {
 
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
-    let placeholder =
-        goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
+    let placeholder = goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     let _ = pane_runs(&mut root, &app);
 
     // The shell reports an `agy` the app did not launch. The CLI paints an
@@ -867,7 +990,10 @@ fn an_inline_cli_agent_keeps_the_rich_input_below_its_screen() {
         press(&mut root, &app, "ArrowDown"),
         "the CLI takes the arrow key"
     );
-    assert!(press(&mut root, &app, "Enter"), "and Enter picks the option");
+    assert!(
+        press(&mut root, &app, "Enter"),
+        "and Enter picks the option"
+    );
 
     // The CLI exits and the shell prompt is back, so is the pane's own bar.
     let mut emulator = Emulator::new(80, 24);
@@ -910,8 +1036,7 @@ fn a_bootstrapped_shell_with_no_command_keeps_its_composer_at_the_bottom() {
             .sessions
             .insert(1, TerminalSession::with_emulator(emulator));
     }
-    let placeholder =
-        goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
+    let placeholder = goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     let y = pane_runs(&mut root, &app)
         .into_iter()
         .find(|(text, _)| *text == placeholder)
@@ -969,8 +1094,8 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
     // ... and the chip over the input names it.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
-        "the bound pane's bar names the host it is on: {runs:?}"
+        !pane_has(&runs, CHIP),
+        "the retired session chip is not drawn; the host stays in the topbar: {runs:?}"
     );
 
     // The pane's other surface is the same pane on the same session, so its
@@ -992,8 +1117,8 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
     );
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
-        "the pane's agent view names the same host: {runs:?}"
+        !pane_has(&runs, CHIP),
+        "the retired session chip is not drawn in the agent view either: {runs:?}"
     );
     assert!(
         press(&mut root, &app, "Escape"),
@@ -1007,8 +1132,8 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
     // the pane never left the session.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
-        "the shell's bar names the host again: {runs:?}"
+        !pane_has(&runs, CHIP),
+        "the shell's bar draws no session chip: {runs:?}"
     );
 
     // `exit` is the way back to a local shell, and the chip goes with the
@@ -1026,12 +1151,11 @@ fn a_bound_shell_pane_names_its_host_and_clearing_the_binding_removes_it() {
     );
 }
 
-/// The directory pill's menu is a window onto the machine: while it is open
-/// it lists the directories under this pane's working directory — sorted,
-/// hidden entries and plain files left out, the way up last — and while it is
-/// closed it reads nothing at all, so a dropped menu costs no disk.
+/// The directory control belonged to the composer's retired folder band. Even
+/// with the old pane flag left open, the single composer draws no directory pill
+/// and reads no directory rows: the model changes directories through its tools.
 #[test]
-fn the_directory_menu_lists_the_panes_subdirectories_and_the_way_up() {
+fn the_retired_directory_menu_draws_no_rows() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
     let home = tempfile::tempdir().expect("temp home");
@@ -1042,40 +1166,20 @@ fn the_directory_menu_lists_the_panes_subdirectories_and_the_way_up() {
     {
         let mut s = state.borrow_mut();
         s.set_pane_path(1, cwd);
-    }
-
-    let closed = pane_runs(&mut root, &app);
-    assert!(
-        !pane_has(&closed, "goble"),
-        "a closed menu lists nothing: {closed:?}"
-    );
-
-    {
-        let mut s = state.borrow_mut();
         let flag = s.pane_controls_mut(1).dir_menu_open.clone();
         *flag.borrow_mut() = true;
     }
-    let open = pane_runs(&mut root, &app);
+    let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&open, "goble"),
-        "the subdirectory is a row: {open:?}"
-    );
-    assert!(
-        pane_has(&open, crate::ui::pickers::PARENT_LABEL),
-        "the way up is a row: {open:?}"
-    );
-    assert!(
-        !pane_has(&open, ".hidden") && !pane_has(&open, "notes.txt"),
-        "only visible directories are rows: {open:?}"
+        !pane_has(&runs, "goble") && !pane_has(&runs, crate::ui::pickers::PARENT_LABEL),
+        "the retired directory tray draws no rows even with its old flag open: {runs:?}"
     );
 }
 
-/// The branch pill's menu is the repository's own branch list, read while the
-/// menu is open: every local branch is a row, not just the one the pane is
-/// on. The other branch's name is the discriminator — the pill draws the
-/// current one whether the menu is open or not.
+/// The branch pill belonged to the same retired folder band: no branch label
+/// is drawn and the old tray flag opens nothing.
 #[test]
-fn the_branch_menu_lists_the_repositorys_local_branches() {
+fn the_retired_branch_menu_draws_no_rows() {
     let app = AppContext::default();
     let (mut root, state, _dir) = shell_root();
     let Some(repo) = repository_on_two_branches() else {
@@ -1085,103 +1189,13 @@ fn the_branch_menu_lists_the_repositorys_local_branches() {
     {
         let mut s = state.borrow_mut();
         s.set_pane_path(1, cwd);
-    }
-
-    let closed = pane_runs(&mut root, &app);
-    assert!(
-        pane_has(&closed, "feature/x"),
-        "the pill names the branch the repository is on: {closed:?}"
-    );
-    assert!(
-        !pane_has(&closed, "main"),
-        "a closed menu lists nothing: {closed:?}"
-    );
-
-    {
-        let mut s = state.borrow_mut();
         let flag = s.pane_controls_mut(1).branch_menu_open.clone();
         *flag.borrow_mut() = true;
     }
-    let open = pane_runs(&mut root, &app);
+    let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&open, "main") && pane_has(&open, "feature/x"),
-        "both local branches are rows: {open:?}"
-    );
-}
-
-/// The shell bar's diff control reads the pane's own repository: the changed
-/// file count and its additions are on the bar, and the menu opened from it
-/// lists the file.
-#[test]
-fn the_shells_bar_shows_the_working_trees_diff_and_opens_the_review_pane() {
-    let app = AppContext::default();
-    let (mut root, state, _dir) = shell_root();
-    let Some(repo) = repository_on_two_branches() else {
-        return; // no git on this machine: there is no diff to read
-    };
-    std::fs::write(repo.path().join("new.txt"), "one\ntwo\n").unwrap();
-    let cwd = repo.path().to_string_lossy().to_string();
-    {
-        let mut s = state.borrow_mut();
-        s.set_pane_path(1, cwd.clone());
-    }
-
-    let closed = pane_runs(&mut root, &app);
-    assert!(
-        pane_has(&closed, "+2"),
-        "the bar counts the untracked file's lines: {closed:?}"
-    );
-    assert!(
-        !pane_has(&closed, "new.txt"),
-        "nothing lists the files before the click: {closed:?}"
-    );
-
-    // One click on the chip opens the review pane; no menu stands between the
-    // count and the diffs.
-    let at = closed
-        .iter()
-        .find_map(|(text, origin)| (text == "+2").then_some(*origin))
-        .expect("the bar draws the diff totals")
-        + vec2f(2.0, 4.0);
-    let mut ctx = EventContext;
-    let _ = root.dispatch_event(
-        &DispatchedEvent::MouseDown {
-            position: at,
-            button: 0,
-        },
-        &mut ctx,
-        &app,
-    );
-    let _ = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-    let _ = root.dispatch_event(
-        &DispatchedEvent::MouseUp {
-            position: at,
-            button: 0,
-        },
-        &mut ctx,
-        &app,
-    );
-    {
-        let s = state.borrow();
-        let review = s.active_pane_id;
-        assert_eq!(
-            s.spaces[0].diff_leaf_for(&cwd),
-            Some(review),
-            "the click opens one review pane for the shell's directory"
-        );
-        assert!(matches!(
-            s.spaces[0].leaf_kind(review),
-            Some(crate::ui::PaneKind::Diff { .. })
-        ));
-    }
-    let after = pane_runs(&mut root, &app);
-    assert!(
-        pane_has(&after, "Commit"),
-        "the pane is the review surface and its controls bar: {after:?}"
-    );
-    assert!(
-        pane_has(&after, "new.txt"),
-        "and it draws the changed file: {after:?}"
+        !pane_has(&runs, "feature/x") && !pane_has(&runs, "main"),
+        "the retired branch control and tray draw no labels: {runs:?}"
     );
 }
 
@@ -1388,8 +1402,8 @@ fn the_panes_bar_draws_no_expand_control_in_a_one_pane_space() {
         "a one-pane space draws no expand control: {icons:?}"
     );
     assert!(
-        !icons.iter().any(|name| *name == "dots-horizontal"),
-        "and no tray trigger: {icons:?}"
+        icons.iter().any(|name| *name == "ellipsis"),
+        "DSH's More trigger is present: {icons:?}"
     );
 
     let drawn: Vec<&String> = commands
@@ -1426,8 +1440,7 @@ fn an_active_shell_pane_keeps_the_keys_in_its_bar() {
     // bar was laid out with, and the placeholder's own origin is a point
     // inside the editor that drew it.
     let runs = pane_runs(&mut root, &app);
-    let placeholder =
-        goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
+    let placeholder = goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string();
     let editor = runs
         .iter()
         .find(|(text, _)| text == &placeholder)
@@ -1776,7 +1789,7 @@ fn the_shells_bar_runs_its_draft_as_a_command_and_cmd_enter_opens_the_agent_view
 /// harness leads its bar with. A shell pane draws none of them, and the
 /// shell's own bar draws the one instruction that belongs to a command line
 /// (the shared-composer test above pins that side).
-const AGENT_SURFACE_RUNS: [&str; 4] = ["send", "send to cloud", "tasks", "for terminal"];
+const AGENT_SURFACE_RUNS: [&str; 3] = ["send", "send to cloud", "tasks"];
 
 /// S4: a shell pane in terminal mode builds no agent surface and dispatches
 /// no agent action. Nothing about the pane's kind has made it an agent
@@ -1886,7 +1899,7 @@ fn an_ssh_bound_pane_in_terminal_mode_is_still_a_terminal() {
     );
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
+        !pane_has(&runs, CHIP),
         "the bound pane's bar names the host it is on: {runs:?}"
     );
     assert!(
@@ -1984,8 +1997,8 @@ fn the_panes_mode_decides_its_surface_and_the_switch_puts_the_agent_surface_up()
         "the agent surface's own instruction strip is drawn: {runs:?}"
     );
     assert!(
-        pane_has(&runs, "for terminal"),
-        "and its bar leads with the way back to the shell: {runs:?}"
+        !pane_has(&runs, "for terminal") && !pane_has(&runs, "esc"),
+        "the retired esc-for-terminal hint is gone: {runs:?}"
     );
     assert!(
         !pane_has(&runs, "new conversation"),
@@ -2074,8 +2087,8 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
     // output the shell already printed still on it.
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, CHIP),
-        "the bound pane names the host it is on: {runs:?}"
+        !pane_has(&runs, CHIP),
+        "the retired session chip is not drawn: {runs:?}"
     );
     assert!(
         pane_has(&runs, MARKER),
@@ -2133,7 +2146,7 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
         );
     }
     assert!(
-        pane_has(&runs, CHIP),
+        !pane_has(&runs, CHIP),
         "and its input names the same host: {runs:?}"
     );
 
@@ -2169,7 +2182,7 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
         "and the output from before the switch is still drawn: {runs:?}"
     );
     assert!(
-        pane_has(&runs, CHIP),
+        !pane_has(&runs, CHIP),
         "with the chip still naming the host: {runs:?}"
     );
 }
@@ -2229,64 +2242,6 @@ fn cmd_enter_on_a_pane_already_in_the_agent_view_pushes_nothing_again() {
     assert!(
         s.pane_controls(1).harness_refusal.is_none(),
         "and nothing was refused: the entry was already made"
-    );
-}
-
-/// A custom harness owns its model and approval policy, so its agent surface
-/// draws the harness's own mark in the composer footer where the native
-/// surface draws the model selector and the approval mode. The bar leads with
-/// the same mark, so a pane on a custom harness draws it twice: once beside the
-/// title and once in the footer.
-#[test]
-fn a_custom_harness_agent_surface_draws_its_mark_in_the_footer() {
-    let app = AppContext::default();
-    let (mut root, state, _dir) = shell_root();
-    {
-        let s = state.borrow();
-        s.terminal.borrow_mut().set_mode(
-            1,
-            crate::terminal::TerminalMode::Agent(crate::terminal::TuiAgent::Claude),
-        );
-    }
-    let model = state.borrow().pane_controls(1).model.clone();
-    {
-        let mut s = state.borrow_mut();
-        s.pane_controls_mut(1).harness_mode = true;
-        s.enter_agent_view(1, "c1", "A conversation");
-    }
-
-    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-    let marks: Vec<f32> = commands
-        .iter()
-        .filter_map(|c| match c {
-            RenderCommand::DrawIcon { origin, name, .. }
-                if name == "harness-claude" && origin.x >= crate::ui::SIDEBAR_WIDTH =>
-            {
-                Some(origin.y)
-            }
-            _ => None,
-        })
-        .collect();
-    assert!(
-        marks.len() >= 2,
-        "the bar and the composer footer both lead with the harness mark: {marks:?}"
-    );
-
-    let runs = pane_runs(&mut root, &app);
-    assert!(
-        !runs.iter().any(|(text, _)| *text == model),
-        "a custom harness draws no model control: {runs:?}"
-    );
-    assert!(
-        !pane_has(
-            &runs,
-            goble_ui::elements::chat_composer::MODEL_NOT_CONFIGURED
-        ),
-        "and no placeholder for one: {runs:?}"
-    );
-    assert!(
-        !pane_has(&runs, "manual"),
-        "a custom harness draws no approval control: {runs:?}"
     );
 }
 
@@ -2459,58 +2414,6 @@ fn the_refusal_band_runs_the_panes_whole_width() {
     assert!(
         reason.x > band.min_x(),
         "the text keeps its own side padding: {reason:?} in {band:?}"
-    );
-}
-
-/// The focused pane's corner mark is drawn over the left end of the pane's
-/// own bar, so the bar starts past it. The harness's "esc for terminal" hint
-/// leads that bar, and without the room the mark leaves it would sit under
-/// the mark and read as one glyph with it.
-#[test]
-fn the_harness_hint_starts_past_the_focus_mark() {
-    let app = AppContext::default();
-    let (mut root, state, _dir) = shell_root();
-    // One frame first: the bar takes the keys once it is on screen.
-    let _ = pane_runs(&mut root, &app);
-    // Cmd+Enter is what opens the pane's harness, and the open harness is
-    // the only view whose bar leads with the hint.
-    for ch in "explain".chars() {
-        assert!(press(&mut root, &app, &ch.to_string()));
-    }
-    let cmd_enter = key(
-        "Enter",
-        ModifiersState {
-            command: true,
-            ..ModifiersState::default()
-        },
-    );
-    let mut ctx = EventContext;
-    assert!(root.dispatch_event(&cmd_enter, &mut ctx, &app));
-    assert!(
-        state.borrow().pane_controls(1).harness_mode,
-        "the harness is open, so its bar is the one on screen"
-    );
-    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-
-    let (mark, mark_size) = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::DrawIcon {
-                origin, name, size, ..
-            } if name == "upper-left-triangle" => Some((*origin, *size)),
-            _ => None,
-        })
-        .expect("the focused pane draws its corner mark");
-    let esc = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::DrawText { origin, text, .. } if text == "esc" => Some(*origin),
-            _ => None,
-        })
-        .expect("the harness bar leads with the esc hint");
-    assert!(
-        esc.x >= mark.x + mark_size,
-        "the hint starts past the mark: esc at {esc:?}, mark at {mark:?} sized {mark_size}"
     );
 }
 
@@ -2869,119 +2772,6 @@ fn a_command_is_drawn_as_a_section_with_its_directory_and_duration() {
     assert!(
         !pane_has(&runs, "$"),
         "the block view hides the shell's prompt: {runs:?}"
-    );
-}
-
-/// The prompt a command was typed at is drawn once, in the block's header.
-/// The body starts at the command's own `❯` line, so the shell prompt is
-/// never a row above the command inside the pane.
-#[test]
-fn a_typed_command_shows_its_prompt_in_the_header_not_the_body() {
-    use goble_terminal::hooks::{
-        encode_hook, CommandFinishedValue, InitShellValue, PrecmdValue, PreexecValue,
-    };
-    use goble_terminal::HookEvent;
-
-    let app = AppContext::default();
-    let (mut root, state, _dir) = shell_root();
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("LOGNAME"))
-        .expect("a user for the prompt");
-    let prompt = format!("{user}@Adrians-MacBook-Pro /tmp %");
-    {
-        let mut emulator = Emulator::new(80, 24);
-        emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
-            shell: Some("zsh".to_string()),
-            host: Some("Adrians-MacBook-Pro.local".to_string()),
-            honor_ps1: Some(true),
-            ..Default::default()
-        })));
-        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
-            pwd: Some("/tmp".to_string()),
-            ..Default::default()
-        })));
-        // The shell typed its own prompt and echoed the line before Preexec.
-        emulator.feed(format!("{prompt} echo hi\r\n").as_bytes());
-        emulator.feed(&encode_hook(&HookEvent::Preexec(PreexecValue {
-            command: Some("echo hi".to_string()),
-        })));
-        emulator.feed(b"hi\r\n");
-        emulator.feed(&encode_hook(&HookEvent::CommandFinished(
-            CommandFinishedValue {
-                exit_code: 0,
-                ..Default::default()
-            },
-        )));
-        state
-            .borrow_mut()
-            .terminal
-            .borrow_mut()
-            .sessions
-            .insert(1, TerminalSession::with_emulator(emulator));
-    }
-
-    let runs = pane_runs(&mut root, &app);
-    let header = runs
-        .iter()
-        .find(|(text, _)| text.starts_with(&user) && text.ends_with('…'))
-        .unwrap_or_else(|| panic!("the header carries the prompt, cut to its row: {runs:?}"));
-    assert!(
-        !pane_has(&runs, &prompt),
-        "the prompt is part of the header row, not a row of its own: {runs:?}"
-    );
-    let body: String = runs.iter().map(|(text, _)| text.as_str()).collect();
-    assert!(
-        body.contains("echo hi"),
-        "the body draws the command alone: {runs:?}"
-    );
-    assert!(
-        header.0.len() > user.len(),
-        "the header keeps the prompt's context on its one row: {:?}",
-        header.0
-    );
-}
-
-/// A bootstrapped shell waiting at its prompt has no command block to
-/// draw. The pane leaves that space empty rather than painting the live
-/// screen, whose only content is the prompt line the block header owns.
-#[test]
-fn a_bare_shell_prompt_is_not_drawn_in_the_pane() {
-    use goble_terminal::hooks::{encode_hook, InitShellValue, PrecmdValue};
-    use goble_terminal::HookEvent;
-
-    let app = AppContext::default();
-    let (mut root, state, _dir) = shell_root();
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("LOGNAME"))
-        .expect("a user for the prompt");
-    let prompt = format!("{user}@Adrians-MacBook-Pro /tmp %");
-    {
-        let mut emulator = Emulator::new(80, 24);
-        emulator.feed(&encode_hook(&HookEvent::InitShell(InitShellValue {
-            shell: Some("zsh".to_string()),
-            host: Some("Adrians-MacBook-Pro.local".to_string()),
-            honor_ps1: Some(true),
-            ..Default::default()
-        })));
-        emulator.feed(&encode_hook(&HookEvent::Bootstrapped(Default::default())));
-        emulator.feed(&encode_hook(&HookEvent::Precmd(PrecmdValue {
-            pwd: Some("/tmp".to_string()),
-            ..Default::default()
-        })));
-        emulator.feed(format!("{prompt} ").as_bytes());
-        state
-            .borrow_mut()
-            .terminal
-            .borrow_mut()
-            .sessions
-            .insert(1, TerminalSession::with_emulator(emulator));
-    }
-
-    let runs = pane_runs(&mut root, &app);
-    assert!(
-        !runs.iter().any(|(text, _)| text.contains(&prompt)),
-        "a shell at its prompt draws no prompt row in the pane: {runs:?}"
     );
 }
 
@@ -3692,59 +3482,6 @@ fn an_image_only_viewport_is_painted() {
     assert_eq!(drawn, 1, "the pane paints its only content: {commands:?}");
 }
 
-
-/// The shell pane's bar names the directory it runs in, centred over the pane.
-#[test]
-fn the_shell_bar_centres_its_working_directory() {
-    let app = AppContext::default();
-    let (mut root, state, _dir) = shell_root();
-    let cwd = "/tmp/goble-shell-heading".to_string();
-    {
-        let mut s = state.borrow_mut();
-        s.composer_path = cwd.clone();
-        if let Some(session) = s.pane_sessions.get_mut(&1) {
-            session.path = cwd.clone();
-        }
-    }
-
-    let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
-    let bar_y = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::DrawIcon { origin, name, .. }
-                if name == "x-close" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
-            {
-                Some(origin.y)
-            }
-            _ => None,
-        })
-        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .expect("the pane bar draws its close X");
-    let origin = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if text == &cwd => Some(*origin),
-            _ => None,
-        })
-        .find(|origin| (origin.y - bar_y).abs() < 24.0)
-        .expect("the bar draws the pane's directory");
-
-    let width = goble_ui::elements::text::measure_text(&cwd, 12.0, 1.2, f32::INFINITY).x;
-    let centred = origin.x + width / 2.0;
-    let bounds = state
-        .borrow()
-        .pane_bounds
-        .borrow()
-        .get(&1)
-        .copied()
-        .expect("the pane recorded its bounds");
-    let pane_middle = (bounds.min_x() + bounds.max_x()) / 2.0;
-    assert!(
-        (centred - pane_middle).abs() <= 0.5,
-        "the directory sits in the pane's middle: {centred} vs {pane_middle}"
-    );
-}
-
 /// A command's output keeps the colours it printed. The pane draws a block from
 /// the cells the command painted into, not from the flattened text its
 /// `VisibleBlock` carries, so an SGR colour reaches the frame.
@@ -3856,7 +3593,10 @@ fn an_alternate_screen_keeps_a_cells_background() {
 #[test]
 fn wide_and_emoji_characters_survive_to_the_drawn_output() {
     let app = AppContext::default();
-    let session = session_that_ran("printf", "\u{65e5}\u{672c}\u{8a9e} \u{1f600} \u{250c}\u{2500}\u{2510}");
+    let session = session_that_ran(
+        "printf",
+        "\u{65e5}\u{672c}\u{8a9e} \u{1f600} \u{250c}\u{2500}\u{2510}",
+    );
     let (pane, _terminal) = view_over(
         session,
         7,
@@ -3868,7 +3608,11 @@ fn wide_and_emoji_characters_survive_to_the_drawn_output() {
         .iter()
         .map(|(text, ..)| text.as_str())
         .collect();
-    for wanted in ["\u{65e5}\u{672c}\u{8a9e}", "\u{1f600}", "\u{250c}\u{2500}\u{2510}"] {
+    for wanted in [
+        "\u{65e5}\u{672c}\u{8a9e}",
+        "\u{1f600}",
+        "\u{250c}\u{2500}\u{2510}",
+    ] {
         assert!(
             drawn.contains(wanted),
             "{wanted:?} survives to the frame, got {drawn:?}"
@@ -3960,11 +3704,19 @@ fn a_harness_line_typed_into_the_grid_never_starts_its_tui() {
     let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
     for ch in line.chars() {
         assert!(
-            pane.dispatch_event(&key(&ch.to_string(), ModifiersState::none()), &mut ctx, &app),
+            pane.dispatch_event(
+                &key(&ch.to_string(), ModifiersState::none()),
+                &mut ctx,
+                &app
+            ),
             "the grid takes {ch:?}"
         );
     }
-    assert_eq!(terminal.borrow().input(7), line, "the mirror holds the line");
+    assert_eq!(
+        terminal.borrow().input(7),
+        line,
+        "the mirror holds the line"
+    );
     assert!(
         pane.dispatch_event(&key("Enter", ModifiersState::none()), &mut ctx, &app),
         "the grid takes Enter"
@@ -3993,7 +3745,11 @@ fn a_harness_named_inside_a_command_is_not_launched() {
     let _ = render_element(&mut pane, vec2f(900.0, 500.0), &app);
     for ch in "man claude".chars() {
         assert!(
-            pane.dispatch_event(&key(&ch.to_string(), ModifiersState::none()), &mut ctx, &app),
+            pane.dispatch_event(
+                &key(&ch.to_string(), ModifiersState::none()),
+                &mut ctx,
+                &app
+            ),
             "the grid takes {ch:?}"
         );
     }
@@ -4067,5 +3823,256 @@ fn a_cli_harness_bar_names_the_harness_in_the_composer_footer() {
     assert!(
         footer_marks >= 1,
         "the CLI harness's bar draws its mark in the composer footer: {commands:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The dedicated cell-grid surface
+// ---------------------------------------------------------------------------
+
+/// The grid renderer paints the alacritty cell runs directly: one glyph
+/// command per non-blank cell, and one rect per contiguous background run. It
+/// is a single element painting the frame, not a goble-ui element per cell.
+#[test]
+fn the_cell_grid_paints_alacritty_runs_as_glyphs_and_background_rects() {
+    use super::surface::{cell_width, GridSurface};
+
+    let app = AppContext::default();
+    let mut emulator = Emulator::new(40, 4);
+    emulator.feed(b"\x1b[41mAB\x1b[0mC");
+    let frame = emulator.frame();
+    assert_eq!(frame.row_text(0).as_deref(), Some("ABC"));
+
+    let palette = app.theme.terminal_palette();
+    let mut surface: Box<dyn Element> = GridSurface::new(frame)
+        .with_palette(palette)
+        // Hide the cursor so this test counts only the cells' own runs.
+        .with_cursor_visible(false)
+        .finish();
+    let commands = render_element(&mut surface, vec2f(400.0, 80.0), &app);
+
+    let drawn: String = text_runs(&commands)
+        .iter()
+        .map(|(text, ..)| text.as_str())
+        .collect();
+    assert_eq!(
+        drawn, "ABC",
+        "each non-blank cell is one glyph run, not a per-cell element: {commands:?}"
+    );
+
+    let (r, g, b) = palette.ansi[1];
+    let red = ColorU::new(r, g, b, 255);
+    let red_rects: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::FillRect { rect, color, .. } if *color == red => Some(*rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        red_rects.len(),
+        1,
+        "the two adjacent red cells merge into one background run: {commands:?}"
+    );
+    assert!(
+        (red_rects[0].width() - cell_width() * 2.0).abs() < 0.01,
+        "the run spans both cells: {}",
+        red_rects[0].width()
+    );
+}
+
+/// The bottom dock and the side panel's Terminal tab are a live terminal, so
+/// their pane paints the alacritty viewport even when the shell has delimited
+/// command blocks: no section header, no composer, just the grid.
+#[test]
+fn a_grid_only_pane_paints_the_live_screen_instead_of_the_block_list() {
+    let app = AppContext::default();
+    let session = session_that_ran("echo", "GRID-ONLY-OUTPUT");
+    let (pane, _terminal) = view_over(
+        session,
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let mut pane: Box<dyn Element> = Box::new(pane.with_grid_only(true));
+
+    let commands = render_element(&mut pane, vec2f(900.0, 500.0), &app);
+    let drawn: String = texts(&commands).join("");
+    assert!(
+        drawn.contains("GRID-ONLY-OUTPUT"),
+        "the live alacritty screen is painted: {commands:?}"
+    );
+    // The pane's own composer (the "bar" label) is part of the block surface,
+    // not the dock grid.
+    assert!(
+        !drawn.contains("bar"),
+        "a grid-only pane draws no composer: {commands:?}"
+    );
+}
+
+/// The wheel over the dock grid walks the session's scrollback, exactly as it
+/// does over the main pane's grid.
+#[test]
+fn the_dock_grid_scrolls_the_session_scrollback() {
+    let app = AppContext::default();
+    let mut emulator = Emulator::new(80, 24);
+    for line in 0..120 {
+        emulator.feed(format!("dock line {line}\r\n").as_bytes());
+    }
+    let (pane, terminal) = view_over(
+        TerminalSession::with_emulator(emulator),
+        7,
+        TerminalBlockPlumbing::new(block_filters(), None, None),
+    );
+    let mut root: Box<dyn Element> = Box::new(pane.with_grid_only(true));
+    let _ = render_element(&mut root, vec2f(1024.0, 768.0), &app);
+
+    let offset = || {
+        terminal
+            .borrow()
+            .sessions
+            .get(&7)
+            .map(|session| session.view().display_offset)
+            .expect("the dock's session")
+    };
+    let wheel = |root: &mut Box<dyn Element>, dy: f32| {
+        let mut ctx = EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(600.0, 300.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, dy)), &mut ctx, &app);
+    };
+
+    assert_eq!(offset(), 0, "the dock opens at the live screen");
+    wheel(&mut root, 60.0);
+    assert!(
+        offset() > 0,
+        "a positive delta walks back into the dock's scrollback"
+    );
+    wheel(&mut root, -60.0);
+    assert!(
+        offset() < 120,
+        "and a negative one returns towards the live screen"
+    );
+}
+
+/// A command typed into the dock's grid reaches a real PTY, the shell runs it,
+/// the bytes are fed back into the alacritty screen, and the marker is painted
+/// from the grid's glyph runs. This is the whole round trip for the surface the
+/// bottom dock and the side panel's Terminal tab use.
+#[cfg(unix)]
+#[test]
+fn a_real_pty_command_round_trips_into_the_dock_grid() {
+    use std::sync::Once;
+
+    /// A daemon on a private socket, so the test never touches the user's.
+    struct PtyDaemon {
+        // The server drops before its temp directory, so the socket it owns is
+        // still there while it shuts down.
+        _server: goble_pty::Server,
+        _dir: tempfile::TempDir,
+        socket: std::path::PathBuf,
+    }
+
+    impl PtyDaemon {
+        fn start() -> Self {
+            // `default_shell` prefers `$SHELL`; the test process may not have
+            // one and the fallback is zsh. Use the bash this machine has.
+            static SHELL: Once = Once::new();
+            SHELL.call_once(|| {
+                if std::path::Path::new("/bin/bash").exists() {
+                    std::env::set_var("SHELL", "/bin/bash");
+                }
+            });
+            let dir = tempfile::tempdir().expect("create a daemon temp dir");
+            let socket = dir.path().join("pty.sock");
+            let server = goble_pty::Server::start(&socket).expect("start the PTY daemon");
+            Self {
+                _server: server,
+                _dir: dir,
+                socket,
+            }
+        }
+    }
+
+    let app = AppContext::default();
+    let daemon = PtyDaemon::start();
+    let terminal = Rc::new(RefCell::new(TerminalRegistry::default()));
+    {
+        let mut reg = terminal.borrow_mut();
+        reg.use_socket(daemon.socket.clone());
+        reg.ensure_session(1, "/tmp");
+    }
+
+    let mut view = TerminalView::new(
+        Rc::clone(&terminal),
+        1,
+        "/tmp".to_string(),
+        true,
+        BlockView::Terminal,
+        false,
+        None,
+        Rc::new(RefCell::new(|_: u64| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: bool| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: u64, _: String| {})),
+        Rc::new(RefCell::new(|_: String| {})),
+    )
+    .with_grid_only(true);
+    let mut root: Box<dyn Element> = Box::new(view);
+
+    // One frame: it tells the pty its size, pumps what the shell has written,
+    // and builds the grid surface.
+    let _ = render_element(&mut root, vec2f(900.0, 500.0), &app);
+
+    // Type the command through the same KeyDown path a dock gets.
+    let command = "echo GOBLE_RT_MARKER_9F3";
+    let mut ctx = EventContext;
+    for ch in command.chars() {
+        assert!(
+            root.dispatch_event(
+                &key(&ch.to_string(), ModifiersState::none()),
+                &mut ctx,
+                &app
+            ),
+            "the dock consumed the key {ch:?}"
+        );
+    }
+    assert!(
+        root.dispatch_event(&key("Enter", ModifiersState::none()), &mut ctx, &app),
+        "the dock consumed Enter"
+    );
+
+    // Pump and paint until the shell's answer reaches the grid's glyph runs.
+    let mut last = Vec::new();
+    let mut found = false;
+    for _ in 0..400 {
+        let commands = render_element(&mut root, vec2f(900.0, 500.0), &app);
+        last = texts(&commands);
+        if last.join("").contains("GOBLE_RT_MARKER_9F3") {
+            found = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        found,
+        "the echo marker reached the dock's alacritty grid; last drawn text: {last:?}"
+    );
+
+    // The same marker is on the session's grid, not only in a paint cache.
+    let grid = terminal
+        .borrow()
+        .sessions
+        .get(&1)
+        .map(|session| session.view().frame.text())
+        .unwrap_or_default();
+    assert!(
+        grid.contains("GOBLE_RT_MARKER_9F3"),
+        "the marker is in the alacritty viewport: {grid}"
     );
 }

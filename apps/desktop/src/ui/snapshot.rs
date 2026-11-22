@@ -13,7 +13,7 @@ use goble_ui::ScrollState;
 
 use crate::state::{
     ArchiveConfirm, InboxItem, PaneAttach, PaneControls, PaneDrag, PaneWorkItem, Responsive,
-    SidebarRename, SidebarWorkspace, SidebarWorkspaceRename, SpaceMenu, ToastNotice,
+    SideTabKind, SidebarRename, SidebarWorkspace, SidebarWorkspaceRename, SpaceMenu, ToastNotice,
     WorkerPaneSession,
 };
 use crate::terminal::TerminalRegistry;
@@ -25,8 +25,8 @@ use super::pane::Space;
 use super::types::{
     AgentDashboardState, AppTab, ArchivedFilter, CostEntry, CronEntry, ExecutionEntry, ExplorerRow,
     HarnessEntry, LlmFormField, McpSearchEntry, McpServerEntry, RemoteAgentEntry, SearchRow,
-    SettingsCategory, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
-    WorkflowEntry, WorkflowRunEntry, WorkspaceRouting,
+    SettingsCategory, SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry,
+    WorkflowRunEntry, WorkspaceRouting,
 };
 
 /// What a pane's sub-agent child view (S6) shows: the child's own conversation,
@@ -174,9 +174,17 @@ pub struct PaneChatSnapshot {
     /// The tokens this conversation has spent, summed from the provider-reported
     /// usage of its own model calls. Accounting only, never a price.
     pub usage: goble_ui::TokenUsage,
+    /// The latest reported model call's usage, when one has been reported.
+    pub usage_last_call: Option<goble_ui::TokenUsage>,
+    /// How many model calls have reported usage for this conversation.
+    pub usage_calls: u64,
+    /// The model's context window, when this host's configuration states one.
+    pub usage_context_window: Option<u64>,
     /// Whether the usage disclosure is expanded. App-owned so it survives the
     /// per-frame rebuild.
     pub usage_open: Rc<RefCell<bool>>,
+    /// The transcript changed-files card's fold.
+    pub changed_files_open: Rc<RefCell<bool>>,
 }
 
 /// The composer's warp-new style context pills: which harness (the selected
@@ -452,6 +460,15 @@ pub struct UiSnapshot {
     pub llm_dialog_focus: Rc<RefCell<Option<LlmFormField>>>,
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
+    /// The right side panel's share of the content width while it is open and
+    /// unmaximized (`0.5` = equal split). The build lays the main card and the
+    /// panel out at `(1 - ratio)` and `ratio` of the measured content width,
+    /// with the same minimum width on each and the ratio clamped to
+    /// `0.25..=0.75`. Persisted in the pane layout and restored on startup
+    /// (see `UiState::side_split_ratio`).
+    pub side_split_ratio: f32,
+    /// Whether the shared main/side-panel boundary is being dragged.
+    pub side_split_dragging: bool,
     /// The user's committed content-lane width PER PANE: a pane with an entry
     /// lays its content out at that width (re-clamped into the pane each
     /// frame); a pane with none keeps the aspect-ratio width. The lane element
@@ -497,6 +514,27 @@ pub struct UiSnapshot {
     pub sidebar_focus_row: Rc<RefCell<Option<String>>>,
     /// Whether the Workspaces header menu (sliders) is open.
     pub sidebar_menu_open: Rc<RefCell<bool>>,
+    /// The Workspaces header's add menu (New Project / SSH Host…).
+    pub sidebar_add_menu_open: Rc<RefCell<bool>>,
+    /// The chat changed-files card's fold.
+    pub changed_files_open: Rc<RefCell<bool>>,
+    /// The settings overlay's open flag and narrow-window hamburger.
+    pub settings_overlay_open: bool,
+    pub settings_overlay_hamburger: Rc<RefCell<bool>>,
+    pub settings_overlay_wide: bool,
+    /// The chrome row's Overview popover and side-panel maximize state.
+    pub chrome_overview_open: Rc<RefCell<bool>>,
+    pub chrome_more_open: Rc<RefCell<bool>>,
+    pub side_panel_maximized: bool,
+    /// The right side panel's tabs, the selected one and whether its "+" menu
+    /// is open. The panel draws one of these surfaces in its content area.
+    pub side_tabs: Vec<SideTabKind>,
+    pub active_side_tab: usize,
+    /// Q: the topbar spotlight window.
+    pub spotlight: crate::ui::spotlight::SpotlightState,
+    pub side_tab_add_menu_open: Rc<RefCell<bool>>,
+    /// Horizontal swipe travel accumulated by the panel's content wrapper.
+    pub side_swipe_accum: Rc<RefCell<f32>>,
     /// The list's grouping: one flat list or one block per project.
     pub sidebar_flat_list: Rc<RefCell<bool>>,
     /// The list's order: most recent first, or the user's manual drag order.
@@ -504,8 +542,7 @@ pub struct UiSnapshot {
     /// The sidebar's drag-reorder gesture, shared with the rows.
     pub sidebar_drag: Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarDrag>>,
     /// The user's manual order of conversations inside each group.
-    pub sidebar_session_order:
-        Rc<RefCell<std::collections::HashMap<String, Vec<String>>>>,
+    pub sidebar_session_order: Rc<RefCell<std::collections::HashMap<String, Vec<String>>>>,
     /// Global search: the query, its rows and whether it has run.
     pub global_search_query: String,
     pub global_search_rows: Vec<SearchRow>,
@@ -532,6 +569,8 @@ pub struct UiSnapshot {
     /// The workspace tab whose right-click menu is open and the point the
     /// pointer was at when it opened, so the bar can hang the panel from it.
     pub space_menu: Rc<RefCell<Option<SpaceMenu>>>,
+    /// The open file row/card context menu, if any.
+    pub file_menu: Rc<RefCell<Option<crate::state::FileMenu>>>,
     /// Per-card interaction state (hover / delete menu), shared with the
     /// card elements so selections and menus persist across frames.
     pub agent_cards: HashMap<String, Rc<RefCell<AgentCardUi>>>,
@@ -574,6 +613,13 @@ pub struct UiSnapshot {
     pub ssh_host_entries: Vec<goble_core::hosts::HostEntry>,
     pub ssh_host_picker_open: bool,
     pub ssh_host_picker_index: usize,
+    /// The "Open SSH Host" overlay's live state.
+    pub ssh_target_open: bool,
+    pub ssh_target_draft: String,
+    pub ssh_target_focused: bool,
+    pub ssh_config_path: String,
+    pub ssh_config_hosts: Vec<goble_core::ssh_hosts::SshHost>,
+    pub ssh_target_error: Option<String>,
     /// A saved host whose session ended, with the pane it ran in.
     pub ssh_reconnect_prompt: Option<(u64, String)>,
     /// The focused leaf pane (target for splits/closes, highlighted).
@@ -663,7 +709,12 @@ pub struct UiSnapshot {
     /// Per-workspace-group tray state, shared with the rows (the same contract
     /// as `agent_cards` for the session rows' trays).
     pub sidebar_group_ui: Rc<
-        RefCell<HashMap<String, Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarGroupUi>>>>,
+        RefCell<
+            HashMap<
+                String,
+                Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarGroupUi>>,
+            >,
+        >,
     >,
     /// The open stop-and-archive confirmation, if any.
     pub archive_confirm: Option<ArchiveConfirm>,

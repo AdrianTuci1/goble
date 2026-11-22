@@ -120,6 +120,9 @@ pub(crate) fn build_terminal_composer(
         // shell draws no chip at all.
         .with_ssh_session(ssh_session)
         .with_stop_visible(session.agent_busy)
+        // The attach (`+`) card's app-owned state, when the bar offers one.
+        .with_attach_menu_open(controls.attach_menu_open.clone())
+        .with_attach_menu_highlight(controls.attach_menu_highlight.clone())
         // The shell's own context — this pane's working directory and its git
         // branch — rides above the editor: it describes the command line below
         // it, the way the shell prompt does.
@@ -127,6 +130,14 @@ pub(crate) fn build_terminal_composer(
         // The bar is the pane's own bottom surface, so it spans the pane: no
         // gutter of its own between the input and the pane's side edges.
         .with_edge_to_edge(true)
+        // The bar is not a floating card: it is the pane's bottom band. The
+        // outer box runs the pane's full width, square against the shell output
+        // above it, and only its bottom corners carry the pane card's own radius
+        // — the same radius `panes.rs` draws the panel with, so the band's bottom
+        // follows the panel's rounded bottom. The inner input keeps its radius
+        // and stretches with the band (the terminal composer, not the agent
+        // one: this builder is the shell's).
+        .with_bottom_band(crate::ui::panes::WINDOW_CORNER_RADIUS)
         // What the bar answers, written where the bar is: under a CLI agent the
         // bar is that agent's prompt line, so Enter is the whole instruction.
         // At a plain shell Cmd/Ctrl+Enter is the one gesture that leaves the
@@ -197,8 +208,7 @@ pub(crate) fn build_terminal_composer(
     let draft_commands =
         crate::ui::palette::draft_commands(state, actions, &session.composer_draft);
     let draft_query = crate::ui::palette::draft_query(&session.composer_draft).unwrap_or_default();
-    let slash_filtered =
-        crate::ui::palette::matching_slash_commands(&draft_commands, &draft_query);
+    let slash_filtered = crate::ui::palette::matching_slash_commands(&draft_commands, &draft_query);
     let slash_items = crate::ui::palette::slash_items(&slash_filtered);
     let on_composer_insert = actions.on_composer_insert.clone();
     let accept = Rc::new(RefCell::new(crate::ui::palette::slash_accept(

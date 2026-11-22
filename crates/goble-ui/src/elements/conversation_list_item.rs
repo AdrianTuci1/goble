@@ -2466,7 +2466,7 @@ pub const SIDEBAR_STATUS_DOT: f32 = 10.0;
 /// The running spinner ring's size.
 pub const SIDEBAR_RUNNING_RING: f32 = 14.0;
 /// The section header's title copy.
-pub const SIDEBAR_SECTION_TITLE: &str = "Workspaces";
+pub const SIDEBAR_SECTION_TITLE: &str = "Projects";
 
 /// Atlas glyphs the Workspaces rows draw.
 pub const SIDEBAR_ICON_FOLDER_CLOSE: &str = "folder-close";

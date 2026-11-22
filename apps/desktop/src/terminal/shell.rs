@@ -6,7 +6,19 @@ use std::path::{Path, PathBuf};
 
 /// The shell to spawn: `$SHELL` when set, else `/bin/zsh`.
 pub fn default_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
+    if let Ok(shell) = std::env::var("SHELL") {
+        if !shell.trim().is_empty() {
+            return shell;
+        }
+    }
+    // macOS defaults to zsh; a Linux host may not ship it, so fall back to the
+    // first shell that exists instead of spawning a path the PTY cannot exec.
+    for shell in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+        if Path::new(shell).exists() {
+            return shell.to_string();
+        }
+    }
+    "/bin/sh".to_string()
 }
 
 /// Resolve a pane's working directory: the per-session path when it exists,

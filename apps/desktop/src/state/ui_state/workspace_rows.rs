@@ -29,6 +29,11 @@ pub struct SidebarWorkspace {
     /// row reads the folder's own name (the directory's last segment).
     #[serde(default)]
     pub title: String,
+    /// Where the workspace runs: empty/"local" for a local directory, or
+    /// `ssh:<alias|user@host:port>` for a remote target. Old records have no
+    /// field and migrate as local.
+    #[serde(default)]
+    pub target: String,
 }
 
 impl SidebarWorkspace {
@@ -37,6 +42,7 @@ impl SidebarWorkspace {
         Self {
             path: path.into(),
             title: String::new(),
+            target: "local".to_string(),
         }
     }
 
@@ -54,6 +60,18 @@ impl SidebarWorkspace {
         } else {
             title.to_string()
         }
+    }
+
+    /// Whether this workspace runs somewhere other than this machine.
+    pub fn is_remote(&self) -> bool {
+        self.target.starts_with("ssh:")
+    }
+
+    /// The remote target's label (`ssh:<alias>` stripped), for the row badge.
+    pub fn remote_target(&self) -> Option<&str> {
+        self.target
+            .strip_prefix("ssh:")
+            .filter(|target| !target.is_empty())
     }
 }
 
@@ -148,12 +166,219 @@ impl UiState {
         Some(workspace)
     }
 
+    /// Adopt a remote SSH target as a Workspace. The path is the target's own
+    /// URI (`ssh://alias`), which keeps the folder group stable and distinct
+    /// from a local directory of the same name.
+    pub fn add_ssh_workspace(
+        &mut self,
+        target: &str,
+        title: &str,
+        desktop: Option<&DesktopState>,
+    ) -> Option<SidebarWorkspace> {
+        let target = target.trim();
+        if target.is_empty() {
+            return None;
+        }
+        let path = format!("ssh://{target}");
+        if self
+            .sidebar_workspaces
+            .iter()
+            .any(|workspace| workspace.path == path)
+        {
+            return None;
+        }
+        let workspace = SidebarWorkspace {
+            path,
+            title: title.trim().to_string(),
+            target: format!("ssh:{target}"),
+        };
+        self.sidebar_workspaces.push(workspace.clone());
+        self.persist_workspaces(desktop);
+        Some(workspace)
+    }
+
+    /// Open the "Open SSH Host" overlay and read its config. The input starts
+    /// focused, the way the reference's field does.
+    pub fn open_ssh_target(&mut self) {
+        self.ssh_target_open = true;
+        self.ssh_target_focused = true;
+        self.ssh_target_error = None;
+        if self.ssh_config_path.trim().is_empty() {
+            self.ssh_config_path = crate::state::home_directory()
+                .map(|home| format!("{home}/.ssh/config"))
+                .unwrap_or_else(|| "~/.ssh/config".to_string());
+        }
+        self.reload_ssh_config_hosts();
+    }
+
+    pub fn close_ssh_target(&mut self) {
+        self.ssh_target_open = false;
+        self.ssh_target_focused = false;
+        self.ssh_target_error = None;
+    }
+
+    pub fn set_ssh_target_draft(&mut self, draft: String) {
+        self.ssh_target_draft = draft;
+        self.ssh_target_error = None;
+    }
+
+    pub fn set_ssh_target_focus(&mut self, focused: bool) {
+        self.ssh_target_focused = focused;
+    }
+
+    /// Point the overlay at another config file (the "Choose File..." action).
+    pub fn choose_ssh_config(&mut self, path: String) {
+        self.ssh_config_path = path;
+        self.reload_ssh_config_hosts();
+    }
+
+    /// Re-read the chosen config. A missing file is an empty list, not a
+    /// fabricated host; a read error is kept as the honest error line.
+    fn reload_ssh_config_hosts(&mut self) {
+        let path = self.ssh_config_path.clone();
+        let text = std::fs::read_to_string(&path);
+        match text {
+            Ok(text) => {
+                self.ssh_config_hosts = goble_core::ssh_hosts::parse_ssh_config(
+                    &text,
+                    &goble_core::ssh_hosts::current_user(),
+                );
+                self.ssh_target_error = None;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.ssh_config_hosts.clear();
+            }
+            Err(error) => {
+                self.ssh_config_hosts.clear();
+                self.ssh_target_error = Some(format!("Could not read {path}: {error}"));
+            }
+        }
+    }
+
+    /// Parse the typed target into a connectable host. `[user@]host[:port]`,
+    /// with no invented values; a config alias resolves to its block.
+    fn typed_ssh_host(&self) -> Result<goble_core::hosts::HostEntry, String> {
+        let typed = self.ssh_target_draft.trim();
+        if typed.is_empty() {
+            return Err("Enter a host to connect to.".to_string());
+        }
+        if let Some(host) = self
+            .ssh_config_hosts
+            .iter()
+            .find(|host| host.alias == typed || host.target() == typed)
+        {
+            return Ok(goble_core::hosts::HostEntry {
+                name: host.alias.clone(),
+                host: host.hostname.clone(),
+                user: Some(host.user.clone()).filter(|user| !user.is_empty()),
+                port: Some(host.port),
+                identity: host.identity_files.first().cloned(),
+            });
+        }
+        let (user, rest) = match typed.rsplit_once('@') {
+            Some((user, rest)) if !user.is_empty() => (Some(user.to_string()), rest),
+            _ => (None, typed),
+        };
+        let (host, port) = match rest.rsplit_once(':') {
+            Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+                let port: u16 = port
+                    .parse()
+                    .map_err(|_| "The port must be between 1 and 65535.".to_string())?;
+                if port == 0 {
+                    return Err("The port must be between 1 and 65535.".to_string());
+                }
+                (host, Some(port))
+            }
+            Some(_) => return Err("The port must be between 1 and 65535.".to_string()),
+            None => (rest, None),
+        };
+        if host.trim().is_empty() || host.chars().any(char::is_whitespace) {
+            return Err("Enter a host name such as worker2 or deploy@host:22.".to_string());
+        }
+        Ok(goble_core::hosts::HostEntry {
+            name: host.to_string(),
+            host: host.to_string(),
+            user,
+            port,
+            identity: None,
+        })
+    }
+
+    /// Create the remote workspace from the typed target and return the host
+    /// the caller opens. Invalid targets leave an error on the overlay.
+    pub fn connect_ssh_target(
+        &mut self,
+        desktop: Option<&DesktopState>,
+    ) -> Option<goble_core::hosts::HostEntry> {
+        match self.typed_ssh_host() {
+            Ok(host) => {
+                self.ssh_target_open = false;
+                self.ssh_target_focused = false;
+                let label = self
+                    .ssh_config_hosts
+                    .iter()
+                    .find(|candidate| candidate.alias == host.name)
+                    .map(|candidate| candidate.alias.clone())
+                    .unwrap_or_else(|| self.ssh_target_draft.trim().to_string());
+                self.add_ssh_workspace(&label, &label, desktop);
+                Some(host)
+            }
+            Err(error) => {
+                self.ssh_target_error = Some(error);
+                None
+            }
+        }
+    }
+
+    /// Resolve a stored remote workspace's `ssh:` target to a connectable host.
+    /// The overlay's parsed config is preferred; `hosts.toml` is the fallback.
+    /// `None` is the honest "not available" case.
+    pub fn ssh_workspace_host(&self, target: &str) -> Option<goble_core::hosts::HostEntry> {
+        let alias = target.strip_prefix("ssh:")?;
+        self.ssh_config_hosts
+            .iter()
+            .find(|host| host.alias == alias)
+            .map(|host| goble_core::hosts::HostEntry {
+                name: host.alias.clone(),
+                host: host.hostname.clone(),
+                user: Some(host.user.clone()).filter(|user| !user.is_empty()),
+                port: Some(host.port),
+                identity: host.identity_files.first().cloned(),
+            })
+            .or_else(|| {
+                self.ssh_host_entries
+                    .iter()
+                    .find(|host| host.name == alias)
+                    .cloned()
+            })
+    }
+
+    /// Connect one row of the parsed config.
+    pub fn pick_ssh_config_host(
+        &mut self,
+        index: usize,
+        desktop: Option<&DesktopState>,
+    ) -> Option<goble_core::hosts::HostEntry> {
+        let host = self.ssh_config_hosts.get(index)?.clone();
+        self.ssh_target_open = false;
+        self.ssh_target_focused = false;
+        self.add_ssh_workspace(&host.alias, &host.alias, desktop);
+        Some(goble_core::hosts::HostEntry {
+            name: host.alias,
+            host: host.hostname,
+            user: Some(host.user).filter(|user| !user.is_empty()),
+            port: Some(host.port),
+            identity: host.identity_files.first().cloned(),
+        })
+    }
+
     /// Delete a Workspace from the list (DSH's "Delete workspace": the folder
     /// and the conversations in it are kept — they simply fall back to their
     /// folder group, since the sidebar derives folders from sessions too).
     pub fn delete_workspace(&mut self, path: &str, desktop: Option<&DesktopState>) {
         let before = self.sidebar_workspaces.len();
-        self.sidebar_workspaces.retain(|workspace| workspace.path != path);
+        self.sidebar_workspaces
+            .retain(|workspace| workspace.path != path);
         if self.sidebar_workspaces.len() == before {
             return;
         }
@@ -220,12 +445,17 @@ impl UiState {
             return;
         }
         let folder = super::refresh::conversation_group(Some(&rename.path));
-        let stored_title = if title == folder { String::new() } else { title };
+        let stored_title = if title == folder {
+            String::new()
+        } else {
+            title
+        };
         match self.workspace_over_path(&rename.path) {
             Some(workspace) => workspace.title = stored_title,
             None => self.sidebar_workspaces.push(SidebarWorkspace {
                 path: rename.path.clone(),
                 title: stored_title,
+                target: "local".to_string(),
             }),
         }
         self.persist_workspaces(desktop);
@@ -262,7 +492,10 @@ impl UiState {
 
     /// The group row's tray state cell for `section`, created on first use and
     /// shared with the element tree (the rows are rebuilt every frame).
-    pub fn group_ui(&self, section: &str) -> Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarGroupUi>> {
+    pub fn group_ui(
+        &self,
+        section: &str,
+    ) -> Rc<RefCell<goble_ui::elements::conversation_list_item::SidebarGroupUi>> {
         self.sidebar_group_ui
             .borrow_mut()
             .entry(section.to_string())
@@ -399,7 +632,11 @@ mod tests {
             "the worker thread's refused AppKit call is reported: {:?}",
             state.toast
         );
-        assert_eq!(state.sidebar_workspaces.len(), 1, "revealing changes no row");
+        assert_eq!(
+            state.sidebar_workspaces.len(),
+            1,
+            "revealing changes no row"
+        );
 
         // A row with no directory has nothing to reveal, so it raises nothing.
         state.dismiss_toast();
@@ -422,5 +659,148 @@ mod tests {
         assert!(second.borrow().menu_open);
         state.set_workspace_menu(None);
         assert!(!second.borrow().menu_open);
+    }
+}
+#[cfg(test)]
+mod ssh_workspace_tests {
+    use super::*;
+
+    fn desktop() -> (std::sync::Arc<DesktopState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().unwrap(),
+            goble_desktop_service::ThreadStore::new(dir.path()).unwrap(),
+        );
+        (desktop, dir)
+    }
+
+    /// Old `ui.workspaces` records have no `target`; they migrate as local
+    /// rows instead of being dropped or guessed remote.
+    #[test]
+    fn old_workspace_records_migrate_as_local() {
+        let (desktop, _dir) = desktop();
+        desktop
+            .set_ui_workspaces(r#"[{"path":"/tmp/legacy","title":"Legacy"}]"#)
+            .unwrap();
+        let mut state = UiState::mock();
+        state.refresh_workspaces(desktop.as_ref());
+        let workspace = &state.sidebar_workspaces[0];
+        assert_eq!(workspace.path, "/tmp/legacy");
+        assert_eq!(workspace.title, "Legacy");
+        assert_eq!(workspace.target, "");
+        assert!(!workspace.is_remote());
+    }
+
+    /// A remote workspace persists its `ssh:` target, keeps the alias as its
+    /// label, and comes back after a restart.
+    #[test]
+    fn an_ssh_workspace_persists_its_target_and_badge() {
+        let (desktop, _dir) = desktop();
+        let mut state = UiState::mock();
+        let added = state
+            .add_ssh_workspace("controlpanel", "controlpanel", Some(&desktop))
+            .expect("the SSH target becomes a workspace");
+        assert_eq!(added.path, "ssh://controlpanel");
+        assert_eq!(added.target, "ssh:controlpanel");
+        assert_eq!(added.remote_target(), Some("controlpanel"));
+        assert_eq!(added.display_title(), "controlpanel");
+        assert!(desktop
+            .get_ui_workspaces()
+            .unwrap()
+            .contains("ssh:controlpanel"));
+
+        let restarted = UiState::from_desktop(&desktop);
+        let workspace = restarted
+            .workspace_for_folder("controlpanel")
+            .expect("the remote row comes back");
+        assert_eq!(workspace.target, "ssh:controlpanel");
+        assert!(workspace.is_remote());
+    }
+
+    /// The overlay parses the chosen config, ignoring wildcard/negated blocks,
+    /// and a host row resolves to a real connect target.
+    #[test]
+    fn the_ssh_overlay_parses_a_config_and_picks_a_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        std::fs::write(
+            &path,
+            "Host controlpanel\n    HostName 10.0.0.4\n    User deploy\n    Port 2222\n\n\
+             Host worker2\n    HostName worker2.internal\n\n\
+             Host *\n    ServerAliveInterval 30\n\n\
+             Host !bad *.wild\n    User ignored\n",
+        )
+        .unwrap();
+        let (desktop, _repo) = desktop();
+        let mut state = UiState::mock();
+        state.choose_ssh_config(path.to_string_lossy().to_string());
+        let aliases: Vec<&str> = state
+            .ssh_config_hosts
+            .iter()
+            .map(|host| host.alias.as_str())
+            .collect();
+        assert_eq!(aliases, vec!["controlpanel", "worker2"]);
+        let host = state
+            .pick_ssh_config_host(0, Some(desktop.as_ref()))
+            .expect("the row resolves");
+        assert_eq!(host.name, "controlpanel");
+        assert_eq!(host.host, "10.0.0.4");
+        assert_eq!(host.user.as_deref(), Some("deploy"));
+        assert_eq!(host.port, Some(2222));
+        assert!(state
+            .sidebar_workspaces
+            .iter()
+            .any(|workspace| workspace.target == "ssh:controlpanel"));
+    }
+
+    /// A stored remote workspace routes through its parsed config by alias;
+    /// an unknown target resolves to `None` (the caller shows "not available"
+    /// rather than opening a local shell).
+    #[test]
+    fn a_remote_workspace_routes_through_its_parsed_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        std::fs::write(
+            &path,
+            "Host controlpanel\n    HostName 10.0.0.4\n    User deploy\n    Port 2222\n",
+        )
+        .unwrap();
+        let mut state = UiState::mock();
+        state.choose_ssh_config(path.to_string_lossy().to_string());
+        let host = state
+            .ssh_workspace_host("ssh:controlpanel")
+            .expect("the alias resolves");
+        assert_eq!(host.host, "10.0.0.4");
+        assert_eq!(host.user.as_deref(), Some("deploy"));
+        assert_eq!(host.port, Some(2222));
+        assert!(state.ssh_workspace_host("ssh:missing").is_none());
+        assert!(state.ssh_workspace_host("/tmp/local").is_none());
+    }
+
+    /// A malformed target is rejected on the overlay and adds nothing; a typed
+    /// `user@host:port` resolves without inventing values.
+    #[test]
+    fn a_typed_ssh_target_is_validated_before_it_creates_a_workspace() {
+        let mut state = UiState::mock();
+        state.ssh_target_draft = "deploy@example.com:0".to_string();
+        assert!(state.connect_ssh_target(None).is_none());
+        assert!(state
+            .ssh_target_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("port"));
+        assert!(state.sidebar_workspaces.is_empty());
+
+        state.ssh_target_draft = "deploy@example.com:2222".to_string();
+        let host = state.connect_ssh_target(None).expect("a valid target");
+        assert_eq!(host.name, "example.com");
+        assert_eq!(host.host, "example.com");
+        assert_eq!(host.user.as_deref(), Some("deploy"));
+        assert_eq!(host.port, Some(2222));
+        assert!(!state.ssh_target_open);
+        assert!(state
+            .sidebar_workspaces
+            .iter()
+            .any(|workspace| workspace.target == "ssh:deploy@example.com:2222"));
     }
 }

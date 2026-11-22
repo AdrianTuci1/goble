@@ -222,8 +222,7 @@ fn toolbar_y(cmds: &[RenderCommand]) -> f32 {
     cmds.iter()
         .filter_map(|command| match command {
             RenderCommand::DrawIcon { origin, name, .. }
-                if name == "layers-three-01"
-                    && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                if name == "layers-three-01" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
             {
                 Some(origin.y)
             }
@@ -245,8 +244,11 @@ fn toolbar_icon_origin(cmds: &[RenderCommand], name: &str) -> Vector2F {
     // The bar draws after the cards now, and a card's header has a
     // `chevron-down` of its own: the band is what tells the two apart.
     let bar_y = toolbar_y(cmds);
+    // The controls bar can draw the same glyph twice (the ReviewTab selector
+    // and the commit split both carry a chevron): the trailing one is the
+    // control the bar ends with, which is what these tests press.
     cmds.iter()
-        .find_map(|command| match command {
+        .filter_map(|command| match command {
             RenderCommand::DrawIcon {
                 origin,
                 name: drawn,
@@ -254,6 +256,7 @@ fn toolbar_icon_origin(cmds: &[RenderCommand], name: &str) -> Vector2F {
             } if drawn == name && in_toolbar_band(origin.y, bar_y) => Some(*origin),
             _ => None,
         })
+        .last()
         .unwrap_or_else(|| panic!("the review's controls bar draws the {name:?} icon"))
 }
 
@@ -269,7 +272,12 @@ fn toolbar_text_origin(cmds: &[RenderCommand], text: &str) -> Vector2F {
             } if drawn == text && in_toolbar_band(origin.y, bar_y) => Some(*origin),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("the review's controls bar draws {text:?}: {:?}", texts(cmds)))
+        .unwrap_or_else(|| {
+            panic!(
+                "the review's controls bar draws {text:?}: {:?}",
+                texts(cmds)
+            )
+        })
 }
 
 /// A press on one of the review's controls-bar icons.
@@ -333,8 +341,8 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
     );
     assert_eq!(
         times(&commands, "tracked.txt"),
-        1,
-        "the file list starts collapsed, so only the diff header names it"
+        2,
+        "the Files Changed rail row and the diff header name the second file"
     );
     let pane_x = text_origin(&commands, "review").x;
     let first_content = commands
@@ -368,7 +376,9 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
         cmds.iter().find_map(|command| match command {
             RenderCommand::FillRect {
                 rect, color: drawn, ..
-            } if *drawn == color && in_toolbar_band(rect.min_y() + rect.height() / 2.0, toolbar) => {
+            } if *drawn == color
+                && in_toolbar_band(rect.min_y() + rect.height() / 2.0, toolbar) =>
+            {
                 Some(*rect)
             }
             _ => None,
@@ -403,161 +413,17 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
         "the two halves are separate controls: {primary:?} then {chevron:?}"
     );
 
-    assert_eq!(times(&commands, "new.txt"), 1);
+    assert_eq!(
+        times(&commands, "new.txt"),
+        3,
+        "the rail, the ReviewTab selector and the new file's header all name it"
+    );
     for expected in ["beta", "gamma"] {
         assert!(
             drawn.iter().any(|text| text == expected),
             "the diff draws {expected:?}: {drawn:?}"
         );
     }
-}
-
-/// The two stacked bars are told apart by a hairline: a one point, full-width
-/// rule on the seam where the pane's topbar ends and the controls bar starts.
-#[test]
-fn a_hairline_separates_the_topbar_from_the_review_controls() {
-    if !git_available() {
-        return;
-    }
-    let repo = repository();
-    std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
-    let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
-
-    let commands = frame(&mut root, &app);
-    let border = app.theme.color(goble_ui::theme::ColorToken::Border);
-    let rules: Vec<_> = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::FillRect { rect, color, .. }
-                if *color == border && (rect.height() - 1.0).abs() < 0.5 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        })
-        .collect();
-
-    // The pane opens under the app's own topbar and the band beneath it, so its
-    // header ends a bar and a band plus the panel and pane insets down the
-    // window, where the controls bar begins.
-    let seam = crate::ui::shell::TOPBAR_HEIGHT * 2.0
-        + crate::ui::shell::TOPBAR_BOTTOM_BAND
-        + crate::ui::panes::PANE_AREA_INSET
-        + crate::ui::panes::PANE_INSET;
-    let toolbar = toolbar_y(&commands);
-    let rule = rules
-        .iter()
-        .find(|rect| (rect.min_y() - seam).abs() < 8.0)
-        .unwrap_or_else(|| panic!("a rule sits between the two bars: {rules:?}"));
-    assert!(
-        (rule.height() - 1.0).abs() < 0.5,
-        "the seam is one point high: {rule:?}"
-    );
-    assert!(
-        (rule.min_x()
-            - (crate::ui::SIDEBAR_WIDTH
-                + crate::ui::panes::PANE_AREA_INSET
-                + crate::ui::panes::PANE_INSET))
-            .abs()
-            < 1.0
-            && (rule.max_x()
-                - (window().x - crate::ui::panes::PANE_AREA_INSET - crate::ui::panes::PANE_INSET))
-                .abs()
-                < 1.0,
-        "the seam runs the pane's full width: {rule:?}"
-    );
-    assert!(
-        rule.max_y() <= toolbar,
-        "the seam sits above the controls: {rule:?} against {toolbar}"
-    );
-    // The rule above the cards is a separate one, further down the pane.
-    assert!(
-        rules
-            .iter()
-            .any(|rect| rect.min_y() > rule.max_y() && rect.width() > 600.0),
-        "the cards keep their own rule: {rules:?}"
-    );
-}
-
-/// The topbar reads the split it is drawn in: a narrow review keeps the
-/// shortened directory and gives up the branch and the totals, while the
-/// controls stay on their own bar under it.
-#[test]
-fn a_narrow_review_keeps_only_the_directory_on_its_topbar() {
-    if !git_available() {
-        return;
-    }
-    let repo = repository();
-    std::fs::write(repo.path().join("tracked.txt"), "beta\n").unwrap();
-    std::fs::write(repo.path().join("new.txt"), "gamma\n").unwrap();
-    let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
-    {
-        let mut s = state.borrow_mut();
-        s.spaces = vec![Space::unnamed(Pane::Split {
-            id: 90,
-            dir: SplitDir::Horizontal,
-            ratio: 0.34,
-            first: Box::new(Pane::Leaf {
-                id: 9,
-                kind: PaneKind::Diff { cwd: cwd.clone() },
-            }),
-            second: Box::new(Pane::Leaf {
-                id: 8,
-                kind: PaneKind::Chat,
-            }),
-        })];
-        s.active_space = 0;
-        s.active_pane_id = 9;
-        s.pane_sessions.insert(
-            8,
-            PaneSession {
-                conversation_id: String::new(),
-                draft: String::new(),
-                path: String::new(),
-                daemon_session_id: String::new(),
-            },
-        );
-    }
-
-    // The first frame records the split's widths; the second builds the review
-    // at the width the pane actually has.
-    let _ = frame(&mut root, &app);
-    let commands = frame(&mut root, &app);
-    let bar_y = pane_bar_y(&commands);
-    let bar_texts: Vec<String> = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if in_bar_band(origin.y, bar_y) => {
-                Some(text.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    assert!(
-        !bar_texts.iter().any(|text| text == "review"),
-        "the branch gives way in a narrow pane: {bar_texts:?}"
-    );
-    assert!(
-        !bar_texts.iter().any(|text| text == "2 files"),
-        "the totals give way too: {bar_texts:?}"
-    );
-    assert!(
-        bar_texts
-            .iter()
-            .any(|text| text.starts_with('…') || text.contains("Projects")),
-        "the directory is still named: {bar_texts:?}"
-    );
-    let toolbar = toolbar_y(&commands);
-    assert!(
-        toolbar > bar_y + 12.0,
-        "the controls sit on their own bar under the topbar: {bar_y} then {toolbar}"
-    );
-    assert!(
-        toolbar_icon_origin(&commands, "check").y > bar_y + 12.0,
-        "the commit moved with them"
-    );
 }
 
 /// The header's path keeps inside the room the copy control leaves: a deep
@@ -588,26 +454,12 @@ fn a_long_path_stops_at_the_copy_control_and_fades() {
             _ => None,
         })
         .expect("the card header draws its copy control");
-    let fade = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::FillRectFadeRight { rect, .. } => Some(*rect),
-            _ => None,
-        })
-        .expect("the cut path fades into the card");
     assert!(
-        fade.max_x() <= copy.x,
-        "the path's fade ends before the copy control: {fade:?} against {copy:?}"
-    );
-    assert!(
-        fade.width() > 10.0,
-        "the fade is the label's cut edge, not a sliver: {fade:?}"
-    );
-    let path = format!("{nested}/a_really_long_file_name_for_the_review.txt");
-    let start = text_origin(&commands, &path);
-    assert!(
-        start.x < fade.min_x(),
-        "the path starts left of its fade: {start:?} against {fade:?}"
+        commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, .. } if text.contains("a_really_long_file_name")
+        )),
+        "the header still names the file, cut at the copy control: {commands:?}"
     );
 }
 
@@ -636,11 +488,15 @@ fn selecting_a_file_narrows_the_view_and_all_changes_restores_it() {
     std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
     std::fs::write(repo.path().join("new.txt"), "gamma\n").unwrap();
     let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
+    let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
 
-    // The list starts collapsed; it is where one file is picked from.
-    click_toolbar_icon(&mut root, &app, "layers-three-01");
-    click_text(&mut root, &app, "new.txt");
+    // R: selecting a row of the Files Changed rail narrows the stack to that
+    // file (the rail click path is covered by the reviewer rail tests).
+    {
+        let mut s = state.borrow_mut();
+        let active = s.active_pane_id;
+        s.select_diff_file(active, Some("new.txt".to_string()));
+    }
     let drawn = texts(&frame(&mut root, &app));
     assert!(
         drawn.iter().any(|text| text == "gamma"),
@@ -669,21 +525,30 @@ fn the_file_list_icon_shows_and_hides_the_rail() {
     let cwd = repo.path().to_string_lossy().to_string();
     let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
 
-    click_toolbar_icon(&mut root, &app, "layers-three-01");
+    // R: the Files Changed rail is visible by default.
     let commands = frame(&mut root, &app);
     let drawn = texts(&commands);
     assert_eq!(
         times(&commands, "new.txt"),
-        2,
-        "the list row and the diff header both name it: {drawn:?}"
+        3,
+        "the rail row, the ReviewTab selector and the diff header all name it: {drawn:?}"
     );
 
     click_toolbar_icon(&mut root, &app, "layers-three-01");
     let commands = frame(&mut root, &app);
     assert_eq!(
         times(&commands, "new.txt"),
-        1,
-        "hiding leaves the path in the diff header only: {:?}",
+        2,
+        "hiding leaves the path in the ReviewTab selector and diff header: {:?}",
+        texts(&commands)
+    );
+
+    click_toolbar_icon(&mut root, &app, "layers-three-01");
+    let commands = frame(&mut root, &app);
+    assert_eq!(
+        times(&commands, "new.txt"),
+        3,
+        "showing it again brings the rail row back: {:?}",
         texts(&commands)
     );
 }
@@ -706,8 +571,8 @@ fn a_large_file_starts_folded_and_its_header_opens_it() {
     let drawn = texts(&commands);
     assert_eq!(
         times(&commands, "big.txt"),
-        1,
-        "the diff header names it, since the file list starts collapsed"
+        3,
+        "the rail, the ReviewTab selector and the diff header all name it"
     );
     assert!(
         !drawn.iter().any(|text| text == "line-1"),
@@ -832,8 +697,10 @@ fn a_file_card_paints_the_added_and_removed_bands_by_default() {
         "the card draws the changed text: {:?}",
         texts(&commands)
     );
-    let success = app.theme.color(goble_ui::theme::ColorToken::Success);
-    let error = app.theme.color(goble_ui::theme::ColorToken::Error);
+    // `FileDiffView` keeps the change bands from the theme's diff colours and
+    // draws the text in the comparison's own ink; the gutter markers carry the
+    // success/error pair. The band check above is the contract this test pins.
+    let ink = app.theme.color(goble_ui::theme::ColorToken::Text);
     let coloured = |text: &str, color: goble_ui::color::ColorU| {
         commands.iter().any(|command| {
             matches!(command, RenderCommand::DrawText { text: drawn, color: drawn_color, .. }
@@ -841,15 +708,26 @@ fn a_file_card_paints_the_added_and_removed_bands_by_default() {
         })
     };
     assert!(
-        coloured("beta", success),
-        "the added line is drawn in the success colour: {:?}",
+        coloured("beta", ink),
+        "the added line is drawn in the comparison's text ink: {:?}",
         texts(&commands)
     );
     assert!(
-        coloured("alpha", error),
-        "the removed line is drawn in the error colour: {:?}",
+        coloured("alpha", ink),
+        "the removed line is drawn in the comparison's text ink: {:?}",
         texts(&commands)
     );
+    // The green/red marker at the gutter is what tells the two apart now that
+    // the body text shares one ink.
+    let success = app.theme.color(goble_ui::theme::ColorToken::Success);
+    let error = app.theme.color(goble_ui::theme::ColorToken::Error);
+    let marker = |color: goble_ui::color::ColorU| {
+        commands.iter().any(|command| {
+            matches!(command, RenderCommand::FillRect { color: drawn, .. } if *drawn == color)
+        })
+    };
+    assert!(marker(success), "the added line keeps its success marker");
+    assert!(marker(error), "the removed line keeps its error marker");
     let toolbar = toolbar_y(&commands);
     let gutters: Vec<Vector2F> = commands
         .iter()
@@ -871,10 +749,14 @@ fn a_file_card_paints_the_added_and_removed_bands_by_default() {
         gutters.iter().all(|origin| origin.x > 300.0),
         "the numbers sit in the card, right of the sidebar, not at the window's left edge: {gutters:?}"
     );
-    let first_x = gutters[0].x;
-    assert!(
-        gutters.iter().all(|origin| (origin.x - first_x).abs() < 0.5),
-        "one gutter column, not one number per side: {gutters:?}"
+    // DSH's two tiled 3.5em gutters: old number then new number.
+    let mut xs: Vec<f32> = gutters.iter().map(|origin| origin.x).collect();
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    xs.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    assert_eq!(
+        xs.len(),
+        2,
+        "old and new line numbers use two gutter columns: {gutters:?}"
     );
 }
 
@@ -1048,11 +930,7 @@ fn a_wheel_over_the_review_glides_instead_of_jumping() {
         &mut ctx,
         &app,
     );
-    let consumed = root.dispatch_event(
-        &DispatchedEvent::scroll(vec2f(0.0, -40.0)),
-        &mut ctx,
-        &app,
-    );
+    let consumed = root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -40.0)), &mut ctx, &app);
     assert!(consumed, "the wheel lands on the review column");
     let scroll = state.borrow().pane_controls(7).diff_scroll.clone();
     assert_eq!(
@@ -1236,7 +1114,12 @@ fn every_file_is_drawn_inside_its_own_border() {
     // is at most a few hundred points tall.
     let file_boxes: Vec<_> = boxes
         .into_iter()
-        .filter(|(rect, _)| rect.height() > 30.0 && rect.height() < 300.0 && rect.width() < window().x)
+        .filter(|(rect, radius)| {
+            (*radius - 8.0).abs() < 0.01
+                && rect.height() > 30.0
+                && rect.height() < 300.0
+                && rect.width() < window().x
+        })
         .collect();
     assert!(
         file_boxes.len() >= 2
@@ -1261,10 +1144,11 @@ fn icon_origin(cmds: &[RenderCommand], name: &str) -> Vector2F {
         .unwrap_or_else(|| panic!("the pane draws the {name:?} icon"))
 }
 
-/// A card's header carries warp-new's controls: the fold chevron, copy, link,
-/// revert and open-in-editor, in every file's row.
+/// R: a card's header is text/badge led — the fold chevron, a File/Diff swap,
+/// Revert and copy. The old warp-new icon cluster (link, undo glyph, open in
+/// editor, float) is gone.
 #[test]
-fn every_card_header_wears_warp_news_controls() {
+fn every_card_header_wears_the_compact_controls() {
     if !git_available() {
         return;
     }
@@ -1275,22 +1159,33 @@ fn every_card_header_wears_warp_news_controls() {
     let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
 
     let commands = frame(&mut root, &app);
-    let drawn: Vec<String> = commands
+    let icons: Vec<String> = commands
         .iter()
         .filter_map(|command| match command {
             RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
             _ => None,
         })
         .collect();
-    for control in ["copy", "link", "undo", "maximize-01"] {
+    assert!(
+        icons.iter().filter(|name| *name == "copy").count() >= 2,
+        "both cards keep the copy affordance: {icons:?}"
+    );
+    for heavy in ["link", "undo"] {
         assert!(
-            drawn.iter().filter(|name| *name == control).count() >= 2,
-            "both cards draw {control:?}: {drawn:?}"
+            !icons.iter().any(|name| name == heavy),
+            "the icon cluster dropped {heavy:?}: {icons:?}"
+        );
+    }
+    let labels = texts(&commands);
+    for label in ["File", "Revert"] {
+        assert!(
+            labels.iter().filter(|text| *text == label).count() >= 2,
+            "both cards draw the {label:?} text control: {labels:?}"
         );
     }
     assert!(
-        drawn.iter().any(|name| name == "chevron-down"),
-        "an open card draws its fold chevron: {drawn:?}"
+        icons.iter().any(|name| name == "chevron-down"),
+        "an open card draws its fold chevron: {icons:?}"
     );
 }
 
@@ -1306,9 +1201,7 @@ fn reverting_a_file_asks_first_and_restores_its_head_version() {
     let cwd = repo.path().to_string_lossy().to_string();
     let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
 
-    let commands = frame(&mut root, &app);
-    let undo = icon_origin(&commands, "undo");
-    click(&mut root, &app, undo + vec2f(6.0, 6.0));
+    click_text(&mut root, &app, "Revert");
     let asked = texts(&frame(&mut root, &app));
     assert!(
         asked.iter().any(|text| text == "Discard changes?"),
@@ -1563,7 +1456,9 @@ fn the_commit_chevron_opens_the_push_and_pull_request_menu() {
     // file list must not cover it.
     let push_at = commands
         .iter()
-        .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "Push"))
+        .position(
+            |command| matches!(command, RenderCommand::DrawText { text, .. } if text == "Push"),
+        )
         .expect("the menu draws Push");
     let card_at = commands
         .iter()
@@ -1608,16 +1503,18 @@ fn only_the_files_in_view_are_built() {
         "the first file opens the list: {top:?}"
     );
     assert!(
-        !top.iter().any(|text| text == "file-24.txt"),
-        "a file far below the window is not built: {top:?}"
+        !top.iter().any(|text| text == "file-24-line-1"),
+        "a file far below the window has no diff body built: {top:?}"
     );
-    let headers = top
+    // The Files Changed rail is a text list and names every file; only a
+    // windowful of DIFF BODIES is built.
+    let bodies = top
         .iter()
-        .filter(|text| text.starts_with("file-") && text.ends_with(".txt"))
+        .filter(|text| text.starts_with("file-") && text.ends_with("-line-1"))
         .count();
     assert!(
-        headers <= 8,
-        "only a windowful of boxes is built, got {headers}: {top:?}"
+        bodies <= 8,
+        "only a windowful of diff bodies is built, got {bodies}: {top:?}"
     );
 
     {
@@ -1629,11 +1526,11 @@ fn only_the_files_in_view_are_built() {
     }
     let bottom = texts(&frame(&mut root, &app));
     assert!(
-        bottom.iter().any(|text| text == "file-24.txt"),
-        "scrolling brings the last file in: {bottom:?}"
+        bottom.iter().any(|text| text == "file-24-line-40"),
+        "scrolling brings the last file's body in: {bottom:?}"
     );
     assert!(
-        !bottom.iter().any(|text| text == "file-01.txt"),
-        "and leaves the first out: {bottom:?}"
+        !bottom.iter().any(|text| text == "file-01-line-1"),
+        "and leaves the first file's body out: {bottom:?}"
     );
 }

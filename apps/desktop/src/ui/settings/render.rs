@@ -5,22 +5,26 @@
 //! enumerates, and the slot counter is what puts the focus ring on the row the
 //! keyboard model says is focused.
 
+#[path = "color_palette.rs"]
+pub mod color_palette;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_core::config::ConfigFile;
 use goble_ui::color::ColorU;
 use goble_ui::elements::settings::{
-    SettingsButton, SettingsNav, SettingsNavGroup, SettingsNavItem, SettingsNotice,
-    SettingsNoticeKind, SettingsRow, SettingsRowStatus, SettingsRowStatusKind, SettingsSecretField,
-    SettingsSection, SettingsSelect, SettingsSlider, SettingsTextField, SettingsToggle,
-    SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING, SETTINGS_RAIL_WIDTH, SETTINGS_SECTION_GAP,
-    SETTINGS_SHEET_PADDING, SETTINGS_SHEET_WIDTH,
+    SettingsButton, SettingsKeyChip, SettingsNav, SettingsNavGroup, SettingsNavItem,
+    SettingsNotice, SettingsNoticeKind, SettingsRow, SettingsRowStatus, SettingsRowStatusKind,
+    SettingsSecretField, SettingsSection, SettingsSegmented, SettingsSelect, SettingsSlider,
+    SettingsTextField, SettingsToggle, SETTINGS_PAGE_MAX_WIDTH, SETTINGS_PAGE_PADDING,
+    SETTINGS_RAIL_WIDTH, SETTINGS_SECTION_GAP, SETTINGS_SHEET_PADDING, SETTINGS_SHEET_WIDTH,
 };
 use goble_ui::elements::{
-    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, Element, EventContext,
-    Expanded, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment, MainAxisSize,
-    PaintContext, Point, Scrollable, SizeConstraint, Text, Tooltip, TooltipPosition,
+    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, Element,
+    EventContext, Expanded, Fill, Flex, Icon, IconButton, LayoutContext, MainAxisAlignment,
+    MainAxisSize, PaintContext, Point, Scrollable, SearchInput, SizeConstraint, Text, Tooltip,
+    TooltipPosition,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
@@ -29,12 +33,15 @@ use goble_ui::theme::ColorToken;
 
 use crate::ui::SettingsCategory;
 
-use super::model::{ActionModel, ActionStyle, ControlModel, PageModel, RowModel, SectionModel};
+use super::model::{
+    ActionModel, ActionStyle, ControlModel, PageModel, PageSearch, RowModel, SectionModel,
+};
 use super::state::{SettingsAction, SettingsActions, SettingsUiState as State, StatusKind};
 
-/// The rail: the grouped pages, filtered by the search query.
+/// The rail: the grouped pages, filtered by the search query, with the compact
+/// account footer at its bottom.
 pub fn render_nav(
-    _app: &AppContext,
+    app: &AppContext,
     settings: &State,
     actions: &SettingsActions,
 ) -> Box<dyn Element> {
@@ -65,31 +72,74 @@ pub fn render_nav(
     };
     let pages = visible_pages.clone();
     let select_dispatch = actions.dispatch.clone();
-    let search_dispatch = actions.dispatch.clone();
-    let focus_dispatch = actions.dispatch.clone();
-    let clear_dispatch = actions.dispatch.clone();
     let nav = SettingsNav::new(groups)
         .with_selected(selected)
         .with_focused(rail_focused)
-        .with_search(settings.search.clone())
-        .with_search_focused(settings.search_focused)
+        .without_search()
         .with_on_select(move |index| {
             if let Some(page) = pages.get(index).copied() {
                 (select_dispatch.borrow_mut())(SettingsAction::Navigate(page));
             }
         })
-        .with_on_search(move |query| {
-            (search_dispatch.borrow_mut())(SettingsAction::Search(query));
-        })
-        .with_on_focus_change(move |focused| {
-            (focus_dispatch.borrow_mut())(SettingsAction::FocusSearch(focused));
-        })
-        .with_on_clear(move || {
-            (clear_dispatch.borrow_mut())(SettingsAction::ClearSearch);
-        })
         .finish();
-    ConstrainedBox::new(nav)
+    let nav = ConstrainedBox::new(nav)
         .with_width(SETTINGS_RAIL_WIDTH)
+        .finish();
+    Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(nav).finish())
+        .finish()
+}
+
+/// The compact account footer every settings rail ends with: the avatar, the
+/// user's friendly name (or "You" until one is set) and the local workspace
+/// line. Shared by the in-pane rail and the floating overlay rail so the two
+/// cannot drift.
+pub fn render_rail_footer(app: &AppContext, settings: &State) -> Box<dyn Element> {
+    let name = super::fields::app_text(settings, "friendly_name");
+    let who = if name.trim().is_empty() {
+        "You".to_string()
+    } else {
+        name
+    };
+    let initial = who.chars().next().unwrap_or('?').to_uppercase().to_string();
+    let avatar = Container::new(
+        Text::new(initial)
+            .with_font_size(12.0)
+            .with_weight(FontWeight::SemiBold)
+            .with_color(app.theme.color(ColorToken::Text))
+            .finish(),
+    )
+    .with_padding(goble_ui::elements::EdgeInsets::uniform(10.0))
+    .with_background(Fill::Solid(app.theme.color(ColorToken::Hover)))
+    .with_corner_radius(16.0)
+    .finish();
+    let labels = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(1.0)
+        .with_child(
+            Text::new(who)
+                .with_font_size(13.0)
+                .with_weight(FontWeight::Medium)
+                .with_color(app.theme.color(ColorToken::Text))
+                .finish(),
+        )
+        .with_child(
+            Text::new("Local workspace")
+                .with_font_size(11.0)
+                .with_color(app.theme.color(ColorToken::Muted))
+                .finish(),
+        )
+        .finish();
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.0)
+        .with_child(avatar)
+        .with_child(labels)
+        .finish();
+    Container::new(row)
+        .with_padding(goble_ui::elements::EdgeInsets::new(8.0, 6.0, 8.0, 6.0))
         .finish()
 }
 
@@ -188,6 +238,24 @@ pub fn render_page(
     settings: &State,
     actions: &SettingsActions,
 ) -> Box<dyn Element> {
+    let content = render_page_content(app, model, settings, actions);
+    // The Appearance menu is painted after every section but receives pointer
+    // and key events before them: a panel anchored under an early row must draw
+    // over the rows below it, and a press inside it must not reach a control
+    // that happens to sit underneath.
+    let overlay = color_palette::appearance_menu_layer(app, settings, actions);
+    Box::new(color_palette::OverlayLayer::new(content, overlay))
+}
+
+/// The page's sections/search without the Appearance popover layer. The
+/// Settings overlay mounts that layer above its own Scrollable so the panel is
+/// not clipped by the scroll viewport.
+pub fn render_page_content(
+    app: &AppContext,
+    model: &PageModel,
+    settings: &State,
+    actions: &SettingsActions,
+) -> Box<dyn Element> {
     let mut children: Vec<Box<dyn Element>> = Vec::new();
     if let Some(notice) = settings.notice.as_ref() {
         children.push(render_notice(app, notice, actions));
@@ -230,6 +298,40 @@ pub fn render_page(
         .finish()
 }
 
+/// The page-level search field: the same `SearchInput` the rail uses, sized to
+/// the page and given the reference's rounded box and magnifier. Its value and
+/// focus live in the app state, so a frame rebuild neither drops the query nor
+/// pulls the caret out.
+fn render_page_search(
+    app: &AppContext,
+    search: &PageSearch,
+    actions: &SettingsActions,
+) -> Box<dyn Element> {
+    let change_dispatch = actions.dispatch.clone();
+    let focus_dispatch = actions.dispatch.clone();
+    let kind = search.kind;
+    let field = SearchInput::new()
+        .with_value(search.value.clone())
+        .with_placeholder(search.placeholder.clone())
+        .with_focused(search.focused)
+        .with_compact(true)
+        .with_icon(true)
+        .with_extra_height(6.0)
+        .with_text_size(13.0)
+        .with_corner_radius(8.0)
+        .with_on_change(move |value| {
+            (change_dispatch.borrow_mut())(kind.change_action(value));
+        })
+        .with_on_focus_change(move |focused| {
+            (focus_dispatch.borrow_mut())(kind.focus_action(focused));
+        })
+        .finish();
+    let _ = app;
+    Container::new(field)
+        .with_padding(goble_ui::elements::EdgeInsets::new(0.0, 0.0, 0.0, 16.0))
+        .finish()
+}
+
 fn render_notice(
     app: &AppContext,
     notice: &super::state::SettingsNotice,
@@ -257,9 +359,9 @@ fn render_section(
     slot: &mut usize,
 ) -> Box<dyn Element> {
     let mut element = SettingsSection::new(section.title.clone());
-    if !section.description.is_empty() {
-        element = element.with_description(section.description.clone());
-    }
+    // K: Settings carry no description copy. Section headings, labels, values
+    // and controls are the whole page; the model keeps the strings for other
+    // surfaces (search indexing) but the sheet does not draw them.
     if let Some(action) = section.header_action.as_ref() {
         element = element.with_header_action(action_button(app, action, actions));
     }
@@ -307,36 +409,25 @@ fn render_row(
     // visible on a row, as the parity document requires).
     let row_ring = focused && settings.focused_field.is_none();
     let mut element =
-        SettingsRow::new(app, row.label.clone(), row.hint.clone()).with_focused(row_ring);
+        SettingsRow::new(app, row.label.clone(), String::new()).with_focused(row_ring);
     if let Some(swatch) = row.swatch {
         element = element.with_swatch(swatch);
     }
     if row.disabled {
         element = element.with_disabled(true);
     }
+    // K: muted status lines were descriptive subtitles ("Using the palette's
+    // accent"); keep only real feedback (info/success/warning/error).
     if let Some((text, kind)) = row.status.as_ref() {
-        element = element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+        if !matches!(kind, super::state::StatusKind::Muted) {
+            element =
+                element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+        }
     }
     if let Some(reset) = row.reset.as_ref() {
         element = element.with_reset(reset_button(app, reset, actions));
     }
-    if let ControlModel::ColorWheel {
-        channel,
-        label,
-        stored,
-    } = &row.control
-    {
-        // The wheel is the row's full-width body: a 190pt wheel plus its
-        // swatch/hex readout, aligned under the label.
-        element = element.with_body(color_wheel_body(
-            app,
-            settings,
-            *channel,
-            label,
-            stored.as_deref(),
-            actions,
-        ));
-    } else if let Some(control) = render_control(app, row, settings, actions, focused, false) {
+    if let Some(control) = render_control(app, row, settings, actions, focused, false) {
         element = element.with_control(control);
     }
     if !row.children.is_empty() {
@@ -403,16 +494,68 @@ fn render_control(
             selected,
             disabled,
         } => {
+            // The Appearance page's theme choice is the one select whose real
+            // dropdown lives at page level: its panel has to paint after the
+            // rows it covers. Every other select keeps the shared control.
+            if path == "theme.preset" {
+                let swatch = options.get(*selected).and_then(|label| {
+                    goble_ui::theme::ThemePreset::ALL
+                        .into_iter()
+                        .find(|preset| preset.display_name() == label)
+                        .map(|preset| preset.accent())
+                });
+                return Some(color_palette::theme_select_control(
+                    settings, actions, options, *selected, swatch, *disabled, focused,
+                ));
+            }
             let path = path.clone();
+            // The open flag is app-owned, keyed by the control path: the tree is
+            // rebuilt every frame, so an element-local flag would shut the menu
+            // on the frame after it opened. Per-select menu ids keep the window's
+            // one-menu rule and the outside-press dismiss working.
+            let (open, menu_id) = settings.select_menu(&path);
+            let open_changed = Rc::clone(&settings.select_open);
+            let own_path = path.clone();
             SettingsSelect::new(options.clone())
                 .with_selected(*selected)
                 .with_disabled(*disabled)
                 .with_focused(focused)
+                .with_open(open)
+                .with_menu_id(menu_id)
+                .with_on_open_change(move |is_open| {
+                    if !is_open {
+                        return;
+                    }
+                    // Only one plain select menu may be up even if a second one
+                    // was opened from the keyboard before the registry saw it.
+                    for (candidate, cell) in open_changed.borrow().iter() {
+                        if candidate != &own_path {
+                            *cell.borrow_mut() = false;
+                        }
+                    }
+                })
                 .with_on_change(move |index| {
                     (dispatch.clone().borrow_mut())(SettingsAction::SetSelect {
                         path: path.clone(),
                         index,
                     });
+                })
+                .finish()
+        }
+        ControlModel::Segmented {
+            path,
+            options,
+            selected,
+            disabled,
+        } => {
+            let path = path.clone();
+            let dispatch = dispatch.clone();
+            SettingsSegmented::new(options.clone())
+                .with_selected(*selected)
+                .with_disabled(*disabled)
+                .with_focused(focused)
+                .with_on_change(move |index| {
+                    (dispatch.borrow_mut())(super::model::segment_action(&path, index));
                 })
                 .finish()
         }
@@ -424,6 +567,21 @@ fn render_control(
             configured,
             disabled,
         } => {
+            if !*secret {
+                if let Some((channel, key)) = color_palette::channel_for_path(id) {
+                    let color = color_palette::channel_color(settings, key);
+                    return Some(color_palette::color_palette_control(
+                        settings,
+                        actions,
+                        id,
+                        channel,
+                        value.clone(),
+                        color,
+                        *disabled,
+                        focused,
+                    ));
+                }
+            }
             let focused_field = settings.focused_field.as_deref() == Some(id.as_str());
             let id_change = id.clone();
             let id_commit = id.clone();
@@ -451,7 +609,10 @@ fn render_control(
                 } else {
                     field.with_width(240.0)
                 };
-                field.with_on_change(on_change).with_on_submit(on_submit).finish()
+                field
+                    .with_on_change(on_change)
+                    .with_on_submit(on_submit)
+                    .finish()
             } else {
                 let field = SettingsTextField::new()
                     .with_value(value.clone())
@@ -463,7 +624,10 @@ fn render_control(
                 } else {
                     field.with_width(240.0)
                 };
-                field.with_on_change(on_change).with_on_submit(on_submit).finish()
+                field
+                    .with_on_change(on_change)
+                    .with_on_submit(on_submit)
+                    .finish()
             }
         }
         ControlModel::Slider {
@@ -489,6 +653,18 @@ fn render_control(
                 .with_spacing(8.0)
                 .with_child(slider_output(app, output))
                 .with_child(slider)
+                .finish()
+        }
+        ControlModel::KeyChips { keys, action } => {
+            let chip = SettingsKeyChip::new(keys.clone()).finish();
+            let mut parts: Vec<Box<dyn Element>> = vec![chip];
+            if let Some(action) = action {
+                parts.push(icon_action_button(app, action, actions));
+            }
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(8.0)
+                .with_children(parts)
                 .finish()
         }
         ControlModel::ReadOnly { text } => {
@@ -522,83 +698,9 @@ fn render_control(
                 .finish()
         }
         ControlModel::Buttons(button_models) => action_buttons(app, button_models, actions),
-        // The wheel is drawn as the row's body (see `render_row`), not here.
-        ControlModel::ColorWheel { .. } => return None,
         ControlModel::None => return None,
     };
     Some(control)
-}
-
-/// A theme channel's token, so the wheel starts from the colour the live theme
-/// paints with when the file has no override for it.
-fn channel_token(channel: usize) -> ColorToken {
-    use crate::ui::color_picker::COLOR_TARGET_ORDER;
-    use crate::ui::color_picker::ColorTarget as T;
-    match COLOR_TARGET_ORDER.get(channel).copied().unwrap_or(T::Accent) {
-        T::Primary => ColorToken::Text,
-        T::Secondary => ColorToken::Muted,
-        T::Accent => ColorToken::Accent,
-        T::Background => ColorToken::Bg,
-        T::Surface => ColorToken::Surface,
-    }
-}
-
-/// The colour wheel body: the wheel, the channel's swatch and its exact hex.
-fn color_wheel_body(
-    app: &AppContext,
-    settings: &State,
-    channel: usize,
-    label: &str,
-    stored: Option<&str>,
-    actions: &SettingsActions,
-) -> Box<dyn Element> {
-    let current = stored
-        .and_then(ColorU::from_hex)
-        .unwrap_or_else(|| app.theme.color(channel_token(channel)));
-    let dispatch = actions.dispatch.clone();
-    let hex = current.to_hex_string();
-    let channel_index = channel;
-    let wheel = crate::ui::color_picker::ColorWheel::new(current)
-        .with_drag(Rc::clone(&settings.color_drag))
-        .with_on_change(move |color: ColorU| {
-            (dispatch.borrow_mut())(SettingsAction::SetColor {
-                target: channel_index,
-                hex: color.to_hex_string(),
-            });
-        });
-    let wheel_box: Box<dyn Element> = Box::new(wheel);
-    let swatch = Container::new(
-        goble_ui::elements::Empty::new()
-            .with_size(vec2f(18.0, 18.0))
-            .finish(),
-    )
-    .with_background(Fill::Solid(current))
-    .with_border(
-        goble_ui::elements::Border::all(1.0)
-            .with_border_color(app.theme.color(ColorToken::Border)),
-    )
-    .with_corner_radius(5.0)
-    .finish();
-    let swatch = ConstrainedBox::new(swatch)
-        .with_width(18.0)
-        .with_height(18.0)
-        .finish();
-    let label = Text::new(format!("{label} · {hex}"))
-        .with_font_size(12.0)
-        .with_color(app.theme.color(ColorToken::Text))
-        .finish();
-    let readout = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(7.0)
-        .with_child(swatch)
-        .with_child(label)
-        .finish();
-    Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_spacing(18.0)
-        .with_child(wheel_box)
-        .with_child(readout)
-        .finish()
 }
 
 /// The add/edit side sheet: a docked panel on the settings pane's trailing
@@ -733,15 +835,20 @@ fn render_sheet_row(
     }
     let row_ring = focused && settings.focused_field.is_none();
     let mut element =
-        SettingsRow::new(app, row.label.clone(), row.hint.clone()).with_focused(row_ring);
+        SettingsRow::new(app, row.label.clone(), String::new()).with_focused(row_ring);
     if let Some(swatch) = row.swatch {
         element = element.with_swatch(swatch);
     }
     if row.disabled {
         element = element.with_disabled(true);
     }
+    // K: muted status lines were descriptive subtitles ("Using the palette's
+    // accent"); keep only real feedback (info/success/warning/error).
     if let Some((text, kind)) = row.status.as_ref() {
-        element = element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+        if !matches!(kind, super::state::StatusKind::Muted) {
+            element =
+                element.with_status(SettingsRowStatus::new(text.clone(), row_status_kind(*kind)));
+        }
     }
     if let ControlModel::ReadOnly { text } = &row.control {
         element = element.with_body(
@@ -793,6 +900,30 @@ fn action_buttons(
     row.finish()
 }
 
+/// The trailing icon action a key-chip row carries (the Shortcuts page's
+/// trash). It is a real `SettingsButton`, so the click goes through the same
+/// dispatch as every other settings control; the tooltip states the honest
+/// outcome before the press.
+fn icon_action_button(
+    app: &AppContext,
+    action: &ActionModel,
+    settings: &SettingsActions,
+) -> Box<dyn Element> {
+    let dispatch = settings.dispatch.clone();
+    let forwarded = action.action.clone();
+    let button = SettingsButton::icon(action.icon.unwrap_or("trash"))
+        .with_disabled(action.disabled)
+        .ghost()
+        .with_on_click(move || {
+            (dispatch.borrow_mut())(forwarded.clone());
+        })
+        .finish();
+    let _ = app;
+    Tooltip::new(button, action.label.clone())
+        .with_position(TooltipPosition::Above)
+        .finish()
+}
+
 fn action_button(
     app: &AppContext,
     action: &ActionModel,
@@ -837,7 +968,6 @@ fn reset_button(
     })
     .finish()
 }
-
 
 /// The sheet's outside-click/dim layer: paints the page dimmed and consumes the
 /// first pointer press as "dismiss the sheet", so the main surface behind a
@@ -911,5 +1041,149 @@ impl Element for DismissLayer {
             | DispatchedEvent::Scroll { .. } => true,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goble_ui::test_util::render_element;
+
+    fn press(page: &mut Box<dyn Element>, app: &AppContext, at: Vector2F) -> bool {
+        let mut ctx = EventContext::default();
+        let down = page.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            &mut ctx,
+            app,
+        );
+        let up = page.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
+            &mut ctx,
+            app,
+        );
+        down && up
+    }
+
+    fn text_origin(commands: &[goble_ui::render::RenderCommand], needle: &str) -> Option<Vector2F> {
+        commands.iter().find_map(|command| match command {
+            goble_ui::render::RenderCommand::DrawText { origin, text, .. } if text == needle => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_plain_select_stays_open_across_the_next_page_build() {
+        let state = State::default();
+        let actions = SettingsActions::new(|_| {});
+        let app = AppContext::default();
+        let model = super::super::pages::page_model(SettingsCategory::General, &state);
+
+        // The page has to be laid out and painted before an event can hit-test
+        // it, exactly as the root view does each frame.
+        let mut page = render_page(&app, &model, &state, &actions);
+        let commands = render_element(&mut page, vec2f(900.0, 2000.0), &app);
+        let origin = text_origin(&commands, "Default").expect("the Permissions trigger label");
+        assert!(press(
+            &mut page,
+            &app,
+            vec2f(origin.x + 2.0, origin.y + 2.0)
+        ));
+        let (open, _) = state.select_menu("app.approval_mode");
+        assert!(*open.borrow(), "the press opens the Permissions select");
+
+        // The next frame rebuilds the whole page; the app-owned cell keeps the
+        // menu up and the renderer draws its options again.
+        let model = super::super::pages::page_model(SettingsCategory::General, &state);
+        let mut page = render_page(&app, &model, &state, &actions);
+        let commands = render_element(&mut page, vec2f(900.0, 2000.0), &app);
+        assert!(
+            text_origin(&commands, "Plan").is_some(),
+            "the open select still draws its menu"
+        );
+
+        // Choosing a row closes it.
+        let origin = text_origin(&commands, "Plan").expect("the menu row");
+        assert!(press(
+            &mut page,
+            &app,
+            vec2f(origin.x + 2.0, origin.y + 2.0)
+        ));
+        assert!(!*open.borrow(), "choosing a row closes the select");
+    }
+
+    fn texts(commands: &[goble_ui::render::RenderCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                goble_ui::render::RenderCommand::DrawText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_shortcuts_trash_is_a_real_button_that_dispatches_the_honest_remap() {
+        let app = AppContext::default();
+        let state = State::default();
+        let dispatched: Rc<RefCell<Vec<SettingsAction>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&dispatched);
+        let actions = SettingsActions::new(move |action| seen.borrow_mut().push(action));
+        let model = super::super::pages::page_model(SettingsCategory::Shortcuts, &state);
+        let mut page = render_page(&app, &model, &state, &actions);
+        let commands = render_element(&mut page, vec2f(900.0, 2400.0), &app);
+
+        // The chips draw the grouped chord before the trash button.
+        assert!(texts(&commands).iter().any(|text| text == "⌘ + K"));
+
+        let (origin, size) = commands
+            .iter()
+            .find_map(|command| match command {
+                goble_ui::render::RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "trash-02" => Some((*origin, *size)),
+                _ => None,
+            })
+            .expect("the binding row draws its trash icon");
+        assert!(press(
+            &mut page,
+            &app,
+            vec2f(origin.x + size / 2.0, origin.y + size / 2.0)
+        ));
+        assert_eq!(
+            dispatched.borrow().as_slice(),
+            &[SettingsAction::ShortcutRemap(
+                "shortcut.Command palette".to_string()
+            )],
+            "the trash press is honest: it asks to remap, it does not delete"
+        );
+    }
+
+    #[test]
+    fn the_rail_footer_names_you_and_the_local_workspace() {
+        let app = AppContext::default();
+        let state = State::default();
+        let mut footer = render_rail_footer(&app, &state);
+        let commands = render_element(&mut footer, vec2f(200.0, 80.0), &app);
+        let drawn = texts(&commands);
+        assert!(drawn.iter().any(|text| text == "You"), "{drawn:?}");
+        assert!(
+            drawn.iter().any(|text| text == "Local workspace"),
+            "{drawn:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                goble_ui::render::RenderCommand::DrawText { text, .. } if text == "Y"
+            )),
+            "the avatar initial comes from the name: {drawn:?}"
+        );
     }
 }

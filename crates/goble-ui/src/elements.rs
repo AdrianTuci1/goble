@@ -11,7 +11,7 @@ pub use chat_composer::{
     ChatComposer, CommandProposalUi, DiffFileStat, DiffSummary, COMPOSER_CARD_GUTTER,
     COMPOSER_CARD_INSET, COMPOSER_CARD_RADIUS, COMPOSER_EDITOR_MAX_HEIGHT,
     COMPOSER_EDITOR_MIN_HEIGHT, COMPOSER_FOOTER_GAP, COMPOSER_FOOTER_HEIGHT,
-    COMPOSER_INPUT_MIN_HEIGHT, COMPOSER_INPUT_RADIUS, COMPOSER_SEND_SIZE, CONTEXT_SEGMENT_HEIGHT,
+    COMPOSER_INPUT_MIN_HEIGHT, COMPOSER_INPUT_RADIUS, COMPOSER_SEND_SIZE,
 };
 pub use chat_content::{
     tool_fold_key, ChatAction, ChatFragment, ChatFragmentKind, ChatMessage, ChatRole,
@@ -30,7 +30,9 @@ pub use conversation_sidebar::{
 };
 pub use dialog::{Dialog, DIALOG_DEFAULT_WIDTH};
 pub use diff::{
-    parse_unified_diff, Diff, DiffLine, DiffLineKind, DiffRow, DiffStats, Hunk, PreparedDiff,
+    build_split_rows, parse_unified_diff, split_rows, Diff, DiffLayout, DiffLine, DiffLineKind,
+    DiffRow, DiffSpec, DiffStats, FileDiffView, Hunk, PreparedDiff, ReviewHeader, ReviewTab,
+    ReviewTabFile, ReviewTabHeader, ReviewTabState, SplitDiffRow, SplitRow,
 };
 pub mod markdown;
 pub use chat_message_bubble::ChatMessageBubble;

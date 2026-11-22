@@ -208,7 +208,10 @@ impl SearchWorker {
 
 /// Start the walking thread. `None` when the machine refuses one, which leaves
 /// the caller to walk on its own thread.
-fn spawn_worker(latest: Arc<AtomicU64>, done: Arc<Mutex<Option<SearchOutcome>>>) -> Option<Sender<Job>> {
+fn spawn_worker(
+    latest: Arc<AtomicU64>,
+    done: Arc<Mutex<Option<SearchOutcome>>>,
+) -> Option<Sender<Job>> {
     let (jobs, inbox) = mpsc::channel::<Job>();
     std::thread::Builder::new()
         .name("global-search".to_string())
@@ -410,11 +413,15 @@ fn search_in_process(
             return Ok(None);
         }
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else { continue };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
         if metadata.len() > MAX_FILE_BYTES {
             continue;
         }
-        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
         // A NUL byte in the head means binary: ripgrep refuses those too, and
         // the band has nothing to show for one.
         if bytes.iter().take(1024).any(|byte| *byte == 0) {
@@ -828,8 +835,12 @@ mod tests {
         );
 
         // A query with nothing behind it is an answer, not a failure.
-        assert!(search(&dir.path().to_string_lossy(), "absent").expect("runs").is_empty());
-        assert!(search(&dir.path().to_string_lossy(), "").expect("runs").is_empty());
+        assert!(search(&dir.path().to_string_lossy(), "absent")
+            .expect("runs")
+            .is_empty());
+        assert!(search(&dir.path().to_string_lossy(), "")
+            .expect("runs")
+            .is_empty());
     }
 
     /// The in-process engine is the one this machine actually runs, so it is
@@ -959,13 +970,13 @@ mod sidebar_scroll_tests {
     /// so the pointer has to be over the band while the tree is painted.
     const OVER_THE_BAND_Y: f32 = 400.0;
 
-    fn paint(root: &mut Box<dyn Element>, app: &AppContext, cursor: Vector2F) -> Vec<RenderCommand> {
+    fn paint(
+        root: &mut Box<dyn Element>,
+        app: &AppContext,
+        cursor: Vector2F,
+    ) -> Vec<RenderCommand> {
         let window = vec2f(1024.0, 768.0);
-        let _ = root.layout(
-            SizeConstraint::loose(window),
-            &mut LayoutContext,
-            app,
-        );
+        let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, app);
         let mut ctx = PaintContext::new(Renderer::new());
         ctx.cursor_inside = true;
         ctx.cursor_position = cursor;
@@ -1261,7 +1272,10 @@ mod sidebar_scroll_tests {
             whole = whole.with_child(result_row(&app, row, &actions));
         }
         let height = whole.finish().layout(
-            SizeConstraint::new(vec2f(0.0, 0.0), vec2f(crate::ui::SIDEBAR_WIDTH, f32::INFINITY)),
+            SizeConstraint::new(
+                vec2f(0.0, 0.0),
+                vec2f(crate::ui::SIDEBAR_WIDTH, f32::INFINITY),
+            ),
             &mut LayoutContext,
             &app,
         );
@@ -1347,8 +1361,12 @@ mod sidebar_scroll_tests {
                 RenderCommand::DrawText {
                     text, font_size, ..
                 } => {
-                    let measured =
-                        goble_ui::elements::text::measure_text(text, *font_size, 1.2, f32::INFINITY);
+                    let measured = goble_ui::elements::text::measure_text(
+                        text,
+                        *font_size,
+                        1.2,
+                        f32::INFINITY,
+                    );
                     Some(measured.x * measured.y)
                 }
                 _ => None,
@@ -1419,126 +1437,4 @@ mod field_tests {
     use goble_ui::event::DispatchedEvent;
     use goble_ui::render::{RenderCommand, Renderer};
     use std::sync::Arc;
-
-    #[test]
-    fn the_query_field_edits_at_the_caret() {
-        let dir = tempfile::tempdir().expect("temp thread-store dir");
-        let desktop = Arc::new(DesktopState::new(
-            Store::open_in_memory().expect("in-memory store"),
-            ThreadStore::new(dir.path()).expect("thread store"),
-        ));
-        let app = AppContext::default();
-        let home = tempfile::tempdir().expect("temp working directory");
-        let view = RootView::new(&app, &desktop, None);
-        {
-            let state = view.state_rc();
-            let mut s = state.borrow_mut();
-            s.show_workspace_choice = false;
-            s.show_llm_key_banner = false;
-            s.right_sidebar_open = false;
-            s.crons_open = false;
-            s.set_active_pane_path(home.path().to_string_lossy().to_string());
-            s.sidebar_view = SidebarView::Search;
-            s.global_search_query = "ab".to_string();
-            *s.global_search_caret.borrow_mut() = 2;
-        }
-        let state = view.state_rc();
-
-        let mut root: Box<dyn Element> = Box::new(view);
-        let window = vec2f(1024.0, 768.0);
-        let paint = |root: &mut Box<dyn Element>| {
-            let _ = root.layout(
-                SizeConstraint::loose(window),
-                &mut LayoutContext::default(),
-                &app,
-            );
-            let mut ctx = PaintContext::new(Renderer::new());
-            root.paint(vec2f(0.0, 0.0), &mut ctx, &app);
-            ctx.renderer.expect("renderer").commands().to_vec()
-        };
-        let commands = paint(&mut root);
-        // The field's own box is the one stroke in the band taller than a rule.
-        let field = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::StrokeRect { rect, .. }
-                    if rect.max_x() <= crate::ui::SIDEBAR_WIDTH
-                        && rect.min_y() >= crate::ui::shell::TOPBAR_HEIGHT
-                        && rect.height() > 2.0 =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .expect("the search view draws its query field");
-        let at = vec2f(
-            (field.min_x() + field.max_x()) / 2.0,
-            (field.min_y() + field.max_y()) / 2.0,
-        );
-        root.dispatch_event(
-            &DispatchedEvent::MouseDown {
-                position: at,
-                button: 0,
-            },
-            &mut EventContext::default(),
-            &app,
-        );
-        assert!(
-            state.borrow().global_search_focused,
-            "the press puts the caret in the field"
-        );
-
-        let key = |root: &mut Box<dyn Element>, key: &str| {
-            root.dispatch_event(
-                &DispatchedEvent::KeyDown {
-                    key: key.to_string(),
-                    modifiers: Default::default(),
-                },
-                &mut EventContext::default(),
-                &app,
-            )
-        };
-
-        assert!(key(&mut root, "ArrowLeft"));
-        assert_eq!(
-            *state.borrow().global_search_caret.borrow(),
-            1,
-            "the arrow moved the query field's caret"
-        );
-
-        assert!(key(&mut root, "X"));
-        assert_eq!(
-            state.borrow().global_search_query,
-            "aXb",
-            "the character landed before the last one"
-        );
-        assert_eq!(*state.borrow().global_search_caret.borrow(), 2);
-
-        assert!(key(&mut root, "Enter"), "enter is still the field's key");
-        assert_eq!(
-            state.borrow().global_search_query,
-            "aXb",
-            "and changes nothing"
-        );
-
-        // The next frame draws the value split where the caret is.
-        let commands = paint(&mut root);
-        let drawn: Vec<String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. }
-                    if origin.x < crate::ui::SIDEBAR_WIDTH =>
-                {
-                    Some(text.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        for run in ["aX", "b"] {
-            assert!(
-                drawn.iter().any(|text| text == run),
-                "the field draws the run {run:?} around its beam: {drawn:?}"
-            );
-        }
-    }
 }

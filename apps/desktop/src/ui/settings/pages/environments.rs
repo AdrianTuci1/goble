@@ -1,4 +1,5 @@
-//! Settings → Environments: the groups in `environment.toml`.
+//! Settings → Projects: project folders are the sidebar's job, while the real
+//! environment groups this page edits live in `environment.toml`.
 //!
 //! Two levels only — group name → variable name → value — and a value is a
 //! literal string or an inline `{ vault = "<key>" }` reference. A literal value
@@ -13,7 +14,49 @@ use super::super::state::{SettingsAction, SettingsUiState, StatusKind};
 use super::{problem_section, unavailable_row};
 
 pub fn page(state: &SettingsUiState) -> PageModel {
+    let groups = state
+        .environment
+        .as_ref()
+        .map(|view| view.sections.environment.clone())
+        .unwrap_or_default();
+    let group_summary = match groups.len() {
+        0 => "none declared".to_string(),
+        1 => "1 group declared".to_string(),
+        count => format!("{count} groups declared"),
+    };
+
     let mut sections = Vec::new();
+    sections.push(
+        SectionModel::new("projects", "Projects")
+            .with_description(
+                "Project folders are managed from the sidebar. The environment groups below are real, file-backed settings in environment.toml.",
+            )
+            .with_row(
+                RowModel::new(
+                    "projects.source",
+                    "Project folders",
+                    "Create, rename, open and group project folders from the sidebar.",
+                )
+                .read_only("Sidebar")
+                .with_status(StatusKind::Muted, "Managed from the sidebar"),
+            )
+            .with_row(
+                RowModel::new(
+                    "projects.environments",
+                    "Environment groups",
+                    "The [groups.<name>] tables this page edits; each one is listed in full below.",
+                )
+                .read_only(group_summary)
+                .with_status(
+                    StatusKind::Muted,
+                    if groups.is_empty() {
+                        "No groups are declared in environment.toml yet."
+                    } else {
+                        "Add, inspect and delete variables below."
+                    },
+                ),
+            ),
+    );
     if let Some(problems) = problem_section(state, ConfigFile::Environment) {
         sections.push(problems);
     }
@@ -50,14 +93,9 @@ pub fn page(state: &SettingsUiState) -> PageModel {
             ),
     );
 
-    let groups = state
-        .environment
-        .as_ref()
-        .map(|view| view.sections.environment.clone())
-        .unwrap_or_default();
     if groups.is_empty() {
         sections.push(
-            SectionModel::new("groups-empty", "Groups")
+            SectionModel::new("groups-empty", "Environment groups")
                 .with_description("No groups are declared in environment.toml yet.")
                 .with_row(
                     RowModel::new(
@@ -163,12 +201,14 @@ pub fn page(state: &SettingsUiState) -> PageModel {
         sections.push(section);
     }
     sections.push(
-        SectionModel::new("env-unavailable", "Not in this build").with_row(unavailable_row(
-            "env-vault-create",
-            "Create a vault entry",
-            "Write `VAR = { vault = \"key\" }` from this page.",
-            "vault-backed values are declared in the file",
-        )),
+        SectionModel::new("env-unavailable", "Environment options not in this build").with_row(
+            unavailable_row(
+                "env-vault-create",
+                "Create a vault entry",
+                "Write `VAR = { vault = \"key\" }` from this page.",
+                "vault-backed values are declared in the file",
+            ),
+        ),
     );
     sections.push(
         SectionModel::new("files", "This file").with_row(super::open_file_row(

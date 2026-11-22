@@ -1,8 +1,93 @@
 use super::session::is_unnamed_harness_title;
-use super::title::agent_subject;
+use super::title::deterministic_subject;
 use super::*;
 
 impl UiState {
+    /// Keep the side panel's tab list and selection usable. The list is never
+    /// empty — closing the last tab brings Overview back — and an active index
+    /// left out of range (a test fixture, a stale layout) falls back to the
+    /// first tab instead of drawing nothing.
+    pub fn ensure_side_tabs(&mut self) {
+        if self.side_tabs.is_empty() {
+            self.side_tabs.push(SideTabKind::Overview);
+        }
+        if self.active_side_tab >= self.side_tabs.len() {
+            self.active_side_tab = 0;
+        }
+    }
+
+    /// The tab the side panel is showing. Overview is the fallback, so the
+    /// panel has a surface even before the first [`Self::ensure_side_tabs`].
+    pub fn active_side_tab_kind(&self) -> SideTabKind {
+        self.side_tabs
+            .get(self.active_side_tab)
+            .copied()
+            .unwrap_or(SideTabKind::Overview)
+    }
+
+    /// The side panel was opened: keep the tabs and land on the one that was
+    /// active. The Overview surface is the body's home when there is no tab,
+    /// but it is not a chip and opening the panel must not add one.
+    pub fn open_side_panel(&mut self) {
+        if self.side_tabs.is_empty() {
+            self.active_side_tab = 0;
+            return;
+        }
+        self.active_side_tab = self.active_side_tab.min(self.side_tabs.len() - 1);
+    }
+
+    /// Make the tab at `index` the panel's surface. An index outside the strip
+    /// is ignored rather than selecting a tab that is not there.
+    pub fn select_side_tab(&mut self, index: usize) {
+        if index < self.side_tabs.len() {
+            self.active_side_tab = index;
+        }
+    }
+
+    /// Add a tab kind, or show it when it is already in the strip: one tab per
+    /// kind, so the "+" menu never stacks duplicates of the same pane view.
+    pub fn add_side_tab(&mut self, kind: SideTabKind) {
+        match self.side_tabs.iter().position(|tab| *tab == kind) {
+            Some(index) => self.active_side_tab = index,
+            None => {
+                self.side_tabs.push(kind);
+                self.active_side_tab = self.side_tabs.len() - 1;
+            }
+        }
+    }
+
+    /// Close the tab at `index`. Closing the active tab selects its neighbour —
+    /// the next one when there is one, the previous one otherwise — and closing
+    /// the last tab brings Overview back, so the panel always has a surface.
+    pub fn close_side_tab(&mut self, index: usize) {
+        if index >= self.side_tabs.len() {
+            return;
+        }
+        self.side_tabs.remove(index);
+        if self.side_tabs.is_empty() {
+            self.side_tabs.push(SideTabKind::Overview);
+            self.active_side_tab = 0;
+            return;
+        }
+        if index < self.active_side_tab {
+            self.active_side_tab -= 1;
+        } else if index == self.active_side_tab {
+            self.active_side_tab = index.min(self.side_tabs.len() - 1);
+        }
+    }
+
+    /// Move the selection by `step` tabs, wrapping at both ends. A horizontal
+    /// swipe on the panel sends one step per completed gesture, so a swipe past
+    /// the last tab returns to the first.
+    pub fn cycle_side_tab(&mut self, step: i32) {
+        self.ensure_side_tabs();
+        let len = self.side_tabs.len();
+        if len <= 1 || step == 0 {
+            return;
+        }
+        self.active_side_tab = (self.active_side_tab as i32 + step).rem_euclid(len as i32) as usize;
+    }
+
     /// Take the search the worker has finished, when it answered the newest
     /// query. Called once per frame, so a result appears as soon as the walk
     /// behind it lands — whichever pane's directory the user has moved to.
@@ -96,6 +181,8 @@ impl UiState {
             pending_close_pane: None,
             pending_close_file: None,
             conversation_usage: HashMap::new(),
+            conversation_last_usage: HashMap::new(),
+            conversation_usage_calls: HashMap::new(),
             theme_primary: None,
             theme_secondary: None,
             theme_accent: None,
@@ -124,6 +211,8 @@ impl UiState {
             sidebar_dragging: false,
             sidebar_drag_origin_x: 0.0,
             sidebar_drag_start_width: SIDEBAR_WIDTH,
+            side_split_ratio: 0.5,
+            side_split_dragging: false,
             content_lane_prefs: std::collections::HashMap::new(),
             content_lane_drag_pane: None,
             content_lane_dragging: false,
@@ -157,9 +246,7 @@ impl UiState {
             sidebar_menu_open: Rc::new(RefCell::new(false)),
             sidebar_flat_list: Rc::new(RefCell::new(false)),
             sidebar_recent_first: Rc::new(RefCell::new(true)),
-            sidebar_archived_filter: Rc::new(RefCell::new(
-                crate::ui::ArchivedFilter::Default,
-            )),
+            sidebar_archived_filter: Rc::new(RefCell::new(crate::ui::ArchivedFilter::Default)),
             sidebar_rename: None,
             sidebar_workspaces: Vec::new(),
             sidebar_workspace_rename: None,
@@ -172,12 +259,14 @@ impl UiState {
             sidebar_session_order: Rc::new(RefCell::new(std::collections::HashMap::new())),
             explorer_scroll: Rc::new(RefCell::new(ScrollState::default())),
             global_search_scroll: Rc::new(RefCell::new(ScrollState::default())),
+            spotlight: crate::ui::spotlight::SpotlightState::default(),
             space_rename_editing: false,
             command_held: false,
             space_press_run: Rc::new(RefCell::new(None)),
             space_rename_draft: String::new(),
             space_rename_focused: false,
             space_menu: Rc::new(RefCell::new(None)),
+            file_menu: Rc::new(RefCell::new(None)),
             agent_cards: HashMap::new(),
             new_agent_hover: Rc::new(RefCell::new(false)),
             spaces: default_spaces(),
@@ -211,10 +300,31 @@ impl UiState {
             ssh_host_entries: Vec::new(),
             ssh_host_picker_open: false,
             ssh_host_picker_index: 0,
+            ssh_target_open: false,
+            ssh_target_draft: String::new(),
+            ssh_target_focused: false,
+            ssh_config_path: String::new(),
+            ssh_config_hosts: Vec::new(),
+            ssh_target_error: None,
+            sidebar_add_menu_open: Rc::new(RefCell::new(false)),
+            changed_files_open: Rc::new(RefCell::new(false)),
+            settings_overlay_open: false,
+            settings_overlay_hamburger: Rc::new(RefCell::new(false)),
+            settings_overlay_wide: true,
+            chrome_overview_open: Rc::new(RefCell::new(false)),
+            chrome_more_open: Rc::new(RefCell::new(false)),
+            side_panel_maximized: false,
+            side_tabs: vec![SideTabKind::Overview],
+            side_review: None,
+            active_side_tab: 0,
+            side_tab_add_menu_open: Rc::new(RefCell::new(false)),
+            side_swipe_accum: Rc::new(RefCell::new(0.0)),
+            send_immediately: false,
             ssh_reconnect_prompt: None,
             floating_drag: Rc::new(RefCell::new(None)),
             live_executions: HashMap::new(),
             pane_controls: HashMap::new(),
+            diff_reviews: Rc::new(RefCell::new(HashMap::new())),
             pane_chat_scroll: HashMap::new(),
             pane_transcript_selection: HashMap::new(),
             pane_usage_open: HashMap::new(),
@@ -560,8 +670,7 @@ impl UiState {
             // DSH separates "running" (the spinner ring) from "stopped on the
             // user" (the amber dot): a pending approval/question is the latter,
             // and it outranks the turn's own busy flag.
-            let waiting_on_user =
-                rt.pending_command.is_some() || rt.pending_ask.is_some();
+            let waiting_on_user = rt.pending_command.is_some() || rt.pending_ask.is_some();
             if waiting_on_user || rt.agent_state == PaneAgentState::NeedsInput {
                 return ConversationStatus::Waiting;
             }
@@ -767,8 +876,8 @@ impl UiState {
                     .unwrap_or_default()
                     .is_empty()
             {
-                if let Err(e) = desktop
-                    .set_chat_working_dir(&chat.id, &crate::state::display_path(&directory))
+                if let Err(e) =
+                    desktop.set_chat_working_dir(&chat.id, &crate::state::display_path(&directory))
                 {
                     log::warn!("set_chat_working_dir for {} failed: {e}", chat.id);
                 }
@@ -873,15 +982,89 @@ impl UiState {
         }
     }
 
+    /// Name a conversation from the first prompt the user sends into it.
+    ///
+    /// A conversation is created under [`NEW_CONVERSATION_TITLE`], and the
+    /// first thing the user says in it is what it is about. Naming it from that
+    /// prompt as the turn starts is what gives a conversation a subject while it
+    /// is still new: the sidebar row, the tab label and the pane's own bar read
+    /// a real name instead of the placeholder for the whole first turn (and no
+    /// reply ever names a conversation).
+    ///
+    /// The name written here is the deterministic subject
+    /// ([`deterministic_subject`]): the topic keywords of the prompt, not the
+    /// prompt itself. It is the fallback that stands when no provider key exists,
+    /// and the name the conversation carries while the model-backed title
+    /// request ([`spawn_title_generation`]) is in flight; that request replaces
+    /// it with a generated subject when it returns.
+    ///
+    /// Only the placeholder is replaced. A subject the user typed (in the create
+    /// row, or through the sidebar's rename row) is theirs and stands, and a
+    /// conversation already named keeps that name — the first prompt is the one
+    /// that names a conversation.
+    ///
+    /// The write reaches the store, the in-memory list the sidebar is built
+    /// from, and the frontends through the `chats:updated` it emits, so the card,
+    /// the tab and the pane bar update without a restart. The local row and tab
+    /// label are also updated at once, so this frame already names the
+    /// conversation.
+    ///
+    /// Returns whether this was the conversation's first prompt (whether it was
+    /// still under the placeholder), which is what tells the caller to ask the
+    /// model for a subject. A prompt with nothing to name in it (`thanks!`)
+    /// writes nothing but still reports the first prompt.
+    pub fn name_conversation_from_prompt(
+        &mut self,
+        conversation_id: &str,
+        prompt: &str,
+        desktop: &DesktopState,
+    ) -> bool {
+        if conversation_id.is_empty() {
+            return false;
+        }
+        let Some(chat) = desktop
+            .list_chats()
+            .into_iter()
+            .find(|chat| chat.id == conversation_id)
+        else {
+            return false;
+        };
+        // Only the placeholder is the agent's to replace: anything else was
+        // typed by the user or written by an earlier naming pass.
+        if chat.title != NEW_CONVERSATION_TITLE {
+            return false;
+        }
+        let subject = deterministic_subject(prompt);
+        if let Some(subject) = subject
+            .as_deref()
+            .filter(|subject| *subject != NEW_CONVERSATION_TITLE)
+        {
+            if let Err(e) = desktop.set_chat_title(conversation_id, subject) {
+                log::warn!("set_chat_title for {conversation_id} failed: {e}");
+                return true;
+            }
+            // The card the frame draws reads `conversations`, so the row reads
+            // the new name now rather than at the refresh the write emits; the
+            // tab and the pane bar follow the card.
+            if let Some(entry) = self
+                .conversations
+                .iter_mut()
+                .find(|entry| entry.id == conversation_id)
+            {
+                entry.name = subject.to_string();
+            }
+            self.refresh_space_labels();
+        }
+        true
+    }
+
     /// Rebuild the sidebar's conversation list from the service.
     ///
-    /// A conversation the agent has answered in is also named here: the subject
-    /// is derived from what was said in it ([`agent_subject`]) and written back
-    /// through [`DesktopState::set_chat_title`], so the row drawn below reads it
-    /// at once and the next launch reads it from the store. The write happens
-    /// only when the subject actually changes — a conversation the agent has
-    /// already named, or one the user named, is left alone — so the
-    /// `chats:updated` the write emits cannot feed this call back into itself.
+    /// A conversation is named from its first prompt, not from its replies: the
+    /// subject is written at turn start by
+    /// [`Self::name_conversation_from_prompt`] (and refined by the model-backed
+    /// title request). This pass only reads the durable titles back, so a
+    /// conversation keeps the subject it was given however many turns follow.
     /// A conversation that ran in a CLI harness has no transcript here, so it is
     /// named from the title the harness recorded for its session
     /// ([`Self::retitle_harness_conversations`]) instead.
@@ -928,7 +1111,7 @@ impl UiState {
             .map(|c| {
                 let live = self.conversation_is_live(&c.id);
                 let previous = settled.get(&c.id);
-                let mut title = retitled
+                let title = retitled
                     .get(&c.id)
                     .cloned()
                     .unwrap_or_else(|| c.title.clone());
@@ -953,25 +1136,6 @@ impl UiState {
                         let has_agent_reply = messages
                             .iter()
                             .any(|m| m.role == "assistant" || m.role == "tool");
-                        // A live turn's reply is half-written, so it cannot
-                        // name the conversation yet: the settled refresh after
-                        // the turn is what derives the subject. That also keeps
-                        // a title write (and the `chats:updated` it emits) out
-                        // of the per-token path.
-                        if !live {
-                            if let Some(subject) = agent_subject(
-                                &c.title,
-                                &messages
-                                    .iter()
-                                    .map(|m| (m.role.as_str(), m.content.as_str()))
-                                    .collect::<Vec<_>>(),
-                            ) {
-                                if let Err(e) = desktop.set_chat_title(&c.id, &subject) {
-                                    log::warn!("set_chat_title for {} failed: {e}", c.id);
-                                }
-                                title = subject;
-                            }
-                        }
                         (last, has_agent_reply)
                     }
                 };
@@ -1259,6 +1423,189 @@ mod tests {
         );
     }
 
+    /// The whole path a new conversation's subject takes: it opens under the
+    /// placeholder, its first prompt names it at once with a deterministic
+    /// subject (a topic, not the message), the write is durable and the sidebar
+    /// entry, the tab label and the pane's own bar all read the subject. The
+    /// model-backed title request then replaces the fallback with a generated
+    /// subject; later turns leave that subject alone, and a name the user typed
+    /// is never taken back.
+    #[test]
+    fn a_new_conversation_is_named_from_its_first_prompt() {
+        use goble_core::llm::{CompletionResponse, MockProvider};
+
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("thread store"),
+        );
+
+        // A tab the sidebar's "New conversation" row opens: one pane on a
+        // conversation created under the placeholder.
+        let mut state = UiState::mock();
+        let pane_id = state.active_pane_id;
+        state.bind_pane_new_conversation_titled(pane_id, NEW_CONVERSATION_TITLE, Some(&desktop));
+        let chat = state
+            .pane_conversation_id(pane_id)
+            .expect("the tab's conversation");
+        state.refresh_space_labels();
+        assert_eq!(
+            state.spaces[state.active_space].name, NEW_AGENT_TAB_LABEL,
+            "a conversation nobody has named opens on the placeholder tab label"
+        );
+        assert_eq!(state.pane_subject(pane_id), NEW_AGENT_TAB_LABEL);
+
+        // The first prompt names it at once — there is no assistant reply in the
+        // store yet — with the deterministic subject, which is the topic and not
+        // the message.
+        let prompt = "Arata un text colorat in chat";
+        assert!(
+            state.name_conversation_from_prompt(&chat, prompt, &desktop),
+            "the first prompt is the one that names the conversation"
+        );
+        let fallback = "Text colorat in chat";
+        assert_eq!(
+            desktop.list_chats()[0].title,
+            fallback,
+            "the deterministic subject is written to the store"
+        );
+        assert_ne!(
+            desktop.list_chats()[0].title,
+            prompt,
+            "the title is the topic, not the user's message"
+        );
+
+        // The `chats:updated` the write emits is what rebuilds the list: the
+        // entry, the tab label and the pane bar all read the subject.
+        state.refresh_conversations(&desktop);
+        state.refresh_space_labels();
+        assert_eq!(state.conversations[0].name, fallback);
+        assert_eq!(
+            state.spaces[state.active_space].name, fallback,
+            "the topbar tab reads the conversation subject"
+        );
+        assert_eq!(
+            state.pane_subject(pane_id),
+            fallback,
+            "the pane header reads the conversation subject"
+        );
+
+        // The model-backed request replaces the fallback with the generated
+        // subject, and every surface reads the refined title after the refresh
+        // the write's `chats:updated` triggers.
+        let provider = MockProvider::new(
+            "title-test",
+            CompletionResponse::new("Colorful chat text", Vec::new()),
+        );
+        let runtime = tokio::runtime::Runtime::new().expect("build runtime");
+        let generated = runtime
+            .block_on(super::title::generate_and_store_title(
+                &desktop,
+                &provider,
+                "title-test",
+                "title-model",
+                &chat,
+                prompt,
+            ))
+            .expect("the generated subject");
+        assert_eq!(generated, "Colorful chat text");
+        assert_eq!(
+            desktop.list_chats()[0].title,
+            "Colorful chat text",
+            "the generated subject is durable"
+        );
+        state.refresh_conversations(&desktop);
+        state.refresh_space_labels();
+        assert_eq!(state.conversations[0].name, "Colorful chat text");
+        assert_eq!(state.spaces[state.active_space].name, "Colorful chat text");
+        assert_eq!(state.pane_subject(pane_id), "Colorful chat text");
+
+        // Later turns do not retitle the conversation: replies name nothing.
+        assert!(
+            !state.name_conversation_from_prompt(&chat, "Now make it green", &desktop),
+            "a conversation a prompt already named keeps its name"
+        );
+        desktop
+            .add_chat_message(&chat, "user", prompt)
+            .expect("the prompt the turn ran");
+        desktop
+            .add_chat_message(&chat, "assistant", "Textul colorat apare acum in chat.")
+            .expect("the agent's reply");
+        state.refresh_conversations(&desktop);
+        assert_eq!(
+            state.conversations[0].name, "Colorful chat text",
+            "the settled turn leaves the subject alone"
+        );
+
+        // A subject the user typed is never taken back.
+        desktop
+            .set_chat_title(&chat, "Planul de lansare")
+            .expect("the user's rename");
+        assert!(
+            !state.name_conversation_from_prompt(&chat, "Something else entirely", &desktop),
+            "a prompt does not rename a conversation the user named"
+        );
+        assert_eq!(
+            runtime.block_on(super::title::generate_and_store_title(
+                &desktop,
+                &provider,
+                "title-test",
+                "title-model",
+                &chat,
+                prompt,
+            )),
+            None,
+            "a user's name is not the app's to replace"
+        );
+        state.refresh_conversations(&desktop);
+        assert_eq!(
+            desktop.list_chats()[0].title,
+            "Planul de lansare",
+            "the conversation's own words do not take a user's name back"
+        );
+
+        // A conversation created under a subject the user typed is left alone
+        // from the start — the create row's draft is the user's name.
+        let named = desktop
+            .create_chat("Ship the topbar", None, None)
+            .expect("a conversation the user named");
+        assert!(!state.name_conversation_from_prompt(&named, "fix the sidebar", &desktop));
+        assert_eq!(
+            desktop
+                .list_chats()
+                .into_iter()
+                .find(|chat| chat.id == named)
+                .map(|chat| chat.title),
+            Some("Ship the topbar".to_string())
+        );
+    }
+
+    /// A prompt with nothing to name in it leaves the conversation on the
+    /// placeholder — a neutral placeholder, not the message — and reports itself
+    /// as the first prompt, so the model may still name it. A prompt that does
+    /// name a topic replaces the placeholder.
+    #[test]
+    fn a_pleasantry_does_not_name_a_new_conversation() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("thread store"),
+        );
+        let chat = desktop
+            .create_chat(NEW_CONVERSATION_TITLE, None, None)
+            .expect("a conversation nobody has named");
+        let mut state = UiState::mock();
+        assert!(
+            state.name_conversation_from_prompt(&chat, "Thanks!", &desktop),
+            "the pleasantry is still the conversation's first prompt"
+        );
+        assert!(state.name_conversation_from_prompt(&chat, "   ", &desktop));
+        assert_eq!(desktop.list_chats()[0].title, NEW_CONVERSATION_TITLE);
+
+        assert!(state.name_conversation_from_prompt(&chat, "fix the sidebar", &desktop));
+        assert_eq!(desktop.list_chats()[0].title, "Sidebar");
+    }
+
     /// A harness conversation the user named is not looked up in the harness's
     /// session store at all: the store is the filesystem, and a name the user
     /// typed is not the harness's to replace.
@@ -1376,7 +1723,7 @@ mod tests {
 /// in.
 pub fn conversation_group(directory: Option<&str>) -> String {
     let Some(directory) = directory.map(str::trim).filter(|d| !d.is_empty()) else {
-        return "General".to_string();
+        return "Not in project".to_string();
     };
     let path = std::path::Path::new(directory);
     let in_home = std::env::var_os("HOME")

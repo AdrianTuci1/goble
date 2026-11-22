@@ -109,7 +109,11 @@ fn submit(session: &mut TerminalSession, line: &str) -> oneshot::Receiver<Result
 /// boundary even when it runs in this one, so events are awaited, never
 /// assumed to have already arrived.
 fn wait_for(mut condition: impl FnMut() -> bool) -> bool {
-    for _ in 0..400 {
+    // 20 s, not 10 s: the full app suite runs the terminal cases beside ~900
+    // other tests, and a daemon shell that bootstraps in well under a second on
+    // an idle machine can take several seconds under that load. The condition
+    // is unchanged; only the ceiling that turns slow into failed moves.
+    for _ in 0..800 {
         if condition() {
             return true;
         }

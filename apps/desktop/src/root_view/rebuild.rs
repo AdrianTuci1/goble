@@ -60,6 +60,9 @@ impl RootView {
         // snapshot is built, so two pty/agent panes never share the composer's
         // buttons.
         self.state.borrow_mut().ensure_pane_controls();
+        // The side panel always has a tab surface to draw: the strip is never
+        // empty and its selected index is always one of its tabs.
+        self.state.borrow_mut().ensure_side_tabs();
         // A TUI agent's own terminal reports whether it is running a command or
         // sitting at a prompt; fold that into the pane's agent state before the
         // snapshot draws it.
@@ -378,6 +381,16 @@ impl RootView {
                         let generation = *s.pane_controls(id).diff_refresh.borrow();
                         wanted.push((id, cwd, generation));
                     }
+                    // Q: the side-panel Review tab reads its source pane's
+                    // directory without adding a diff pane to the layout.
+                    if s.active_side_tab_kind() == crate::state::SideTabKind::Review {
+                        if let Some((pane, cwd)) = s.side_review.clone() {
+                            if !wanted.iter().any(|(id, _, _)| *id == pane) {
+                                let generation = *s.pane_controls(pane).diff_refresh.borrow();
+                                wanted.push((pane, cwd, generation));
+                            }
+                        }
+                    }
                 }
                 let mut pickers = self.pickers.borrow_mut();
                 wanted
@@ -568,6 +581,12 @@ impl RootView {
                 floating_drag: s.floating_drag.clone(),
                 ssh_host_entries: s.ssh_host_entries.clone(),
                 ssh_host_picker_open: s.ssh_host_picker_open,
+                ssh_target_open: s.ssh_target_open,
+                ssh_target_draft: s.ssh_target_draft.clone(),
+                ssh_target_focused: s.ssh_target_focused,
+                ssh_config_path: s.ssh_config_path.clone(),
+                ssh_config_hosts: s.ssh_config_hosts.clone(),
+                ssh_target_error: s.ssh_target_error.clone(),
                 ssh_host_picker_index: s.ssh_host_picker_index,
                 ssh_reconnect_prompt: s.ssh_reconnect_prompt.clone(),
                 active_pane_id: s.active_pane_id,
@@ -581,6 +600,8 @@ impl RootView {
                 terminal: s.terminal.clone(),
                 sidebar_width: s.sidebar_width,
                 sidebar_dragging: s.sidebar_dragging,
+                side_split_ratio: s.side_split_ratio,
+                side_split_dragging: s.side_split_dragging,
                 content_lane_prefs: s.content_lane_prefs.clone(),
                 content_lane_drag_pane: s.content_lane_drag_pane,
                 content_lane_dragging: s.content_lane_dragging,
@@ -605,6 +626,19 @@ impl RootView {
                 sidebar_hover_row: s.sidebar_hover_row.clone(),
                 sidebar_focus_row: s.sidebar_focus_row.clone(),
                 sidebar_menu_open: s.sidebar_menu_open.clone(),
+                sidebar_add_menu_open: s.sidebar_add_menu_open.clone(),
+                changed_files_open: s.changed_files_open.clone(),
+                settings_overlay_open: s.settings_overlay_open,
+                settings_overlay_hamburger: s.settings_overlay_hamburger.clone(),
+                settings_overlay_wide: s.settings_overlay_wide,
+                chrome_overview_open: s.chrome_overview_open.clone(),
+                chrome_more_open: s.chrome_more_open.clone(),
+                side_panel_maximized: s.side_panel_maximized,
+                side_tabs: s.side_tabs.clone(),
+                active_side_tab: s.active_side_tab,
+                spotlight: s.spotlight.clone(),
+                side_tab_add_menu_open: s.side_tab_add_menu_open.clone(),
+                side_swipe_accum: s.side_swipe_accum.clone(),
                 sidebar_flat_list: s.sidebar_flat_list.clone(),
                 sidebar_recent_first: s.sidebar_recent_first.clone(),
                 sidebar_archived_filter: s.archived_filter(),
@@ -631,6 +665,7 @@ impl RootView {
                 space_rename_draft: s.space_rename_draft.clone(),
                 space_rename_focused: s.space_rename_focused,
                 space_menu: s.space_menu.clone(),
+                file_menu: s.file_menu.clone(),
                 agent_cards: s.agent_cards.clone(),
                 new_agent_hover: s.new_agent_hover.clone(),
                 command_palette_open: s.command_palette_open,

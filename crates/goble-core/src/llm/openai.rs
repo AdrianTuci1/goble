@@ -58,6 +58,10 @@ struct OpenAiRequest {
     messages: Vec<OpenAiMessage>,
     tools: Option<Vec<OpenAiTool>>,
     temperature: Option<f32>,
+    /// The caller's output-token bound, when it set one (a title request does;
+    /// a turn does not). Omitted so the endpoint's own default applies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     stream: bool,
     /// Asks the OpenAI-compatible endpoint for a final `usage` frame on the
     /// stream. Without it the stream carries no token counts at all.
@@ -340,6 +344,7 @@ impl LlmProvider for OpenAiProvider {
             messages: into_openai_messages(request.messages, thinking_provider),
             tools: into_openai_tools(request.tools),
             temperature: request.temperature,
+            max_tokens: request.max_tokens,
             stream: true,
             stream_options: OpenAiStreamOptions { include_usage: true },
         };

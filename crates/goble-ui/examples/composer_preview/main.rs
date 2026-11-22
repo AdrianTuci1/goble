@@ -15,8 +15,10 @@
 //!   the card itself paints no focus ring — the owner asked for no blue border
 //!   or margin around the rich input.
 //! - `menus` — the same composer with the environment popup open and with the
-//!   branch popup open (two PNGs, `<stem>-env-menu.png` / `<stem>-branch-menu.png`).
-//! - `env-menu`, `branch-menu` — one of those two, to `--out`.
+//!   attach (`+`) card open (two PNGs, `<stem>-env-menu.png` /
+//!   `<stem>-attach-menu.png`).
+//! - `env-menu`, `attach-menu` — one of those two, to `--out` (`branch-menu` is
+//!   kept as an alias for the attach card now that the branch control is gone).
 //! - `model-menu` — the composer with the DSH model card open on its root pane
 //!   (`Model` / `Effort` cells), anchored above the model chip.
 //! - `model-pane` — the same card drilled into the provider-grouped model list,
@@ -30,6 +32,15 @@
 //!   the fixed instruction row under the footer.
 //! - `agent-placeholder` — the agent input: "Ask anything..." with the same
 //!   fixed-height instruction row.
+//! - `terminal-band` — a pane of the app with the terminal composer drawn as the
+//!   pane's bottom band: full pane width and flush at the sides and bottom,
+//!   square against the output above it, only the bottom corners on the panel's
+//!   radius, and the inner input segment keeping its own radius. Writes the wide
+//!   pass, `<stem>-narrow.png`, the agent composer in the same pane
+//!   (`<stem>-agent.png`) and a magnified bottom-right corner
+//!   (`<stem>-corner.png`).
+//! - `agent-band` — the same pane with the agent composer's floating card, the
+//!   shape every agent surface draws.
 //! - `lane` — a 1600x900 window (default) with the real [`ContentLane`] around a
 //!   representative transcript + the composer; `--width 800` renders the
 //!   narrow-window pass-through. `--dragging` paints the dragged edge rule and
@@ -54,12 +65,14 @@ use goble_ui::elements::chat_composer::{
     AGENT_COMPOSER_PLACEHOLDER, TERMINAL_COMPOSER_PLACEHOLDER,
 };
 use goble_ui::elements::{
-    AppContext, ChatComposer, ComposerModelTray, ContentLane, CrossAxisAlignment, EdgeInsets,
-    Element, Expanded, Fill, Flex, LaneEdge, MainAxisSize, ModelTrayHarness, ModelTrayModel,
-    ModelTrayState, Padding, PopupMenuItem, ShortcutHint, SlashMenu, SlashMenuItem, Text,
+    AppContext, ChatComposer, ComposerModelTray, Container, ContentLane, CrossAxisAlignment,
+    Divider, EdgeInsets, Element, Expanded, Fill, Flex, LaneEdge, LayoutContext, MainAxisSize,
+    ModelTrayHarness, ModelTrayModel, ModelTrayState, Padding, PaintContext, Point, PopupMenuItem,
+    ShortcutHint, SizeConstraint, SlashMenu, SlashMenuItem, Stack, Text,
 };
-use goble_ui::geometry::vec2f;
+use goble_ui::geometry::{vec2f, Vector2F};
 use goble_ui::theme::{ColorToken, Theme};
+use goble_ui::ColorU;
 
 mod raster;
 
@@ -86,11 +99,12 @@ fn main() -> anyhow::Result<()> {
         "composer" => render_composer(&options, &assets)?,
         "menus" => {
             render_menu(&options, &assets, MenuKind::Environment)?;
-            render_menu(&options, &assets, MenuKind::Branch)?;
+            render_menu(&options, &assets, MenuKind::Attach)?;
         }
         "env-menu" => render_menu(&options, &assets, MenuKind::Environment)?,
-        "branch-menu" => render_menu(&options, &assets, MenuKind::Branch)?,
+        "branch-menu" => render_menu(&options, &assets, MenuKind::Attach)?,
         "model-menu" => render_model_menu(&options, &assets)?,
+        "attach-menu" => render_attach_menu(&options, &assets)?,
         "model-pane" => {
             render_model_pane(&options, &assets, goble_ui::elements::ModelTrayPane::Model)?
         }
@@ -102,6 +116,8 @@ fn main() -> anyhow::Result<()> {
             render_placeholder(&options, &assets, PlaceholderSurface::Terminal)?
         }
         "agent-placeholder" => render_placeholder(&options, &assets, PlaceholderSurface::Agent)?,
+        "terminal-band" => render_band(&options, &assets, true)?,
+        "agent-band" => render_band(&options, &assets, false)?,
         "lane" => render_lane(&options, &assets)?,
         "all" => {
             // `all` writes one file per scene into the `--out` directory (the
@@ -129,9 +145,13 @@ fn main() -> anyhow::Result<()> {
             )?;
             let menus = options.sub_scene("menus", dir.join("menus.png"));
             render_menu(&menus, &assets, MenuKind::Environment)?;
-            render_menu(&menus, &assets, MenuKind::Branch)?;
+            render_menu(&menus, &assets, MenuKind::Attach)?;
             render_model_menu(
                 &options.sub_scene("model-menu", dir.join("model-menu.png")),
+                &assets,
+            )?;
+            render_attach_menu(
+                &options.sub_scene("attach-menu", dir.join("attach-menu.png")),
                 &assets,
             )?;
             render_model_pane(
@@ -158,6 +178,11 @@ fn main() -> anyhow::Result<()> {
                 &assets,
                 PlaceholderSurface::Agent,
             )?;
+            render_band(
+                &options.sub_scene("terminal-band", dir.join("terminal-band.png")),
+                &assets,
+                true,
+            )?;
             for (name, width) in [("lane-wide.png", 1600.0), ("lane-narrow.png", 800.0)] {
                 let lane = options.sub_scene("lane", dir.join(name));
                 render_lane(
@@ -171,9 +196,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
         other => anyhow::bail!(
-            "unknown scene {other:?}; expected composer, menus, env-menu, branch-menu, \
-             model-menu, model-pane, slash-menu, terminal-placeholder, agent-placeholder, \
-             lane or all"
+            "unknown scene {other:?}; expected composer, menus, env-menu, attach-menu, branch-menu, \
+             model-menu, attach-menu, model-pane, slash-menu, terminal-placeholder, agent-placeholder, \
+             terminal-band, agent-band, lane or all"
         ),
     }
     Ok(())
@@ -362,8 +387,9 @@ fn print_usage() {
     println!(
         "composer_preview — rasterize goble-ui scenes to PNG\n\
          \n\
-         --scene composer|menus|env-menu|branch-menu|model-menu|model-pane|model-effort|slash-menu|\n\
-         --scene terminal-placeholder|agent-placeholder|lane|all  (default: composer)\n\
+         --scene composer|menus|env-menu|attach-menu|branch-menu|model-menu|model-pane|model-effort|slash-menu|\n\
+         --scene terminal-placeholder|agent-placeholder|terminal-band|agent-band|lane|all\n\
+         (default: composer)\n\
          --out PATH        output PNG path (default: /tmp/goble-work/out/<scene>.png)\n\
          --scale N         device pixel ratio to rasterize at (default: 2 for composer/menus, 1 for lane)\n\
          --width N         logical scene width (default: 876 for composer/menus, 1600 for lane)\n\
@@ -375,7 +401,7 @@ fn print_usage() {
          --long-model      composer/model scenes: use the overflow-length model catalogue\n\
          --dump-commands   print every DrawText/DrawIcon/rect command of the scene\n\
          \n\
-         `menus` writes two PNGs next to --out: <stem>-env-menu.png and <stem>-branch-menu.png.\n\
+         `menus` writes two PNGs next to --out: <stem>-env-menu.png and <stem>-attach-menu.png.\n\
          Use --scene all to render every scene."
     );
 }
@@ -429,11 +455,10 @@ struct MenuFlags {
     harnesses: Vec<ModelTrayHarness>,
     tray_model: &'static str,
     tray_level: &'static str,
-    dir_open: Rc<RefCell<bool>>,
-    branch_open: Rc<RefCell<bool>>,
     harness_open: Rc<RefCell<bool>>,
     model_open: Rc<RefCell<bool>>,
     tray_open: Rc<RefCell<bool>>,
+    attach_open: Rc<RefCell<bool>>,
     tray_state: Rc<RefCell<ModelTrayState>>,
     slash_index: Rc<RefCell<usize>>,
     slash_dismissed: Rc<RefCell<bool>>,
@@ -453,11 +478,10 @@ impl MenuFlags {
 
     fn new() -> Self {
         Self {
-            dir_open: Rc::new(RefCell::new(false)),
-            branch_open: Rc::new(RefCell::new(false)),
             harness_open: Rc::new(RefCell::new(false)),
             model_open: Rc::new(RefCell::new(false)),
             tray_open: Rc::new(RefCell::new(false)),
+            attach_open: Rc::new(RefCell::new(false)),
             tray_state: Rc::new(RefCell::new(ModelTrayState::default())),
             harnesses: model_tray_harnesses(false),
             tray_model: "deepseek-flash",
@@ -535,27 +559,6 @@ fn composer_element(flags: &MenuFlags, focused: bool) -> Box<dyn Element> {
 /// The agent composer builder the menu scenes start from: the same calls the app
 /// makes, with the draft the scene needs.
 fn composer_with(flags: &MenuFlags, focused: bool, value: &str) -> ChatComposer {
-    let dir_items = vec![
-        PopupMenuItem::new("brindlepad-web")
-            .with_icon("folder")
-            .selected(),
-        PopupMenuItem::new("goble").with_icon("folder"),
-        PopupMenuItem::new("sandbox").with_icon("folder"),
-        PopupMenuItem::new("/Users/adrian/Projects/acme-api").with_icon("folder"),
-    ];
-    // The branch tray: the repository header row, its branches with the checked
-    // one marked, and the worktree action.
-    let branch_items = vec![
-        PopupMenuItem::new("brindlepad-web").with_icon("folder"),
-        PopupMenuItem::new("main").with_icon("branch").selected(),
-        PopupMenuItem::new("feature/checkout-flow").with_icon("branch"),
-        PopupMenuItem::new("fix/cart-totals").with_icon("branch"),
-        PopupMenuItem::new("release/2.4").with_icon("branch"),
-        PopupMenuItem::new("Work in a New Worktree")
-            .with_icon("branch")
-            .with_description("Keeps your checkout untouched")
-            .with_separator_before(),
-    ];
     let harness_items = vec![
         PopupMenuItem::new("This Computer")
             .with_icon("environment-computer")
@@ -576,12 +579,11 @@ fn composer_with(flags: &MenuFlags, focused: bool, value: &str) -> ChatComposer 
         .with_placeholder("Ask anything, @ to mention, / for actions")
         .with_caret(flags.caret.clone())
         .with_focused(focused)
-        // The agent pane's composer: the context row rides above the editor and
-        // the bar spans its pane, exactly as the app builds it.
+        // The single composer the app now builds: one card, no folder/branch
+        // band, the environment icon in the footer beside the model chip, and
+        // the fixed instruction row under the card.
         .with_context_above_editor(true)
         .with_edge_to_edge(true)
-        .with_path_label("brindlepad-web")
-        .with_branch_label("main")
         .with_harness_label("This Computer")
         .with_harness_icon("environment-computer")
         .with_model_label("DeepSeek Flash")
@@ -597,11 +599,23 @@ fn composer_with(flags: &MenuFlags, focused: bool, value: &str) -> ChatComposer 
             .with_on_select_model(|_| {})
             .with_on_select_level(|_| {}),
         )
-        .with_dir_menu(dir_items, flags.dir_open.clone(), |_| {})
-        .with_branch_menu(branch_items, flags.branch_open.clone(), |_| {})
         .with_harness_menu(harness_items, flags.harness_open.clone(), |_| {})
         .with_model_menu(model_items, flags.model_open.clone(), |_| {})
+        // Every attach row the owner wants, so the `+` card is the full DSH
+        // menu in the preview.
         .with_on_attach(|| {})
+        .with_on_image(|| {})
+        .with_on_link(|| {})
+        .with_on_code(|| {})
+        .with_on_voice(|| {})
+        .with_attach_menu_open(flags.attach_open.clone())
+        .with_attach_menu_highlight(Rc::new(RefCell::new(None)))
+        // The owner's fixed row under the card: send, cloud, tasks.
+        .with_hints(vec![
+            ShortcutHint::new(&["↵"], "send"),
+            ShortcutHint::new(&["⌘", "↵"], "send to cloud"),
+            ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
+        ])
         .with_on_select_model(|| {})
         .with_on_send(|_text| {})
 }
@@ -678,14 +692,14 @@ fn render_composer(options: &Options, assets: &PreviewAssets) -> anyhow::Result<
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuKind {
     Environment,
-    Branch,
+    Attach,
 }
 
 impl MenuKind {
     fn suffix(self) -> &'static str {
         match self {
             MenuKind::Environment => "env-menu",
-            MenuKind::Branch => "branch-menu",
+            MenuKind::Attach => "attach-menu",
         }
     }
 }
@@ -706,7 +720,7 @@ fn render_menu(options: &Options, assets: &PreviewAssets, kind: MenuKind) -> any
     let focused = options.focused;
     match kind {
         MenuKind::Environment => *flags.harness_open.borrow_mut() = true,
-        MenuKind::Branch => *flags.branch_open.borrow_mut() = true,
+        MenuKind::Attach => *flags.attach_open.borrow_mut() = true,
     }
     let mut probe = composer_element(&flags, false);
     let content = raster::layout_size(&mut probe, vec2f(width, 4000.0), &app);
@@ -748,6 +762,42 @@ fn render_model_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Resul
         MenuFlags::new()
     };
     *flags.tray_open.borrow_mut() = true;
+    let focused = options.focused;
+    let mut probe = composer_element(&flags, false);
+    let content = raster::layout_size(&mut probe, vec2f(width, 4000.0), &app);
+    if options.dump_commands {
+        let mut element = composer_element(&flags, focused);
+        let commands = raster::render_commands(&mut element, vec2f(width, 4000.0), &app);
+        dump_commands(&commands);
+    }
+    let build_flags = flags.clone();
+    frame_scene(
+        width,
+        scale,
+        &app,
+        assets,
+        &options.out,
+        content.y,
+        move |headroom| {
+            Padding::new(
+                composer_element(&build_flags, focused),
+                EdgeInsets::new(0.0, headroom, 0.0, 0.0),
+            )
+            .finish()
+        },
+    )
+}
+
+/// The composer with the attach (`+`) card open above the footer control: the
+/// DSH menu surface lists the real attach gestures the app wires (files, image,
+/// link, code, voice), one row each.
+fn render_attach_menu(options: &Options, assets: &PreviewAssets) -> anyhow::Result<()> {
+    let mut app = AppContext::default();
+    app.theme = options.theme()?;
+    let width = options.width.unwrap_or(REFERENCE_WIDTH);
+    let scale = options.scale(2.0);
+    let flags = MenuFlags::new();
+    *flags.attach_open.borrow_mut() = true;
     let focused = options.focused;
     let mut probe = composer_element(&flags, false);
     let content = raster::layout_size(&mut probe, vec2f(width, 4000.0), &app);
@@ -906,32 +956,38 @@ fn placeholder_element(
         .with_focused(focused)
         .with_context_above_editor(true)
         .with_edge_to_edge(true)
-        .with_path_label("brindlepad-web")
-        .with_branch_label("main")
         .with_placeholder(surface.placeholder())
         .with_on_send(|_| {});
-    // The shell bar ships the one instruction its command line answers (⌘↵ new
-    // conversation), drawn inside the reserved footer row. The agent view hosts
-    // its own hint strip above the card (ChatView), so its card carries none.
-    if surface == PlaceholderSurface::Terminal {
-        composer = composer.with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]);
-    }
-    if surface == PlaceholderSurface::Agent {
-        composer = composer
-            .with_harness_label("This Computer")
-            .with_harness_icon("environment-computer")
-            .with_model_label("DeepSeek Flash")
-            .with_model_tray(
-                ComposerModelTray::new(
-                    model_tray_harnesses(false),
-                    flags.tray_state.clone(),
-                    flags.tray_open.clone(),
+    // Both surfaces ship the fixed instruction row **under** the card: the
+    // shell bar's one gesture, the agent input's send / cloud / tasks set. The
+    // row is the same reserved height either way, so the two cards stay equal.
+    match surface {
+        PlaceholderSurface::Terminal => {
+            composer =
+                composer.with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]);
+        }
+        PlaceholderSurface::Agent => {
+            composer = composer
+                .with_harness_label("This Computer")
+                .with_harness_icon("environment-computer")
+                .with_model_label("DeepSeek Flash")
+                .with_model_tray(
+                    ComposerModelTray::new(
+                        model_tray_harnesses(false),
+                        flags.tray_state.clone(),
+                        flags.tray_open.clone(),
+                    )
+                    .with_current("deepseek-flash", "off")
+                    .with_on_select_model(|_| {})
+                    .with_on_select_level(|_| {}),
                 )
-                .with_current("deepseek-flash", "off")
-                .with_on_select_model(|_| {})
-                .with_on_select_level(|_| {}),
-            )
-            .with_on_attach(|| {});
+                .with_on_attach(|| {})
+                .with_hints(vec![
+                    ShortcutHint::new(&["↵"], "send"),
+                    ShortcutHint::new(&["⌘", "↵"], "send to cloud"),
+                    ShortcutHint::new(&["⌘", "⇧", "W"], "tasks"),
+                ]);
+        }
     }
     composer.finish()
 }
@@ -979,6 +1035,258 @@ fn render_placeholder(
             .finish()
         },
     )
+}
+
+// ---------------------------------------------------------------------------
+// Terminal band vs agent card
+// ---------------------------------------------------------------------------
+
+/// The pane card's corner radius in the app (`panes.rs::WINDOW_CORNER_RADIUS`),
+/// which is also the radius the app hands the terminal composer as its band's
+/// bottom radius. The preview's pane stands in for the app's panel, so the scene
+/// draws both with the same number.
+const BAND_PANE_RADIUS: f32 = 6.0;
+/// The panel surface's frame around the pane card: the app's panel area (the
+/// 4px content inset plus the gutters around a tab slot) reads as this
+/// `Surface` frame around the darker pane.
+const BAND_PANE_PAD: f32 = 16.0;
+/// The scene's default pane: wide enough to show the band at the shell's usual
+/// width, tall enough to hold output above it.
+const BAND_SCENE_WIDTH: f32 = 760.0;
+const BAND_SCENE_HEIGHT: f32 = 420.0;
+/// The narrow pane the terminal scene also renders, so the full-width rule is
+/// verified at a width where the composer's controls fold.
+const BAND_SCENE_NARROW: f32 = 380.0;
+
+/// One pane of the app, framed on the panel surface: shell output above and the
+/// rich input pinned to the bottom of the pane card.
+///
+/// With `band`, the input is the terminal composer drawn as the pane's bottom
+/// band — full pane width, flush with the pane's sides and bottom, square
+/// against the divider above it, rounded only at the bottom where the panel is
+/// rounded, with the inner input segment keeping its own radius and casing.
+/// Without it, the same pane draws the agent composer: the floating card every
+/// agent surface keeps.
+fn band_pane(app: &AppContext, flags: &MenuFlags, band: bool) -> Box<dyn Element> {
+    let mono = |text: &str| -> Box<dyn Element> {
+        Text::new(text)
+            .with_font_size(12.0)
+            .with_line_height(1.4)
+            .with_font_family(goble_ui::theme::FontFamily::Mono)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish()
+    };
+    let output = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(2.0)
+        .with_child(mono(
+            "$ cargo test -p goble-ui --lib elements::chat_composer",
+        ))
+        .with_child(mono("test result: ok. 52 passed; 0 failed; 0 ignored"))
+        .with_child(mono("$ git status --short"))
+        .with_child(mono("?? functii.py"))
+        .finish();
+    let output = Padding::new(output, EdgeInsets::new(16.0, 12.0, 16.0, 12.0)).finish();
+    let composer: Box<dyn Element> = if band {
+        ChatComposer::new()
+            .with_value("")
+            .with_caret(flags.caret.clone())
+            .with_placeholder(TERMINAL_COMPOSER_PLACEHOLDER)
+            .with_context_above_editor(true)
+            .with_path_label("brindlepad-web")
+            .with_branch_label("main")
+            .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")])
+            .with_on_send(|_| {})
+            .with_on_cmd_enter(|_| {})
+            .with_bottom_band(BAND_PANE_RADIUS)
+            .finish()
+    } else {
+        composer_element(flags, false)
+    };
+    let column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(output).finish())
+        .with_child(Divider::horizontal().finish())
+        .with_child(composer)
+        .finish();
+    let pane = Container::new(column)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .with_corner_radius(BAND_PANE_RADIUS)
+        .finish();
+    // The pane card's edge is traced over its content, the way the app's
+    // `PaneCard` paints its rounded `Border` last: the terminal band runs to the
+    // card's own edge, so the rounded bottom corners are the panel's, not the
+    // band's own square cut.
+    let pane = Stack::new()
+        .with_children(vec![pane])
+        .with_overlay(
+            RoundedEdge::new(app.theme.color(ColorToken::Border), BAND_PANE_RADIUS).finish(),
+            Vector2F::zero(),
+        )
+        .finish();
+    Container::new(Padding::new(pane, EdgeInsets::uniform(BAND_PANE_PAD)).finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+        .finish()
+}
+
+/// A 1pt rounded edge painted over its scene: the pane card's border in the
+/// app is traced after the content (panes.rs `PaneCard`), so the composer band
+/// that reaches the card's bottom edge still shows the rounded panel edge over
+/// it. The preview's pane has no content that spills past the card, so an edge
+/// overlay is enough to mirror that.
+struct RoundedEdge {
+    color: ColorU,
+    radius: f32,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl RoundedEdge {
+    fn new(color: ColorU, radius: f32) -> Self {
+        Self {
+            color,
+            radius,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for RoundedEdge {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        let size = constraint.max;
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(size) = self.size else { return };
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            renderer.stroke_rect(
+                goble_ui::geometry::rectf(origin.x, origin.y, size.x, size.y),
+                self.color,
+                1.0,
+                self.radius,
+            );
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
+
+/// Render the terminal band (or the agent composer, for comparison) in a pane.
+///
+/// The terminal scene also writes its narrow pass, the agent composer in the
+/// same pane, and a magnified bottom-right corner: the band's bottom arc has to
+/// sit on the panel's own radius while the inner segment stays a rounded box
+/// inside it.
+fn render_band(options: &Options, assets: &PreviewAssets, band: bool) -> anyhow::Result<()> {
+    let mut app = AppContext::default();
+    app.theme = options.theme()?;
+    let flags = MenuFlags::new();
+    let width = options.width.unwrap_or(BAND_SCENE_WIDTH);
+    let height = options.height.unwrap_or(BAND_SCENE_HEIGHT);
+    let scale = options.scale(2.0);
+    let mut root = band_pane(&app, &flags, band);
+    raster::render_to_png(
+        assets,
+        &app,
+        &mut root,
+        vec2f(width, height),
+        scale,
+        None,
+        &options.out,
+    )?;
+    if options.scene == "terminal-band" {
+        let mut narrow = band_pane(&app, &flags, true);
+        raster::render_to_png(
+            assets,
+            &app,
+            &mut narrow,
+            vec2f(BAND_SCENE_NARROW, height),
+            scale,
+            None,
+            &with_out_suffix(&options.out, "narrow"),
+        )?;
+        let mut agent = band_pane(&app, &flags, false);
+        raster::render_to_png(
+            assets,
+            &app,
+            &mut agent,
+            vec2f(width, height),
+            scale,
+            None,
+            &with_out_suffix(&options.out, "agent"),
+        )?;
+        // The bottom-corner zoom: render the wide pane at 4x and crop the
+        // bottom-right corner, inside the pane plus a strip of the panel frame.
+        let full = std::env::temp_dir().join("goble-terminal-band-zoom.png");
+        let mut zoom = band_pane(&app, &flags, true);
+        raster::render_to_png(
+            assets,
+            &app,
+            &mut zoom,
+            vec2f(width, height),
+            4.0,
+            None,
+            &full,
+        )?;
+        let x = width - BAND_PANE_PAD - 160.0;
+        let y = height - BAND_PANE_PAD - 100.0;
+        crop_png(
+            &full,
+            &with_out_suffix(&options.out, "corner"),
+            x,
+            y,
+            176.0,
+            116.0,
+            4.0,
+        )?;
+        let _ = std::fs::remove_file(&full);
+    }
+    Ok(())
+}
+
+/// Crop a `w` x `h` logical region of a PNG rasterized at `scale` device pixels
+/// per point, so the corner scene is a true magnification of the same render.
+fn crop_png(
+    src: &Path,
+    dst: &Path,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    scale: f32,
+) -> anyhow::Result<()> {
+    let image = image::open(src)?.to_rgba8();
+    let px = (x * scale).round().max(0.0) as u32;
+    let py = (y * scale).round().max(0.0) as u32;
+    let pw = (w * scale).round().max(1.0) as u32;
+    let ph = (h * scale).round().max(1.0) as u32;
+    let cropped = image::imageops::crop_imm(&image, px, py, pw, ph).to_image();
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    cropped.save(dst)?;
+    println!(
+        "wrote {} ({pw}x{ph} px, bottom-corner zoom of {} at {scale}x)",
+        dst.display(),
+        src.display()
+    );
+    Ok(())
 }
 
 /// A full-height pane column: a representative transcript and the real

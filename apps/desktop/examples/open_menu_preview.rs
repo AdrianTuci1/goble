@@ -254,8 +254,7 @@ fn save(
 fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(OUT_DIR)?;
     let assets = raster::PreviewAssets::load(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/goble-ui/assets"),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/goble-ui/assets"),
     )?;
 
     // 1. The sidebar's view-options menu over the session rows: the row behind
@@ -288,7 +287,12 @@ fn main() -> anyhow::Result<()> {
         let id = scene.first_conversation();
         scene.mark_row_hovered(&id);
         let commands = scene.frame(&app, Some(point));
-        save(&assets, &app, &commands, "open-menu-sidebar-view-options-before.png")?;
+        save(
+            &assets,
+            &app,
+            &commands,
+            "open-menu-sidebar-view-options-before.png",
+        )?;
         // The row the unrestricted pointer left hovered is the one under the
         // panel; after the frame the gate clears it.
         assert!(
@@ -298,7 +302,12 @@ fn main() -> anyhow::Result<()> {
 
         scene.clear_row_hovered();
         let commands = scene.frame(&app, Some(point));
-        save(&assets, &app, &commands, "open-menu-sidebar-view-options-after.png")?;
+        save(
+            &assets,
+            &app,
+            &commands,
+            "open-menu-sidebar-view-options-after.png",
+        )?;
     }
 
     // 2. A session row's "..." tray: the row behind the open tray must rest.
@@ -341,7 +350,12 @@ fn main() -> anyhow::Result<()> {
         }
         drop(state);
         let commands = scene.frame(&app, Some(point));
-        save(&assets, &app, &commands, "open-menu-session-tray-before.png")?;
+        save(
+            &assets,
+            &app,
+            &commands,
+            "open-menu-session-tray-before.png",
+        )?;
 
         scene.clear_row_hovered();
         let commands = scene.frame(&app, Some(point));
@@ -428,7 +442,12 @@ fn main() -> anyhow::Result<()> {
             .expect("the pane owns a hover cell")
             .borrow_mut() = true;
         let commands = scene.frame(&app, Some(point));
-        save(&assets, &app, &commands, "open-menu-composer-model-before.png")?;
+        save(
+            &assets,
+            &app,
+            &commands,
+            "open-menu-composer-model-before.png",
+        )?;
 
         *scene
             .state
@@ -438,7 +457,12 @@ fn main() -> anyhow::Result<()> {
             .expect("the pane owns a hover cell")
             .borrow_mut() = false;
         let commands = scene.frame(&app, Some(point));
-        save(&assets, &app, &commands, "open-menu-composer-model-after.png")?;
+        save(
+            &assets,
+            &app,
+            &commands,
+            "open-menu-composer-model-after.png",
+        )?;
     }
 
     Ok(())

@@ -286,8 +286,37 @@ impl ChatView {
     /// The tokens this conversation has spent, from the provider's own counts.
     /// Drawn as the transcript's footer usage pill, whose click opens the
     /// details panel; accounting only, never a price.
+    /// The changed-files card's fold, shared with the app so opening it
+    /// survives the per-frame element rebuild.
+    pub fn with_changed_files_open(mut self, open: Rc<RefCell<bool>>) -> Self {
+        self.changed_files_open = open;
+        self
+    }
+
+    /// The Review action at the card's trailing edge: open the existing diff
+    /// pane for this pane's directory.
+    pub fn with_on_review_changes<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_review_changes = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
     pub fn with_usage(mut self, usage: TokenUsage) -> Self {
         self.usage = usage;
+        self
+    }
+
+    /// Plumb the usage dialog's per-call data: the latest reported model call,
+    /// how many calls have reported one, and the model's context window when
+    /// the host knows it. `None`/0 are honest unknowns.
+    pub fn with_usage_detail(
+        mut self,
+        last_call: Option<TokenUsage>,
+        calls: u64,
+        context_window: Option<u64>,
+    ) -> Self {
+        self.usage_last_call = last_call;
+        self.usage_calls = calls;
+        self.usage_context_window = context_window;
         self
     }
 
@@ -496,6 +525,19 @@ impl ChatView {
         self
     }
 
+    /// Share the composer's attach (`+`) card state with the view: the open
+    /// flag the footer control toggles and the row its keyboard highlight is
+    /// on. Both are app-owned because the composer is rebuilt every frame.
+    pub fn with_composer_attach_menu(
+        mut self,
+        open: Rc<RefCell<bool>>,
+        highlight: Rc<RefCell<Option<usize>>>,
+    ) -> Self {
+        self.composer_attach_menu_open = Some(open);
+        self.composer_attach_menu_highlight = Some(highlight);
+        self
+    }
+
     /// Set the composer's git-branch dropdown.
     pub fn with_composer_branch_menu<F: FnMut(usize) + 'static>(
         mut self,
@@ -681,9 +723,7 @@ impl ChatView {
 
     /// Fired with the mode the user picked from the menu or cycled to with
     /// Shift+Tab, so the host stores it on the pane.
-    pub fn with_on_select_approval_mode<
-        F: FnMut(crate::elements::ApprovalMode) + 'static,
-    >(
+    pub fn with_on_select_approval_mode<F: FnMut(crate::elements::ApprovalMode) + 'static>(
         mut self,
         callback: F,
     ) -> Self {

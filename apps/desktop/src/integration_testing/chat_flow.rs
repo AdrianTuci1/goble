@@ -264,7 +264,10 @@ fn select_conversation_opens_a_tab_and_reuses_it() {
         )
     };
     assert_eq!(tabs, tabs_before + 1, "the sidebar row opens a new tab");
-    assert_ne!(active_pane, launch_pane, "the new tab's pane takes the focus");
+    assert_ne!(
+        active_pane, launch_pane,
+        "the new tab's pane takes the focus"
+    );
     assert_eq!(bound.as_deref(), Some(chat_b.as_str()));
 
     // Clicking it again brings the same tab forward: the conversation is
@@ -349,7 +352,11 @@ fn new_conversation_after_a_message_creates_a_fresh_one() {
     let chats_before = state.borrow().conversations.len();
 
     (actions.on_create_submit.borrow_mut())();
-    let first = state.borrow().selected_id.clone().expect("first conversation");
+    let first = state
+        .borrow()
+        .selected_id
+        .clone()
+        .expect("first conversation");
     desktop
         .add_chat_message(&first, "user", "salut")
         .expect("add a message");

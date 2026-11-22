@@ -14,6 +14,8 @@
 //!   per-screen image cache.
 //! * [`screen`] — a VT screen (grid, cursor, modes, alt screen) over the
 //!   vendored `alacritty_terminal` crate.
+//! * [`render`] — the viewport as paint runs (background runs, glyphs, rules),
+//!   read directly from the alacritty grid, for a host's own renderer.
 //! * [`blocks`] — the command-block model, which owns one pair of screens per
 //!   command.
 //!
@@ -43,6 +45,7 @@ pub mod keys;
 pub mod mouse;
 pub mod osc;
 pub mod palette;
+pub mod render;
 pub mod screen;
 
 pub use blocks::{
@@ -58,6 +61,7 @@ pub use keys::{Key, KeyEncoder, Modifiers, TermMode};
 pub use mouse::{encode_mouse, MouseAction, MouseButton};
 pub use osc::{OscEvent, OscTap, PromptMarker};
 pub use palette::Palette;
+pub use render::{BackgroundRun, CellRule, FrameRow, Glyph, GridFrame};
 pub use screen::{
     CellAttrs, CursorShape, CursorState, Screen, ScreenCell, ScreenColor, ScreenConfig,
     ScreenEvent, ScreenEvents, ScreenLine, ScreenQuery, ScreenSize, SearchError, SearchMatch,

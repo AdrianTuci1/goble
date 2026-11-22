@@ -90,7 +90,10 @@ mod tests {
 
     #[test]
     fn daemon_flag_defaults_on() {
-        assert!(feature_enabled(FeatureFlag::Daemon), "daemon is the default composition");
+        assert!(
+            feature_enabled(FeatureFlag::Daemon),
+            "daemon is the default composition"
+        );
         assert!(with_enabled(FeatureFlag::Daemon, || 42).is_some());
     }
 }

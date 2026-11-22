@@ -188,13 +188,14 @@ pub(crate) fn build_sub_agent_child_view(
     // and the child's framed title band stays the full-width header above it.
     let on_content_lane_start = {
         let start = actions.on_content_lane_drag_start.clone();
-        Rc::new(
-            RefCell::new(
-                move |pointer_x: f32, edge: goble_ui::elements::LaneEdge, base_width: f32, column: f32| {
-                    (start.borrow_mut())(pane_id, pointer_x, edge, base_width, column)
-                },
-            ),
-        )
+        Rc::new(RefCell::new(
+            move |pointer_x: f32,
+                  edge: goble_ui::elements::LaneEdge,
+                  base_width: f32,
+                  column: f32| {
+                (start.borrow_mut())(pane_id, pointer_x, edge, base_width, column)
+            },
+        ))
     };
     let pane_dragging = state.content_lane_drag_pane == Some(pane_id);
     view = view.with_content_lane(

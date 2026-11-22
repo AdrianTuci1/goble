@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    harness_bar_mark, AppContext, ConstrainedBox, Container, CrossAxisAlignment,
-    Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Flex, Icon, LayoutContext,
-    MainAxisAlignment, MainAxisSize, PaintContext, Point, SizeConstraint, Spacer, Text, Tooltip,
-    TooltipPosition, TopbarButton,
+    harness_bar_mark, AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider,
+    EdgeInsets, Element, Empty, EventContext, Expanded, Flex, Icon, LayoutContext,
+    MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem,
+    PopupMenuPosition, SizeConstraint, Text, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
@@ -131,7 +131,10 @@ pub(crate) enum PaneHeading {
 }
 
 impl PaneHeading {
-    fn element(self, app: &AppContext) -> Box<dyn Element> {
+    /// The title cluster's current crumb. DSH draws the current crumb at
+    /// 14/20, weight 500, label-primary, with its ancestors muted before a
+    /// `/` separator; a shell path is the whole cluster.
+    fn element(self, app: &AppContext, crumb: Option<String>) -> Box<dyn Element> {
         let (text, tooltip) = match self {
             PaneHeading::Path(path) => {
                 let display = crate::state::display_path(&path);
@@ -139,20 +142,43 @@ impl PaneHeading {
             }
             PaneHeading::Agent(subject) => (subject, None),
         };
-        let label = Text::new(text)
-            .with_font_size(12.0)
+        let current = Text::new(text)
+            .with_font_size(14.0)
+            .with_line_height(20.0 / 14.0)
+            .with_weight(goble_ui::platform::text_atlas::FontWeight::Medium)
             .with_theme_color(ColorToken::Text, app)
             .with_max_lines(1)
             .finish();
-        let label = match tooltip {
-            Some(tooltip) => Tooltip::new(label, tooltip)
+        let current = match tooltip {
+            Some(tooltip) => Tooltip::new(current, tooltip)
                 .with_position(TooltipPosition::Below)
                 .finish(),
-            None => label,
+            None => current,
         };
-        // A long path or subject stops short of the pane's own controls; the
-        // tooltip still carries the whole label.
-        ConstrainedBox::new(label).with_max_width(340.0).finish()
+        let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(4.0);
+        if let Some(crumb) = crumb.filter(|crumb| !crumb.trim().is_empty()) {
+            row = row
+                .with_child(
+                    Text::new(crumb)
+                        .with_font_size(14.0)
+                        .with_line_height(20.0 / 14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .with_max_lines(1)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new("/")
+                        .with_font_size(14.0)
+                        .with_line_height(20.0 / 14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                );
+        }
+        row = row.with_child(ConstrainedBox::new(current).with_max_width(340.0).finish());
+        row.finish()
     }
 }
 
@@ -182,55 +208,54 @@ pub(crate) fn build_agent_header(
     state: &UiSnapshot,
     actions: &UiActions,
     pane_id: u64,
-    // The way off the surface this bar heads, drawn as the `esc for terminal`
-    // hint at the bar's leading edge: a terminal pane's harness view passes its
-    // return to the shell, a chat pane the switch that gives it a terminal to
-    // return to. `None` draws no hint.
-    esc: Option<Rc<RefCell<dyn FnMut()>>>,
+    // Retired: the bar no longer draws `esc for terminal`. Kept in the signature
+    // while the terminal-pane legacy callers are reworked.
+    _esc: Option<Rc<RefCell<dyn FnMut()>>>,
     // The harness the pane's surface works with when no CLI agent is running in
     // its pty: the conversation's own harness on the agent view, `None` on a
     // plain shell.
     surface_harness: Option<&'static goble_core::harness::HarnessSpec>,
     heading: Option<PaneHeading>,
+    // Whether this pane offers the header's bottom-terminal-dock icon.
+    terminal_dock: bool,
 ) -> Box<dyn Element> {
-    // The bar's title carries its harness on the left: the mark sits in the
-    // title's own group, immediately before the words, so the pane reads as
-    // "🐙 New Agent" wherever the bar puts it. A pane with no heading keeps the
-    // mark at the leading edge, where it can still be seen.
-    let mark = harness_chip(app, state, pane_id, surface_harness);
-    let (leading, center) = match (mark, heading) {
-        (mark, Some(heading)) => {
-            let has_mark = mark.is_some();
-            let mut title = Flex::row()
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(app.theme.spacing_px(SpacingToken::Sm));
-            if let Some(mark) = mark {
-                title = title.with_child(mark);
-            }
-            title = title.with_child(heading.element(app));
-            if has_mark {
-                // The mark hangs to the left of the words; matching room on
-                // the right keeps the words in the pane's own middle.
+    // DSH's title cluster: the harness mark, the parent crumb (the harness the
+    // surface works with), a `/` and the current conversation title. A shell
+    // path has no parent crumb; the path is the current crumb alone.
+    // The panel topbar names ONLY the conversation: the harness mark and the
+    // parent crumb belonged to the retired general bar's title language.
+    let mark = None;
+    let crumb = None;
+    let mut title = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0);
+    if let Some(mark) = mark {
+        title = title.with_child(mark);
+    }
+    match heading {
+        Some(heading) => title = title.with_child(heading.element(app, crumb)),
+        None => {
+            if let Some(crumb) = crumb {
                 title = title.with_child(
-                    Empty::new()
-                        .with_size(vec2f(HARNESS_MARK_SIZE, 0.0))
+                    Text::new(crumb)
+                        .with_font_size(14.0)
+                        .with_line_height(20.0 / 14.0)
+                        .with_theme_color(ColorToken::Text, app)
                         .finish(),
                 );
             }
-            (None, Some(title.finish()))
         }
-        (mark, None) => (mark, None),
-    };
+    }
     build_agent_header_with(
         app,
         state,
         actions,
         pane_id,
-        esc,
+        None,
         HeaderSlots {
-            center,
-            leading,
+            leading: Some(title.finish()),
+            terminal_dock,
             ..HeaderSlots::default()
         },
     )
@@ -281,6 +306,9 @@ pub(crate) struct HeaderSlots {
     /// Drawn at the bar's trailing edge, before the expand and close controls:
     /// the pane's own controls, to the left of the ones every pane shares.
     pub trailing: Option<Box<dyn Element>>,
+    /// Whether the bar draws the terminal-dock icon in its utilities. Agent
+    /// panes with a local shell offer it; shell/settings/file panes do not.
+    pub terminal_dock: bool,
 }
 
 /// The same bar, with the pane's own content in its leading and trailing slots.
@@ -289,33 +317,25 @@ pub(crate) fn build_agent_header_with(
     state: &UiSnapshot,
     actions: &UiActions,
     pane_id: u64,
-    esc: Option<Rc<RefCell<dyn FnMut()>>>,
+    // Retired: the `esc for terminal` hint is gone with the dual surface.
+    _esc: Option<Rc<RefCell<dyn FnMut()>>>,
     slots: HeaderSlots,
 ) -> Box<dyn Element> {
     let spacing = app.theme.spacing_px(SpacingToken::Sm);
-    // The agent header is the pane's topbar, so it is padded out to the same
-    // height as the general topbar and the terminal pane header (36px on
-    // macOS) instead of hugging its tallest control.
-    let v_pad = ((super::super::shell::TOPBAR_HEIGHT - HEADER_CONTROL_HEIGHT) / 2.0).max(0.0);
-    // The focused pane's corner mark is drawn over the left end of this bar, so
-    // the bar starts past it — the mark is the pane's, the bar is what it opens.
+    // DSH's header metrics: actions gap 10, utilities gap 8, a 28x28 More
+    // surface and 28x28 corner controls.
+    let actions_gap = 10.0;
+    let utilities_gap = 8.0;
+    // DSH's header controls are 28x28; pad the row out to the pane's topbar
+    // height around that control height.
+    let dsh_control = HEADER_CONTROL_HEIGHT;
+    let v_pad = ((super::super::shell::TOPBAR_HEIGHT - dsh_control) / 2.0).max(0.0);
     let marker_inset = if state.active_pane_id == pane_id {
         super::super::panes::FOCUS_MARKER_SIZE
     } else {
         0.0
     };
 
-    // The pane's fullscreen control: it grows this pane over the whole panes
-    // space, and the exit glyph puts the pane back. The pane tree is left alone
-    // either way, so retracting restores the layout the pane had rather than
-    // recomputing one.
-    //
-    // A pane has something to expand over only while its space holds a second
-    // pane, so a one-pane space draws no control at all (a disabled button
-    // there only added a dead target and a bar to explain it). The exception is
-    // a pane that is still expanded after its neighbour went away: the exit
-    // control stays, because taking the expansion back is always allowed and
-    // the header must keep that way out.
     let maximized = state.maximized_pane == Some(pane_id);
     let expandable = state
         .spaces
@@ -323,14 +343,16 @@ pub(crate) fn build_agent_header_with(
         .is_some_and(|space| space.root.leaf_count() > 1);
     let on_toggle_maximized = actions.on_toggle_pane_maximized.clone();
     let expand_button: Option<Box<dyn Element>> = (expandable || maximized).then(|| {
-        // DeepSeek Harness' panel chrome: 28x28 button, 15px glyph, muted at
-        // rest, hover band under the pointer.
         let glyph = if maximized {
             "fullscreen-exit"
         } else {
             "fullscreen-enter"
         };
-        let tooltip = if maximized { "Exit fullscreen" } else { "Fullscreen" };
+        let tooltip = if maximized {
+            "Exit fullscreen"
+        } else {
+            "Fullscreen"
+        };
         Tooltip::new(
             TopbarButton::new(
                 Icon::new(glyph)
@@ -350,24 +372,100 @@ pub(crate) fn build_agent_header_with(
     let on_close = actions.on_close_pane.clone();
     let close_button = TopbarButton::new(
         Icon::new("x")
-            .with_size(16.0)
+            .with_size(15.0)
             .with_theme_color(ColorToken::Muted, app)
             .finish(),
     )
+    .with_size(28.0)
     .with_on_click(move || (on_close.borrow_mut())())
     .finish();
 
-    let esc_hint = esc.map(|on_escape| {
-        // Clicking the hint is the switch itself: the callback is the same one
-        // Esc fires — the harness closes and the bar's editor lets go of the
-        // keys, or a chat pane becomes the terminal it has no shell behind.
-        let hover = state
-            .pane_hover
-            .get(&pane_id)
-            .cloned()
-            .unwrap_or_else(|| Rc::new(RefCell::new(false)));
-        super::super::panes::build_esc_hint(app, hover, move || (on_escape.borrow_mut())())
+    let controls = state.pane_controls.get(&pane_id).cloned();
+    let dock_open = controls.as_ref().is_some_and(|c| c.terminal_dock_open);
+    let on_toggle_dock = actions.on_toggle_terminal_dock.clone();
+    let dock_button: Option<Box<dyn Element>> = slots.terminal_dock.then(|| {
+        Tooltip::new(
+            TopbarButton::new(
+                Icon::new("terminal")
+                    .with_size(15.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(28.0)
+            .with_corner_radius(app.theme.radius_px())
+            .with_active(dock_open)
+            .with_on_click(move || (on_toggle_dock.borrow_mut())(pane_id))
+            .finish(),
+            "Toggle terminal drawer",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish()
     });
+
+    // DSH's header More: a 28x28 ellipsis that opens the panel's actions menu.
+    // The menu is the header's own seat for the controls that used to be
+    // scattered (and for the dock, so the icon also has a keyboard path).
+    let menu_open = controls
+        .as_ref()
+        .map(|c| c.header_menu_open.clone())
+        .unwrap_or_else(|| Rc::new(RefCell::new(false)));
+    let on_menu_close = actions.on_close_pane.clone();
+    let on_menu_max = actions.on_toggle_pane_maximized.clone();
+    let on_menu_dock = actions.on_toggle_terminal_dock.clone();
+    let mut dock_item = PopupMenuItem::new("Toggle terminal drawer").with_icon("terminal");
+    if !slots.terminal_dock {
+        dock_item = dock_item.disabled();
+    }
+    let mut max_item = PopupMenuItem::new(if maximized {
+        "Exit fullscreen"
+    } else {
+        "Fullscreen"
+    })
+    .with_icon("fullscreen-enter");
+    if !expandable && !maximized {
+        max_item = max_item.disabled();
+    }
+    let on_split_right = actions.on_split_right.clone();
+    let on_split_down = actions.on_split_down.clone();
+    let on_replace = actions.on_create_submit.clone();
+    let menu_items = vec![
+        PopupMenuItem::new("Split right").with_shortcut("⌘ Space"),
+        PopupMenuItem::new("Split down").with_shortcut("⌘ ⇧ D"),
+        PopupMenuItem::new("Replace with new").with_separator_before(),
+        dock_item,
+        max_item,
+        PopupMenuItem::new("Close pane").with_icon("x"),
+    ];
+    let menu = PopupMenu::new(
+        Tooltip::new(
+            TopbarButton::new(
+                Icon::new("ellipsis")
+                    .with_size(15.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(28.0)
+            .with_corner_radius(app.theme.radius_px())
+            .finish(),
+            "More",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish(),
+        menu_items,
+    )
+    .with_open(menu_open)
+    .with_position(PopupMenuPosition::AboveEnd)
+    .with_max_width(220.0)
+    .with_on_select(move |index| match index {
+        0 => (on_split_right.borrow_mut())(),
+        1 => (on_split_down.borrow_mut())(),
+        2 => (on_replace.borrow_mut())(),
+        3 => (on_menu_dock.borrow_mut())(pane_id),
+        4 => (on_menu_max.borrow_mut())(pane_id),
+        _ => (on_menu_close.borrow_mut())(),
+    })
+    .finish();
+
     let work_chip = build_work_chip(
         app,
         state
@@ -378,89 +476,120 @@ pub(crate) fn build_agent_header_with(
     );
     let HeaderSlots {
         leading,
-        center,
+        center: _center,
         trailing,
+        terminal_dock: _,
     } = slots;
 
-    // A titled bar keeps the marker's room inside its left group instead of
-    // padding the whole bar, so the title sits in the pane's true middle.
-    let bar_inset = if center.is_some() { 0.0 } else { marker_inset };
+    // The title cluster is the bar's leading group; everything else is the DSH
+    // utilities/actions tail on the right. The cluster takes the leftover room
+    // and clips a long title, so the controls never leave the bar.
+    let mut title = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0);
+    if let Some(leading) = leading {
+        title = title.with_child(leading);
+    }
+    let title = Container::new(title.finish())
+        .with_padding(EdgeInsets::new(marker_inset, 0.0, 0.0, 0.0))
+        .finish();
 
-    let row = if let Some(center) = center {
-        // A titled bar splits into two equal flexible halves with the title
-        // between them, so the title sits in the middle of the pane however
-        // much room the pane's own content takes on either side.
-        let mut left = Flex::row()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing);
-        if let Some(esc_hint) = esc_hint {
-            left = left.with_child(esc_hint);
-        }
-        if let Some(leading) = leading {
-            left = left.with_child(leading);
-        }
-        let left = Container::new(left.finish())
-            .with_padding(EdgeInsets::new(marker_inset, 0.0, 0.0, 0.0))
-            .finish();
-        let mut right = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_main_axis_alignment(MainAxisAlignment::End)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(work_chip);
-        if let Some(trailing) = trailing {
-            right = right.with_child(trailing);
-        }
-        let mut right = right;
-        if let Some(expand_button) = expand_button {
-            right = right.with_child(expand_button);
-        }
-        let right = right.with_child(close_button).finish();
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing)
-            .with_child(Expanded::new(left).finish())
-            .with_child(center)
-            .with_child(Expanded::new(right).finish())
-            .finish()
-    } else {
-        let mut row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(spacing);
-        if let Some(esc_hint) = esc_hint {
-            row = row.with_child(esc_hint);
-        }
-        // The pane's own content takes the leading edge and the leftover
-        // space: it is the bar's only flexible child, so the controls after it
-        // stay against the trailing edge however wide the pane is. A pane with
-        // nothing to say leaves the space empty, exactly as the bar always did.
-        let row = match leading {
-            Some(leading) => row.with_child(Expanded::new(leading).finish()),
-            None => row.with_child(Spacer::new().finish()),
-        };
-        let row = row.with_child(work_chip);
-        let row = match trailing {
-            Some(trailing) => row.with_child(trailing),
-            None => row,
-        };
-        let row = match expand_button {
-            Some(expand_button) => row.with_child(expand_button),
-            None => row,
-        };
-        row.with_child(close_button).finish()
-    };
+    let mut utilities = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(utilities_gap)
+        .with_child(work_chip);
+    if let Some(dock_button) = dock_button {
+        utilities = utilities.with_child(dock_button);
+    }
+    let on_sidebar = actions.on_toggle_sidebar.clone();
+    let sidebar_open = state.sidebar_visible;
+    let sidebar_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new(if sidebar_open {
+                "left-panel-close"
+            } else {
+                "left-panel-open"
+            })
+            .with_size(15.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(app.theme.radius_px())
+        .with_on_click(move || (on_sidebar.borrow_mut())())
+        .finish(),
+        if sidebar_open {
+            "Hide sidebar"
+        } else {
+            "Show sidebar"
+        },
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    utilities = utilities.with_child(sidebar_button);
+    let on_split = actions.on_split_right.clone();
+    let split_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("split-right")
+                .with_size(15.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(app.theme.radius_px())
+        .with_on_click(move || (on_split.borrow_mut())())
+        .finish(),
+        "Split right",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    utilities = utilities.with_child(split_button);
+    utilities = utilities.with_child(menu);
+    if let Some(expand_button) = expand_button {
+        utilities = utilities.with_child(expand_button);
+    }
+    let utilities = utilities.with_child(close_button).finish();
+
+    let mut right = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_main_axis_alignment(MainAxisAlignment::End)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(actions_gap);
+    if let Some(trailing) = trailing {
+        right = right.with_child(trailing);
+    }
+    let right = right.with_child(utilities).finish();
+
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(spacing)
+        .with_child(
+            // The bar's controls are 28x28, but the band's control height is
+            // 32: a zero-width strut keeps the row at that height even when a
+            // pane has no work chip to hold it open.
+            Empty::new().with_size(vec2f(0.0, dsh_control)).finish(),
+        )
+        .with_child(Expanded::new(title).finish())
+        .with_child(right)
+        .finish();
 
     // The bar is the pane's chrome: its band paints flush with the pane's slot
     // (past the pane card's own inset, square) while only the row inside it is
     // bounded to the tab's content width and centred. The band's height stays
     // the row's own `TOPBAR_HEIGHT`, so the pane below starts exactly under it.
-    let row = Container::new(row)
-        .with_padding(EdgeInsets::new(bar_inset, v_pad, 0.0, v_pad))
+    // DSH's header controls are 28x28, while the band's own control height is
+    // 32: reserve the bar's control height so the band stays exactly
+    // `TOPBAR_HEIGHT` tall (the pane below starts on that edge).
+    let row = ConstrainedBox::new(row)
+        .with_min_height(dsh_control)
         .finish();
-    HeaderBand::new(row, app.theme.color(ColorToken::Surface)).finish()
+    let row = Container::new(row)
+        .with_padding(EdgeInsets::new(0.0, v_pad, 0.0, v_pad))
+        .finish();
+    HeaderBand::new(row, app.theme.color(ColorToken::ContentBg)).finish()
 }
 
 /// The pane's own work cue, drawn between the header's empty space and the
@@ -847,246 +976,43 @@ mod tests {
         record
     }
 
-    /// The pane bar's actions: a one-pane space has nothing to expand over, so
-    /// the bar draws no fullscreen control at all — only the close X — and
-    /// nothing that opens a tray. The acts that used to live in the tray are
-    /// reached from where any pane can reach them (`/clear` and `/fullscreen` in
-    /// the palette, Copy in the macOS menu).
+    /// A chat pane is one surface: Escape no longer turns it into a terminal,
+    /// and no harness-mode flag is touched.
     #[test]
-    fn the_header_draws_no_expand_control_in_a_one_pane_space() {
+    fn escape_does_not_switch_a_chat_pane_to_a_terminal() {
+        use goble_ui::event::DispatchedEvent;
+
         let app = AppContext::default();
-        let (mut root, _state, _desktop, _dir) = pane_root();
+        let (mut root, state, _desktop, _dir) = pane_root();
+        let pane_id = state.borrow().active_pane_id;
         let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-
-        let drawn: Vec<String> = cmds
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        let icons: Vec<String> = cmds
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            !icons.iter().any(|name| name == "dots-horizontal"),
-            "the 3-dots trigger is gone from the pane bar: {icons:?}"
-        );
-        for gone in ["fullscreen-enter", "fullscreen-exit", "maximize-01", "minimize-01"] {
-            assert!(
-                !icons.iter().any(|name| name == gone),
-                "a one-pane space draws no expand control: {icons:?}"
-            );
-        }
-        for gone in [
-            "Copy",
-            "Restart",
-            "Rename",
-            "Clear transcript",
-            "Fullscreen",
-            "Scheduled tasks",
-            "Toggle panel",
-        ] {
-            assert!(
-                !drawn.iter().any(|text| text == gone),
-                "the act {gone} is not drawn anywhere in the frame: {drawn:?}"
-            );
-        }
-        assert!(
-            icons.iter().any(|name| name == "x-close"),
-            "the close X stays on the bar: {icons:?}"
-        );
-    }
-
-    /// The focused pane carries an accent mark in its own top-left corner, and
-    /// it is the only pane that does: warp-new draws the indicator into the
-    /// active pane's header stack, so the mark is read at the corner the pane
-    /// starts from and it walks with the focus rather than sitting on the space.
-    #[test]
-    fn the_focused_pane_carries_the_accent_mark_in_its_own_corner() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = split_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        assert_eq!(
-            state.borrow().active_pane_id,
-            7,
-            "the split starts on the left pane"
-        );
-
-        let bar_y = pane_bar_y(&cmds);
-        let bar_xs: Vec<f32> = pane_bars(&cmds, bar_y).iter().map(|bar| bar.x).collect();
-        let left_bar = bar_xs.iter().cloned().fold(f32::INFINITY, f32::min);
-        let marks = focus_markers(&cmds, &app);
-        assert_eq!(
-            marks.len(),
-            1,
-            "one pane holds the focus, so one mark is drawn: {marks:?}"
-        );
-        assert!(
-            marks[0].x < left_bar && marks[0].y < bar_y,
-            "the mark is in the focused pane's own top-left corner, left of and \
-             above the bar it opens: {:?} against the bars at {bar_xs:?} on {bar_y}",
-            marks[0]
-        );
-
-        // The focus walking right takes the mark with it: the right pane is the
-        // active session then, and the left pane's bar carries nothing.
-        let _ = frame(&mut root, &app, None);
-        let mut ctx = EventContext;
-        root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "ArrowRight".to_string(),
-                modifiers: ModifiersState {
-                    ctrl: true,
-                    ..ModifiersState::default()
-                },
-            },
-            &mut ctx,
-            &app,
-        );
-        assert_eq!(
-            state.borrow().active_pane_id,
-            8,
-            "the focus walked to the pane on the right"
-        );
-        let cmds = frame(&mut root, &app, None);
-        let moved = focus_markers(&cmds, &app);
-        assert_eq!(
-            moved.len(),
-            1,
-            "and the mark is still one, now the right pane's: {moved:?}"
-        );
-        assert!(
-            moved[0].x > marks[0].x,
-            "the mark moved to the pane the focus moved to: {:?} was {:?}",
-            moved[0],
-            marks[0]
-        );
-    }
-
-    /// The control is a toggle: a press expands the pane it belongs to, and a
-    /// second press on the same pane puts it back. It is drawn as the way back
-    /// while the pane is expanded, so the action is always on screen. The pane
-    /// that takes the space is the pane the app works in, so the expansion
-    /// carries the focus with it.
-    #[test]
-    fn the_expand_control_expands_and_retracts_the_pane_it_belongs_to() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = split_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        assert_eq!(
-            state.borrow().active_pane_id,
-            7,
-            "the split starts on the left pane"
-        );
-        assert_eq!(
-            state.borrow().maximized_pane,
-            None,
-            "a pane starts in the tree's own layout"
-        );
-
-        // The right pane, which is not the focused one: the control belongs to
-        // the pane whose bar carries it.
-        click(&mut root, &app, rightmost_icon(&cmds, "fullscreen-enter"));
-        assert_eq!(
-            state.borrow().maximized_pane,
-            Some(8),
-            "the press expands the pane whose bar carries the control"
-        );
-        assert_eq!(
-            state.borrow().active_pane_id,
-            8,
-            "and the pane that takes the space is the one the app works in"
-        );
-
-        let cmds = frame(&mut root, &app, None);
-        assert_eq!(
-            pane_bars(&cmds, pane_bar_y(&cmds)).len(),
-            1,
-            "the split's other pane gives way to the expanded one"
-        );
-        assert!(
-            cmds.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. } if name == "fullscreen-exit"
-            )),
-            "the expanded pane draws the way back"
-        );
-        click(&mut root, &app, topmost_icon(&cmds, "fullscreen-exit"));
-        assert_eq!(
-            state.borrow().maximized_pane,
-            None,
-            "the second press retracts it"
-        );
-
-        let cmds = frame(&mut root, &app, None);
-        assert_eq!(
-            pane_bars(&cmds, pane_bar_y(&cmds)).len(),
-            2,
-            "and the tree is back"
-        );
-        assert!(
-            cmds.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. } if name == "fullscreen-enter"
-            )),
-            "with the control the expand one again"
-        );
-    }
-
-    /// The focus moving to another pane ends the expansion: the pane that gave
-    /// up the focus cannot keep the whole space, so the tree comes back with the
-    /// pane the focus moved to on screen (warp-new's focus rule). The chord is
-    /// what a user would press, and it is answered by the root's own pane-focus
-    /// handling.
-    #[test]
-    fn moving_the_focus_to_another_pane_ends_the_expansion() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = split_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        click(&mut root, &app, rightmost_icon(&cmds, "fullscreen-enter"));
-        assert_eq!(state.borrow().maximized_pane, Some(8));
-
-        // The frame the press lands on is also the frame the chords are
-        // dispatched through, so the tree is rebuilt before the key.
-        let _ = frame(&mut root, &app, None);
-        let mut ctx = EventContext;
         let handled = root.dispatch_event(
             &DispatchedEvent::KeyDown {
-                key: "ArrowLeft".to_string(),
-                modifiers: ModifiersState {
-                    ctrl: true,
-                    ..ModifiersState::default()
-                },
+                key: "Escape".to_string(),
+                modifiers: goble_ui::event::ModifiersState::none(),
             },
-            &mut ctx,
+            &mut goble_ui::elements::EventContext::default(),
             &app,
         );
-        assert!(handled, "the workspace answers the pane-focus chord");
-        assert_eq!(
-            state.borrow().active_pane_id,
-            7,
-            "the focus walked to the pane on the left"
+        let _ = handled;
+        let s = state.borrow();
+        assert!(
+            !s.pane_controls(pane_id).harness_mode,
+            "Escape never turns a chat pane into a harness terminal"
         );
         assert_eq!(
-            state.borrow().maximized_pane,
-            None,
-            "and the expanded pane gave the space back"
+            s.spaces[0].leaf_kind(pane_id),
+            Some(&crate::ui::PaneKind::Chat),
+            "the pane is still the agent chat"
         );
-
+        drop(s);
         let cmds = frame(&mut root, &app, None);
-        assert_eq!(
-            pane_bars(&cmds, pane_bar_y(&cmds)).len(),
-            2,
-            "so both panes are drawn again"
+        assert!(
+            !cmds.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text == "Run any command"
+            )),
+            "no terminal surface replaced the chat"
         );
     }
 
@@ -1124,217 +1050,6 @@ mod tests {
         );
     }
 
-    /// A pane its space holds alone has nothing to expand over: the tree already
-    /// is that pane, so the bar draws no control and there is no dead target to
-    /// press. There is no "split this pane" tooltip either, because there is no
-    /// control to explain.
-    #[test]
-    fn a_pane_its_space_holds_alone_has_nothing_to_expand_over() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        assert!(
-            !cmds.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. }
-                    if name == "fullscreen-enter" || name == "fullscreen-exit"
-            )),
-            "no fullscreen control is drawn: {cmds:?}"
-        );
-
-        // Where the control used to sit, left of the close X: a press there is
-        // the bar's own (it lifts the pane), not an expand.
-        let close = rightmost_icon(&cmds, "x-close");
-        click(&mut root, &app, (close.0 - 36.0, close.1));
-        assert_eq!(
-            state.borrow().maximized_pane,
-            None,
-            "the press expands nothing: the pane already is the space"
-        );
-
-        let _ = frame(&mut root, &app, None);
-        let drawn: Vec<String> = frame(&mut root, &app, None)
-            .into_iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            !drawn
-                .iter()
-                .any(|text| text == "Split this pane to expand it"),
-            "no inert control means no split tooltip: {drawn:?}"
-        );
-    }
-
-    /// A pane expanded in one space does not expand anything in another: the id
-    /// names no leaf there, so that space keeps drawing its own tree.
-    #[test]
-    fn an_expansion_in_one_space_leaves_another_space_its_own_layout() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        let expanded = {
-            let mut s = state.borrow_mut();
-            s.spaces.push(Space::unnamed(Pane::Split {
-                id: 90,
-                dir: SplitDir::Horizontal,
-                ratio: 0.5,
-                first: Box::new(Pane::Leaf {
-                    id: 8,
-                    kind: PaneKind::Chat,
-                }),
-                second: Box::new(Pane::Leaf {
-                    id: 9,
-                    kind: PaneKind::Chat,
-                }),
-            }));
-            s.active_space = 1;
-            s.active_pane_id = 8;
-            for pane_id in [8, 9] {
-                s.pane_sessions.insert(
-                    pane_id,
-                    PaneSession {
-                        conversation_id: String::new(),
-                        draft: String::new(),
-                        path: String::new(),
-                        daemon_session_id: String::new(),
-                    },
-                );
-            }
-            // The pane expanded while the first space was on screen.
-            let expanded = s.spaces[0].root.first_leaf_id();
-            s.maximized_pane = Some(expanded);
-            expanded
-        };
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-
-        let bars = pane_bars(&cmds, pane_bar_y(&cmds));
-        assert_eq!(
-            bars.len(),
-            2,
-            "the second space draws both of its panes, not the first space's one: {bars:?}"
-        );
-        assert_eq!(
-            state.borrow().maximized_pane,
-            Some(expanded),
-            "the flag is untouched; it simply names no leaf of this space"
-        );
-    }
-
-    /// Expanding a pane draws it over the whole panes space: the split's other
-    /// pane is not drawn at all while one is expanded, and its bar reaches the
-    /// far edge of the space the two of them shared. Retracting brings the tree
-    /// back exactly as it was.
-    #[test]
-    fn expanding_a_pane_draws_it_over_the_whole_panes_space() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = split_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let side_by_side = pane_bars(&cmds, pane_bar_y(&cmds));
-        assert_eq!(
-            side_by_side.len(),
-            2,
-            "the split draws a bar per pane: {side_by_side:?}"
-        );
-        let left_edge = side_by_side
-            .iter()
-            .map(|origin| origin.x)
-            .fold(f32::INFINITY, f32::min);
-
-        state.borrow_mut().maximized_pane = Some(8);
-        let cmds = frame(&mut root, &app, None);
-        let expanded = pane_bars(&cmds, pane_bar_y(&cmds));
-        assert_eq!(
-            expanded.len(),
-            1,
-            "only the expanded pane is drawn, so the other pane's bar is gone: {expanded:?}"
-        );
-        assert!(
-            expanded[0].x > left_edge + 100.0,
-            "the expanded pane's bar reaches past where the two bars ended: {expanded:?} vs left bar {left_edge}"
-        );
-
-        state.borrow_mut().maximized_pane = None;
-        let cmds = frame(&mut root, &app, None);
-        assert_eq!(
-            pane_bars(&cmds, pane_bar_y(&cmds)),
-            side_by_side,
-            "retracting restores the layout the split had"
-        );
-    }
-
-    /// The pane's work chip: a rule and `◆ N` in the accent colour at a
-    /// non-zero count, and nothing at all — rule included — at zero.
-    #[test]
-    fn the_work_chip_draws_the_count_and_vanishes_at_zero() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let bar = rightmost_icon(&cmds, "x-close");
-
-        assert!(
-            header_diamonds(&cmds, &app, bar.1).is_empty(),
-            "a pane with no work in flight draws no diamond"
-        );
-        assert!(
-            header_rules(&cmds, &app, bar.1).is_empty(),
-            "and no separator, so the header looks exactly as it did"
-        );
-        let counts: Vec<(String, Vector2F)> = header_texts(&cmds, bar.1)
-            .into_iter()
-            .filter(|(text, _)| text.chars().all(|c| c.is_ascii_digit()))
-            .collect();
-        assert!(counts.is_empty(), "and no count: {counts:?}");
-
-        {
-            let mut s = state.borrow_mut();
-            let pane_id = s.active_pane_id;
-            let rt = s.pane_runtime.entry(pane_id).or_default();
-            rt.in_flight_tools.insert(
-                "call-1".to_string(),
-                tool_call_with("call-1", "run_command", r#"{"command":"cargo test"}"#),
-            );
-            rt.sub_agents.insert(
-                "child-1".to_string(),
-                sub_agent("child-1", "Explore", "Map the tree"),
-            );
-        }
-        let cmds = frame(&mut root, &app, None);
-        let bar = rightmost_icon(&cmds, "x-close");
-
-        let diamonds = header_diamonds(&cmds, &app, bar.1);
-        assert_eq!(diamonds.len(), 1, "one diamond per pane: {diamonds:?}");
-        let (diamond, size) = diamonds[0];
-        assert_eq!(size, 8.0, "the diamond is the topbar cue's 8 pt one");
-        let counts: Vec<(String, Vector2F)> = header_texts(&cmds, bar.1)
-            .into_iter()
-            .filter(|(text, _)| text == "2")
-            .collect();
-        assert_eq!(counts.len(), 1, "the count is drawn once: {counts:?}");
-        let (_, count_origin) = counts[0];
-        assert!(
-            count_origin.x > diamond.x,
-            "the number follows the diamond: {count_origin:?} vs {diamond:?}"
-        );
-
-        let rules = header_rules(&cmds, &app, bar.1);
-        assert_eq!(rules.len(), 1, "one separator: {rules:?}");
-        assert!(
-            rules[0].max_x() < diamond.x,
-            "the rule sits left of the diamond: {:?} vs {diamond:?}",
-            rules[0]
-        );
-        assert!(
-            diamond.x < bar.0,
-            "the whole chip sits left of the expand control: {diamond:?} vs {bar:?}"
-        );
-    }
-
     /// The middle of a pane, from the bounds the pane recorded while painting.
     fn pane_center(state: &Rc<RefCell<UiState>>, pane_id: u64) -> f32 {
         let bounds = state
@@ -1358,399 +1073,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{needle:?} is drawn in the bar"));
         assert!(drawn.next().is_none(), "{needle:?} is drawn once");
         origin.x + measure_text(needle, 12.0, 1.2, f32::INFINITY).x / 2.0
-    }
-
-    /// A pane that talks to an agent names itself in the middle of its bar —
-    /// the placeholder while its conversation has no subject — and the pane's
-    /// own content on either side does not move it off that middle.
-    #[test]
-    fn an_agent_pane_centres_its_placeholder_subject() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let bar = rightmost_icon(&cmds, "x-close");
-        let pane_id = state.borrow().active_pane_id;
-
-        let centred = heading_center(&cmds, bar.1, "New Agent");
-        let pane_middle = pane_center(&state, pane_id);
-        assert!(
-            (centred - pane_middle).abs() <= 0.5,
-            "the placeholder sits in the pane's middle: {centred} vs {pane_middle}"
-        );
-
-        // The work chip takes room on the right only; the two flexible halves
-        // around the title keep it where it was.
-        {
-            let mut s = state.borrow_mut();
-            s.pane_runtime
-                .entry(pane_id)
-                .or_default()
-                .in_flight_tools
-                .insert("call-1".to_string(), tool_call("call-1", "run_command"));
-        }
-        let cmds = frame(&mut root, &app, None);
-        let with_work = heading_center(&cmds, bar.1, "New Agent");
-        assert!(
-            (with_work - centred).abs() <= 0.5,
-            "the chip on the right does not shift the title: {with_work} vs {centred}"
-        );
-    }
-
-    /// Once the conversation has a subject, the bar centres that instead of
-    /// the placeholder.
-    #[test]
-    fn an_agent_pane_centres_the_conversations_subject() {
-        let app = AppContext::default();
-        let (mut root, state, desktop, _dir) = pane_root();
-        let subject = desktop
-            .create_chat("Demo · Hot reload", None, None)
-            .expect("a conversation with a subject");
-        {
-            let mut s = state.borrow_mut();
-            s.refresh_conversations(&desktop);
-            let pane_id = s.active_pane_id;
-            s.pane_sessions
-                .get_mut(&pane_id)
-                .expect("the pane's session")
-                .conversation_id = subject;
-        }
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let bar = rightmost_icon(&cmds, "x-close");
-        let pane_id = state.borrow().active_pane_id;
-
-        let centred = heading_center(&cmds, bar.1, "Demo · Hot reload");
-        let pane_middle = pane_center(&state, pane_id);
-        assert!(
-            (centred - pane_middle).abs() <= 0.5,
-            "the subject sits in the pane's middle: {centred} vs {pane_middle}"
-        );
-        assert!(
-            !header_texts(&cmds, bar.1)
-                .iter()
-                .any(|(text, _)| text == "New Agent"),
-            "the placeholder is gone once there is a subject"
-        );
-    }
-
-    /// The chip is information only: it carries no handler of its own, so a
-    /// press on it reaches the pane header underneath.
-    #[test]
-    fn the_work_chip_takes_no_press_of_its_own() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        {
-            let mut s = state.borrow_mut();
-            let pane_id = s.active_pane_id;
-            s.pane_runtime
-                .entry(pane_id)
-                .or_default()
-                .in_flight_tools
-                .insert("call-1".to_string(), tool_call("call-1", "run_command"));
-        }
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let bar = rightmost_icon(&cmds, "x-close");
-        let (diamond, size) = header_diamonds(&cmds, &app, bar.1)
-            .first()
-            .copied()
-            .expect("the pane's chip draws its diamond");
-
-        let mut ctx = EventContext;
-        let taken = root.dispatch_event(
-            &DispatchedEvent::MouseDown {
-                position: vec2f(diamond.x + size / 2.0, diamond.y + size / 2.0),
-                button: 0,
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(taken, "the press is not swallowed by the chip");
-        assert!(
-            state.borrow().pane_drag.is_some(),
-            "it reaches the pane header, which lifts the pane"
-        );
-    }
-
-    /// The count is what the pane alone is charged with — its running work,
-    /// and the tooltip names every item so the number is never a mystery.
-    #[test]
-    fn the_work_chip_counts_and_names_the_panes_own_work() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        {
-            let mut s = state.borrow_mut();
-            let pane_id = s.active_pane_id;
-            let rt = s.pane_runtime.entry(pane_id).or_default();
-            rt.in_flight_tools.insert(
-                "call-1".to_string(),
-                tool_call_with("call-1", "run_command", r#"{"command":"cargo test"}"#),
-            );
-            rt.sub_agents.insert(
-                "child-1".to_string(),
-                sub_agent("child-1", "Explore", "Map the tree"),
-            );
-            rt.sub_agents.insert(
-                "child-2".to_string(),
-                sub_agent("child-2", "Review", "Check the diff"),
-            );
-            rt.sub_agents.insert(
-                "child-3".to_string(),
-                finished_sub_agent("child-3", "Test", "Ran the suite"),
-            );
-        }
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let bar = rightmost_icon(&cmds, "x-close");
-        let diamond = header_diamonds(&cmds, &app, bar.1)
-            .first()
-            .map(|(origin, size)| vec2f(origin.x + size / 2.0, origin.y + size / 2.0))
-            .expect("the pane's chip draws its diamond");
-        let cmds = frame(&mut root, &app, Some(diamond));
-
-        let drawn: Vec<String> = cmds
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            drawn.iter().any(|text| text == "3"),
-            "one tool call and two running children, not the finished one: {drawn:?}"
-        );
-        assert!(
-            drawn.iter().any(|text| text
-                == "task · Run cargo test\nsub-agent · Explore · Map the tree\nsub-agent · Review · Check the diff"),
-            "the tooltip names every item with its kind and the row's own phrasing: {drawn:?}"
-        );
-    }
-
-    /// Two panes in one frame count their own work, not the window's: the left
-    /// pane's call is not added to the right pane's children.
-    #[test]
-    fn each_pane_counts_only_its_own_work() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        {
-            let mut s = state.borrow_mut();
-            s.spaces = vec![Space::unnamed(Pane::Split {
-                id: 9,
-                dir: SplitDir::Horizontal,
-                ratio: 0.5,
-                first: Box::new(Pane::Leaf {
-                    id: 7,
-                    kind: PaneKind::Chat,
-                }),
-                second: Box::new(Pane::Leaf {
-                    id: 8,
-                    kind: PaneKind::Chat,
-                }),
-            })];
-            s.active_space = 0;
-            s.active_pane_id = 7;
-            for pane_id in [7, 8] {
-                s.pane_sessions.insert(
-                    pane_id,
-                    PaneSession {
-                        conversation_id: String::new(),
-                        draft: String::new(),
-                        path: String::new(),
-                        daemon_session_id: String::new(),
-                    },
-                );
-            }
-            s.pane_runtime
-                .entry(7)
-                .or_default()
-                .in_flight_tools
-                .insert("call-1".to_string(), tool_call("call-1", "run_command"));
-            let right = s.pane_runtime.entry(8).or_default();
-            right.sub_agents.insert(
-                "child-1".to_string(),
-                sub_agent("child-1", "Explore", "Map the tree"),
-            );
-            right.sub_agents.insert(
-                "child-2".to_string(),
-                sub_agent("child-2", "Review", "Check the diff"),
-            );
-        }
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let bar = rightmost_icon(&cmds, "x-close");
-
-        assert_eq!(
-            header_diamonds(&cmds, &app, bar.1).len(),
-            2,
-            "both panes of the split draw their own chip"
-        );
-        assert_eq!(header_rules(&cmds, &app, bar.1).len(), 2);
-
-        let counts: Vec<(String, Vector2F)> = header_texts(&cmds, bar.1)
-            .into_iter()
-            .filter(|(text, _)| text == "1" || text == "2")
-            .collect();
-        let left = counts
-            .iter()
-            .find(|(text, _)| text == "1")
-            .expect("the left pane draws its one item");
-        let right = counts
-            .iter()
-            .find(|(text, _)| text == "2")
-            .expect("the right pane draws its two");
-        assert!(
-            left.1.x < right.1.x,
-            "each pane's count sits in that pane: {counts:?}"
-        );
-    }
-
-    /// The fullscreen control appears exactly when there is something to expand
-    /// over: a one-pane space draws nothing, splitting the space brings the
-    /// enter glyph back, expanding turns it into the exit glyph, and retracting
-    /// restores it.
-    #[test]
-    fn the_expand_control_appears_once_the_pane_has_a_sibling() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = split_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        assert!(
-            cmds.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. } if name == "fullscreen-enter"
-            )),
-            "a split draws the enter glyph on each pane"
-        );
-
-        // The space collapses to one leaf: the control goes away entirely.
-        {
-            let mut s = state.borrow_mut();
-            s.spaces = vec![Space::unnamed(Pane::Leaf {
-                id: 7,
-                kind: PaneKind::Chat,
-            })];
-            s.active_pane_id = 7;
-        }
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        assert!(
-            !cmds.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. }
-                    if name == "fullscreen-enter" || name == "fullscreen-exit"
-            )),
-            "a one-pane space draws no fullscreen control"
-        );
-
-        // Split again: the control is back.
-        {
-            let mut s = state.borrow_mut();
-            s.spaces = vec![Space::unnamed(Pane::Split {
-                id: 9,
-                dir: SplitDir::Horizontal,
-                ratio: 0.5,
-                first: Box::new(Pane::Leaf {
-                    id: 7,
-                    kind: PaneKind::Chat,
-                }),
-                second: Box::new(Pane::Leaf {
-                    id: 8,
-                    kind: PaneKind::Chat,
-                }),
-            })];
-            s.active_pane_id = 7;
-        }
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let control = rightmost_icon(&cmds, "fullscreen-enter");
-        assert!(
-            control.0 > 0.0,
-            "the control is back once the pane has a sibling"
-        );
-    }
-
-    /// A pane left expanded after its neighbour went away keeps the exit
-    /// control, because taking the expansion back is always allowed: hiding the
-    /// button in a one-pane space must not strand the expanded state.
-    #[test]
-    fn a_maximized_pane_keeps_its_exit_control_in_a_one_pane_space() {
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        {
-            let mut s = state.borrow_mut();
-            let pane_id = s.active_pane_id;
-            s.maximized_pane = Some(pane_id);
-        }
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        assert!(
-            !cmds.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. } if name == "fullscreen-enter"
-            )),
-            "an expanded pane draws no enter glyph"
-        );
-        let exit = topmost_icon(&cmds, "fullscreen-exit");
-        click(&mut root, &app, exit);
-        assert_eq!(
-            state.borrow().maximized_pane,
-            None,
-            "the exit control is the header's way out of a stranded expansion"
-        );
-
-        // Back to the ordinary one-pane bar: no control, because there is
-        // nothing left to expand over.
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        assert!(
-            !cmds.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. }
-                    if name == "fullscreen-enter" || name == "fullscreen-exit"
-            )),
-            "the control is gone once the expansion is retracted"
-        );
-    }
-
-    /// The control carries DSH's labels: "Fullscreen" over the enter glyph and
-    /// "Exit fullscreen" over the exit one.
-    #[test]
-    fn the_fullscreen_control_wears_the_dsh_labels() {
-        let app = AppContext::default();
-        let (mut root, _state, _desktop, _dir) = split_root();
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let enter = rightmost_icon(&cmds, "fullscreen-enter");
-        let hovered = frame(&mut root, &app, Some(vec2f(enter.0, enter.1)));
-        let drawn: Vec<String> = hovered
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            drawn.iter().any(|text| text == "Fullscreen"),
-            "the enter control says Fullscreen: {drawn:?}"
-        );
-
-        click(&mut root, &app, enter);
-        let _ = frame(&mut root, &app, None);
-        let cmds = frame(&mut root, &app, None);
-        let exit = topmost_icon(&cmds, "fullscreen-exit");
-        let hovered = frame(&mut root, &app, Some(vec2f(exit.0, exit.1)));
-        let drawn: Vec<String> = hovered
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            drawn.iter().any(|text| text == "Exit fullscreen"),
-            "the exit control says Exit fullscreen: {drawn:?}"
-        );
     }
 
     /// One frame of the real tree at an explicit window size, so the wide
@@ -1800,136 +1122,6 @@ mod tests {
             .copied()
             .expect("the pane recorded its bounds");
         bounds
-    }
-
-    /// The pane's topbar band is flush with the pane's slot: it paints past the
-    /// pane card's inset (`PANE_INSET`) on the top, left and right, so the bar
-    /// shows no 2-3 px margin against the pane's edge. It is square while the
-    /// pane card below keeps its rounded, inset frame.
-    #[test]
-    fn the_pane_header_band_is_flush_with_the_pane_slot() {
-        let app = AppContext::default();
-        for size in [window(), vec2f(1600.0, 900.0)] {
-            let (mut root, state, _desktop, _dir) = pane_root();
-            let _ = frame_sized(&mut root, &app, size);
-            let cmds = frame_sized(&mut root, &app, size);
-            let pane = pane_rect(&state);
-            let band = header_band(&cmds, &app);
-            assert_eq!(
-                band.min_x(),
-                pane.min_x() - PANE_INSET,
-                "the band reaches the pane slot's left edge at {size:?}: {band:?} vs {pane:?}"
-            );
-            assert_eq!(
-                band.max_x(),
-                pane.max_x() + PANE_INSET,
-                "and its right edge at {size:?}: {band:?} vs {pane:?}"
-            );
-            assert_eq!(
-                band.min_y(),
-                pane.min_y() - PANE_INSET,
-                "and its top: the pane frame's gutter under the bar is covered: {band:?}"
-            );
-            assert_eq!(
-                band.max_y(),
-                pane.min_y() + crate::ui::shell::TOPBAR_HEIGHT,
-                "the band ends exactly where the pane body starts: {band:?}"
-            );
-            assert_eq!(
-                band.width(),
-                pane.width() + PANE_INSET * 2.0,
-                "the band is the pane's whole slot width"
-            );
-            assert!(
-                band.max_y() < pane.max_y(),
-                "the pane card below keeps its own inset frame"
-            );
-        }
-    }
-
-    /// The pane header row spans the whole band even while the pane's content
-    /// lane is active: the adjustable conversation width never reaches the
-    /// topbar. The close X keeps the pane's trailing edge, the `esc` hint its
-    /// leading one, and the work chip sits outside the (narrower) lane column.
-    #[test]
-    fn the_pane_header_row_spans_the_full_band_even_with_the_lane_active() {
-        use goble_ui::elements::resolve_content_width;
-
-        let app = AppContext::default();
-        let (mut root, state, _desktop, _dir) = pane_root();
-        let size = vec2f(1600.0, 900.0);
-        let committed = 700.0;
-        {
-            let mut s = state.borrow_mut();
-            let pane_id = s.active_pane_id;
-            s.pane_runtime
-                .entry(pane_id)
-                .or_default()
-                .in_flight_tools
-                .insert("call-1".to_string(), tool_call("call-1", "run_command"));
-            // A committed lane width narrower than the passive ratio: the
-            // conversation column is clearly inside the pane while the bar
-            // still fills it.
-            s.content_lane_prefs.insert(pane_id, committed);
-        }
-        let _ = frame_sized(&mut root, &app, size);
-        let cmds = frame_sized(&mut root, &app, size);
-        let pane = pane_rect(&state);
-        let lane = resolve_content_width(pane.width(), Some(committed));
-        let gutter = (pane.width() - lane) / 2.0;
-        let lane_left = pane.min_x() + gutter;
-        let lane_right = lane_left + lane;
-        assert!(
-            lane < pane.width() - 100.0,
-            "the fixture pane's lane is clearly narrower than the pane: {lane} in {}",
-            pane.width()
-        );
-
-        // The band itself is still the whole pane slot.
-        let band = header_band(&cmds, &app);
-        assert_eq!(band.min_x(), pane.min_x() - PANE_INSET);
-        assert_eq!(band.max_x(), pane.max_x() + PANE_INSET);
-
-        // The close X keeps the pane's own trailing edge, outside the lane.
-        let close = rightmost_icon(&cmds, "x-close");
-        assert!(
-            close.0 > pane.max_x() - 40.0,
-            "the close X sits on the pane's trailing edge: {close:?} vs pane {pane:?}"
-        );
-        assert!(
-            close.0 > lane_right + 20.0,
-            "and not on the lane's: {close:?} vs lane right {lane_right}"
-        );
-
-        // The `esc` hint keeps the pane's leading edge, outside the lane.
-        let esc = header_texts(&cmds, close.1)
-            .into_iter()
-            .find(|(text, _)| text == "esc")
-            .map(|(_, origin)| origin)
-            .expect("the bar draws its esc hint");
-        assert!(
-            esc.x < lane_left - 20.0,
-            "the esc hint sits on the pane's leading edge: {esc:?} vs lane left {lane_left}"
-        );
-
-        // The work chip is a bar control, not lane content: it stays on the
-        // pane's side of the lane's trailing edge.
-        let diamond = header_diamonds(&cmds, &app, close.1)
-            .first()
-            .map(|(origin, size)| origin.x + size / 2.0)
-            .expect("the pane's chip draws its diamond");
-        assert!(
-            diamond > lane_right + 20.0,
-            "the work chip sits on the pane's edge, outside the lane: {diamond} vs lane right {lane_right}"
-        );
-
-        // The title still centres in the pane.
-        let centred = heading_center(&cmds, close.1, "New Agent");
-        let pane_middle = (pane.min_x() + pane.max_x()) / 2.0;
-        assert!(
-            (centred - pane_middle).abs() <= 0.5,
-            "the title centres in the pane: {centred} vs {pane_middle}"
-        );
     }
 
     /// The panel itself is ONE darker surface: the card's whole background is
@@ -1999,7 +1191,9 @@ mod tests {
                     }
                     _ => None,
                 })
-                .max_by(|a, b| (a.0.width() * a.0.height()).total_cmp(&(b.0.width() * b.0.height())))
+                .max_by(|a, b| {
+                    (a.0.width() * a.0.height()).total_cmp(&(b.0.width() * b.0.height()))
+                })
                 .expect("the lane paints its content column");
 
             let lane = resolve_content_width(pane.width(), None);

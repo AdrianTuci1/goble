@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// The subset of [`UiState`] pane layout persisted across app restarts.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct PersistedPaneState {
@@ -15,6 +14,13 @@ pub(crate) struct PersistedPaneState {
     /// `#[serde(default)]` so a layout written before saved hosts still parses.
     #[serde(default)]
     pub(crate) pane_ssh: HashMap<u64, SshPaneBinding>,
+    /// The main/side split ratio, so the panel reopens where it was left.
+    #[serde(default = "default_side_split_ratio")]
+    pub(crate) side_split_ratio: f32,
+}
+
+fn default_side_split_ratio() -> f32 {
+    0.5
 }
 
 /// Collect every pane id (leaves and splits) in a pane tree.
@@ -76,12 +82,15 @@ pub(crate) fn ensure_all_chat_pane_sessions(state: &mut UiState, desktop: Option
     }
     let default_path = current_dir_display();
     for id in leaf_ids {
-        state.pane_sessions.entry(id).or_insert_with(|| PaneSession {
-            conversation_id: String::new(),
-            draft: String::new(),
-            path: default_path.clone(),
-            daemon_session_id: String::new(),
-        });
+        state
+            .pane_sessions
+            .entry(id)
+            .or_insert_with(|| PaneSession {
+                conversation_id: String::new(),
+                draft: String::new(),
+                path: default_path.clone(),
+                daemon_session_id: String::new(),
+            });
     }
     let mut created = false;
     let mut adopted_selection = false;
@@ -128,7 +137,10 @@ pub fn default_pane_path(project_id: &str, desktop: Option<&DesktopState>) -> St
 /// label is derived from what it holds (an agent with no conversation subject
 /// yet reads [`crate::state::NEW_AGENT_TAB_LABEL`]).
 pub(crate) fn default_spaces() -> Vec<Space> {
-    vec![Space::unnamed(Pane::Leaf { id: 1, kind: PaneKind::Chat })]
+    vec![Space::unnamed(Pane::Leaf {
+        id: 1,
+        kind: PaneKind::Chat,
+    })]
 }
 
 /// The current working directory, used as the composer's path label.

@@ -66,12 +66,27 @@ fn handle(
         state.settings.page = state.settings_page();
     }
     match action {
+        SettingsAction::SetSendImmediately(value) => {
+            let Some(desktop) = desktop else {
+                no_service(state);
+                return;
+            };
+            state.send_immediately = value;
+            state.settings.send_immediately = value;
+            write_ops(
+                state,
+                desktop,
+                ConfigFile::Config,
+                vec![fields::bool_op("app.send_immediately", value)],
+            );
+        }
         SettingsAction::Navigate(page) => {
             state.settings_set_page(page);
             state.settings.region = crate::ui::settings::SettingsRegion::Rail;
             state.settings.row_index = 0;
             state.settings.focused_field = None;
             state.settings.theme_select_open = false;
+            state.settings.close_select_menus();
             state.settings.scroll.borrow_mut().reset();
             // The Providers page's accounts and per-CLI folds read live PATH
             // detection, so opening it re-scans.
@@ -113,6 +128,27 @@ fn handle(
             state.settings.search.clear();
             state.settings.search_focused = false;
         }
+        SettingsAction::ShortcutsSearch(query) => {
+            state.settings.shortcuts_search = query;
+            state.settings.shortcuts_search_focused = true;
+        }
+        SettingsAction::ShortcutsSearchFocus(focused) => {
+            state.settings.shortcuts_search_focused = focused;
+        }
+        SettingsAction::ShortcutsClearSearch => {
+            state.settings.shortcuts_search.clear();
+            state.settings.shortcuts_search_focused = false;
+        }
+        SettingsAction::ShortcutRemap(id) => {
+            // Remapping is not in this build. The trash affordance is a real
+            // press that says so; it never deletes a binding (the list is a
+            // report of what the app dispatches, and there is nowhere to write
+            // a removal to).
+            let _ = id;
+            state
+                .settings
+                .set_status(StatusKind::Info, pages::REMAP_UNAVAILABLE);
+        }
         SettingsAction::Step(delta) => step_focus(state, delta),
         SettingsAction::Adjust(delta) => {
             if let Some(row) = focused_row(state) {
@@ -143,33 +179,8 @@ fn handle(
             }
         }
         SettingsAction::RefreshHarnesses => load_harnesses(state, desktop),
-        SettingsAction::SetColorTarget(index) => {
-            state.settings.color_target = index.min(4);
-        }
         SettingsAction::ToggleThemeSelect(open) => {
             state.settings.theme_select_open = open;
-        }
-        SettingsAction::SetColor { target, hex } => {
-            let Some(desktop) = desktop else {
-                no_service(state);
-                return;
-            };
-            let target = crate::ui::color_picker::COLOR_TARGET_ORDER
-                .get(target)
-                .copied()
-                .unwrap_or(crate::ui::color_picker::ColorTarget::Accent);
-            let key = color_key(target);
-            let path = format!("theme.{key}");
-            if fields::theme_text(&state.settings, key).as_deref() == Some(hex.as_str()) {
-                return;
-            }
-            write_ops(
-                state,
-                desktop,
-                ConfigFile::Config,
-                vec![fields::text_op(&path, &hex)],
-            );
-            state.settings.clear_draft(&path);
         }
         SettingsAction::EditHarness(id) => {
             let status = state
@@ -1005,18 +1016,6 @@ fn load_harnesses(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
     state.settings.harnesses = desktop.list_harnesses();
 }
 
-/// The `[theme]` channel a colour target writes.
-fn color_key(target: crate::ui::color_picker::ColorTarget) -> &'static str {
-    use crate::ui::color_picker::ColorTarget as T;
-    match target {
-        T::Primary => "primary",
-        T::Secondary => "secondary",
-        T::Accent => "accent",
-        T::Background => "bg",
-        T::Surface => "surface",
-    }
-}
-
 fn step_focus(state: &mut UiState, delta: i32) {
     let delta = delta.signum();
     if delta == 0 {
@@ -1660,9 +1659,10 @@ fn save_harness_form(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
             state.adopt_settings_view(view);
             close_sheet(state);
             start_harness_scan(state, desktop);
-            state
-                .settings
-                .set_status(StatusKind::Success, format!("Saved [harness.{id}] to config.toml."));
+            state.settings.set_status(
+                StatusKind::Success,
+                format!("Saved [harness.{id}] to config.toml."),
+            );
         }
         Err(error) => write_error(state, desktop, error),
     }

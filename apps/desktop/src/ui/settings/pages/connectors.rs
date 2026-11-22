@@ -1,9 +1,11 @@
-//! Settings → Connectors: the MCP servers `[mcp_servers.*]` declares, with the
-//! Add/Edit form and the real stdio/HTTP test the service runs.
+//! Settings → Browser: the embedded preview surface this build does not have,
+//! and the real Extensions/MCP servers it does.
 //!
 //! A connector's transport is one of `url` (streamable HTTP) or `command` +
 //! `args` (stdio); the form writes one and unsets the other, because a table
-//! with both is ambiguous to the runtime registry.
+//! with both is ambiguous to the runtime registry. The connector rows are the
+//! same real rows the old Connectors page owned, reused here as the useful part
+//! of a Browser page with no browser backend.
 
 use goble_core::config::{ConfigFile, McpView};
 
@@ -13,6 +15,24 @@ use super::{add_action, problem_section};
 
 pub fn page(state: &SettingsUiState) -> PageModel {
     let mut sections = Vec::new();
+    sections.push(
+        SectionModel::new("browser", "Browser")
+            .with_description(
+                "An embedded preview surface is not included in this build. The Extensions below are real MCP servers the agent can use.",
+            )
+            .with_row(super::unavailable_row(
+                "browser-surface",
+                "Browser preview",
+                "Open a URL in an embedded preview surface inside Goble.",
+                "browser preview is unavailable in this build",
+            ))
+            .with_row(super::unavailable_row(
+                "browser-inspector",
+                "Page inspector",
+                "Inspect a previewed page's DOM and network requests.",
+                "there is no browser surface to inspect",
+            )),
+    );
     if let Some(problems) = problem_section(state, ConfigFile::Config) {
         sections.push(problems);
     }
@@ -41,25 +61,28 @@ pub fn page(state: &SettingsUiState) -> PageModel {
     sections.push(
         SectionModel::new("mcp", "MCP servers")
             .with_description(
-                "Declared in config.toml and synced into the runtime registry on save. A server is enabled unless it says otherwise.",
+                "Extensions the agent can use, declared in [mcp_servers.<name>] in config.toml and synced into the runtime registry on save. A server is enabled unless it says otherwise.",
             )
             .with_header_action(add_action("Add connector", SettingsAction::NewConnector))
             .with_rows(rows),
     );
     sections.push(
-        SectionModel::new("connector-unavailable", "Not in this build")
-            .with_row(super::unavailable_row(
-                "onepassword",
-                "1Password secrets",
-                "Pull a connector's credentials from a 1Password vault.",
-                "no 1Password integration",
-            ))
-            .with_row(super::unavailable_row(
-                "mcp-catalog",
-                "Connector catalog",
-                "Browse a hosted catalog of MCP servers and install one.",
-                "no connector marketplace",
-            )),
+        SectionModel::new(
+            "connector-unavailable",
+            "Connector options not in this build",
+        )
+        .with_row(super::unavailable_row(
+            "onepassword",
+            "1Password secrets",
+            "Pull a connector's credentials from a 1Password vault.",
+            "no 1Password integration",
+        ))
+        .with_row(super::unavailable_row(
+            "mcp-catalog",
+            "Connector catalog",
+            "Browse a hosted catalog of MCP servers and install one.",
+            "no connector marketplace",
+        )),
     );
     sections.push(
         SectionModel::new("files", "This file").with_row(super::open_file_row(
@@ -113,7 +136,10 @@ fn connector_row(state: &SettingsUiState, server: &McpView) -> RowModel {
     row
 }
 
-pub(super) fn connector_form_section(state: &SettingsUiState, form: &ConnectorForm) -> SectionModel {
+pub(super) fn connector_form_section(
+    state: &SettingsUiState,
+    form: &ConnectorForm,
+) -> SectionModel {
     let title = match &form.editing {
         Some(name) => format!("Edit connector · {name}"),
         None => "Add connector".to_string(),

@@ -140,6 +140,10 @@ pub struct InlineText {
     /// a terminal paints a cell. Off, a background is the padded code chip
     /// prose wants.
     cell_backgrounds: bool,
+    /// Report the flow's own longest line instead of the full constraint: a
+    /// user bubble hugs its text instead of stretching to its cap. Assistant
+    /// prose keeps the full paragraph width.
+    fit_content: bool,
     placed: Vec<PlacedSpan>,
     /// When set, every visual row this flow draws is recorded here so a
     /// surface can select and copy the text. See [`SelectableText`].
@@ -155,6 +159,7 @@ impl InlineText {
             font_size: DEFAULT_FONT_SIZE,
             line_height: DEFAULT_LINE_HEIGHT,
             cell_backgrounds: false,
+            fit_content: false,
             placed: Vec::new(),
             selection: None,
             size: None,
@@ -184,6 +189,14 @@ impl InlineText {
     /// cell, where the spaces are part of the band.
     pub fn with_cell_backgrounds(mut self, cell: bool) -> Self {
         self.cell_backgrounds = cell;
+        self
+    }
+
+    /// Size the flow to its longest drawn line (capped by the constraint)
+    /// rather than claiming the constraint's full width. A user message is a
+    /// bubble that hugs its words; the agent's prose keeps the full column.
+    pub fn with_fit_content(mut self, fit: bool) -> Self {
+        self.fit_content = fit;
         self
     }
 
@@ -259,8 +272,8 @@ fn push_chunk(placed: &mut Vec<PlacedSpan>, chunk: PlacedSpan, max_width: f32) {
         return;
     }
     if let Some(last) = placed.last_mut() {
-        let adjacent = (last.y - chunk.y).abs() < 0.5
-            && (last.x + last.width - chunk.x).abs() < 0.5;
+        let adjacent =
+            (last.y - chunk.y).abs() < 0.5 && (last.x + last.width - chunk.x).abs() < 0.5;
         if adjacent && last.span.icon.is_none() && same_style(&last.span, &chunk.span) {
             last.span.text.push_str(&chunk.span.text);
             last.width += chunk.width;
@@ -309,11 +322,8 @@ impl Element for InlineText {
         let mut bottom = 0.0;
         // Each span's leading glyph is placed once, in front of its first word,
         // so a run that wraps keeps its glyph on the word's first line.
-        let mut pending_icons: Vec<bool> = self
-            .spans
-            .iter()
-            .map(|span| span.icon.is_some())
-            .collect();
+        let mut pending_icons: Vec<bool> =
+            self.spans.iter().map(|span| span.icon.is_some()).collect();
 
         // Words, not whole spans, are what a line breaks between: filling a line
         // to its edge is what makes a paragraph read as one column of text. A
@@ -325,13 +335,7 @@ impl Element for InlineText {
             // of the ink, which is a side bearing narrower than the room the
             // run takes up, and the renderer lays the run out by its advances.
             // Whitespace above all measures as nothing at all.
-            let width = advance_width(
-                &text,
-                self.font_size,
-                span.weight,
-                span.family,
-                span.italic,
-            );
+            let width = advance_width(&text, self.font_size, span.weight, span.family, span.italic);
 
             if is_space {
                 // A terminal paints a cell's background for every column it
@@ -472,8 +476,17 @@ impl Element for InlineText {
         }
 
         let height = if placed.is_empty() { line_h } else { bottom };
+        let intrinsic = placed
+            .iter()
+            .map(|chunk| chunk.x + chunk.width)
+            .fold(0.0_f32, f32::max);
         self.placed = placed;
-        let size = vec2f(max_width.min(f32::INFINITY).max(0.0), height);
+        let width = if self.fit_content {
+            intrinsic.min(max_width)
+        } else {
+            max_width
+        };
+        let size = vec2f(width.min(f32::INFINITY).max(0.0), height);
         self.size = Some(size);
         size
     }
@@ -504,7 +517,12 @@ impl Element for InlineText {
                     // inside the same box.
                     let height = self.font_size * self.line_height;
                     renderer.fill_rounded_rect(
-                        rectf(base.x - CODE_BG_PAD, base.y - CODE_BG_PAD, placed.width + CODE_BG_PAD * 2.0, height + CODE_BG_PAD * 2.0),
+                        rectf(
+                            base.x - CODE_BG_PAD,
+                            base.y - CODE_BG_PAD,
+                            placed.width + CODE_BG_PAD * 2.0,
+                            height + CODE_BG_PAD * 2.0,
+                        ),
                         bg,
                         3.0,
                     );
@@ -655,11 +673,7 @@ pub fn resolve_span(
             None,
         )
     } else {
-        (
-            FontFamily::System,
-            app.theme.color(ColorToken::Text),
-            None,
-        )
+        (FontFamily::System, app.theme.color(ColorToken::Text), None)
     };
     TextSpan {
         text,
@@ -686,9 +700,9 @@ mod tests {
         let app = AppContext::default();
         let recording = Rc::new(RefCell::new(SelectableText::default()));
         let mut element: Box<dyn Element> = Box::new(
-            InlineText::new(vec![
-                TextSpan::plain("alpha beta gamma delta epsilon zeta eta theta"),
-            ])
+            InlineText::new(vec![TextSpan::plain(
+                "alpha beta gamma delta epsilon zeta eta theta",
+            )])
             .with_font_size(12.0)
             .with_text_selection(recording.clone()),
         );
@@ -773,15 +787,18 @@ mod tests {
         let runs = drawn_runs(&commands);
         let drawn: String = runs.iter().map(|(_, text, ..)| text.as_str()).collect();
         assert_eq!(drawn, "a  b   c");
-        assert_eq!(
-            runs.len(),
-            1,
-            "one style draws as one run, got {runs:?}"
-        );
+        assert_eq!(runs.len(), 1, "one style draws as one run, got {runs:?}");
         let (origin, _, _, _, max_width) = runs[0];
         assert_eq!(origin.x, 0.0);
         assert!(
-            max_width >= advance_width("a  b   c", 12.0, FontWeight::Regular, FontFamily::System, false),
+            max_width
+                >= advance_width(
+                    "a  b   c",
+                    12.0,
+                    FontWeight::Regular,
+                    FontFamily::System,
+                    false
+                ),
             "the run is given room for every space it holds, got {max_width}"
         );
     }
@@ -831,7 +848,11 @@ mod tests {
     /// with come down with it.
     #[test]
     fn inline_text_rewraps_and_narrows_when_the_constraint_shrinks() {
-        let spans = || vec![TextSpan::plain("one two three four five six seven eight nine")];
+        let spans = || {
+            vec![TextSpan::plain(
+                "one two three four five six seven eight nine",
+            )]
+        };
         let (wide_size, wide_commands) = painted(400.0, spans());
         let (narrow_size, narrow_commands) = painted(150.0, spans());
         let widest = |commands: &[RenderCommand]| {

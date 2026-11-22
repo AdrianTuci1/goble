@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::read_excerpt::{read_excerpt, read_excerpt_column, EXPANDED_LINE_CAP};
+use super::tool_call::{argument_str, tool_body_row, tool_body_span_row};
 use crate::elements::chat_content::{SubAgentRow, SubAgentRowStatus, ToolCall, ToolDisplayMode};
 use crate::elements::chat_typography;
 use crate::elements::{
@@ -12,8 +14,6 @@ use crate::elements::{
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily};
 use goble_core::harness::{one_line, tool_kind_for, web_search_sources, ToolCallStatus, ToolKind};
-use super::read_excerpt::{read_excerpt, read_excerpt_column, EXPANDED_LINE_CAP};
-use super::tool_call::{argument_str, tool_body_row, tool_body_span_row};
 
 /// First / last body lines a truncated read draws, and the fewer lines a
 /// truncated command's output draws — grok-build's per-block truncation counts.

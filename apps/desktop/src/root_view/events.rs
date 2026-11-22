@@ -45,9 +45,7 @@ impl RootView {
                     let outcome = match payload.get("status").and_then(|v| v.as_str()) {
                         Some("success") => crate::state::TurnOutcome::Success,
                         Some("failed") => crate::state::TurnOutcome::Failed(None),
-                        Some(other) => {
-                            crate::state::TurnOutcome::Failed(Some(other.to_string()))
-                        }
+                        Some(other) => crate::state::TurnOutcome::Failed(Some(other.to_string())),
                         None => crate::state::TurnOutcome::Unknown,
                     };
                     // How long the turn ran, when the app saw it start, and how
@@ -65,8 +63,14 @@ impl RootView {
                     state.refresh_conversations(&desktop);
                     log::warn!(
                         "chat:turn_finished for {}: {}",
-                        payload.get("chat_id").and_then(|v| v.as_str()).unwrap_or(""),
-                        payload.get("status").and_then(|v| v.as_str()).unwrap_or("unknown")
+                        payload
+                            .get("chat_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
+                        payload
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
                     );
                     // A prompt queued while the agent was running is submitted
                     // automatically now that the turn finished (warp-new model).
@@ -180,11 +184,11 @@ impl RootView {
                                     .first()
                                     .cloned()
                                     .map(goble_core::harness::CommandDecision::Approve),
-                                goble_ui::ApprovalMode::Plan => Some(
-                                    goble_core::harness::CommandDecision::Reject(
+                                goble_ui::ApprovalMode::Plan => {
+                                    Some(goble_core::harness::CommandDecision::Reject(
                                         "Plan mode: command execution is disabled.".to_string(),
-                                    ),
-                                ),
+                                    ))
+                                }
                                 goble_ui::ApprovalMode::Manual
                                 | goble_ui::ApprovalMode::AutoReview => None,
                             };
@@ -192,7 +196,8 @@ impl RootView {
                                 // The approval mode made this decision, not the
                                 // user, and the outcome counts the same way.
                                 crate::telemetry::approval_decision(&decision);
-                                match desktop.resume_command_chat_turn(&proposal.chat_id, decision) {
+                                match desktop.resume_command_chat_turn(&proposal.chat_id, decision)
+                                {
                                     Ok(_) => {
                                         state.resume_command_decision(pane_id, &proposal.id);
                                         state.agent_busy = true;
@@ -353,9 +358,7 @@ impl RootView {
                 // another writer) is pulled into the page and the app's typed
                 // config here. The service already reloaded its own cache, so
                 // this is the one cheap read per change.
-                "settings:changed" | "settings:file-changed" => {
-                    state.refresh_settings(&desktop)
-                }
+                "settings:changed" | "settings:file-changed" => state.refresh_settings(&desktop),
                 "executions:updated" => {
                     self.projects_state.borrow_mut().refresh(&desktop);
                     // Sessions/projects come from the store; re-derive the tree

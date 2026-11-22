@@ -214,6 +214,54 @@ impl UiState {
         true
     }
 
+    /// Toggle the bottom terminal dock of an agent pane.
+    ///
+    /// A chat pane has no shell mounted for its pane kind, so the first open
+    /// starts a real PTY in the pane's own directory. The draw is checked by the
+    /// UI, which also clamps its height; this method only owns the flag and the
+    /// session lifecycle. A terminal pane already is its shell: the header
+    /// offers no dock there.
+    pub fn toggle_terminal_dock(&mut self, pane_id: u64) -> bool {
+        let Some(space_idx) = self.space_index_of_pane(pane_id) else {
+            return false;
+        };
+        if !matches!(
+            self.spaces[space_idx].leaf_kind(pane_id),
+            Some(PaneKind::Chat)
+        ) {
+            return false;
+        }
+        let controls = self.pane_controls_mut(pane_id);
+        controls.terminal_dock_open = !controls.terminal_dock_open;
+        let opening = controls.terminal_dock_open;
+        if opening {
+            let cwd = self
+                .pane_sessions
+                .get(&pane_id)
+                .map(|session| session.path.clone())
+                .unwrap_or_default();
+            self.terminal.borrow_mut().ensure_session(pane_id, &cwd);
+            // The dock takes the keyboard when it opens: its grid is the typing
+            // surface until the user clicks back into the composer.
+            self.composer_focused = false;
+        } else {
+            *self
+                .pane_controls(pane_id)
+                .terminal_dock_dragging
+                .borrow_mut() = false;
+            self.composer_focused = true;
+        }
+        true
+    }
+
+    /// Set the bottom terminal dock's height, clamped to its 180pt minimum. The
+    /// upper bound (75% of the pane) is applied by the dock element, which is
+    /// the first place the pane's height is known.
+    pub fn set_terminal_dock_height(&mut self, pane_id: u64, height: f32) {
+        let controls = self.pane_controls_mut(pane_id);
+        controls.terminal_dock_height = height.max(180.0);
+    }
+
     /// Point the file pane at another file it already has open, or add the file
     /// to the pane's chips. The pane stays where it is: two files share one
     /// topbar instead of splitting the space.

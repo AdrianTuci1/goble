@@ -346,7 +346,10 @@ fn a_conversation_switch_opens_a_tab_and_leaves_the_pane_on_its_surface() {
         "and its harness switch is untouched"
     );
     assert_eq!(
-        state.pane_sessions.get(&1).map(|s| s.conversation_id.as_str()),
+        state
+            .pane_sessions
+            .get(&1)
+            .map(|s| s.conversation_id.as_str()),
         Some(parent.as_str()),
         "the pane is still bound to the conversation it was on"
     );

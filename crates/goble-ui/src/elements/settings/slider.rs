@@ -19,7 +19,8 @@ use super::{control_fill, ClickCallback, SETTINGS_TOGGLE_HEIGHT};
 /// The slider's track height, and the knob's size.
 pub const SLIDER_TRACK_HEIGHT: f32 = 4.0;
 pub const SLIDER_KNOB: f32 = 14.0;
-/// The default track width, T3's contrast-row slider (`sm:w-52` = 208).
+/// The default track width: T3's `sm:w-52` (208) narrowed for the settings
+/// column, while pages that want the full reference width pass `with_width`.
 pub const SLIDER_DEFAULT_WIDTH: f32 = 160.0;
 
 /// A horizontal value slider.
@@ -196,8 +197,8 @@ impl Element for SettingsSlider {
 /// text-center font-mono text-xs`. Returns the box and the value text.
 pub fn slider_output(app: &AppContext, text: impl Into<String>) -> Box<dyn Element> {
     let label = Text::new(text)
-        .with_font_size(11.0)
-        .with_line_height(1.2)
+        .with_font_size(12.0)
+        .with_line_height(1.3)
         .with_weight(FontWeight::Medium)
         .with_color(app.theme.color(ColorToken::Text))
         .finish();

@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// How long ago an RFC3339 timestamp was, when it parses. A row that cannot
 /// read its start states no elapsed time rather than guessing one.
 pub(crate) fn elapsed_since(started_at: &str) -> Option<std::time::Duration> {
@@ -329,7 +328,9 @@ fn hide_internal_tools(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     messages
         .into_iter()
         .filter_map(|mut message| {
-            message.tool_calls.retain(|call| !is_hidden_tool(&call.name));
+            message
+                .tool_calls
+                .retain(|call| !is_hidden_tool(&call.name));
             let empty = message.role == ChatRole::Assistant
                 && message.fragments.is_empty()
                 && message.tool_calls.is_empty();
@@ -376,7 +377,10 @@ pub(crate) fn tool_call_from_event(call: &goble_desktop_service::ToolCallEvent) 
 /// A live record that carries no result yet keeps the one the transcript
 /// already had, so the output folded in from a persisted result row is not lost
 /// for the rest of the call's run.
-pub(crate) fn overlay_in_flight(messages: &mut Vec<ChatMessage>, in_flight: &HashMap<String, ToolCall>) {
+pub(crate) fn overlay_in_flight(
+    messages: &mut Vec<ChatMessage>,
+    in_flight: &HashMap<String, ToolCall>,
+) {
     if in_flight.is_empty() {
         return;
     }
@@ -464,10 +468,7 @@ pub(crate) fn overlay_reasoning(
         Some(index) => index + 1,
         None => 0,
     };
-    messages.insert(
-        index,
-        ChatMessage::new(ChatRole::Assistant, fragments),
-    );
+    messages.insert(index, ChatMessage::new(ChatRole::Assistant, fragments));
 }
 
 /// The app-owned expand-state key for one reasoning step. It is stable while

@@ -9,9 +9,9 @@ use goble_terminal::SearchMatch;
 use goble_ui::elements::terminal_block::terminal_filter_bar;
 use goble_ui::elements::{
     AppContext, Axis, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
-    Fill, Flex, GridRange, MainAxisAlignment, MainAxisSize, Scrollable, SearchInput,
-    SizeConstraint, Stack, TerminalBlockCursor, TerminalBlockPlumbing, TerminalCursorShape,
-    TerminalFilter, TerminalGrid, TerminalTextSelection, TerminalTextStyle, Text, TopbarButton,
+    Fill, Flex, MainAxisAlignment, MainAxisSize, Scrollable, SearchInput, SizeConstraint, Stack,
+    TerminalBlockCursor, TerminalBlockPlumbing, TerminalCursorShape, TerminalFilter,
+    TerminalTextSelection, TerminalTextStyle, Text, TopbarButton,
 };
 use goble_ui::geometry::Vector2F;
 use goble_ui::theme::{ColorToken, FontFamily, SpacingToken};
@@ -21,7 +21,7 @@ use crate::ui::chat;
 
 use super::blocks::{section_data, styled_section_data};
 use super::cards::{build_card, card_infos, CardInfo, CardProbe};
-use super::grid::GridProbe;
+use super::surface::{cell_width, row_pitch, CellSpan, GridSurface};
 use super::TerminalView;
 use super::{FONT_SIZE, LINE_HEIGHT};
 
@@ -100,6 +100,8 @@ pub fn build_terminal(
         // pane happens to hold: out of agent mode this pane is the shell.
         None,
         Some(chat::PaneHeading::Path(cwd.clone())),
+        // A shell pane is already the terminal; it has no dock of its own.
+        false,
     );
     // Whether the pane's whole-output filter bar holds the caret (see the input
     // rule below).
@@ -287,9 +289,7 @@ fn find_bar(
         .with_focused(find.focused)
         .with_compact(true)
         .with_on_change(move |value| {
-            change_terminal
-                .borrow_mut()
-                .set_find_query(pane_id, value);
+            change_terminal.borrow_mut().set_find_query(pane_id, value);
         })
         .with_on_focus_change(move |focused| {
             focus_terminal
@@ -352,7 +352,7 @@ fn search_ranges(
     display_offset: usize,
     screen_rows: usize,
     columns: usize,
-) -> (Vec<GridRange>, Option<usize>) {
+) -> (Vec<CellSpan>, Option<usize>) {
     if columns == 0 {
         return (Vec::new(), None);
     }
@@ -378,7 +378,7 @@ fn search_ranges(
         if Some(index) == current {
             active = Some(ranges.len());
         }
-        ranges.push(GridRange::new((row, from), (row, to)));
+        ranges.push(CellSpan::new((row, from), (row, to)));
     }
     (ranges, active)
 }
@@ -390,7 +390,7 @@ fn selection_ranges(
     display_offset: usize,
     screen_rows: usize,
     columns: usize,
-) -> Vec<GridRange> {
+) -> Vec<CellSpan> {
     if columns == 0 {
         return Vec::new();
     }
@@ -416,7 +416,7 @@ fn selection_ranges(
             columns - 1
         };
         if from <= to {
-            ranges.push(GridRange::new((row, from), (row, to)));
+            ranges.push(CellSpan::new((row, from), (row, to)));
         }
     }
     ranges
@@ -487,6 +487,7 @@ impl TerminalView {
             approval_pending: false,
             harness_refusal: None,
             composer_focused,
+            grid_only: false,
             on_activate,
             on_route,
             on_harness_mode,
@@ -507,6 +508,13 @@ impl TerminalView {
             size: None,
             origin: None,
         }
+    }
+
+    /// Draw only the live cell grid: the bottom dock and the side panel's
+    /// Terminal tab are a full-screen terminal, not a command-block history.
+    pub(super) fn with_grid_only(mut self, grid_only: bool) -> Self {
+        self.grid_only = grid_only;
+        self
     }
 
     /// Attach the app-owned scroll state of the pane's command sections.
@@ -560,7 +568,7 @@ impl TerminalView {
         let sm = app.theme.spacing_px(SpacingToken::Sm);
         let md = app.theme.spacing_px(SpacingToken::Md);
         let lg = app.theme.spacing_px(SpacingToken::Lg);
-        let row_pitch = TerminalGrid::row_pitch(FONT_SIZE, LINE_HEIGHT);
+        let row_pitch = row_pitch();
 
         // One badge line per active surface, plus the shared input bar pinned to
         // the bottom. The grid takes what is left.
@@ -590,14 +598,10 @@ impl TerminalView {
         // The approval card is output, not chrome over it, but the pty is told
         // the rows it can actually paint: a suspended turn's card takes its
         // room from the grid the same way the bar does.
-        let approval_height = self
-            .approval
-            .as_ref()
-            .map_or(0.0, |(_, height)| *height);
-        let chrome =
-            badge_lines as f32 * row_pitch + bar_height + find_chrome + approval_height;
+        let approval_height = self.approval.as_ref().map_or(0.0, |(_, height)| *height);
+        let chrome = badge_lines as f32 * row_pitch + bar_height + find_chrome + approval_height;
         let rows = (((constraint.max.y - lg * 2.0 - chrome) / row_pitch).floor() as usize).max(1);
-        let cols = ((constraint.max.x - lg * 2.0) / TerminalGrid::cell_width(FONT_SIZE))
+        let cols = ((constraint.max.x - lg * 2.0) / cell_width())
             .floor()
             .max(1.0) as usize;
 
@@ -614,7 +618,7 @@ impl TerminalView {
             session.set_size(
                 rows.min(u16::MAX as usize) as u16,
                 cols.min(u16::MAX as usize) as u16,
-                TerminalGrid::cell_width(FONT_SIZE).round() as u16,
+                cell_width().round() as u16,
                 row_pitch.round() as u16,
             );
             // Answers to the program's questions are written from this thread,
@@ -630,6 +634,78 @@ impl TerminalView {
         }
         let pane_ui = reg.pane_ui(self.pane_id).cloned().unwrap_or_default();
         drop(reg);
+
+        // The bottom dock and the side panel's Terminal tab are one live
+        // terminal surface: the alacritty viewport, painted by our own grid
+        // renderer, with none of the pane's block history, cards or composer.
+        // The chrome around it (dock header, tab strip) belongs to goble-ui;
+        // the content does not.
+        if self.grid_only {
+            self.cards.borrow_mut().clear();
+            self.block_geometry.borrow_mut().clear();
+            let columns = screen.frame.columns;
+            let selection = pane_ui
+                .copy
+                .selection()
+                .or(pane_ui.selection)
+                .map(|selection| {
+                    selection_ranges(
+                        selection,
+                        screen.frame.history_size,
+                        screen.frame.display_offset,
+                        screen.frame.rows.len(),
+                        columns,
+                    )
+                })
+                .unwrap_or_default();
+            let (highlights, active_highlight) = search_ranges(
+                &pane_ui.find.matches,
+                pane_ui.find.current,
+                screen.frame.history_size,
+                screen.frame.display_offset,
+                screen.frame.rows.len(),
+                columns,
+            );
+            let copy_cursor = pane_ui
+                .copy
+                .active
+                .then(|| {
+                    visible_cell(
+                        pane_ui.copy.cursor,
+                        screen.frame.history_size,
+                        screen.frame.display_offset,
+                    )
+                })
+                .flatten()
+                .filter(|(row, _)| *row < screen.frame.rows.len());
+            let surface = GridSurface::new(screen.frame)
+                .with_palette(palette)
+                .with_font_size(FONT_SIZE)
+                .with_line_height(LINE_HEIGHT)
+                // A dock terminal is a live screen, not history above a
+                // composer: its rows start at the top where the program put
+                // them, and its cursor says where typing goes while the pane
+                // is active.
+                .with_bottom_anchor(false)
+                .with_cursor_visible(self.active && !pane_ui.copy.active && !pane_ui.find.open)
+                .with_selection(selection)
+                .with_selection_color(app.theme.color(ColorToken::Selection))
+                .with_highlights(highlights, active_highlight)
+                .with_copy_cursor(copy_cursor)
+                .with_images(screen.images)
+                .with_image_namespace(format!("pane-{}", self.pane_id))
+                .with_cell_pixels(cell_width().round(), row_pitch.round())
+                .with_geometry(Rc::clone(&self.geometry))
+                .finish();
+            self.root = Some(
+                Container::new(surface)
+                    .with_padding(EdgeInsets::uniform(lg))
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+                    .finish(),
+            );
+            return;
+        }
+
         // What the pane paints as its body: the program's live screen while it
         // owns the pane, and the command blocks otherwise.
         let live_screen = screen.alt_screen || program_owns_screen;
@@ -757,8 +833,9 @@ impl TerminalView {
                     });
                     // The section draws its command line first, so the block's
                     // own output rows sit one line below the screen's row 0.
-                    let cursor = block_cursors.get(&block.id).map(|cursor| {
-                        TerminalBlockCursor {
+                    let cursor = block_cursors
+                        .get(&block.id)
+                        .map(|cursor| TerminalBlockCursor {
                             line: cursor.line + 1,
                             column: cursor.column,
                             shape: match cursor.shape {
@@ -772,8 +849,7 @@ impl TerminalView {
                                 }
                                 goble_terminal::CursorShape::Hidden => TerminalCursorShape::Beam,
                             },
-                        }
-                    });
+                        });
                     list = list.with_child(inset(self.plumbing.element_with_selection_and_cursor(
                         &data,
                         selection,
@@ -798,24 +874,19 @@ impl TerminalView {
         // mapped to the pointer. An image in the viewport takes the grid too:
         // block sections are text, so the live grid is the surface that can
         // paint the image on its cell.
-        let show_grid = live_screen
-            || pane_ui.copy.active
-            || pane_ui.find.open
-            || !screen.images.is_empty();
+        let show_grid =
+            live_screen || pane_ui.copy.active || pane_ui.find.open || !screen.images.is_empty();
         let history = screen.scrollback;
         let display_offset = screen.display_offset;
-        let screen_rows = screen.rows.len();
-        let columns = screen
-            .rows
-            .iter()
-            .map(|row| row.cells.len())
-            .max()
-            .unwrap_or(0);
+        let screen_rows = screen.frame.rows.len();
+        let columns = screen.frame.columns;
         let selection = pane_ui
             .copy
             .selection()
             .or(pane_ui.selection)
-            .map(|selection| selection_ranges(selection, history, display_offset, screen_rows, columns))
+            .map(|selection| {
+                selection_ranges(selection, history, display_offset, screen_rows, columns)
+            })
             .unwrap_or_default();
         let (highlights, active_highlight) = search_ranges(
             &pane_ui.find.matches,
@@ -856,43 +927,35 @@ impl TerminalView {
         } else if show_grid || screen.has_content {
             // The grid is the only surface that can paint an image, so an
             // image-only viewport takes it even when every cell is blank.
-            let probe = GridProbe {
+            let probe = GridSurface::new(screen.frame)
                 // The grid is this pane's output; the pane's input is the rich
                 // input bar below it, and that bar owns the caret. A cursor
                 // painted in the grid too would read as a second, competing
                 // insertion point.
-                inner: TerminalGrid::new(screen.rows, screen.cursor)
-                    .with_palette(palette)
-                    .with_font_size(FONT_SIZE)
-                    .with_line_height(LINE_HEIGHT)
-                    // The shell's history grows upwards from the rich input
-                    // below it (warp-new); a program that owns the screen
-                    // painted its own layout, so its rows stay where it put them.
-                    .with_bottom_anchor(!live_screen)
-                    // A program that owns the screen draws its own caret as the
-                    // pty's cursor — its position, its shape (`DECSCUSR`) and
-                    // whether it asked for one (`?25l`). That is the native
-                    // cursor of the terminal it believes it is running in, so a
-                    // TUI's editing point follows the program instead of the
-                    // pane. Only when the pane's own input owns the caret — a
-                    // plain shell, copy mode, the find bar — is the grid's
-                    // cursor hidden.
-                    .with_cursor_visible(
-                        live_screen && !pane_ui.copy.active && !pane_ui.find.open,
-                    )
-                    .with_selection(selection)
-                    .with_selection_color(app.theme.color(ColorToken::Selection))
-                    .with_highlights(highlights, active_highlight)
-                    .with_copy_cursor(copy_cursor)
-                    .with_images(screen.images)
-                    .with_image_namespace(format!("pane-{}", self.pane_id))
-                    .with_cell_pixels(
-                        TerminalGrid::cell_width(FONT_SIZE).round(),
-                        row_pitch.round(),
-                    ),
-                geometry: Rc::clone(&self.geometry),
-            }
-            .finish();
+                .with_palette(palette)
+                .with_font_size(FONT_SIZE)
+                .with_line_height(LINE_HEIGHT)
+                // The shell's history grows upwards from the rich input below
+                // it (warp-new); a program that owns the screen painted its own
+                // layout, so its rows stay where it put them.
+                .with_bottom_anchor(!live_screen)
+                // A program that owns the screen draws its own caret as the
+                // pty's cursor — its position, its shape (`DECSCUSR`) and
+                // whether it asked for one (`?25l`). That is the native cursor
+                // of the terminal it believes it is running in, so a TUI's
+                // editing point follows the program instead of the pane. Only
+                // when the pane's own input owns the caret — a plain shell,
+                // copy mode, the find bar — is the grid's cursor hidden.
+                .with_cursor_visible(live_screen && !pane_ui.copy.active && !pane_ui.find.open)
+                .with_selection(selection)
+                .with_selection_color(app.theme.color(ColorToken::Selection))
+                .with_highlights(highlights, active_highlight)
+                .with_copy_cursor(copy_cursor)
+                .with_images(screen.images)
+                .with_image_namespace(format!("pane-{}", self.pane_id))
+                .with_cell_pixels(cell_width().round(), row_pitch.round())
+                .with_geometry(Rc::clone(&self.geometry))
+                .finish();
             inset(probe)
         } else {
             *self.geometry.borrow_mut() = None;
@@ -980,4 +1043,54 @@ impl TerminalView {
             .finish();
         self.root = Some(content);
     }
+}
+
+/// The body of an agent pane's bottom terminal dock: the same PTY-backed
+/// [`TerminalView`] the shell pane draws, without the pane header or the rich
+/// input bar. The dock's own header/resize chrome is built by the chat module;
+/// this is only the live shell surface inside it.
+pub fn build_terminal_dock(
+    app: &AppContext,
+    state: &crate::ui::UiSnapshot,
+    actions: &crate::ui::UiActions,
+    pane_id: u64,
+    cwd: String,
+    active: bool,
+) -> Box<dyn Element> {
+    let view = TerminalView::new(
+        state.terminal.clone(),
+        pane_id,
+        cwd,
+        active,
+        BlockView::Terminal,
+        false,
+        None,
+        actions.on_pane_activate.clone(),
+        actions.on_terminal_command.clone(),
+        actions.on_set_pane_harness_mode.clone(),
+        actions.on_open_agent_view.clone(),
+        actions.on_shell_line.clone(),
+        actions.on_copy_terminal.clone(),
+    )
+    .with_conversation_info(card_infos(state))
+    .with_scroll(
+        state
+            .pane_terminal_scroll
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| Rc::new(RefCell::new(goble_ui::ScrollState::following()))),
+    )
+    .with_block_plumbing(TerminalBlockPlumbing::new(
+        state.terminal_filters.clone(),
+        state.terminal_global_filters.get(&pane_id).cloned(),
+        Some(actions.on_copy_terminal.clone()),
+    ))
+    // The dock is a terminal, not the pane's block history: draw the live
+    // alacritty viewport and nothing else. The side panel's Terminal tab calls
+    // this same builder, so both surfaces are the one grid renderer.
+    .with_grid_only(true)
+    .finish();
+    Container::new(view)
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .finish()
 }

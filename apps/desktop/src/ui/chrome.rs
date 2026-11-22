@@ -324,13 +324,18 @@ pub fn build_chrome_row(
                 }
             })
             .finish();
+        // The inline editor keeps the pill's exact box: same paddings, height
+        // and radius as the resting title, with no focus border adding a pixel
+        // of growth. The caret says it is being edited.
         let editor = Container::new(input)
             .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Focus)))
             .with_corner_radius(8.0)
-            .with_padding(EdgeInsets::new(2.0, 8.0, 2.0, 8.0))
+            .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
             .finish();
-        let editor = ConstrainedBox::new(editor).with_max_width(360.0).finish();
+        let editor = ConstrainedBox::new(editor)
+            .with_max_width(360.0)
+            .with_height(26.0)
+            .finish();
         let key = actions.on_session_rename_commit.clone();
         let cancel = actions.on_session_rename_cancel.clone();
         KeyHandler::new(editor, move |pressed, modifiers| {
@@ -360,15 +365,14 @@ pub fn build_chrome_row(
             .with_theme_color(ColorToken::Text, app)
             .with_max_lines(1)
             .finish();
-        let pill = HoverRow::new(
-            Container::new(label)
-                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
-                .with_corner_radius(8.0)
-                .finish(),
-        )
-        .with_on_click(move || (on_start.borrow_mut())(id.clone()))
-        .finish();
+        // No chip at rest: the title is plain text and the rounded band only
+        // appears under the pointer (where the tooltip names the action).
+        let pill = HoverRow::new(label)
+            .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
+            .with_corner_radius(8.0)
+            .with_on_click(move || (on_start.borrow_mut())(id.clone()))
+            .finish();
+        let pill = ConstrainedBox::new(pill).with_height(26.0).finish();
         let pill = Tooltip::new(pill, "Edit Conversation Title")
             .with_position(TooltipPosition::Below)
             .finish();

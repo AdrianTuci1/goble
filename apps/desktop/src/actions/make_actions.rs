@@ -2958,6 +2958,18 @@ pub fn make_actions(
                 SideTabAction::Add(kind) => state.add_side_tab(kind),
                 SideTabAction::Cycle(step) => state.cycle_side_tab(step),
             }
+            // The Terminal tab mounts the live grid: make sure the active
+            // pane's PTY exists before that surface reads it (the dock starts
+            // it on open; a tab can be opened without the dock).
+            if state.active_side_tab_kind() == crate::state::SideTabKind::Terminal {
+                let pane_id = state.active_pane_id;
+                let cwd = state
+                    .pane_sessions
+                    .get(&pane_id)
+                    .map(|session| session.path.clone())
+                    .unwrap_or_default();
+                state.terminal.borrow_mut().ensure_session(pane_id, &cwd);
+            }
         })),
         on_onboarding: action_onboarding.clone(),
         // The settings tab's one dispatch. Every page row, field commit, dialog

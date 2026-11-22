@@ -161,7 +161,10 @@ impl SideSplitLayout {
         if size.x <= 0.0 {
             return self.ratio;
         }
-        resolved_side_split_ratio((pointer_x - origin.x()) / size.x, size.x)
+        // The boundary sits at `origin.x + size.x * (1 - side_ratio)`: the
+        // side panel is the trailing half. A pointer dragging right must
+        // therefore shrink the side share so the boundary follows the cursor.
+        resolved_side_split_ratio(1.0 - (pointer_x - origin.x()) / size.x, size.x)
     }
 
     fn request_cursor(&self, ctx: &PaintContext, app: &AppContext) {

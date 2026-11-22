@@ -208,6 +208,14 @@ impl Theme {
     pub fn color(&self, token: ColorToken) -> ColorU {
         match token {
             ColorToken::Bg => self.bg.unwrap_or(self.colors.bg),
+            ColorToken::ContentBg => {
+                let bg = self.bg.unwrap_or(self.colors.bg);
+                if bg.r < 128 {
+                    bg.mix(&ColorU::new(0, 0, 0, 255), 0.45)
+                } else {
+                    bg
+                }
+            }
             ColorToken::Surface => self.surface.unwrap_or(self.colors.surface),
             ColorToken::SurfaceRaised => self.colors.surface_raised,
             ColorToken::Border => self.colors.border,
@@ -484,6 +492,10 @@ pub struct ColorScheme {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ColorToken {
     Bg,
+    /// The content material every pane/panel surface paints. It is the shell's
+    /// `Bg` pushed darker, so panels read black while the topbar and the
+    /// sidebar keep the grey `Surface`.
+    ContentBg,
     Surface,
     SurfaceRaised,
     Border,

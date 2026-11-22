@@ -861,7 +861,7 @@ impl PaneCard {
         Self {
             content,
             fill: pane_surface(app),
-            backdrop: app.theme.color(ColorToken::Surface),
+            backdrop: app.theme.color(ColorToken::ContentBg),
             size: None,
             origin: None,
         }
@@ -970,7 +970,7 @@ fn paint_card_corner_cut(
 /// The returned value is a theme token's colour, never a hardcoded one, so the
 /// dark and light themes both follow their own palette.
 fn pane_surface(app: &AppContext) -> goble_ui::ColorU {
-    app.theme.color(ColorToken::Surface)
+    app.theme.color(ColorToken::ContentBg)
 }
 
 /// `rect` shrunk by `amount` on every side, never past half its width or

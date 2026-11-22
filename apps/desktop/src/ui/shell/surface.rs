@@ -46,10 +46,10 @@ impl WorkspaceSurface {
         // One flat dark surface for the whole pane area, edges included: no
         // rounded sheet and no band, so the resize zone reads as the same
         // black material as the panels.
-        let backdrop = app.theme.color(ColorToken::Bg);
+        let backdrop = app.theme.color(ColorToken::ContentBg);
         Self {
             child,
-            fill: app.theme.color(ColorToken::Bg),
+            fill: app.theme.color(ColorToken::ContentBg),
             backdrop,
             radius: WORKSPACE_RADIUS,
             size: None,

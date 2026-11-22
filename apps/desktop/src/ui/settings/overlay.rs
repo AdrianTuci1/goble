@@ -208,7 +208,7 @@ fn overlay_content(
             .finish()
     };
     Container::new(row)
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
         .with_border(
             goble_ui::elements::Border::all(1.0)
                 .with_border_color(app.theme.color(ColorToken::Border)),

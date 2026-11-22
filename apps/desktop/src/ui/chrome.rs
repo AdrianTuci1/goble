@@ -1947,7 +1947,7 @@ pub fn build_side_panel(
     // the main card (which crosses under it by the canceled gutter).
     let inset = crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET;
     let body = Container::new(body)
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
         // The reference's content inset (the search field's own left margin)
         // is a little wider than the panel frame: 16 pt inside the `Bg`, the
         // same breathing room the main pane's chat column keeps.
@@ -1957,7 +1957,7 @@ pub fn build_side_panel(
     // review tabs all sit on `Bg`), so it reads apart from the grey sidebar and
     // topbar material.
     Container::new(body)
-        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+        .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
         .with_padding(EdgeInsets::new(0.0, inset, inset, inset))
         .finish()
 }

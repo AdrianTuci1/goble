@@ -1557,7 +1557,7 @@ impl ChatView {
         // `md` gap the chrome used to contribute to the column is this
         // container's own top padding, so the lane's background covers it too.
         let content: Box<dyn Element> = Container::new(column.finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
+            .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
             .with_padding(EdgeInsets::new(
                 0.0,
                 if chrome.is_some() { spacing } else { 0.0 },

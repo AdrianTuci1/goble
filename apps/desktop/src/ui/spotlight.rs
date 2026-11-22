@@ -332,7 +332,7 @@ fn build_window(
         .with_child(build_results(app, state, actions));
     ConstrainedBox::new(
         Container::new(column.finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
             .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
             .with_corner_radius(14.0)
             .finish(),

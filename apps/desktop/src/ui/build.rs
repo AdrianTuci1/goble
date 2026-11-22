@@ -360,7 +360,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
             };
             let panels = Padding::new(main, insets).finish();
             Container::new(panels)
-                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+                .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
                 .finish()
         } else {
             // Every other page is not a panel surface: it takes the whole main

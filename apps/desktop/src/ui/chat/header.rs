@@ -589,7 +589,7 @@ pub(crate) fn build_agent_header_with(
     let row = Container::new(row)
         .with_padding(EdgeInsets::new(0.0, v_pad, 0.0, v_pad))
         .finish();
-    HeaderBand::new(row, app.theme.color(ColorToken::Surface)).finish()
+    HeaderBand::new(row, app.theme.color(ColorToken::ContentBg)).finish()
 }
 
 /// The pane's own work cue, drawn between the header's empty space and the

@@ -1007,11 +1007,12 @@ mod tests {
     fn workspace_sheet(commands: &[RenderCommand], app: &AppContext, size: Vector2F) -> RectF {
         let bg = app.theme.color(ColorToken::Bg);
         let surface = app.theme.color(ColorToken::Surface);
+        let content = app.theme.color(ColorToken::ContentBg);
         let sheets: Vec<RectF> = commands
             .iter()
             .filter_map(|command| match command {
                 RenderCommand::FillRect { rect, color, .. }
-                    if (*color == bg || *color == surface)
+                    if (*color == bg || *color == surface || *color == content)
                         && rect.height() > size.y / 2.0
                         && rect.width() > size.x / 2.0
                         && rect.min_x() >= crate::ui::SIDEBAR_WIDTH - 1.0
@@ -1163,7 +1164,7 @@ mod tests {
                 if two_panes { 2 } else { 1 },
                 "the frame draws every pane: {frames:?}"
             );
-            let bg = app.theme.color(ColorToken::Bg);
+            let bg = app.theme.color(ColorToken::ContentBg);
             let border = app.theme.color(ColorToken::Border);
             let _ = border;
             for card in &frames {
@@ -1220,7 +1221,7 @@ mod tests {
     fn the_panel_has_no_corner_ornament() {
         let app = AppContext::default();
         let accent = app.theme.color(ColorToken::Accent);
-        let surface = app.theme.color(ColorToken::Surface);
+        let surface = app.theme.color(ColorToken::ContentBg);
         let border = app.theme.color(ColorToken::Border);
 
         for two_panes in [false, true] {
@@ -1284,8 +1285,8 @@ mod tests {
             for two_panes in [false, true] {
                 let (pixels, frames) = raster_frame(app, two_panes);
                 assert_eq!(frames.len(), if two_panes { 2 } else { 1 });
-                let surface = app.theme.color(ColorToken::Surface);
-                let bg = app.theme.color(ColorToken::Bg);
+                let surface = app.theme.color(ColorToken::ContentBg);
+                let bg = app.theme.color(ColorToken::ContentBg);
                 let accent = app.theme.color(ColorToken::Accent);
 
                 for (index, card) in frames.iter().enumerate() {
@@ -1509,7 +1510,7 @@ mod tests {
     /// plus `TOPBAR_HEIGHT` (so the band is one bar tall against the card, not
     /// inset). A header inside the content lane would be lane-wide instead.
     fn header_band(commands: &[RenderCommand], app: &AppContext, frame: RectF) -> Option<RectF> {
-        let surface = app.theme.color(ColorToken::Surface);
+        let surface = app.theme.color(ColorToken::ContentBg);
         let inset = crate::ui::panes::PANE_INSET;
         commands.iter().find_map(|command| match command {
             RenderCommand::FillRect {
@@ -1536,7 +1537,7 @@ mod tests {
     /// surface), so the card's own fill — the frame rect itself — is skipped and
     /// the column is the tall fill under the pane's chrome.
     fn content_column(commands: &[RenderCommand], app: &AppContext, frame: RectF) -> RectF {
-        let bg = app.theme.color(ColorToken::Bg);
+        let bg = app.theme.color(ColorToken::ContentBg);
         commands
             .iter()
             .filter_map(|command| match command {
@@ -3182,9 +3183,9 @@ mod tests {
             "the surface reaches the window's right/bottom edges: {sheet:?}"
         );
 
-        // The side panel body paints the main panel's `Bg` across the boundary,
+        // The side panel body paints the content material across the boundary,
         // with no casing of its own.
-        let bg = app.theme.color(ColorToken::Bg);
+        let bg = app.theme.color(ColorToken::ContentBg);
         let boundary = sheet.min_x() + sheet.width() * 0.5;
         let side_at = vec2f(boundary + 30.0, sheet.min_y() + 120.0);
         assert!(

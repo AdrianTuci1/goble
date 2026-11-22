@@ -1610,15 +1610,13 @@ mod tests {
         assert!((cut_radius - CARD_EDGE_BAND - radius).abs() < 1e-6);
     }
 
-    /// R: one flat grey app surface. EVERY pane card — chat, worker, terminal,
-    /// file, diff, settings — shares the window's `Surface`; there is no darker
-    /// card material and no second backdrop tone.
+    /// Every pane card — chat, worker, terminal, file, diff, settings — shares
+    /// the black `ContentBg` material; the shell/topbar/sidebar keep the grey
+    /// `Surface`.
     #[test]
-    fn every_panel_card_shares_the_window_surface() {
+    fn every_panel_card_shares_the_content_material() {
         fn assert_panels_flat(app: &AppContext) {
-            let surface = app.theme.color(ColorToken::Surface);
-            let bg = app.theme.color(ColorToken::Bg);
-            assert_eq!(bg, surface, "window and panel materials are one grey");
+            let surface = app.theme.color(ColorToken::ContentBg);
             for kind in [
                 PaneKind::Chat,
                 PaneKind::Worker,
@@ -1634,7 +1632,7 @@ mod tests {
                 assert_eq!(
                     pane_surface(app),
                     surface,
-                    "the panel card ({kind:?}) is the window surface"
+                    "the panel card ({kind:?}) is the content material"
                 );
             }
         }

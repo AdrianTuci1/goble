@@ -3946,7 +3946,8 @@ mod sticky_turn {
                 RenderCommand::FillRect { rect, color, .. }
                     if *color == raised
                         && (rect.max_x()
-                            - (width - crate::elements::chat_typography::USER_BUBBLE_RIGHT_INSET))
+                            - (width
+                                - crate::elements::chat_typography::USER_BUBBLE_RIGHT_INSET))
                             .abs()
                             < 0.01
                         && rect.width() <= width + 0.01
@@ -4695,11 +4696,11 @@ fn laned_view(
 /// in. (The view's other backgrounds are `Surface`/raised.)
 fn view_content_column(commands: &[crate::render::RenderCommand], app: &AppContext) -> RectF {
     use crate::render::RenderCommand;
-    let bg = app.theme.color(ColorToken::Bg);
+    let content = app.theme.color(ColorToken::ContentBg);
     commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::FillRect { rect, color, .. } if *color == bg => Some(*rect),
+            RenderCommand::FillRect { rect, color, .. } if *color == content => Some(*rect),
             _ => None,
         })
         .max_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
@@ -4968,7 +4969,7 @@ fn the_lane_column_paints_the_one_surface() {
     let (mut view, _starts) = laned_view(None);
     let commands = render_element(&mut view, vec2f(1600.0, 900.0), &app);
 
-    let bg = app.theme.color(ColorToken::Bg);
+    let bg = app.theme.color(ColorToken::ContentBg);
     let column = commands
         .iter()
         .filter_map(|command| match command {
@@ -4980,12 +4981,12 @@ fn the_lane_column_paints_the_one_surface() {
     assert_eq!(
         (column.width(), column.min_x()),
         (920.0, 340.0),
-        "the darker column is the centred lane: {column:?}"
+        "the content column is the centred lane: {column:?}"
     );
     assert_eq!(
         bg,
-        app.theme.color(ColorToken::Surface),
-        "the lane is the same flat grey as the pane surface"
+        app.theme.color(ColorToken::ContentBg),
+        "the lane paints the content material"
     );
 }
 

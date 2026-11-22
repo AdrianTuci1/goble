@@ -195,9 +195,10 @@ window scale. Files open in the right panel's Files tab (`side-files-*`), not a
 main pane; the left sidebar carries Projects/Conversations only and no file
 tree (`sidebar-no-files-*`). The tab-strip
 evidence shows multiple chips, a hovered chip with its close X and the pinned
-`+` menu (`side-tabs-hover-*`, `side-tabs-add-*`). The app is one flat grey
-(`Surface`) surface — window, panes, cards and workspace sheet share it, with
-no darker card fill, border, rounded casing, shadow or 4 px band; the only
+`+` menu (`side-tabs-hover-*`, `side-tabs-add-*`). The shell material (topbar, sidebar) is the grey `Surface`; the content
+material (`ContentBg`, the shell Bg pushed toward black) is shared by the
+panes, cards, workspace sheet, chat lane, spotlight and settings sheet. There
+is no border, rounded casing, shadow or 4 px band around content; the only
 separation is the full-height 1 px main/side hairline. The topbar's two panel
 toggles use DSH's own `panel-left-outline` glyph and its mirrored right-hand
 twin. The active conversation title is a rounded pill that turns into an inline

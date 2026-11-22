@@ -690,7 +690,7 @@ fn the_shells_composer_is_the_panes_bottom_band() {
     let app = AppContext::default();
     let surface = app.theme.color(ColorToken::Surface);
     let raised = app.theme.color(ColorToken::SurfaceRaised);
-    let pane_bg = app.theme.color(ColorToken::Bg);
+    let pane_bg = app.theme.color(ColorToken::ContentBg);
     let radius = crate::ui::panes::WINDOW_CORNER_RADIUS;
     let fills = |commands: &[RenderCommand], color: ColorU, corner_radius: f32, min_height: f32| {
         commands

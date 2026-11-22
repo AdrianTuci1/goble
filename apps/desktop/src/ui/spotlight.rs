@@ -199,7 +199,9 @@ struct SpotPalette {
 fn palette(app: &AppContext) -> SpotPalette {
     if app.theme.name == "dark" {
         SpotPalette {
-            card: ColorU::hex(0x1E1D22),
+            // X: the reference card fill, so the black content material behind
+            // it still reads as a lifted rounded card.
+            card: ColorU::hex(0x17161B),
             border: ColorU::hex(0x323136),
             raised: ColorU::hex(0x323136),
             text: ColorU::hex(0xF8F7FC),
@@ -407,9 +409,9 @@ fn build_window(
         .with_child(build_results(app, state, actions));
     ConstrainedBox::new(
         Container::new(column.finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
-            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-            .with_corner_radius(14.0)
+            .with_background(Fill::Solid(colors.card))
+            .with_border(Border::all(1.0).with_border_color(colors.border))
+            .with_corner_radius(CARD_RADIUS)
             .finish(),
     )
     .with_width(width)

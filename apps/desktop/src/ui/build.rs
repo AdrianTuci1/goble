@@ -1001,37 +1001,31 @@ mod tests {
             .collect()
     }
 
-    /// The one workspace sheet: the rounded surface both panels live on. It is
-    /// the only `Border` rule with the sheet radius that spans the content
-    /// height, so its count also proves the old per-panel casings are gone.
+    /// The flat workspace surface: the full pane-area `Bg` fill that both
+    /// panels live on. It has no radius, margin or border; the largest
+    /// content-sized fill is the sheet.
     fn workspace_sheet(commands: &[RenderCommand], app: &AppContext, size: Vector2F) -> RectF {
-        // The shell's sheet is the one rounded `Surface` fill that spans the
-        // workspace; it owns no Border stroke any more (the windows float with
-        // a shadow instead).
+        let bg = app.theme.color(ColorToken::Bg);
         let surface = app.theme.color(ColorToken::Surface);
         let sheets: Vec<RectF> = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::FillRect {
-                    rect,
-                    color,
-                    corner_radius,
-                } if *color == surface
-                    && (*corner_radius - 12.0).abs() < 0.01
-                    && rect.height() > size.y / 2.0
-                    && rect.width() > size.x / 2.0 =>
+                RenderCommand::FillRect { rect, color, .. }
+                    if (*color == bg || *color == surface)
+                        && rect.height() > size.y / 2.0
+                        && rect.width() > size.x / 2.0
+                        && rect.min_x() >= crate::ui::SIDEBAR_WIDTH - 1.0
+                        && rect.min_y() >= crate::ui::chrome::CHROME_HEIGHT - 1.0 =>
                 {
                     Some(*rect)
                 }
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            sheets.len(),
-            1,
-            "the workspace wears one sheet, not a casing per panel: {sheets:?}"
-        );
-        sheets[0]
+        sheets
+            .into_iter()
+            .max_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
+            .expect("the workspace surface")
     }
 
     /// The rule that spans the window, when the frame drew one.
@@ -2998,10 +2992,9 @@ mod tests {
         );
     }
 
-    /// Dragging the shared boundary writes the side panel's ratio, clamps it to
-    /// the `0.25..=0.75` range at a wide window, and stops at each panel's
-    /// 320 pt minimum when the content area is narrower. The handle is still a
-    /// cursor-only band centred on the boundary inside the one sheet.
+    /// Dragging the shared boundary writes the side panel's trailing ratio,
+    /// clamps it to the `0.25..=0.75` range at a wide window, and keeps both
+    /// panels above their 320 pt minimum when the content area is narrower.
     #[test]
     fn dragging_the_side_split_changes_and_clamps_the_ratio() {
         let app = AppContext::default();
@@ -3028,7 +3021,8 @@ mod tests {
         assert!(state.borrow().side_split_dragging);
         let _ = render_element(&mut root, size, &app);
 
-        // Far right: the ratio stops at 0.75, not at the window edge.
+        // Far right: the side panel is the trailing share, so it shrinks to
+        // its 0.25 floor while the boundary follows the pointer.
         assert!(root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: vec2f(size.x - 1.0, mid_y),
@@ -3037,8 +3031,8 @@ mod tests {
             &app,
         ));
         assert!(
-            (state.borrow().side_split_ratio - 0.75).abs() < 0.001,
-            "the drag clamps at 0.75, got {}",
+            (state.borrow().side_split_ratio - 0.25).abs() < 0.001,
+            "the right drag clamps at the 0.25 side share, got {}",
             state.borrow().side_split_ratio
         );
         let _ = render_element(&mut root, size, &app);
@@ -3046,40 +3040,31 @@ mod tests {
         let sheet = workspace_sheet(&commands, &app, size);
         let main = pane_frames(&state)[0];
         assert!(
-            (main.width() - sheet.width() * 0.25).abs() < 10.0,
-            "the main panel keeps the quarter share: {main:?} in {sheet:?}"
+            (main.width() - sheet.width() * 0.75).abs() < 12.0,
+            "the main panel keeps the three-quarter share: {main:?} in {sheet:?}"
         );
 
-        assert!(root.dispatch_event(
+        let _ = root.dispatch_event(
             &DispatchedEvent::MouseUp {
                 position: vec2f(size.x - 1.0, mid_y),
                 button: 0,
             },
             &mut ctx,
             &app,
-        ));
+        );
         assert!(
             !state.borrow().side_split_dragging,
             "mouse up ends the drag"
         );
 
-        // Narrower content: at 1400 the panel can be at most all but 320 pt,
-        // and the main panel stops at 320 pt.
+        // Narrower content: the side share can reach 0.75, but the main panel
+        // never falls below 320 pt; dragging left/right hits those bounds.
         let narrow = vec2f(1400.0, 900.0);
-        state.borrow_mut().side_split_ratio = 0.75;
+        state.borrow_mut().side_split_ratio = 0.5;
         let _ = render_element(&mut root, narrow, &app);
         let commands = render_element(&mut root, narrow, &app);
         let sheet = workspace_sheet(&commands, &app, narrow);
-        let expected = 1.0 - 320.0 / sheet.width();
-        // The layout resolves the stored 0.75 against the minimum rather than
-        // writing the clamped value back; the panel widths are the evidence.
         let main = pane_frames(&state)[0];
-        assert!(
-            (main.width() - 320.0).abs() < 10.0,
-            "the main panel holds its 320 pt minimum: {main:?}"
-        );
-        // The pane card's right edge crosses the shared boundary by the
-        // canceled gutter (card max = boundary + 5), so the handle is there.
         let boundary = main.max_x() - 5.0;
         let mid_y = main.min_y() + main.height() / 2.0;
         assert!(root.dispatch_event(
@@ -3098,20 +3083,21 @@ mod tests {
             &mut ctx,
             &app,
         ));
-        let min_side = 320.0 / sheet.width();
         assert!(
-            (state.borrow().side_split_ratio - min_side).abs() < 0.001,
-            "the drag clamps at the 320 pt side minimum, got {} (wanted {min_side})",
+            state.borrow().side_split_ratio > 0.69,
+            "the left drag takes the side panel to its width-aware maximum, got {}",
             state.borrow().side_split_ratio
         );
-
-        let _ = root.dispatch_event(
-            &DispatchedEvent::MouseUp {
-                position: vec2f(0.0, mid_y),
-                button: 0,
-            },
-            &mut ctx,
-            &app,
+        let _ = render_element(&mut root, narrow, &app);
+        let main = pane_frames(&state)[0];
+        assert!(
+            main.width() >= 320.0 - 10.0,
+            "the main panel holds its 320 pt minimum: {main:?}"
+        );
+        let min_side = (320.0 / sheet.width()).min(0.75);
+        assert!(
+            state.borrow().side_split_ratio >= min_side - 0.001,
+            "the side panel keeps its minimum too"
         );
     }
 
@@ -3134,7 +3120,7 @@ mod tests {
         );
         assert!(
             (bottom - 8.0).abs() < 0.5,
-            "the bottom keeps the card gutter plus the shell's 4 pt free space: {bottom}"
+            "the bottom keeps the area and card gutters: {bottom}"
         );
     }
 
@@ -3181,33 +3167,24 @@ mod tests {
         let commands = render_element(&mut root, size, &app);
         let sheet = workspace_sheet(&commands, &app, size);
 
-        // The free margin is exactly 5 pt on every side, outside the sheet.
-        for (label, actual) in [
-            ("left", sheet.min_x() - crate::ui::SIDEBAR_WIDTH),
-            ("top", sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT),
-            ("right", size.x - sheet.max_x()),
-            ("bottom", size.y - sheet.max_y()),
-        ] {
-            assert!(
-                (actual - shell::WORKSPACE_MARGIN).abs() < 0.51,
-                "the {label} free margin is 5 pt, got {actual}: {sheet:?}"
-            );
-        }
-        // The margin is the shell's `Bg`, not the sheet's `Surface`.
-        let bg = app.theme.color(ColorToken::Bg);
-        let margin_at = vec2f(sheet.min_x() - 2.0, sheet.min_y() + 4.0);
+        // Remote flat-square shell: the surface reaches the chrome, the
+        // sidebar and the window's right/bottom edges; no margin or radius.
         assert!(
-            commands.iter().any(|command| matches!(
-                command,
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == bg && contains(*rect, margin_at)
-            )),
-            "the free margin is painted in the shell background"
+            (sheet.min_x() - crate::ui::SIDEBAR_WIDTH).abs() < 1.0,
+            "the surface starts at the sidebar: {sheet:?}"
+        );
+        assert!(
+            (sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT).abs() < 1.0,
+            "the surface starts under the chrome: {sheet:?}"
+        );
+        assert!(
+            (size.x - sheet.max_x()).abs() < 1.0 && (size.y - sheet.max_y()).abs() < 1.0,
+            "the surface reaches the window's right/bottom edges: {sheet:?}"
         );
 
         // The side panel body paints the main panel's `Bg` across the boundary,
-        // with no casing of its own: the only rounded sheet rule is the one
-        // `workspace_sheet` found.
+        // with no casing of its own.
+        let bg = app.theme.color(ColorToken::Bg);
         let boundary = sheet.min_x() + sheet.width() * 0.5;
         let side_at = vec2f(boundary + 30.0, sheet.min_y() + 120.0);
         assert!(

@@ -151,8 +151,8 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     );
     assert_eq!(
         band.0.max_x(),
-        width,
-        "the user's bubble is right-aligned to the pane's trailing edge"
+        width - crate::elements::chat_typography::USER_BUBBLE_RIGHT_INSET,
+        "the user's bubble keeps its trailing inset"
     );
     assert!(
         band.0.width() <= width * 0.82 + 0.01,
@@ -3945,7 +3945,10 @@ mod sticky_turn {
             .filter_map(|command| match command {
                 RenderCommand::FillRect { rect, color, .. }
                     if *color == raised
-                        && (rect.max_x() - width).abs() < 0.01
+                        && (rect.max_x()
+                            - (width - crate::elements::chat_typography::USER_BUBBLE_RIGHT_INSET))
+                            .abs()
+                            < 0.01
                         && rect.width() <= width + 0.01
                         && rect.height() > 20.0
                         && Some(*rect) != pinned =>
@@ -4085,8 +4088,8 @@ mod sticky_turn {
         assert_eq!(band.min_y(), 0.0, "the band sits at the viewport top");
         assert_eq!(
             band.max_x(),
-            width,
-            "the pin is right-aligned to the pane's trailing edge"
+            width - crate::elements::chat_typography::USER_BUBBLE_RIGHT_INSET,
+            "the pin keeps the bubble's 16 pt trailing inset"
         );
         let row = user_row("Fix the login bug", width, &app);
         assert_eq!(
@@ -4141,8 +4144,8 @@ mod sticky_turn {
         );
         assert_eq!(
             band.max_x(),
-            width,
-            "the pin is anchored to the same trailing edge as the bubble"
+            width - crate::elements::chat_typography::USER_BUBBLE_RIGHT_INSET,
+            "the pin is anchored to the bubble's trailing edge"
         );
         assert!(
             !commands.iter().any(|command| matches!(

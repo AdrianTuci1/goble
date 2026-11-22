@@ -433,8 +433,8 @@ fn transcript_rows_are_full_width_bands_with_a_right_aligned_user_bubble() {
     assert_eq!(band.1, 20.0, "the user's bubble carries DSH's 20 px radius");
     assert_eq!(
         band.0.max_x(),
-        width,
-        "the user's bubble is right-aligned to the lane's trailing edge"
+        width - crate::elements::chat_typography::USER_BUBBLE_RIGHT_INSET,
+        "the user's bubble keeps its trailing inset"
     );
     assert!(
         band.0.width() <= width * 0.82 + 0.01,

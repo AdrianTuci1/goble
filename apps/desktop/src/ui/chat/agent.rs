@@ -1062,8 +1062,8 @@ mod chat_geometry_tests {
         );
         assert_eq!(
             band.0.max_x(),
-            pane_right,
-            "the user's bubble is right-aligned to the pane's trailing edge"
+            pane_right - 16.0,
+            "the user's bubble keeps a 16 pt inset from the lane's trailing edge"
         );
         assert!(
             band.0.min_x() > pane_left + 50.0,

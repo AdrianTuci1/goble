@@ -274,7 +274,7 @@ impl Element for StickyHeader {
         // its first line (capped like the bubble) and anchored to the lane's
         // trailing edge.
         let band_width = (measured + pad_x * 2.0).min(cap).min(size.x).max(0.0);
-        let band_x = origin.x + size.x - band_width;
+        let band_x = origin.x + size.x - chat_typography::USER_BUBBLE_RIGHT_INSET - band_width;
         // The pinned band mirrors the user's rounded bubble: no prompt marker,
         // so the first line starts at the band's own text inset.
         renderer.fill_rounded_rect(
@@ -409,7 +409,8 @@ pub(super) fn painted_strip(
     let rule = app.theme.color(ColorToken::Border);
     let height = StickyHeader::height(app);
     let right_aligned = |rect: &crate::geometry::RectF| {
-        (rect.max_x() - width).abs() < 0.01 && rect.width() <= width + 0.01
+        (rect.max_x() - (width - chat_typography::USER_BUBBLE_RIGHT_INSET)).abs() < 0.01
+            && rect.width() <= width + 0.01
     };
     commands.iter().enumerate().find_map(|(index, command)| {
         let RenderCommand::FillRect { rect, color, .. } = command else {

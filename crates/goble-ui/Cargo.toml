@@ -35,7 +35,7 @@ num-traits = "0.2"
 ordered-float = "3.0"
 palette = "0.7"
 parking_lot = "0.12"
-pollster = "0.4"
+pollster = "1.0"
 pulldown-cmark = "0.13"
 resvg = "0.47"
 # Syntax highlighting for code blocks and tool bodies. syntect uses the native

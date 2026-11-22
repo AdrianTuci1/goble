@@ -362,6 +362,11 @@ impl RootView {
                     active.insert(pane_id, path);
                     lists.insert(pane_id, paths);
                 }
+                if let Some(path) = s.side_file.clone() {
+                    open.push((crate::state::SIDE_FILE_PANE_ID, path.clone()));
+                    active.insert(crate::state::SIDE_FILE_PANE_ID, path);
+                    lists.insert(crate::state::SIDE_FILE_PANE_ID, Vec::new());
+                }
                 let contents = self.file_cache.borrow_mut().read_open(&open, &active);
                 (contents, lists)
             };
@@ -636,6 +641,7 @@ impl RootView {
                 side_panel_maximized: s.side_panel_maximized,
                 side_tabs: s.side_tabs.clone(),
                 active_side_tab: s.active_side_tab,
+                side_file: s.side_file.clone(),
                 spotlight: s.spotlight.clone(),
                 side_tab_add_menu_open: s.side_tab_add_menu_open.clone(),
                 side_swipe_accum: s.side_swipe_accum.clone(),

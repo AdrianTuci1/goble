@@ -209,18 +209,30 @@ fn main() -> anyhow::Result<()> {
             ),
             (
                 "spotlight",
-                vec2f(1600.0, 1000.0),
+                vec2f(1182.0, 667.0),
                 false,
                 SettingsCategory::General,
             ),
             (
                 "spotlight-scope",
-                vec2f(1600.0, 1000.0),
+                vec2f(1182.0, 667.0),
                 false,
                 SettingsCategory::General,
             ),
             (
                 "spotlight-options",
+                vec2f(1182.0, 667.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-files",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "sidebar-no-files",
                 vec2f(1600.0, 1000.0),
                 false,
                 SettingsCategory::General,
@@ -413,8 +425,18 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 if name.starts_with("spotlight") {
+                    // The reference has exactly two conversations in the
+                    // spotlight fixture; the shared seed carries a third plus
+                    // an archived row, so trim the preview data to match the
+                    // shot while leaving every other scene untouched.
+                    s.conversations
+                        .retain(|entry| entry.id == "spot-1" || entry.id == "spot-2");
                     s.spotlight.open = true;
-                    s.spotlight.focused = true;
+                    // The reference menus were opened from the scope pill /
+                    // options button, which leaves the query line unfocused;
+                    // the caret is not in the shot.
+                    s.spotlight.focused =
+                        !(name == "spotlight-scope" || name == "spotlight-options");
                     if name == "spotlight-scope" {
                         *s.spotlight.scope_menu_open.borrow_mut() = true;
                     }
@@ -433,6 +455,16 @@ fn main() -> anyhow::Result<()> {
                     if name == "side-tabs-add" {
                         *s.side_tab_add_menu_open.borrow_mut() = true;
                     }
+                }
+                if name == "side-files" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Files];
+                    s.active_side_tab = 0;
+                    s.side_file = Some(repo_path.join("src/lib.rs").to_string_lossy().to_string());
+                }
+                if name == "sidebar-no-files" {
+                    s.right_sidebar_open = false;
+                    s.sidebar_visible = true;
                 }
                 if name == "side-agent" {
                     s.right_sidebar_open = true;

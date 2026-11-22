@@ -303,6 +303,8 @@ pub fn make_actions(
     let on_toast_dismiss = Rc::clone(&state);
     let on_toggle_explorer_dir = Rc::clone(&state);
     let on_explorer_file_click = Rc::clone(&state);
+    let on_open_file_side = Rc::clone(&state);
+    let on_open_files_tab = Rc::clone(&state);
     let on_open_file_floating = Rc::clone(&state);
     let desktop_open_file_floating = desktop.clone();
     let on_dock_float = Rc::clone(&state);
@@ -2470,8 +2472,9 @@ pub fn make_actions(
                         }
                     }
                     DiffPanelAction::OpenFile(path) => {
-                        state.focus_pane(pane_id);
-                        open_file_pane(&mut state, path, desktop_diff_panel.as_ref());
+                        // Y: a file reference opens the side panel's Files tab;
+                        // it never splits or retargets a main pane.
+                        state.open_file_side(path);
                     }
                     DiffPanelAction::CopyPaths(paths) => {
                         crate::clipboard::copy_text(&paths.join("\n"));
@@ -2761,8 +2764,13 @@ pub fn make_actions(
             }
         })),
         on_explorer_file_click: Rc::new(RefCell::new(move |path: String| {
-            let mut state = on_explorer_file_click.borrow_mut();
-            open_file_pane(&mut state, path, desktop_file_view.as_ref());
+            on_explorer_file_click.borrow_mut().open_file_side(path);
+        })),
+        on_open_file_side: Rc::new(RefCell::new(move |path: String| {
+            on_open_file_side.borrow_mut().open_file_side(path);
+        })),
+        on_open_files_tab: Rc::new(RefCell::new(move || {
+            on_open_files_tab.borrow_mut().open_files_tab();
         })),
         // DSH's "Open in floating panel": the file pane opens first (beside the
         // active pane, or as a chip in the file pane already in front), then the

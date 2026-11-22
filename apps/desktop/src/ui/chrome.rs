@@ -1658,10 +1658,8 @@ fn build_overview_popover_content(
     body = body.with_child(row);
     flat.push(action);
 
-    let on_explorer = actions.on_select_sidebar_view.clone();
-    let files = Rc::new(RefCell::new(move || {
-        (on_explorer.borrow_mut())(SidebarView::Explorer)
-    }));
+    let on_files_tab = actions.on_open_files_tab.clone();
+    let files = Rc::new(RefCell::new(move || (on_files_tab.borrow_mut())()));
     let (row, action) = overview_action_row(
         app,
         "folder",
@@ -1901,20 +1899,26 @@ pub fn build_side_panel(
             crate::ui::terminal::build_terminal_dock(app, state, actions, active, cwd, true)
         }
         SideTabKind::Files => {
-            let path = state
-                .spaces
-                .get(state.active_space)
-                .and_then(|space| space.leaf_kind(active))
-                .and_then(|kind| match kind {
-                    PaneKind::File { path } => Some(path.clone()),
-                    _ => None,
-                });
-            match (state.pane_files.contains_key(&active), path) {
+            // Y: the tab shows the file a click named (SIDE_FILE_PANE_ID), or
+            // the file the active pane already shows. It never retargets the
+            // main pane just to read a file.
+            let (pane_id, path) = if let Some(path) = state.side_file.clone() {
+                (crate::state::SIDE_FILE_PANE_ID, Some(path))
+            } else {
+                let path = state
+                    .spaces
+                    .get(state.active_space)
+                    .and_then(|space| space.leaf_kind(active))
+                    .and_then(|kind| match kind {
+                        PaneKind::File { path } => Some(path.clone()),
+                        _ => None,
+                    });
+                (active, path)
+            };
+            match (state.pane_files.contains_key(&pane_id), path) {
                 (true, Some(path)) => {
-                    crate::ui::file_view::build_file_view(app, state, actions, active, &path)
+                    crate::ui::file_view::build_file_view(app, state, actions, pane_id, &path)
                 }
-                // No file is open in the active pane: say so instead of
-                // drawing a view of a file that is not there.
                 _ => side_tabs::no_file_message(app),
             }
         }
@@ -2170,14 +2174,14 @@ fn build_overview_content(
             Container::new(panel_row(app, icon, label, true, trailing)).finish()
         } else {
             let on_diff = on_diff.clone();
-            let on_explorer = on_explorer.clone();
+            let on_files_tab = actions.on_open_files_tab.clone();
             let on_side_tab = on_side_tab.clone();
             HoverRow::new(panel_row(app, icon, label, false, trailing))
                 .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
                 .with_corner_radius(8.0)
                 .with_on_click(move || match action {
                     0 => (on_diff.borrow_mut())(active, DiffPanelAction::Open(None)),
-                    1 => (on_explorer.borrow_mut())(SidebarView::Explorer),
+                    1 => (on_files_tab.borrow_mut())(),
                     2 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Terminal)),
                     4 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Agent)),
                     _ => {}

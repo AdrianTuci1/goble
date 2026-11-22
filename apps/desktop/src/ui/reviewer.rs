@@ -364,7 +364,7 @@ fn tree_row(
         .with_padding(EdgeInsets::new(4.0, 5.0, 4.0, 6.0))
         .with_corner_radius(4.0)
         .with_on_click(move || {
-            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())))
+            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())));
         })
         .finish()
 }
@@ -1510,8 +1510,10 @@ pub(crate) fn files_changed_rail(
     }
     for file in &detail.files {
         let path = file.path.clone();
+        let absolute = file.absolute_path.clone();
         let sel = selected == Some(file.path.as_str());
         let on_diff = actions.on_diff_panel.clone();
+        let on_files = actions.on_open_file_side.clone();
         let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -1553,7 +1555,8 @@ pub(crate) fn files_changed_rail(
         )
         .with_selected(sel)
         .with_on_click(move || {
-            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())))
+            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())));
+            (on_files.borrow_mut())(absolute.clone());
         })
         .finish();
         column = column.with_child(row);

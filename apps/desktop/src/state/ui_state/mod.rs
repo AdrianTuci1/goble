@@ -72,6 +72,9 @@ pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
 /// machinery ([`UiState::pane_sessions`], `pane_runtime`, `pane_chat`) without
 /// appearing as a leaf, so the active pane's chat is never reused.
 pub const SIDE_AGENT_PANE_ID: u64 = u64::MAX - 1;
+/// The reserved pane id the right panel's Files tab reads a file under, so a
+/// file opens in the panel without touching the main pane tree.
+pub const SIDE_FILE_PANE_ID: u64 = u64::MAX - 2;
 
 /// The subject a fresh side-panel agent conversation starts under. It is a
 /// placeholder like [`NEW_CONVERSATION_TITLE`], replaced by the first prompt's
@@ -725,6 +728,10 @@ pub struct UiState {
     /// pane's own diff controls and `pane_diffs[pane]`, so opening Review does
     /// not split a diff pane into the layout.
     pub side_review: Option<(u64, String)>,
+    /// The file the side panel's Files tab shows, independent of the active
+    /// pane's kind. A click anywhere that names a file sets this and activates
+    /// the Files tab.
+    pub side_file: Option<String>,
     /// The index in [`Self::side_tabs`] the panel is showing. Kept in range by
     /// the side-tab methods; a stale value falls back to Overview.
     pub active_side_tab: usize,

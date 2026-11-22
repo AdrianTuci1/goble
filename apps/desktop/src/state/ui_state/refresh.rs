@@ -25,6 +25,21 @@ impl UiState {
             .unwrap_or(SideTabKind::Overview)
     }
 
+    /// Y: open `path` in the side panel's Files tab. No pane is split or
+    /// retargeted: the tab reads the file under `SIDE_FILE_PANE_ID`.
+    pub fn open_file_side(&mut self, path: String) {
+        self.side_file = Some(path);
+        self.add_side_tab(super::SideTabKind::Files);
+        self.right_sidebar_open = true;
+    }
+
+    /// Open the Files tab without naming a file (the "Open File" action keeps
+    /// whatever the tab was showing, or its honest empty state).
+    pub fn open_files_tab(&mut self) {
+        self.add_side_tab(super::SideTabKind::Files);
+        self.right_sidebar_open = true;
+    }
+
     /// The side panel was opened: keep the tabs and land on the one that was
     /// active. The Overview surface is the body's home when there is no tab,
     /// but it is not a chip and opening the panel must not add one.
@@ -316,6 +331,7 @@ impl UiState {
             side_panel_maximized: false,
             side_tabs: vec![SideTabKind::Overview],
             side_review: None,
+            side_file: None,
             active_side_tab: 0,
             side_tab_add_menu_open: Rc::new(RefCell::new(false)),
             side_swipe_accum: Rc::new(RefCell::new(0.0)),

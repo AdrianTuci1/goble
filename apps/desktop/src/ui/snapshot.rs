@@ -530,6 +530,9 @@ pub struct UiSnapshot {
     /// is open. The panel draws one of these surfaces in its content area.
     pub side_tabs: Vec<SideTabKind>,
     pub active_side_tab: usize,
+    /// Y: the file the side panel's Files tab shows, independent of the active
+    /// pane's kind.
+    pub side_file: Option<String>,
     /// Q: the topbar spotlight window.
     pub spotlight: crate::ui::spotlight::SpotlightState,
     pub side_tab_add_menu_open: Rc<RefCell<bool>>,

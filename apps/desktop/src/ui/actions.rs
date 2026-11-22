@@ -415,6 +415,10 @@ pub struct UiActions {
     /// Hand a file path to the active pane's input, from a click in the project
     /// explorer or on a global-search result.
     pub on_explorer_file_click: Rc<RefCell<dyn FnMut(String)>>,
+    /// Y: open a file in the side panel's Files tab (no pane split).
+    pub on_open_file_side: Rc<RefCell<dyn FnMut(String)>>,
+    /// Y: show the Files tab without naming a new file.
+    pub on_open_files_tab: Rc<RefCell<dyn FnMut()>>,
     /// Open a file in a file pane and arrange the active space as floating
     /// windows (DSH's "Open in floating panel"). The file pane opens first, so
     /// the window the gesture is about is the one on top.

@@ -3836,6 +3836,45 @@ mod tests {
         );
     }
 
+    /// Y: the Files side tab renders the real file content a click named,
+    /// without splitting or retargeting the main pane.
+    #[test]
+    fn the_side_files_tab_renders_the_clicked_file() {
+        let app = AppContext::default();
+        let (mut root, state, dir) = app_root();
+        let path = dir.path().join("side-note.md");
+        std::fs::write(&path, "needle in the side panel\nsecond line\n").unwrap();
+        let file = path.to_string_lossy().to_string();
+        let pane = state.borrow().active_pane_id;
+        let max = state.borrow().spaces[0].root.max_id();
+        {
+            let mut s = state.borrow_mut();
+            s.open_file_side(file.clone());
+        }
+        assert_eq!(
+            state.borrow().active_side_tab_kind(),
+            crate::state::SideTabKind::Files
+        );
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("needle in the side panel")),
+            "the Files tab draws the file's content: {texts:?}"
+        );
+        let s = state.borrow();
+        assert_eq!(s.side_file.as_deref(), Some(file.as_str()));
+        assert_eq!(s.active_pane_id, pane, "the main pane is untouched");
+        assert_eq!(s.spaces[0].root.max_id(), max, "no pane is split");
+    }
+
     /// U: Escape only dismisses the topmost overlay. It never opens, restores
     /// or focuses a terminal/floating pane, however many times it is pressed.
     #[test]

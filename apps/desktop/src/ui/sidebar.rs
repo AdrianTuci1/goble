@@ -90,7 +90,9 @@ pub fn build_sidebar(
 
     let view: Box<dyn Element> = match state.sidebar_view {
         SidebarView::Agents => agents_view(app, state, actions, selected_medium),
-        SidebarView::Explorer => build_explorer(app, state, actions),
+        // Z: the left sidebar no longer lists files; an old Explorer state
+        // falls back to the conversations view.
+        SidebarView::Explorer => agents_view(app, state, actions, selected_medium),
         SidebarView::Search => build_search(app, state, actions),
     };
 
@@ -1799,7 +1801,7 @@ mod sidebar_surface_tests {
     /// directory's own children, the search view draws what the query found, and
     /// neither is the conversation list.
     #[test]
-    fn the_toolbelt_switches_the_sidebar_between_the_tree_and_the_search() {
+    fn the_sidebar_has_no_file_tree_and_keeps_search() {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = Arc::new(DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
@@ -1820,12 +1822,12 @@ mod sidebar_surface_tests {
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
         let drawn = drawn_text(&commands);
         assert!(
-            drawn.iter().any(|run| run == "notes.md"),
-            "the explorer draws the directory's children: {drawn:?}"
+            !drawn.iter().any(|run| run == "notes.md"),
+            "the sidebar draws no file tree: {drawn:?}"
         );
         assert!(
-            !drawn.iter().any(|run| run == "New conversation"),
-            "the explorer is not the conversation list: {drawn:?}"
+            drawn.iter().any(|run| run == "New conversation"),
+            "an old Explorer state falls back to the conversations list: {drawn:?}"
         );
 
         // The search view draws the query it ran and the rows it found.
@@ -2228,27 +2230,45 @@ mod sidebar_action_tests {
         assert!(!state.borrow().starred_conversations.contains("c1"));
     }
 
-    /// A file row opens the file in a pane of its own: the tree hands the path
-    /// to the pane tree, and the input the user was typing in is left alone.
+    /// Y/Z: a file row/click opens the side panel's Files tab; it never
+    /// retargets or splits a main pane, and the sidebar no longer owns a tree.
     #[test]
-    fn a_file_click_opens_the_file_in_a_pane_not_in_the_input() {
+    fn a_file_click_opens_the_side_files_tab_not_a_pane() {
         let (state, actions, dir) = harness();
         let spaced = dir.path().join("my notes.md");
         std::fs::write(&spaced, "hi").unwrap();
         let path = spaced.to_string_lossy().to_string();
+        let pane_id = state.borrow().active_pane_id;
 
         (actions.on_explorer_file_click.borrow_mut())(path.clone());
         let s = state.borrow();
-        let pane_id = s.active_pane_id;
-        assert_eq!(
+        assert_ne!(
             s.spaces[s.active_space].leaf_kind(pane_id),
-            Some(&crate::ui::PaneKind::File { path }),
-            "the clicked file opens in a pane of its own"
+            Some(&crate::ui::PaneKind::File { path: path.clone() }),
+            "the main pane is not retargeted to the file"
         );
+        assert_eq!(s.side_file.as_deref(), Some(path.as_str()));
+        assert_eq!(s.active_side_tab_kind(), crate::state::SideTabKind::Files);
+        assert!(s.right_sidebar_open, "the Files tab is revealed");
         assert_eq!(
             s.composer_draft, "",
             "the path is not typed into the pane's input"
         );
+    }
+
+    /// Y: the "Open File" launcher shows the Files side tab without touching a
+    /// pane.
+    #[test]
+    fn open_file_launcher_shows_the_side_files_tab() {
+        let (state, actions, _dir) = harness();
+        let pane = state.borrow().active_pane_id;
+        let max = state.borrow().spaces[0].root.max_id();
+        (actions.on_open_files_tab.borrow_mut())();
+        let s = state.borrow();
+        assert_eq!(s.active_side_tab_kind(), crate::state::SideTabKind::Files);
+        assert!(s.right_sidebar_open);
+        assert_eq!(s.active_pane_id, pane);
+        assert_eq!(s.spaces[0].root.max_id(), max);
     }
 
     /// The query runs the search off the UI thread, and clearing it abandons the

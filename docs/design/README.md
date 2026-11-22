@@ -189,7 +189,11 @@ Review button, expanding to full-path rows with counts flush right; on narrow
 widths only the path shrinks, with a leading ellipsis.
 
 The topbar Search opens the centered spotlight (`spotlight-*`): scope pill,
-query field, sort/filter menu and real conversation rows. The tab-strip
+query field, sort/filter menu and real conversation rows. `spotlight-compare-*`
+puts the supplied reference and the Goble render side by side at the same full
+window scale. Files open in the right panel's Files tab (`side-files-*`), not a
+main pane; the left sidebar carries Projects/Conversations only and no file
+tree (`sidebar-no-files-*`). The tab-strip
 evidence shows multiple chips, a hovered chip with its close X and the pinned
 `+` menu (`side-tabs-hover-*`, `side-tabs-add-*`). The app is one flat grey
 (`Surface`) surface — window, panes, cards and workspace sheet share it, with

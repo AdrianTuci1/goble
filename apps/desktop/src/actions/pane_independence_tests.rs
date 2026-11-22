@@ -255,43 +255,33 @@ fn a_shell_line_for_a_missing_harness_stays_a_shell_line() {
 /// active one, in the tab on screen — and a second click while that view is up
 /// loads the other file into the same pane instead of tiling the tab with them.
 #[test]
-fn a_file_click_opens_a_file_pane_and_a_second_click_retargets_it() {
+fn a_file_click_opens_the_side_files_tab_and_a_second_click_retargets_it() {
     let (desktop, _dir) = desktop_state();
     let (state, actions, _media) = build(&desktop);
+    let pane = state.borrow().active_pane_id;
+    let max = state.borrow().spaces[0].root.max_id();
 
     (actions.on_explorer_file_click.borrow_mut())("/tmp/one.rs".to_string());
-    let pane_id = {
+    {
         let s = state.borrow();
-        let pane_id = s.active_pane_id;
-        assert_ne!(pane_id, 1, "the file view opens as its own pane");
+        assert_eq!(s.active_pane_id, pane, "the main pane is not retargeted");
+        assert_eq!(s.spaces[0].root.max_id(), max, "a file click opens no pane");
         assert_eq!(
-            s.spaces[0].leaf_kind(pane_id),
-            Some(&PaneKind::File {
-                path: "/tmp/one.rs".to_string()
-            }),
-            "the pane shows the file that was clicked"
+            s.active_side_tab_kind(),
+            crate::state::SideTabKind::Files,
+            "the Files side tab opens"
         );
-        assert!(
-            !s.pane_owns_conversation(pane_id),
-            "a file view opens no conversation"
-        );
-        pane_id
-    };
+        assert_eq!(s.side_file.as_deref(), Some("/tmp/one.rs"));
+        assert!(s.right_sidebar_open);
+    }
 
     (actions.on_explorer_file_click.borrow_mut())("/tmp/two.rs".to_string());
     let s = state.borrow();
-    assert_eq!(s.active_pane_id, pane_id, "the file view keeps the pane");
-    assert_eq!(
-        s.spaces[0].leaf_kind(pane_id),
-        Some(&PaneKind::File {
-            path: "/tmp/two.rs".to_string()
-        }),
-        "the pane takes the newly clicked file over"
-    );
+    assert_eq!(s.side_file.as_deref(), Some("/tmp/two.rs"));
     assert_eq!(
         s.spaces[0].root.max_id(),
-        pane_id,
-        "no second file pane was opened"
+        max,
+        "a second click still opens no pane"
     );
 }
 

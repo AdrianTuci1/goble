@@ -463,6 +463,51 @@ fn a_long_path_stops_at_the_copy_control_and_fades() {
     );
 }
 
+/// Y: clicking a file row in the review's Files Changed rail opens the side
+/// panel's Files tab on that file (and selects it in the review). No main pane
+/// is split or retargeted.
+#[test]
+fn clicking_a_review_file_opens_the_side_files_tab() {
+    if !git_available() {
+        return;
+    }
+    let repo = repository();
+    std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
+    std::fs::write(repo.path().join("new.txt"), "gamma\n").unwrap();
+    let cwd = repo.path().to_string_lossy().to_string();
+    let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
+    let pane_before = state.borrow().active_pane_id;
+    let max_before = state.borrow().spaces[0].root.max_id();
+
+    let commands = frame(&mut root, &app);
+    let target = commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. } if text == "new.txt" => Some(*origin),
+            _ => None,
+        })
+        .max_by(|a, b| a.x.partial_cmp(&b.x).unwrap())
+        .expect("the Files Changed rail row");
+    click(&mut root, &app, target + vec2f(6.0, 4.0));
+
+    let s = state.borrow();
+    assert_eq!(
+        s.active_side_tab_kind(),
+        crate::state::SideTabKind::Files,
+        "the Files tab is activated"
+    );
+    assert!(s.right_sidebar_open);
+    assert!(
+        s.side_file
+            .as_deref()
+            .is_some_and(|path| path.ends_with("new.txt")),
+        "the tab names the clicked file: {:?}",
+        s.side_file
+    );
+    assert_eq!(s.active_pane_id, pane_before);
+    assert_eq!(s.spaces[0].root.max_id(), max_before, "no pane is split");
+}
+
 #[test]
 fn a_clean_tree_says_there_are_no_open_changes() {
     if !git_available() {

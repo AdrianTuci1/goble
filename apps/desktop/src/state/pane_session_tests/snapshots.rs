@@ -254,7 +254,10 @@ fn the_workflow_view_is_the_panes_own_surface() {
         "no selected run draws the list"
     );
     assert!(state.close_workflow_view(1));
-    assert!(!state.close_workflow_view(1), "a second Esc has nothing to close");
+    assert!(
+        !state.close_workflow_view(1),
+        "a second Esc has nothing to close"
+    );
 
     // The toggle opens the list and closes it again.
     state.toggle_workflow_view(2);

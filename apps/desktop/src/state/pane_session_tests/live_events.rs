@@ -503,19 +503,16 @@ fn the_footer_reads_thinking_and_responding_from_the_reasoning_rows() {
 fn a_childs_reasoning_stays_out_of_the_parents_rows() {
     use goble_desktop_service::{ReasoningEvent, ReasoningPhase};
 
-    let event = |chat_id: &str,
-                 phase,
-                 step,
-                 mode: &str,
-                 delta: &str,
-                 content: Option<&str>| ReasoningEvent {
-        chat_id: chat_id.to_string(),
-        step,
-        mode: mode.to_string(),
-        delta: delta.to_string(),
-        content: content.map(str::to_string),
-        decision: None,
-        phase,
+    let event = |chat_id: &str, phase, step, mode: &str, delta: &str, content: Option<&str>| {
+        ReasoningEvent {
+            chat_id: chat_id.to_string(),
+            step,
+            mode: mode.to_string(),
+            delta: delta.to_string(),
+            content: content.map(str::to_string),
+            decision: None,
+            phase,
+        }
     };
 
     let mut state = UiState::mock();

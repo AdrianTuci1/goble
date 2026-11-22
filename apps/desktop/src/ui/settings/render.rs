@@ -1044,8 +1044,6 @@ impl Element for DismissLayer {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1072,10 +1070,7 @@ mod tests {
         down && up
     }
 
-    fn text_origin(
-        commands: &[goble_ui::render::RenderCommand],
-        needle: &str,
-    ) -> Option<Vector2F> {
+    fn text_origin(commands: &[goble_ui::render::RenderCommand], needle: &str) -> Option<Vector2F> {
         commands.iter().find_map(|command| match command {
             goble_ui::render::RenderCommand::DrawText { origin, text, .. } if text == needle => {
                 Some(*origin)
@@ -1151,11 +1146,9 @@ mod tests {
         let (origin, size) = commands
             .iter()
             .find_map(|command| match command {
-                goble_ui::render::RenderCommand::DrawIcon { origin, name, size, .. }
-                    if name == "trash-02" =>
-                {
-                    Some((*origin, *size))
-                }
+                goble_ui::render::RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "trash-02" => Some((*origin, *size)),
                 _ => None,
             })
             .expect("the binding row draws its trash icon");

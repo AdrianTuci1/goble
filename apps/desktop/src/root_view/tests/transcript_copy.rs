@@ -35,7 +35,9 @@ fn fake_pbcopy(dir: &Path) -> std::path::PathBuf {
     let script = dir.join("pbcopy");
     let body = format!("#!/bin/sh\ncat > '{}'\n", target.display());
     std::fs::write(&script, body).expect("write fake pbcopy");
-    let mut permissions = std::fs::metadata(&script).expect("stat fake pbcopy").permissions();
+    let mut permissions = std::fs::metadata(&script)
+        .expect("stat fake pbcopy")
+        .permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).expect("make fake pbcopy executable");
     target
@@ -43,7 +45,9 @@ fn fake_pbcopy(dir: &Path) -> std::path::PathBuf {
 
 #[test]
 fn a_transcript_drag_lands_on_the_system_clipboard() {
-    let _guard = CLIPBOARD_ENV.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _guard = CLIPBOARD_ENV
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let clipboard_dir = tempfile::tempdir().expect("clipboard dir");
     let copied_path = fake_pbcopy(clipboard_dir.path());
     let previous_path = std::env::var_os("PATH").unwrap_or_default();
@@ -127,7 +131,9 @@ fn a_transcript_drag_lands_on_the_system_clipboard() {
 /// app gets when a conversation is opened and the mouse is already moving.
 #[test]
 fn a_drag_before_the_first_paint_copies_nothing_and_does_not_panic() {
-    let _guard = CLIPBOARD_ENV.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _guard = CLIPBOARD_ENV
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let dir = tempfile::tempdir().expect("temp thread-store dir");
     let desktop = Arc::new(DesktopState::new(
         Store::open_in_memory().expect("in-memory store"),

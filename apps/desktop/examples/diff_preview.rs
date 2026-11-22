@@ -79,7 +79,14 @@ fn scene(app: &AppContext) -> Box<dyn Element> {
             Container::new(
                 Icon::new(glyph)
                     .with_size(15.0)
-                    .with_theme_color(if active { ColorToken::Text } else { ColorToken::Muted }, app)
+                    .with_theme_color(
+                        if active {
+                            ColorToken::Text
+                        } else {
+                            ColorToken::Muted
+                        },
+                        app,
+                    )
                     .finish(),
             )
             .with_padding(EdgeInsets::uniform(6.5))
@@ -117,9 +124,9 @@ fn scene(app: &AppContext) -> Box<dyn Element> {
             .with_spacing(6.0)
             .with_child(selector)
             .with_child(counts)
-            .with_child(Expanded::new(
-                Flex::row().with_main_axis_size(MainAxisSize::Max).finish(),
-            ).finish())
+            .with_child(
+                Expanded::new(Flex::row().with_main_axis_size(MainAxisSize::Max).finish()).finish(),
+            )
             .with_child(tools.finish())
             .finish(),
     )
@@ -191,11 +198,36 @@ fn scene(app: &AppContext) -> Box<dyn Element> {
     let card = ConstrainedBox::new(card).with_height(60.0).finish();
 
     let hunks = vec![hunk(vec![
-        (DiffLineKind::Context, Some(40), Some(40), "    let panes = build_panes(state);"),
-        (DiffLineKind::Context, Some(41), Some(41), "    for pane in panes {"),
-        (DiffLineKind::Removed, Some(42), None, "        draw_old(pane);"),
-        (DiffLineKind::Added, None, Some(42), "        draw_new(pane);"),
-        (DiffLineKind::Added, None, Some(43), "        mark_visible(pane);"),
+        (
+            DiffLineKind::Context,
+            Some(40),
+            Some(40),
+            "    let panes = build_panes(state);",
+        ),
+        (
+            DiffLineKind::Context,
+            Some(41),
+            Some(41),
+            "    for pane in panes {",
+        ),
+        (
+            DiffLineKind::Removed,
+            Some(42),
+            None,
+            "        draw_old(pane);",
+        ),
+        (
+            DiffLineKind::Added,
+            None,
+            Some(42),
+            "        draw_new(pane);",
+        ),
+        (
+            DiffLineKind::Added,
+            None,
+            Some(43),
+            "        mark_visible(pane);",
+        ),
         (DiffLineKind::Context, Some(43), Some(44), "    }"),
         (DiffLineKind::Removed, Some(44), None, "    old_footer();"),
         (DiffLineKind::Added, None, Some(45), "    new_footer();"),

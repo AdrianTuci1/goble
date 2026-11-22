@@ -39,12 +39,7 @@ impl UiState {
     /// on. `copy_path` is what the Copy path row writes. Revert is resolved
     /// against the real git backend here, once per opening, rather than per
     /// frame.
-    pub fn open_file_menu(
-        &mut self,
-        path: String,
-        copy_path: String,
-        at: goble_ui::Vector2F,
-    ) {
+    pub fn open_file_menu(&mut self, path: String, copy_path: String, at: goble_ui::Vector2F) {
         let revert = file_revert_target(&path);
         *self.file_menu.borrow_mut() = Some(FileMenu {
             path,
@@ -65,13 +60,13 @@ impl UiState {
 /// can resolve it. Outside a work tree the menu carries no Revert row.
 fn file_revert_target(path: &str) -> Option<FileRevertTarget> {
     let path = Path::new(path);
-    let directory = if path.is_dir() {
-        path
-    } else {
-        path.parent()?
-    };
+    let directory = if path.is_dir() { path } else { path.parent()? };
     let root = crate::ui::pickers::repo_root(directory.to_str()?)?;
-    let relative = path.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
+    let relative = path
+        .strip_prefix(&root)
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
     Some(FileRevertTarget {
         repo: root.to_string_lossy().to_string(),
         git_path: relative,

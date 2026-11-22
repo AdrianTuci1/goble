@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    harness_bar_mark, AppContext, ConstrainedBox, Container, CrossAxisAlignment,
-    Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Flex, Icon, LayoutContext,
+    harness_bar_mark, AppContext, ConstrainedBox, Container, CrossAxisAlignment, Divider,
+    EdgeInsets, Element, Empty, EventContext, Expanded, Flex, Icon, LayoutContext,
     MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem,
     PopupMenuPosition, SizeConstraint, Text, Tooltip, TooltipPosition, TopbarButton,
 };
@@ -348,7 +348,11 @@ pub(crate) fn build_agent_header_with(
         } else {
             "fullscreen-enter"
         };
-        let tooltip = if maximized { "Exit fullscreen" } else { "Fullscreen" };
+        let tooltip = if maximized {
+            "Exit fullscreen"
+        } else {
+            "Fullscreen"
+        };
         Tooltip::new(
             TopbarButton::new(
                 Icon::new(glyph)
@@ -412,9 +416,12 @@ pub(crate) fn build_agent_header_with(
     if !slots.terminal_dock {
         dock_item = dock_item.disabled();
     }
-    let mut max_item =
-        PopupMenuItem::new(if maximized { "Exit fullscreen" } else { "Fullscreen" })
-            .with_icon("fullscreen-enter");
+    let mut max_item = PopupMenuItem::new(if maximized {
+        "Exit fullscreen"
+    } else {
+        "Fullscreen"
+    })
+    .with_icon("fullscreen-enter");
     if !expandable && !maximized {
         max_item = max_item.disabled();
     }
@@ -563,9 +570,7 @@ pub(crate) fn build_agent_header_with(
             // The bar's controls are 28x28, but the band's control height is
             // 32: a zero-width strut keeps the row at that height even when a
             // pane has no work chip to hold it open.
-            Empty::new()
-                .with_size(vec2f(0.0, dsh_control))
-                .finish(),
+            Empty::new().with_size(vec2f(0.0, dsh_control)).finish(),
         )
         .with_child(Expanded::new(title).finish())
         .with_child(right)
@@ -1186,7 +1191,9 @@ mod tests {
                     }
                     _ => None,
                 })
-                .max_by(|a, b| (a.0.width() * a.0.height()).total_cmp(&(b.0.width() * b.0.height())))
+                .max_by(|a, b| {
+                    (a.0.width() * a.0.height()).total_cmp(&(b.0.width() * b.0.height()))
+                })
                 .expect("the lane paints its content column");
 
             let lane = resolve_content_width(pane.width(), None);

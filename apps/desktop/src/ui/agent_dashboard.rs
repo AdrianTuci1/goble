@@ -106,10 +106,7 @@ impl RowState {
 /// resolved the card outside the two paths the app settles, or the harness
 /// moved on), and a finished conversation must not keep showing it: the row
 /// would sit under "Awaiting your input" for good.
-fn awaiting_item<'a>(
-    state: &'a UiSnapshot,
-    entry: &ConversationEntry,
-) -> Option<&'a InboxItem> {
+fn awaiting_item<'a>(state: &'a UiSnapshot, entry: &ConversationEntry) -> Option<&'a InboxItem> {
     if entry.status != ConversationStatus::Waiting {
         return None;
     }
@@ -1751,7 +1748,10 @@ mod ui_tests {
                 _ => None,
             })
             .collect();
-        assert!(texts.contains(&"Scheduled"), "the section is titled: {texts:?}");
+        assert!(
+            texts.contains(&"Scheduled"),
+            "the section is titled: {texts:?}"
+        );
         assert!(
             texts.contains(&"Morning digest"),
             "the schedule is listed: {texts:?}"
@@ -1760,7 +1760,10 @@ mod ui_tests {
             texts.contains(&"0 9 * * * · enabled · last run 2h ago"),
             "the schedule, its state and its last run share the detail line: {texts:?}"
         );
-        assert!(texts.contains(&"New schedule"), "it can be created from here");
+        assert!(
+            texts.contains(&"New schedule"),
+            "it can be created from here"
+        );
         for icon in ["refresh", "trash"] {
             assert!(
                 commands.iter().any(|command| matches!(
@@ -1946,24 +1949,9 @@ mod ui_tests {
         {
             let mut s = state.borrow_mut();
             s.conversations = vec![
-                conversation(
-                    "new",
-                    "Newest",
-                    "one",
-                    ConversationStatus::Success,
-                ),
-                conversation(
-                    "mid",
-                    "Middle",
-                    "two",
-                    ConversationStatus::Default,
-                ),
-                conversation(
-                    "old",
-                    "Oldest",
-                    "three",
-                    ConversationStatus::Success,
-                ),
+                conversation("new", "Newest", "one", ConversationStatus::Success),
+                conversation("mid", "Middle", "two", ConversationStatus::Default),
+                conversation("old", "Oldest", "three", ConversationStatus::Success),
             ];
             s.agent_dashboard.open = true;
         }

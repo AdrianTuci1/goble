@@ -381,6 +381,16 @@ impl RootView {
                         let generation = *s.pane_controls(id).diff_refresh.borrow();
                         wanted.push((id, cwd, generation));
                     }
+                    // Q: the side-panel Review tab reads its source pane's
+                    // directory without adding a diff pane to the layout.
+                    if s.active_side_tab_kind() == crate::state::SideTabKind::Review {
+                        if let Some((pane, cwd)) = s.side_review.clone() {
+                            if !wanted.iter().any(|(id, _, _)| *id == pane) {
+                                let generation = *s.pane_controls(pane).diff_refresh.borrow();
+                                wanted.push((pane, cwd, generation));
+                            }
+                        }
+                    }
                 }
                 let mut pickers = self.pickers.borrow_mut();
                 wanted

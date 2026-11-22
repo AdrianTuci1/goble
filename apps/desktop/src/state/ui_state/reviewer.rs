@@ -181,12 +181,15 @@ impl UiState {
         };
         // The same file in a window that is already floating: bring that
         // window to the front rather than stacking a second copy.
-        if let Some(existing) = space.floating.iter().find_map(|pane| {
-            match space.leaf_kind(pane.pane_id) {
-                Some(PaneKind::File { path }) if path == &file_path => Some(pane.pane_id),
-                _ => None,
-            }
-        }) {
+        if let Some(existing) =
+            space
+                .floating
+                .iter()
+                .find_map(|pane| match space.leaf_kind(pane.pane_id) {
+                    Some(PaneKind::File { path }) if path == &file_path => Some(pane.pane_id),
+                    _ => None,
+                })
+        {
             self.focus_pane(existing);
             let space = &mut self.spaces[index];
             space.raise_pane(existing);
@@ -241,11 +244,7 @@ impl UiState {
     /// Dock the window floated above the active space's layout: the float
     /// entry goes away and the file stays in the pane tree, drawn by the
     /// layout it was opened over. Returns whether a window was docked.
-    pub fn dock_floating_pane(
-        &mut self,
-        pane_id: u64,
-        desktop: Option<&DesktopState>,
-    ) -> bool {
+    pub fn dock_floating_pane(&mut self, pane_id: u64, desktop: Option<&DesktopState>) -> bool {
         let Some(index) = self.space_index_of_pane(pane_id) else {
             return false;
         };
@@ -281,11 +280,7 @@ pub fn review_for(
     reviews: &RefCell<HashMap<u64, DiffReviewState>>,
     pane_id: u64,
 ) -> DiffReviewState {
-    reviews
-        .borrow()
-        .get(&pane_id)
-        .cloned()
-        .unwrap_or_default()
+    reviews.borrow().get(&pane_id).cloned().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -372,7 +367,10 @@ mod tests {
             "the file pane also belongs to the tree, so docking leaves it docked"
         );
         let active = state.active_pane_id;
-        assert_eq!(overlay.pane_id, active, "the new window is the focused pane");
+        assert_eq!(
+            overlay.pane_id, active,
+            "the new window is the focused pane"
+        );
         assert!(
             matches!(
                 state.spaces[0].leaf_kind(active),
@@ -393,7 +391,10 @@ mod tests {
             "the floating rect is drawn above the layout"
         );
         assert!(
-            regions.iter().take(regions.len() - 1).any(|(id, _)| *id == 7),
+            regions
+                .iter()
+                .take(regions.len() - 1)
+                .any(|(id, _)| *id == 7),
             "the layout below the float is still there"
         );
 
@@ -477,7 +478,11 @@ mod tests {
         let folded: BTreeSet<String> = ["src".to_string()].into_iter().collect();
         let rows = tree_rows(&files, &folded);
         let shown: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-        assert_eq!(shown, vec!["src", "README.md"], "the folded subtree is hidden");
+        assert_eq!(
+            shown,
+            vec!["src", "README.md"],
+            "the folded subtree is hidden"
+        );
     }
 
     /// A file with no old lines is added, one with no new lines is deleted, and

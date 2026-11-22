@@ -17,49 +17,48 @@ use goble_core::agent::Trigger;
 use goble_core::harness::{is_hidden_tool, tool_kind_for, ToolCallStatus, ToolKind};
 use goble_core::store::SecretGroup;
 use goble_desktop_service::DesktopState;
+use goble_ui::elements::PanelScroll;
+use goble_ui::vim::VimState;
 use goble_ui::{
     AgentCardUi, ApprovalMode, AskUserUi, ChatFragment, ChatMessage, ChatRole, CommandProposalUi,
     ConversationEntry, ConversationStatus, ScrollState, SettingsPage, SubAgentRow,
     SubAgentRowStatus, TerminalData, TerminalFilter, TerminalLine, TerminalStatus, ToolCall,
     ToolDisplayMode, TurnActivity, TurnStatus, WorkKind, WorkKindCount,
 };
-use goble_ui::elements::PanelScroll;
-use goble_ui::vim::VimState;
 
 use goble_terminal::blocks::{BlockId, BlockView};
 
 use crate::emulator::VisibleBlock;
 use crate::terminal::TerminalRegistry;
+use crate::ui::global_search::SearchWorker;
 use crate::ui::{
     AgentDashboardState, AppTab, CostEntry, CronEntry, ExecutionEntry, FloatingDrag, HarnessEntry,
-    LayoutKind,
-    LlmFormField, Pane, PaneChatSnapshot, PaneDropTarget, PaneKind, RemoteAgentEntry, RemoteDeploy, SearchRow, SettingsCategory, SidebarView,
-    Space, TaskEntry, TimelineEntry, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry,
-    WorkflowStepEntry, WorkerPaneSnapshot,
+    LayoutKind, LlmFormField, Pane, PaneChatSnapshot, PaneDropTarget, RemoteAgentEntry,
+    RemoteDeploy, SearchRow, SettingsCategory, SidebarView, Space, TaskEntry, TimelineEntry,
+    WorkerPaneSnapshot, WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry, WorkflowStepEntry,
     WorkspaceRouting, SIDEBAR_WIDTH,
 };
-use crate::ui::global_search::SearchWorker;
 
-
-mod routing;
 mod links;
+mod paths;
+mod routing;
 mod transcript;
 mod types;
 mod ui_state;
-mod paths;
 
-pub(crate) use routing::*;
+pub use crate::ui::PaneKind;
 pub(crate) use links::*;
+pub use paths::*;
+pub(crate) use routing::*;
 pub use transcript::*;
 pub use types::*;
 pub use ui_state::*;
-pub use paths::*;
 
+#[cfg(test)]
+mod external_url_tests;
+#[cfg(test)]
+mod layout_host_tests;
 #[cfg(test)]
 mod pane_session_tests;
 #[cfg(test)]
 mod space_reorder_tests;
-#[cfg(test)]
-mod layout_host_tests;
-#[cfg(test)]
-mod external_url_tests;

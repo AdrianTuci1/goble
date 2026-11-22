@@ -67,15 +67,14 @@ pub fn page(state: &SettingsUiState) -> PageModel {
         let stored = fields::theme_text(state, key);
         let value = stored.clone().unwrap_or_default();
         let color = color_palette::channel_color(state, key);
-        let mut row = text_row(state, &path, label, hint, value, "#rrggbb")
-            .with_status(
-                StatusKind::Muted,
-                if stored.is_some() {
-                    "Overridden in config.toml".to_string()
-                } else {
-                    format!("Using the palette's {}", label.to_lowercase())
-                },
-            );
+        let mut row = text_row(state, &path, label, hint, value, "#rrggbb").with_status(
+            StatusKind::Muted,
+            if stored.is_some() {
+                "Overridden in config.toml".to_string()
+            } else {
+                format!("Using the palette's {}", label.to_lowercase())
+            },
+        );
         if stored.is_some() {
             row = row.with_reset(SettingsAction::Reset { path: path.clone() });
         }

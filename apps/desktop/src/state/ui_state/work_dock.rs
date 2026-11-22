@@ -152,11 +152,7 @@ impl UiState {
 
     /// The in-flight calls `wanted` accepts, each as the dock's row with the
     /// call's own elapsed clock.
-    fn call_work_rows(
-        &self,
-        pane_id: u64,
-        wanted: impl Fn(&ToolCall) -> bool,
-    ) -> Vec<WorkRow> {
+    fn call_work_rows(&self, pane_id: u64, wanted: impl Fn(&ToolCall) -> bool) -> Vec<WorkRow> {
         let Some(rt) = self.pane_runtime.get(&pane_id) else {
             return Vec::new();
         };
@@ -181,10 +177,7 @@ impl UiState {
                 // the group above it already says "Watchers"; a task row leads
                 // with the word "Task" and the verb its family gives it.
                 let (kind, description) = if is_watcher_call(call) {
-                    (
-                        tool_kind_word(&call.name),
-                        watcher_subject(call),
-                    )
+                    (tool_kind_word(&call.name), watcher_subject(call))
                 } else {
                     ("Task".to_string(), work_call_description(call))
                 };
@@ -231,7 +224,10 @@ fn watcher_subject(call: &ToolCall) -> String {
 /// Whether a call is a watch rather than ordinary work: the harness's monitor
 /// tools. They get their own group in the dock; every other call is a task.
 fn is_watcher_call(call: &ToolCall) -> bool {
-    matches!(call.name.to_lowercase().as_str(), "monitor" | "watch" | "watch_process")
+    matches!(
+        call.name.to_lowercase().as_str(),
+        "monitor" | "watch" | "watch_process"
+    )
 }
 
 #[cfg(test)]
@@ -304,8 +300,7 @@ mod tests {
             },
         );
         let groups = state.work_dock_groups(1);
-        let subagents =
-            group(&groups, WorkSection::Subagents).expect("the child lists a group");
+        let subagents = group(&groups, WorkSection::Subagents).expect("the child lists a group");
         let row = &subagents.rows[0];
         assert_eq!(row.kind, "Subagent");
         assert_eq!(row.description, "audit the migration");
@@ -382,8 +377,7 @@ mod tests {
             log: Vec::new(),
         }];
         let groups = state.work_dock_groups(1);
-        let workflows =
-            group(&groups, WorkSection::Workflows).expect("the run lists a group");
+        let workflows = group(&groups, WorkSection::Workflows).expect("the run lists a group");
         let row = &workflows.rows[0];
         assert_eq!(row.kind, "Workflow");
         assert_eq!(row.description, "Nightly digest");
@@ -422,9 +416,12 @@ mod tests {
     #[test]
     fn a_scheduled_loop_does_not_pin_a_watcher_group() {
         let mut state = UiState::mock();
-        state.crons = vec![
-            crate::ui::CronEntry::new("cron-1", "Morning digest", "0 9 * * *", "2h ago"),
-        ];
+        state.crons = vec![crate::ui::CronEntry::new(
+            "cron-1",
+            "Morning digest",
+            "0 9 * * *",
+            "2h ago",
+        )];
         let groups = state.work_dock_groups(1);
         assert!(
             group(&groups, WorkSection::Watchers).is_none(),

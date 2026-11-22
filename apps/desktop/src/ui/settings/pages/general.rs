@@ -57,11 +57,15 @@ pub fn page(state: &SettingsUiState) -> PageModel {
                 ),
             )
             .with_row(
-                RowModel::new("permissions.advanced", "Advanced", "More permission controls.")
-                    .buttons(vec![ActionModel::new(
-                        "Open",
-                        SettingsAction::Navigate(super::super::super::SettingsCategory::Agent),
-                    )]),
+                RowModel::new(
+                    "permissions.advanced",
+                    "Advanced",
+                    "More permission controls.",
+                )
+                .buttons(vec![ActionModel::new(
+                    "Open",
+                    SettingsAction::Navigate(super::super::super::SettingsCategory::Agent),
+                )]),
             ),
     );
     sections.push(

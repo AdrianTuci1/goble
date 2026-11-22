@@ -121,7 +121,9 @@ mod rich_input_tests {
         commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text: run, origin, .. } if run == text => Some(origin.y),
+                RenderCommand::DrawText {
+                    text: run, origin, ..
+                } if run == text => Some(origin.y),
                 _ => None,
             })
             .collect()
@@ -225,9 +227,10 @@ mod rich_input_tests {
             "{case}: the editor is inside the card ({editor} in {card:?})"
         );
         assert!(
-            rules(&commands).iter().all(|y| {
-                *y < card.min_y() || *y > card.max_y()
-            }) || rules(&commands).is_empty(),
+            rules(&commands)
+                .iter()
+                .all(|y| { *y < card.min_y() || *y > card.max_y() })
+                || rules(&commands).is_empty(),
             "{case}: no rule cuts the card or its instruction row"
         );
 

@@ -38,7 +38,9 @@ impl RootView {
         // start on whatever environment the media tree defaults to.
         let space_medium = {
             let s = state.borrow();
-            s.spaces.get(s.active_space).map(|space| space.medium.clone())
+            s.spaces
+                .get(s.active_space)
+                .map(|space| space.medium.clone())
         };
         if let Some(medium) = space_medium.filter(|medium| !medium.trim().is_empty()) {
             let _ = media_state.borrow_mut().select_medium(&medium);

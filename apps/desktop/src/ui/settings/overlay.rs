@@ -12,10 +12,10 @@ use std::rc::Rc;
 
 use goble_ui::elements::settings::{SettingsNav, SettingsNavGroup, SettingsNavItem};
 use goble_ui::elements::{
-    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, Dialog, Divider,
-    EdgeInsets, Element, Empty, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize,
-    PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, Spacer, Stack, Text, Tooltip,
-    TooltipPosition, TopbarButton,
+    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, Dialog, Divider, EdgeInsets,
+    Element, Empty, Expanded, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, PopupMenu,
+    PopupMenuItem, PopupMenuPosition, Scrollable, Spacer, Stack, Text, Tooltip, TooltipPosition,
+    TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::platform::text_atlas::FontWeight;
@@ -48,10 +48,13 @@ pub fn build_settings_overlay(
     // and let the measured narrow width switch to the full-bleed variant.
     let width = state.window_size.x;
     let narrow = !state.settings_overlay_wide;
-    let width = if width > 0.0 { width } else { OVERLAY_MAX_WIDTH };
+    let width = if width > 0.0 {
+        width
+    } else {
+        OVERLAY_MAX_WIDTH
+    };
     let on_close = actions.on_close_settings_overlay.clone();
-    let close: Rc<RefCell<dyn FnMut()>> =
-        Rc::new(RefCell::new(move || (on_close.borrow_mut())()));
+    let close: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || (on_close.borrow_mut())()));
     let content = overlay_content(app, state, actions, narrow, close);
     let dialog = Dialog::new(content).with_open(true).with_width(if narrow {
         (width - 16.0).max(320.0)
@@ -139,16 +142,12 @@ fn overlay_content(
     let mut page_stack = Stack::new().with_children(vec![scroll]);
     // The Appearance popover rides above the scroll viewport (outside its
     // clip), so a palette anchored to a row is never cut by the page edge.
-    if let Some(palette) = render::color_palette::appearance_menu_layer(
-        app,
-        settings,
-        &actions.settings,
-    ) {
+    if let Some(palette) =
+        render::color_palette::appearance_menu_layer(app, settings, &actions.settings)
+    {
         page_stack = page_stack.with_overlay(palette, vec2f(0.0, 0.0));
     }
-    let page_column = page_stack
-        .with_overlay(close_row, vec2f(0.0, 0.0))
-        .finish();
+    let page_column = page_stack.with_overlay(close_row, vec2f(0.0, 0.0)).finish();
 
     let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
@@ -166,8 +165,10 @@ fn overlay_content(
     };
     Container::new(row)
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-        .with_border(goble_ui::elements::Border::all(1.0)
-            .with_border_color(app.theme.color(ColorToken::Border)))
+        .with_border(
+            goble_ui::elements::Border::all(1.0)
+                .with_border_color(app.theme.color(ColorToken::Border)),
+        )
         .with_corner_radius(16.0)
         .finish()
 }
@@ -301,7 +302,11 @@ impl Element for RailSurface {
 /// The rail labels and order from the reference photos, mapped onto the real
 /// pages this build owns. The last group exposes the remaining file-backed
 /// pages (secrets, updates, advanced, about) instead of hiding them.
-fn photo_nav(app: &AppContext, settings: &super::SettingsUiState, actions: &UiActions) -> Box<dyn Element> {
+fn photo_nav(
+    app: &AppContext,
+    settings: &super::SettingsUiState,
+    actions: &UiActions,
+) -> Box<dyn Element> {
     let entries: Vec<(&'static str, SettingsCategory)> = vec![
         ("General", SettingsCategory::General),
         ("Application", SettingsCategory::Agent),
@@ -368,11 +373,7 @@ fn layout_cards(app: &AppContext, narrow: bool, available: f32) -> Box<dyn Eleme
     } else {
         ((available - gap) / 2.0).max(120.0)
     };
-    let card = |title: &str,
-                icon: &'static str,
-                selected: bool,
-                width: f32|
-     -> Box<dyn Element> {
+    let card = |title: &str, icon: &'static str, selected: bool, width: f32| -> Box<dyn Element> {
         let content = Flex::column()
             .with_main_axis_alignment(MainAxisAlignment::Center)
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
@@ -386,7 +387,9 @@ fn layout_cards(app: &AppContext, narrow: bool, available: f32) -> Box<dyn Eleme
                 )
                 .with_padding(EdgeInsets::uniform(8.0))
                 .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+                .with_border(
+                    Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)),
+                )
                 .with_corner_radius(10.0)
                 .finish(),
             )
@@ -417,11 +420,13 @@ fn layout_cards(app: &AppContext, narrow: bool, available: f32) -> Box<dyn Eleme
             } else {
                 ColorToken::SurfaceRaised
             })))
-            .with_border(Border::all(1.0).with_border_color(app.theme.color(if selected {
-                ColorToken::Accent
-            } else {
-                ColorToken::Border
-            })))
+            .with_border(
+                Border::all(1.0).with_border_color(app.theme.color(if selected {
+                    ColorToken::Accent
+                } else {
+                    ColorToken::Border
+                })),
+            )
             .with_corner_radius(12.0)
             .finish()
     };

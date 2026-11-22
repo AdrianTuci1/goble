@@ -696,9 +696,9 @@ fn settings_navigation_and_back_flip_state() {
         "the settings tab opened"
     );
     // The tab's own dispatch points it at another page of the DSH IA.
-    (actions.settings.dispatch.borrow_mut())(
-        goble_app::ui::settings::SettingsAction::Navigate(goble_app::ui::SettingsCategory::Agent),
-    );
+    (actions.settings.dispatch.borrow_mut())(goble_app::ui::settings::SettingsAction::Navigate(
+        goble_app::ui::SettingsCategory::Agent,
+    ));
     assert_eq!(
         state.borrow().settings_page(),
         goble_app::ui::SettingsCategory::Agent
@@ -889,8 +889,7 @@ fn workspace_tabs_are_chrome_style_tabs_with_no_rules() {
     let band = goble_app::ui::shell::TOPBAR_BOTTOM_BAND;
     // The merge line is the pane card's surface top: the bar block, then the
     // pane area's inset gutter and the card's own 1 pt border.
-    let merge_bottom =
-        topbar_height + band + 4.0 + 1.0; // the pane area's 4px inset
+    let merge_bottom = topbar_height + band + 4.0 + 1.0; // the pane area's 4px inset
 
     assert_eq!(
         topbar_surface(&commands, &app).height(),
@@ -1949,9 +1948,7 @@ fn the_remote_configuration_is_named_on_the_settings_page() {
     let app = AppContext::default();
     let view = RootView::new(&app, &desktop, None);
     let state = view.state_rc();
-    state
-        .borrow_mut()
-        .open_remote_settings_tab(Some(&desktop));
+    state.borrow_mut().open_remote_settings_tab(Some(&desktop));
     let mut root: Box<dyn Element> = Box::new(view);
 
     let commands = frame(&mut root, &app);
@@ -2397,8 +2394,8 @@ fn a_pane_dragged_onto_the_tab_strip_becomes_its_own_tab() {
 
     // The handle is the pane's own header: the top band of the pane, where the
     // header's controls sit — never the body, whose press belongs to the editor.
-    let (control_x, header_y) =
-        topmost_icon_center(&commands, "fullscreen-enter").expect("the pane header's expand control");
+    let (control_x, header_y) = topmost_icon_center(&commands, "fullscreen-enter")
+        .expect("the pane header's expand control");
     assert!(
         header_y > topbar_height,
         "the handle is the pane's header, below the toolbar (y={header_y})"
@@ -2548,8 +2545,8 @@ fn a_pane_lifted_onto_the_strip_is_dropped_off_it_with_no_change() {
     let app = AppContext::default();
     let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
     let commands = frame(&mut root, &app);
-    let (control_x, header_y) =
-        topmost_icon_center(&commands, "fullscreen-enter").expect("the pane header's expand control");
+    let (control_x, header_y) = topmost_icon_center(&commands, "fullscreen-enter")
+        .expect("the pane header's expand control");
     let press_at = vec2f(control_x - 60.0, header_y);
     send(
         &mut root,
@@ -2614,8 +2611,8 @@ fn a_pane_dragged_over_another_pane_shows_where_it_would_land() {
     let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
     let commands = frame(&mut root, &app);
 
-    let (control_x, header_y) =
-        topmost_icon_center(&commands, "fullscreen-enter").expect("the pane header's expand control");
+    let (control_x, header_y) = topmost_icon_center(&commands, "fullscreen-enter")
+        .expect("the pane header's expand control");
     let press_at = vec2f(control_x - 60.0, header_y);
     assert!(
         send(
@@ -2747,8 +2744,8 @@ fn pane_drag_survivors_fill_the_freed_room() {
     let app = AppContext::default();
     let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
     let commands = frame(&mut root, &app);
-    let (control_x, header_y) =
-        topmost_icon_center(&commands, "fullscreen-enter").expect("the pane header's expand control");
+    let (control_x, header_y) = topmost_icon_center(&commands, "fullscreen-enter")
+        .expect("the pane header's expand control");
     let (kept_before, moved_before) = {
         let state = state_rc.borrow();
         let bounds = state.pane_bounds.borrow();
@@ -2812,14 +2809,17 @@ fn pane_drag_reflows_every_pane_that_stays() {
         third
     };
     let commands = frame(&mut root, &app);
-    let (control_x, header_y) =
-        topmost_icon_center(&commands, "fullscreen-enter").expect("the pane header's expand control");
+    let (control_x, header_y) = topmost_icon_center(&commands, "fullscreen-enter")
+        .expect("the pane header's expand control");
     let (kept_before, third_before) = {
         let state = state_rc.borrow();
         let bounds = state.pane_bounds.borrow();
         (
             bounds.get(&kept).copied().expect("the first survivor drew"),
-            bounds.get(&third).copied().expect("the second survivor drew"),
+            bounds
+                .get(&third)
+                .copied()
+                .expect("the second survivor drew"),
         )
     };
 
@@ -2844,7 +2844,10 @@ fn pane_drag_reflows_every_pane_that_stays() {
     let state = state_rc.borrow();
     let bounds = state.pane_bounds.borrow();
     let kept_after = bounds.get(&kept).copied().expect("the first survivor drew");
-    let third_after = bounds.get(&third).copied().expect("the second survivor drew");
+    let third_after = bounds
+        .get(&third)
+        .copied()
+        .expect("the second survivor drew");
     assert!(
         kept_after.width() > kept_before.width() * 1.5,
         "the first survivor takes the left pane's room: {kept_after:?} after {kept_before:?}"
@@ -2866,8 +2869,8 @@ fn pane_drag_drops_on_the_empty_part_of_the_bar() {
     let app = AppContext::default();
     let (mut root, state_rc, _desktop, _dir, _kept, moved) = split_workspace(&app);
     let commands = frame(&mut root, &app);
-    let (control_x, header_y) =
-        topmost_icon_center(&commands, "fullscreen-enter").expect("the pane header's expand control");
+    let (control_x, header_y) = topmost_icon_center(&commands, "fullscreen-enter")
+        .expect("the pane header's expand control");
     let tab = active_tab_rect(&commands, &app);
     let topbar_height = goble_app::ui::shell::TOPBAR_HEIGHT;
 
@@ -2930,8 +2933,8 @@ fn pane_drag_repositions_within_the_same_tab() {
     let app = AppContext::default();
     let (mut root, state_rc, _desktop, _dir, kept, moved) = split_workspace(&app);
     let commands = frame(&mut root, &app);
-    let (control_x, header_y) =
-        topmost_icon_center(&commands, "fullscreen-enter").expect("the pane header's expand control");
+    let (control_x, header_y) = topmost_icon_center(&commands, "fullscreen-enter")
+        .expect("the pane header's expand control");
     let moved_before = state_rc
         .borrow()
         .pane_bounds

@@ -159,7 +159,8 @@ Icons are 24×24 vector glyphs from `crates/goble-ui/assets/icons`, drawn at
 15.5 pt in the topbar (30 pt hit box), 16 pt in rows, 13–14 pt inline in text
 and key chips. Stroke weight is constant across sizes; the icon name is the
 semantic id used by code (`ellipsis`, `flat-list`, `terminal`, `files`,
-`search`, `plus`, `fullscreen-enter`, `left-panel-close`, …).
+`search`, `plus`, `fullscreen-enter`, `panel-left-outline`,
+`panel-right-outline`, …).
 
 ### Previews
 
@@ -172,11 +173,16 @@ overflow strip, the split mid-resize state with the 1 pt inter-panel hairline,
 the terminal shell, Settings (General, Appearance with its in-field swatch,
 Appearance with the colour palette open, Shortcuts, narrow; no descriptions,
 floating close x), the diff reviewer, the floating file window and the
-changed-files card. The shell draws
-one rounded workspace sheet with a 5 pt free margin; the panels are flat
-children (same background, no borders, no corner ornament) separated only by
-the full-height hairline, with the radius on the shell's outer corners and a
-soft shadow instead of a framing border. The Settings sheet uses a full-height
+changed-files card. Next to them: the DSH-style right-aligned user bubble and
+inline image message (`chat-parity-*`), the slash menu floating above an
+unchanged composer (`slash-menu-*`), the Review tab beside the main chat
+(`split-review-*`), the file viewer with Review beside it
+(`split-file-viewer-*`) and the narrow split (`split-review-narrow-*`). The
+shell draws one flat workspace sheet with a 5 pt free margin; the panels are
+flat children (same background, no borders, no corner ornament, no shadow)
+separated only by the full-height hairline, with the radius on the shell's
+outer corners only. The topbar's two panel toggles use DSH's own
+`panel-left-outline` glyph and its mirrored right-hand twin. The Settings sheet uses a full-height
 secondary rail (small muted heading, primary-text menu labels, no search field,
 no user footer, no row/section rules) and long 120 pt Interface Layout tiles
 with an 8 pt gap.

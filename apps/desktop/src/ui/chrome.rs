@@ -12,10 +12,10 @@ use goble_ui::color::ColorU;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisSize,
-    MenuId, MenuPointer, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition,
-    Scrollable, ScrollState, SearchInput, SizeConstraint, Spacer, Stack, Text, Tooltip,
-    TooltipPosition, TopbarButton,
+    Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, LayoutContext, MainAxisSize, MenuId,
+    MenuPointer, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ScrollState,
+    Scrollable, SearchInput, SizeConstraint, Spacer, Stack, Text, Tooltip, TooltipPosition,
+    TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY};
 use goble_ui::geometry::{vec2f, PointF, RectF, Size2F, Vector2F};
@@ -228,20 +228,36 @@ pub fn build_chrome_row(
         .with_spacing(CONTROL_SPACING);
     let on_sidebar = actions.on_toggle_sidebar.clone();
     let sidebar_open = state.sidebar_visible;
-    controls = controls.with_child(button_click(
-        app,
-        if sidebar_open {
-            "left-panel-close"
-        } else {
-            "left-panel-open"
-        },
+    // Q: DSH's panel-left artwork, lit while the sidebar is open and muted
+    // while closed (the same glyph carries both states).
+    let sidebar_button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("panel-left-outline")
+                .with_size(CONTROL_ICON_SIZE)
+                .with_theme_color(
+                    if sidebar_open {
+                        ColorToken::Text
+                    } else {
+                        ColorToken::Muted
+                    },
+                    app,
+                )
+                .finish(),
+        )
+        .with_size(CONTROL_BUTTON_SIZE)
+        .with_corner_radius(8.0)
+        .with_active(sidebar_open)
+        .with_on_click(move || (on_sidebar.borrow_mut())())
+        .finish(),
         if sidebar_open {
             "Hide sidebar"
         } else {
             "Show sidebar"
         },
-        move || (on_sidebar.borrow_mut())(),
-    ));
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    controls = controls.with_child(sidebar_button);
     // Back/forward are visual navigation controls until the pane history lands;
     // they render disabled rather than pretending to navigate.
     controls = controls.with_child(disabled_button(app, "arrow-left", "Back"));
@@ -346,8 +362,7 @@ pub fn build_chrome_row(
         PopupMenuItem::new("Split down")
             .with_shortcut("⌘ ⇧ D")
             .with_on_select(move || (copy_split_down.borrow_mut())()),
-        PopupMenuItem::new("Replace with new")
-            .with_on_select(move || (copy_create.borrow_mut())()),
+        PopupMenuItem::new("Replace with new").with_on_select(move || (copy_create.borrow_mut())()),
     ];
     let mut name_item = PopupMenuItem::new("Conversation name").with_on_select(move || {
         (copy_name_action.borrow_mut())("Conversation name".to_string(), name_for_copy.clone())
@@ -486,12 +501,26 @@ pub fn build_chrome_row(
                 },
                 move || (on_max.borrow_mut())(),
             ))
-            .with_child(button_click(
-                app,
-                "left-panel-close",
-                "Toggle side panel",
-                move || (on_close.borrow_mut())(),
-            ))
+            .with_child({
+                // Mirrored DSH panel glyph for the right-hand panel.
+                let on_close = on_close.clone();
+                Tooltip::new(
+                    TopbarButton::new(
+                        Icon::new("panel-right-outline")
+                            .with_size(CONTROL_ICON_SIZE)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_size(CONTROL_BUTTON_SIZE)
+                    .with_corner_radius(8.0)
+                    .with_active(true)
+                    .with_on_click(move || (on_close.borrow_mut())())
+                    .finish(),
+                    "Toggle side panel",
+                )
+                .with_position(TooltipPosition::Below)
+                .finish()
+            })
             .finish();
         let side_section = Container::new(side_section)
             .with_padding(EdgeInsets::new(
@@ -722,11 +751,7 @@ struct TabStripScroller {
 }
 
 impl TabStripScroller {
-    fn new(
-        app: &AppContext,
-        state: &UiSnapshot,
-        actions: &UiActions,
-    ) -> Self {
+    fn new(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Self {
         let mut widths = Vec::new();
         let mut active = 0;
         for (index, kind) in state.side_tabs.iter().enumerate() {
@@ -763,8 +788,7 @@ impl TabStripScroller {
             .with_child(side_tabs::build_tab_strip(app, state, actions))
             .with_child(side_tab_add_menu(app, state, actions))
             .finish();
-        let scrollable = Scrollable::new(row, Axis::Horizontal)
-            .with_state(Rc::clone(&scroll));
+        let scrollable = Scrollable::new(row, Axis::Horizontal).with_state(Rc::clone(&scroll));
         Self {
             scrollable,
             widths,
@@ -788,8 +812,8 @@ impl TabStripScroller {
         let mut state = self.scroll.borrow_mut();
         let current = state.offset();
         let max = state.max_offset();
-        let start = self.widths.iter().take(self.active).sum::<f32>()
-            + TAB_STRIP_GAP * self.active as f32;
+        let start =
+            self.widths.iter().take(self.active).sum::<f32>() + TAB_STRIP_GAP * self.active as f32;
         let end = start + self.widths.get(self.active).copied().unwrap_or(0.0);
         let target = if start < current {
             start
@@ -958,16 +982,18 @@ impl OverviewPopover {
         let anchor = *self.anchor.borrow();
         let Some(window) = self.window else {
             return match anchor {
-                Some(anchor) => {
-                    vec2f(anchor.max_x() - size.x, anchor.max_y() + OVERVIEW_POPOVER_GAP)
-                }
+                Some(anchor) => vec2f(
+                    anchor.max_x() - size.x,
+                    anchor.max_y() + OVERVIEW_POPOVER_GAP,
+                ),
                 None => vec2f(0.0, CHROME_HEIGHT + OVERVIEW_POPOVER_GAP),
             };
         };
         let (x, y) = match anchor {
-            Some(anchor) => {
-                (anchor.max_x() - size.x, anchor.max_y() + OVERVIEW_POPOVER_GAP)
-            }
+            Some(anchor) => (
+                anchor.max_x() - size.x,
+                anchor.max_y() + OVERVIEW_POPOVER_GAP,
+            ),
             None => (
                 window.x - size.x - OVERVIEW_EDGE_MARGIN,
                 CHROME_HEIGHT + OVERVIEW_POPOVER_GAP,
@@ -1078,8 +1104,7 @@ impl Element for OverviewPopover {
         // state, so opening another menu closes it and an outside press or
         // Escape is handled by the root before the tree.
         if app.open_menus.id() != Some(OVERVIEW_MENU_ID) {
-            app.open_menus
-                .open(OVERVIEW_MENU_ID, self.on_close.clone());
+            app.open_menus.open(OVERVIEW_MENU_ID, self.on_close.clone());
         }
         app.open_menus.report(
             OVERVIEW_MENU_ID,
@@ -1240,10 +1265,16 @@ fn event_position(event: &DispatchedEvent) -> Option<Vector2F> {
 }
 
 fn section_collapsed(state: &UiSnapshot, key: &str) -> bool {
-    state.collapsed_sections.iter().any(|section| section == key)
+    state
+        .collapsed_sections
+        .iter()
+        .any(|section| section == key)
 }
 
-fn overview_popover_header(app: &AppContext, on_close: Rc<RefCell<dyn FnMut()>>) -> Box<dyn Element> {
+fn overview_popover_header(
+    app: &AppContext,
+    on_close: Rc<RefCell<dyn FnMut()>>,
+) -> Box<dyn Element> {
     let close = TopbarButton::new(
         Icon::new("x-close")
             .with_size(12.0)
@@ -1494,22 +1525,20 @@ fn build_overview_popover_content(
                 .collect()
         })
         .unwrap_or_default();
-    let tasks_collapsed = section_collapsed(state, OVERVIEW_TASKS_KEY);
-    let (header, action) = overview_section_header(
-        app,
-        "Background Tasks",
-        tasks.len(),
-        tasks_collapsed,
-        flat.len() == highlight,
-        OVERVIEW_TASKS_KEY,
-        Rc::clone(&on_toggle_section),
-    );
-    body = body.with_child(header);
-    flat.push(action);
-    if !tasks_collapsed {
-        if tasks.is_empty() {
-            body = body.with_child(overview_empty_line(app, "No background tasks"));
-        } else {
+    if !tasks.is_empty() {
+        let tasks_collapsed = section_collapsed(state, OVERVIEW_TASKS_KEY);
+        let (header, action) = overview_section_header(
+            app,
+            "Background Tasks",
+            tasks.len(),
+            tasks_collapsed,
+            flat.len() == highlight,
+            OVERVIEW_TASKS_KEY,
+            Rc::clone(&on_toggle_section),
+        );
+        body = body.with_child(header);
+        flat.push(action);
+        if !tasks_collapsed {
             for task in tasks {
                 let label = if task.description.trim().is_empty() {
                     "Background task"
@@ -1531,22 +1560,20 @@ fn build_overview_popover_content(
             .cmp(&right.description)
             .then_with(|| left.child_id.cmp(&right.child_id))
     });
-    let subagents_collapsed = section_collapsed(state, OVERVIEW_SUBAGENTS_KEY);
-    let (header, action) = overview_section_header(
-        app,
-        "Subagents",
-        subagents.len(),
-        subagents_collapsed,
-        flat.len() == highlight,
-        OVERVIEW_SUBAGENTS_KEY,
-        Rc::clone(&on_toggle_section),
-    );
-    body = body.with_child(header);
-    flat.push(action);
-    if !subagents_collapsed {
-        if subagents.is_empty() {
-            body = body.with_child(overview_empty_line(app, "No subagents"));
-        } else {
+    if !subagents.is_empty() {
+        let subagents_collapsed = section_collapsed(state, OVERVIEW_SUBAGENTS_KEY);
+        let (header, action) = overview_section_header(
+            app,
+            "Subagents",
+            subagents.len(),
+            subagents_collapsed,
+            flat.len() == highlight,
+            OVERVIEW_SUBAGENTS_KEY,
+            Rc::clone(&on_toggle_section),
+        );
+        body = body.with_child(header);
+        flat.push(action);
+        if !subagents_collapsed {
             for subagent in subagents {
                 let label = if subagent.description.trim().is_empty() {
                     subagent.subagent_type.clone()
@@ -1674,9 +1701,9 @@ pub fn build_side_panel(
                 (on_side_attach.borrow_mut())(SideChatAction::Attach)
             }));
             let on_side_focus = on_side;
-            side_actions.on_composer_focus_change = Rc::new(RefCell::new(
-                move |focused: bool| (on_side_focus.borrow_mut())(SideChatAction::Focus(focused)),
-            ));
+            side_actions.on_composer_focus_change = Rc::new(RefCell::new(move |focused: bool| {
+                (on_side_focus.borrow_mut())(SideChatAction::Focus(focused))
+            }));
             // Focusing or submitting in the side chat must not move the pane
             // tree's active pane to the reserved id.
             side_actions.on_pane_activate = Rc::new(RefCell::new(|_pane: u64| {}));
@@ -1722,6 +1749,7 @@ pub fn build_side_panel(
             goble_ui::elements::Axis::Vertical,
         )
         .finish(),
+        SideTabKind::Review => crate::ui::diff_panel::build_review_tab(app, state, actions, active),
     };
     // A horizontal swipe on the content steps the strip; vertical travel goes
     // to the mounted surface unchanged.
@@ -1773,8 +1801,8 @@ fn build_overview_content(
         .with_focused(state.global_search_focused)
         .with_caret(state.global_search_caret.clone())
         .with_placeholder("Search or enter a URL")
-        .with_text_size(12.0)
-        .with_extra_height(12.0)
+        .with_text_size(13.5)
+        .with_extra_height(18.0)
         .with_on_change(move |value| (on_search_change.borrow_mut())(value))
         .with_on_focus_change(move |focused| (on_search_focus.borrow_mut())(focused))
         .finish();
@@ -1949,7 +1977,6 @@ fn build_overview_content(
     // Terminal and Side Question open as panel-2 tabs from this launcher (the
     // Overview icon is the way to add a surface without the strip's `+`).
     let on_side_tab = actions.on_side_tab.clone();
-    let on_connectors = actions.on_settings.clone();
     let active = state.active_pane_id;
     let mut rows = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -1960,7 +1987,6 @@ fn build_overview_content(
         ("terminal", "Terminal", 2, None),
         ("environment-cloud", "Browser", 3, None),
         ("message-plus-square", "Side Question", 4, None),
-        ("layers-three-01", "Plugins", 5, Some("chevron-right")),
     ] {
         let disabled = matches!(action, 3);
         let row = if disabled {
@@ -1969,16 +1995,14 @@ fn build_overview_content(
             let on_diff = on_diff.clone();
             let on_explorer = on_explorer.clone();
             let on_side_tab = on_side_tab.clone();
-            let on_connectors = on_connectors.clone();
             HoverRow::new(panel_row(app, icon, label, false, trailing))
-                .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
+                .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
                 .with_corner_radius(8.0)
                 .with_on_click(move || match action {
                     0 => (on_diff.borrow_mut())(active, DiffPanelAction::Open(None)),
                     1 => (on_explorer.borrow_mut())(SidebarView::Explorer),
                     2 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Terminal)),
                     4 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Agent)),
-                    5 => (on_connectors.borrow_mut())(),
                     _ => {}
                 })
                 .finish()
@@ -1992,10 +2016,8 @@ fn build_overview_content(
     let subagents: Vec<_> = pane
         .map(|pane| pane.sub_agents.values().cloned().collect())
         .unwrap_or_default();
-    sections = sections.with_child(section_header(app, "Subagents", subagents.len()));
-    if subagents.is_empty() {
-        sections = sections.with_child(muted_line(app, "No subagents"));
-    } else {
+    if !subagents.is_empty() {
+        sections = sections.with_child(section_header(app, "Subagents", subagents.len()));
         for row in &subagents {
             let open = actions.on_open_sub_agent.clone();
             let active = state.active_pane_id;
@@ -2040,23 +2062,20 @@ fn build_overview_content(
                 .collect()
         })
         .unwrap_or_default();
-    sections = sections.with_child(
-        Container::new(section_header(app, "Background Tasks", tasks.len()))
-            .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
-            .finish(),
-    );
-    if tasks.is_empty() {
-        sections = sections.with_child(muted_line(app, "No background tasks"));
-    } else {
+    if !tasks.is_empty() {
+        sections = sections.with_child(
+            Container::new(section_header(app, "Background Tasks", tasks.len()))
+                .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
+                .finish(),
+        );
         for task in tasks {
-            sections =
-                sections.with_child(panel_row(
-                    app,
-                    "terminal-input",
-                    &task.description,
-                    false,
-                    None,
-                ));
+            sections = sections.with_child(panel_row(
+                app,
+                "terminal-input",
+                &task.description,
+                false,
+                None,
+            ));
         }
     }
 
@@ -2072,6 +2091,15 @@ fn build_overview_content(
                 .finish(),
         )
         .finish();
+    // The reference launcher is a content column, not full-bleed: cap and
+    // inset it while keeping the search field and kebab inside the same column.
+    let body = ConstrainedBox::new(
+        Container::new(body)
+            .with_padding(EdgeInsets::new(20.0, 0.0, 20.0, 0.0))
+            .finish(),
+    )
+    .with_max_width(540.0)
+    .finish();
     Scrollable::new(body, goble_ui::elements::Axis::Vertical).finish()
 }
 
@@ -2088,7 +2116,7 @@ fn panel_row(
         .with_spacing(10.0)
         .with_child(
             Icon::new(icon)
-                .with_size(15.0)
+                .with_size(17.0)
                 .with_theme_color(
                     if disabled {
                         ColorToken::Border
@@ -2101,7 +2129,7 @@ fn panel_row(
         )
         .with_child(
             Text::new(label)
-                .with_font_size(13.0)
+                .with_font_size(15.0)
                 .with_theme_color(
                     if disabled {
                         ColorToken::Muted

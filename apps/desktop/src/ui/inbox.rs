@@ -25,8 +25,8 @@ use goble_ui::platform::text_atlas::FontWeight;
 use goble_ui::theme::ColorToken;
 
 use super::shell::TOPBAR_HEIGHT;
-use super::top_overlay::TopBanner;
 use super::snapshot::UiSnapshot;
+use super::top_overlay::TopBanner;
 use super::UiActions;
 use crate::state::{InboxItem, InboxKind};
 
@@ -760,8 +760,7 @@ impl Element for InboxPopover {
         // own surface, and any other menu that tries to open while it is up
         // closes it through this handle.
         if app.open_menus.id() != Some(INBOX_MENU_ID) {
-            app.open_menus
-                .open(INBOX_MENU_ID, self.on_close.clone());
+            app.open_menus.open(INBOX_MENU_ID, self.on_close.clone());
         }
         ctx.enter_menu_surface();
         self.content.paint(at, ctx, app);

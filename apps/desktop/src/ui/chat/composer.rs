@@ -208,8 +208,7 @@ pub(crate) fn build_terminal_composer(
     let draft_commands =
         crate::ui::palette::draft_commands(state, actions, &session.composer_draft);
     let draft_query = crate::ui::palette::draft_query(&session.composer_draft).unwrap_or_default();
-    let slash_filtered =
-        crate::ui::palette::matching_slash_commands(&draft_commands, &draft_query);
+    let slash_filtered = crate::ui::palette::matching_slash_commands(&draft_commands, &draft_query);
     let slash_items = crate::ui::palette::slash_items(&slash_filtered);
     let on_composer_insert = actions.on_composer_insert.clone();
     let accept = Rc::new(RefCell::new(crate::ui::palette::slash_accept(

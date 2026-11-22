@@ -11,6 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use goble_ui::color::ColorU;
 use goble_ui::elements::conversation_list_item::{
     sidebar_relative_time, SidebarActionRow, SidebarGroupRow, SidebarIconButton, SidebarList,
     SidebarMenuItem, SidebarSessionRow, SIDEBAR_GROUP_GAP, SIDEBAR_HEADER_BUTTON,
@@ -19,12 +20,11 @@ use goble_ui::elements::conversation_list_item::{
     SIDEBAR_ICON_PROJECT_ADD, SIDEBAR_ICON_SLIDERS, SIDEBAR_LIST_BOTTOM_PAD, SIDEBAR_SECTION_TITLE,
     SIDEBAR_SECTION_TOP_INSET, SIDEBAR_TITLE_LINE, SIDEBAR_TITLE_SIZE,
 };
-use goble_ui::color::ColorU;
 use goble_ui::elements::{
     AgentCardUi, AppContext, Axis, ConstrainedBox, Container, ConversationEntry,
-    CrossAxisAlignment, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow,
-    MainAxisSize, Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput,
-    Spacer, Text, Tooltip, TooltipPosition,
+    CrossAxisAlignment, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, MainAxisSize,
+    Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput, Spacer, Text,
+    Tooltip, TooltipPosition,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -282,7 +282,14 @@ fn agents_view(
         .with_state(state.sidebar_scroll.clone())
         .finish();
 
-    let automations = sidebar_action(app, state, actions, "sparkle", "Automations", "sidebar.automations");
+    let automations = sidebar_action(
+        app,
+        state,
+        actions,
+        "sparkle",
+        "Automations",
+        "sidebar.automations",
+    );
     let customizations = sidebar_action(
         app,
         state,

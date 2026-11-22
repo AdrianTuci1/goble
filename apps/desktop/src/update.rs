@@ -86,7 +86,10 @@ impl UpdatePhase {
 
     /// Whether a check may start from here.
     fn allows_check(self) -> bool {
-        matches!(self, Self::Idle | Self::Available | Self::Ready | Self::Error)
+        matches!(
+            self,
+            Self::Idle | Self::Available | Self::Ready | Self::Error
+        )
     }
 
     /// Whether an install may start from here.
@@ -137,7 +140,12 @@ impl AvailableSummary {
 
     /// `0.2.0 · stable · 12.3 MB`.
     pub fn detail(&self) -> String {
-        format!("{} · {} · {}", self.version, self.channel, self.size_label())
+        format!(
+            "{} · {} · {}",
+            self.version,
+            self.channel,
+            self.size_label()
+        )
     }
 
     /// Whether this is an ordinary forward update.
@@ -248,7 +256,10 @@ impl UpdateViewModel {
             installed_epoch,
             ..UpdateView::default()
         };
-        Self { view, last_check_at: None }
+        Self {
+            view,
+            last_check_at: None,
+        }
     }
 
     pub fn view(&self) -> &UpdateView {
@@ -310,8 +321,10 @@ impl UpdateViewModel {
                 self.view.available = None;
                 self.view.banner = None;
                 self.view.phase = UpdatePhase::Idle;
-                self.view.status =
-                    format!("Goble {} is the newest {} build", self.view.current_version, self.view.channel);
+                self.view.status = format!(
+                    "Goble {} is the newest {} build",
+                    self.view.current_version, self.view.channel
+                );
                 true
             }
             Err(reason) => {
@@ -357,7 +370,10 @@ impl UpdateViewModel {
 
     /// Forget a finished attempt, keeping what the state file knows.
     pub fn reset(&mut self) {
-        if matches!(self.view.phase, UpdatePhase::Checking | UpdatePhase::Downloading) {
+        if matches!(
+            self.view.phase,
+            UpdatePhase::Checking | UpdatePhase::Downloading
+        ) {
             return;
         }
         self.view.phase = UpdatePhase::Idle;
@@ -475,8 +491,7 @@ impl UpdateService {
         };
 
         let state_path = paths.state_path();
-        let mut model =
-            UpdateViewModel::new(running_version, channel.as_str(), installed_epoch);
+        let mut model = UpdateViewModel::new(running_version, channel.as_str(), installed_epoch);
         match UpdateState::load(&state_path) {
             Ok(state) => model.adopt_state(&state),
             Err(err) => log::warn!("the update state could not be read: {err}"),
@@ -614,7 +629,10 @@ impl UpdateService {
     }
 
     fn installed_epoch(&self) -> u64 {
-        self.model.lock().map(|inner| inner.model.view().installed_epoch).unwrap_or(0)
+        self.model
+            .lock()
+            .map(|inner| inner.model.view().installed_epoch)
+            .unwrap_or(0)
     }
 
     fn record_check(&self, at: DateTime<Utc>) {
@@ -696,13 +714,12 @@ impl UpdateService {
                 return;
             }
         };
-        let request = InstallRequest::new(
-            self.paths.clone(),
-            update.version.to_string(),
-            update.epoch,
-        );
+        let request =
+            InstallRequest::new(self.paths.clone(), update.version.to_string(), update.epoch);
         match plan.apply(&request) {
-            Ok(InstallOutcome::Applied { restart_required: true }) => {
+            Ok(InstallOutcome::Applied {
+                restart_required: true,
+            }) => {
                 let version = update.version.to_string();
                 if let Ok(mut inner) = self.model.lock() {
                     inner.model.download_finished(version.clone());
@@ -712,7 +729,9 @@ impl UpdateService {
                 // process to exit, and the new AppImage replaces this file.
                 std::process::exit(0);
             }
-            Ok(InstallOutcome::Applied { restart_required: false }) => {
+            Ok(InstallOutcome::Applied {
+                restart_required: false,
+            }) => {
                 if let Ok(mut inner) = self.model.lock() {
                     inner.model.download_finished(update.version.to_string());
                 }
@@ -743,7 +762,9 @@ impl UpdateService {
         spawn("goble-update-healthy", move || {
             std::thread::sleep(HEALTHY_AFTER);
             match confirm_healthy(&paths, &state_path, &running) {
-                Ok(Some(version)) => log::info!("Goble {version} stayed up; the install is confirmed"),
+                Ok(Some(version)) => {
+                    log::info!("Goble {version} stayed up; the install is confirmed")
+                }
                 Ok(None) => {}
                 Err(err) => log::warn!("the healthy marker could not be written: {err}"),
             }
@@ -760,7 +781,8 @@ pub fn confirm_healthy(
     running_version: &str,
 ) -> Result<Option<String>, InstallError> {
     let pending = paths.mark_healthy()?;
-    let mut state = UpdateState::load(state_path).map_err(|err| InstallError::State(err.to_string()))?;
+    let mut state =
+        UpdateState::load(state_path).map_err(|err| InstallError::State(err.to_string()))?;
     let confirmed = match pending {
         Some(pending) => {
             state.confirm_install(pending.version.clone(), pending.epoch);
@@ -775,14 +797,19 @@ pub fn confirm_healthy(
             None
         }
     };
-    state.save(state_path).map_err(|err| InstallError::State(err.to_string()))?;
+    state
+        .save(state_path)
+        .map_err(|err| InstallError::State(err.to_string()))?;
     Ok(confirmed)
 }
 
 /// Spawn a named background thread, logging rather than panicking when the
 /// machine refuses another thread.
 fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> bool {
-    match std::thread::Builder::new().name(name.to_owned()).spawn(work) {
+    match std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(work)
+    {
         Ok(_) => true,
         Err(err) => {
             log::warn!("could not start the {name} thread: {err}");
@@ -867,9 +894,15 @@ mod tests {
 
         assert!(model.begin_download());
         assert_eq!(model.phase(), UpdatePhase::Downloading);
-        assert!(!model.view().can_install(), "nothing to install while downloading");
+        assert!(
+            !model.view().can_install(),
+            "nothing to install while downloading"
+        );
         assert!(!model.begin_download());
-        assert!(!model.begin_check(), "a check cannot cut in front of a download");
+        assert!(
+            !model.begin_check(),
+            "a check cannot cut in front of a download"
+        );
 
         assert!(model.download_finished("0.2.0"));
         assert_eq!(model.phase(), UpdatePhase::Ready);
@@ -881,9 +914,17 @@ mod tests {
     fn a_failure_is_visible_in_the_view_and_resets() {
         let mut model = model();
         model.begin_check();
-        model.check_finished(Utc::now(), Err("could not reach https://downloads.goble.dev".into()));
+        model.check_finished(
+            Utc::now(),
+            Err("could not reach https://downloads.goble.dev".into()),
+        );
         assert_eq!(model.phase(), UpdatePhase::Error);
-        assert!(model.view().error.as_ref().unwrap().contains("could not reach"));
+        assert!(model
+            .view()
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("could not reach"));
         // The button still works after a failure.
         assert!(model.begin_check());
         model.check_finished(Utc::now(), Ok(None));
@@ -901,7 +942,12 @@ mod tests {
         model.begin_download();
         model.fail("the download did not match the signed digest, so it was discarded");
         assert_eq!(model.phase(), UpdatePhase::Error);
-        assert!(model.view().error.as_ref().unwrap().contains("signed digest"));
+        assert!(model
+            .view()
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("signed digest"));
         // The release is still offered, so a retry can start from it.
         assert_eq!(model.view().available.as_ref().unwrap().version, "0.2.0");
     }
@@ -965,7 +1011,10 @@ mod tests {
     fn the_check_clock_is_six_hours() {
         let mut model = model();
         let start = Utc::now();
-        assert!(model.check_due(start), "the first check of a session is due");
+        assert!(
+            model.check_due(start),
+            "the first check of a session is due"
+        );
 
         model.begin_check();
         model.check_finished(start, Ok(None));
@@ -984,7 +1033,11 @@ mod tests {
         model.adopt_state(&state);
         assert_eq!(model.view().installed_epoch, 4);
         assert_eq!(model.view().failed_version.as_deref(), Some("0.2.1"));
-        assert_eq!(model.phase(), UpdatePhase::Idle, "reading state is not checking");
+        assert_eq!(
+            model.phase(),
+            UpdatePhase::Idle,
+            "reading state is not checking"
+        );
         assert!(model.view().last_check.is_none());
     }
 
@@ -1020,9 +1073,18 @@ mod tests {
     fn a_relative_check_time_reads_as_elapsed() {
         let now = Utc::now();
         assert_eq!(relative_check(now, now), "checked just now");
-        assert_eq!(relative_check(now - chrono::Duration::minutes(5), now), "checked 5m ago");
-        assert_eq!(relative_check(now - chrono::Duration::hours(3), now), "checked 3h ago");
-        assert_eq!(relative_check(now - chrono::Duration::days(2), now), "checked 2d ago");
+        assert_eq!(
+            relative_check(now - chrono::Duration::minutes(5), now),
+            "checked 5m ago"
+        );
+        assert_eq!(
+            relative_check(now - chrono::Duration::hours(3), now),
+            "checked 3h ago"
+        );
+        assert_eq!(
+            relative_check(now - chrono::Duration::days(2), now),
+            "checked 2d ago"
+        );
     }
 
     #[test]
@@ -1031,7 +1093,10 @@ mod tests {
             url: "https://downloads.goble.dev/channel_versions.json".into(),
             status: 503,
         };
-        assert_eq!(check_error(&err), "https://downloads.goble.dev/channel_versions.json answered HTTP 503");
+        assert_eq!(
+            check_error(&err),
+            "https://downloads.goble.dev/channel_versions.json answered HTTP 503"
+        );
         let err = UpdateError::DigestMismatch {
             url: "https://x/y".into(),
             expected: "a".into(),

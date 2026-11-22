@@ -83,7 +83,9 @@ fn run_chat_turn_appends_mock_reply() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
+        .run_chat_turn(
+            &chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None,
+        )
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 
@@ -114,7 +116,9 @@ fn run_chat_turn_emits_chat_updated() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
+        .run_chat_turn(
+            &chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None,
+        )
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 
@@ -393,7 +397,9 @@ fn run_chat_turn_emits_turn_finished() {
     let rt = tokio::runtime::Runtime::new().expect("build runtime");
     let _guard = rt.enter();
     let handle = desktop
-        .run_chat_turn(&chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None)
+        .run_chat_turn(
+            &chat_id, "Say hi", "mock", "", "local", "default", &chat_id, None, None,
+        )
         .expect("run turn");
     rt.block_on(handle).expect("task completes");
 

@@ -264,8 +264,11 @@ impl MediaState {
             self.selected_session.clear();
             return;
         }
-        if !self.session_exists(&self.selected_medium, &self.selected_project, &self.selected_session)
-            && !self.selected_session.is_empty()
+        if !self.session_exists(
+            &self.selected_medium,
+            &self.selected_project,
+            &self.selected_session,
+        ) && !self.selected_session.is_empty()
         {
             self.selected_session.clear();
         }
@@ -387,7 +390,8 @@ impl MediaState {
                 }],
             }],
         });
-        self.custom_mediums.push((id.to_string(), label.to_string()));
+        self.custom_mediums
+            .push((id.to_string(), label.to_string()));
         true
     }
 
@@ -436,8 +440,12 @@ impl MediaState {
     /// used to set the active pane's cwd when a session is chosen. Empty when
     /// no session is selected.
     pub fn selected_session_path(&self) -> String {
-        self.session_path(&self.selected_medium, &self.selected_project, &self.selected_session)
-            .unwrap_or_default()
+        self.session_path(
+            &self.selected_medium,
+            &self.selected_project,
+            &self.selected_session,
+        )
+        .unwrap_or_default()
     }
 
     fn session_path(&self, medium_id: &str, project_id: &str, session_id: &str) -> Option<String> {
@@ -461,7 +469,10 @@ mod tests {
     use goble_persistence::{Project, Session};
 
     /// A real `DesktopState` over an in-memory sqlite store + temp thread store.
-    fn desktop() -> (std::sync::Arc<goble_desktop_service::DesktopState>, tempfile::TempDir) {
+    fn desktop() -> (
+        std::sync::Arc<goble_desktop_service::DesktopState>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().expect("create temp thread store dir");
         let state = goble_desktop_service::DesktopState::new(
             goble_core::store::Store::open_in_memory().expect("open in-memory store"),
@@ -548,7 +559,11 @@ mod tests {
         let state = MediaState::mock();
         assert_eq!(
             state.session_location("s-remote"),
-            Some(("remote".to_string(), "remote".to_string(), "s-remote".to_string()))
+            Some((
+                "remote".to_string(),
+                "remote".to_string(),
+                "s-remote".to_string()
+            ))
         );
         assert_eq!(state.session_location("not-a-session"), None);
     }
@@ -640,9 +655,17 @@ mod tests {
         assert_eq!(state.mediums.len(), 2, "built-in Local + Remote only");
         assert!(state.add_medium("staging-vps", "Staging VPS"));
         assert_eq!(state.mediums.len(), 3);
-        let node = state.mediums.iter().find(|m| m.id == "staging-vps").unwrap();
+        let node = state
+            .mediums
+            .iter()
+            .find(|m| m.id == "staging-vps")
+            .unwrap();
         assert_eq!(node.label, "Staging VPS");
-        assert_eq!(node.projects.len(), 1, "custom medium has a default project");
+        assert_eq!(
+            node.projects.len(),
+            1,
+            "custom medium has a default project"
+        );
         assert_eq!(
             state.custom_mediums(),
             &[("staging-vps".to_string(), "Staging VPS".to_string())]

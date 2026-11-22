@@ -7,8 +7,8 @@ use goble_ui::geometry::Vector2F;
 use goble_ui::SettingsPage;
 
 use super::color_picker;
-use super::pane::{FloatingDragMode, NavDir, PaneDropTarget, PaneRect};
 use super::file_menu::FileMenuAction;
+use super::pane::{FloatingDragMode, NavDir, PaneDropTarget, PaneRect};
 use super::tab_menu::TabMenuAction;
 use super::types::{
     AppTab, ArchivedFilter, OnboardingAction, SettingsCategory, SidebarView, WorkspaceRouting,

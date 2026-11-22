@@ -132,6 +132,9 @@ pub enum SideTabKind {
     Terminal,
     /// The active pane's live work items and their descriptions.
     TaskOutput,
+    /// The active pane's working-tree review: the changed-file rail and the
+    /// diff, inside the panel like Terminal and Side Question (Q).
+    Review,
 }
 
 impl SideTabKind {
@@ -143,6 +146,7 @@ impl SideTabKind {
             Self::Files => "Files",
             Self::Terminal => "Terminal",
             Self::TaskOutput => "Task output",
+            Self::Review => "Review",
         }
     }
 
@@ -154,6 +158,7 @@ impl SideTabKind {
             Self::Files => "file",
             Self::Terminal => "terminal",
             Self::TaskOutput => "terminal-input",
+            Self::Review => "file",
         }
     }
 }
@@ -714,6 +719,10 @@ pub struct UiState {
     /// surfaces. The app machine keeps it non-empty (see
     /// [`UiState::ensure_side_tabs`]).
     pub side_tabs: Vec<SideTabKind>,
+    /// The pane + working directory a Review side tab shows. The tab reads the
+    /// pane's own diff controls and `pane_diffs[pane]`, so opening Review does
+    /// not split a diff pane into the layout.
+    pub side_review: Option<(u64, String)>,
     /// The index in [`Self::side_tabs`] the panel is showing. Kept in range by
     /// the side-tab methods; a stale value falls back to Overview.
     pub active_side_tab: usize,

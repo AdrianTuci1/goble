@@ -172,10 +172,10 @@ pub fn page(state: &SettingsUiState) -> PageModel {
             .iter()
             .map(|key| (*key).to_string())
             .collect::<Vec<_>>();
-        let remap = ActionModel::new("Remapping is not available in this build.", SettingsAction::ShortcutRemap(format!(
-            "shortcut.{}",
-            binding.label
-        )))
+        let remap = ActionModel::new(
+            "Remapping is not available in this build.",
+            SettingsAction::ShortcutRemap(format!("shortcut.{}", binding.label)),
+        )
         .with_icon("trash")
         .with_ghost();
         section = section.with_row(
@@ -257,7 +257,11 @@ mod tests {
             .iter()
             .map(|row| row.label.as_str())
             .collect();
-        assert_eq!(labels, vec!["Toggle sidebar"], "the query is app-owned and filters");
+        assert_eq!(
+            labels,
+            vec!["Toggle sidebar"],
+            "the query is app-owned and filters"
+        );
 
         // The hint is searchable too.
         state.shortcuts_search = "active space".to_string();

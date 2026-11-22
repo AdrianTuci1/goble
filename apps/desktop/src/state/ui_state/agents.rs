@@ -75,7 +75,8 @@ impl UiState {
                 rt.in_flight_since
                     .entry(call.id.clone())
                     .or_insert_with(std::time::Instant::now);
-                rt.work_started_at.get_or_insert_with(std::time::Instant::now);
+                rt.work_started_at
+                    .get_or_insert_with(std::time::Instant::now);
                 rt.in_flight_tools
                     .insert(call.id.clone(), tool_call_from_event(call));
             } else {
@@ -251,8 +252,7 @@ impl UiState {
         // Its thinking belongs to it too: the transcript block is live state,
         // and carried into this turn it would sit under the message the user
         // just sent. A child's rows stay — they are another conversation's.
-        rt.reasoning
-            .retain(|row| row.chat_id != conversation_id);
+        rt.reasoning.retain(|row| row.chat_id != conversation_id);
     }
 
     /// Settle a finished turn on `pane_id`: the pane stops showing busy, its

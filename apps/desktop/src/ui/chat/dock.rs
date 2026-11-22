@@ -94,8 +94,9 @@ pub(crate) fn build_terminal_dock(
         .map(|c| c.terminal_dock_dragging.clone())
         .unwrap_or_else(|| Rc::new(RefCell::new(false)));
     let on_height = actions.on_terminal_dock_height.clone();
-    let resize: Rc<RefCell<dyn FnMut(f32)>> =
-        Rc::new(RefCell::new(move |height| (on_height.borrow_mut())(pane_id, height)));
+    let resize: Rc<RefCell<dyn FnMut(f32)>> = Rc::new(RefCell::new(move |height| {
+        (on_height.borrow_mut())(pane_id, height)
+    }));
     Box::new(DockShell {
         child: Some(content),
         setting,

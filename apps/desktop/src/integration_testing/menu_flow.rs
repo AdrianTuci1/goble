@@ -46,7 +46,9 @@ fn build_root() -> (RootView, Arc<DesktopState>, tempfile::TempDir) {
     config.remote.mode = goble_core::config::RemoteMode::Gateway;
     config.remote.gateway_url = Some("https://gateway.example.com".to_string());
     config.remote.worker_token = Some("wt-test".to_string());
-    desktop.save_config(&config).expect("save the remote config");
+    desktop
+        .save_config(&config)
+        .expect("save the remote config");
     let view = RootView::new(&AppContext::default(), &desktop, None);
     (view, desktop, dir)
 }
@@ -82,9 +84,12 @@ fn render_with_pointer(
 /// Center of the first `name` icon drawn.
 fn icon_center(cmds: &[RenderCommand], name: &str) -> Option<(f32, f32)> {
     cmds.iter().find_map(|c| match c {
-        RenderCommand::DrawIcon { origin, name: n, size, .. } if n == name => {
-            Some((origin.x + size / 2.0, origin.y + size / 2.0))
-        }
+        RenderCommand::DrawIcon {
+            origin,
+            name: n,
+            size,
+            ..
+        } if n == name => Some((origin.x + size / 2.0, origin.y + size / 2.0)),
         _ => None,
     })
 }
@@ -95,9 +100,12 @@ fn icon_center(cmds: &[RenderCommand], name: &str) -> Option<(f32, f32)> {
 fn topmost_icon_center(cmds: &[RenderCommand], name: &str) -> Option<(f32, f32)> {
     cmds.iter()
         .filter_map(|c| match c {
-            RenderCommand::DrawIcon { origin, name: n, size, .. } if n == name => {
-                Some((origin.x + size / 2.0, origin.y + size / 2.0))
-            }
+            RenderCommand::DrawIcon {
+                origin,
+                name: n,
+                size,
+                ..
+            } if n == name => Some((origin.x + size / 2.0, origin.y + size / 2.0)),
             _ => None,
         })
         .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -106,9 +114,9 @@ fn topmost_icon_center(cmds: &[RenderCommand], name: &str) -> Option<(f32, f32)>
 /// A point inside the row that drew `text`: its own left end, a few px in.
 fn text_center(cmds: &[RenderCommand], text: &str) -> Option<(f32, f32)> {
     cmds.iter().find_map(|c| match c {
-        RenderCommand::DrawText { text: run, origin, .. } if run == text => {
-            Some((origin.x + 8.0, origin.y + 6.0))
-        }
+        RenderCommand::DrawText {
+            text: run, origin, ..
+        } if run == text => Some((origin.x + 8.0, origin.y + 6.0)),
         _ => None,
     })
 }
@@ -117,9 +125,9 @@ fn text_center(cmds: &[RenderCommand], text: &str) -> Option<(f32, f32)> {
 fn text_positions(cmds: &[RenderCommand], text: &str) -> Vec<(f32, f32)> {
     cmds.iter()
         .filter_map(|c| match c {
-            RenderCommand::DrawText { text: run, origin, .. } if run == text => {
-                Some((origin.x + 8.0, origin.y + 6.0))
-            }
+            RenderCommand::DrawText {
+                text: run, origin, ..
+            } if run == text => Some((origin.x + 8.0, origin.y + 6.0)),
             _ => None,
         })
         .collect()
@@ -129,18 +137,11 @@ fn text_positions(cmds: &[RenderCommand], text: &str) -> Vec<(f32, f32)> {
 /// with its glyph, then the label. The label's run is taken at its last paint,
 /// because the open popup paints over the window: a pane header or a tab
 /// carrying the same string is drawn earlier in the frame.
-fn icon_before_label(
-    cmds: &[RenderCommand],
-    icon: &str,
-    label: &str,
-) -> Option<(f32, f32)> {
+fn icon_before_label(cmds: &[RenderCommand], icon: &str, label: &str) -> Option<(f32, f32)> {
     let (label_x, label_y) = text_positions(cmds, label).pop()?;
     cmds.iter().find_map(|command| match command {
         RenderCommand::DrawIcon {
-            origin,
-            name,
-            size,
-            ..
+            origin, name, size, ..
         } if name == icon => {
             let centre_y = origin.y + size / 2.0;
             (origin.x < label_x && (centre_y - label_y).abs() <= 6.0)
@@ -183,11 +184,17 @@ fn topmost_label_position(cmds: &[RenderCommand], label: &str) -> Option<(f32, f
 /// tree is rebuilt (matching the real about_to_wait redraw between down and up).
 fn click(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
     let mut ctx = EventContext;
-    let down = DispatchedEvent::MouseDown { position: vec2f(pos.0, pos.1), button: 0 };
+    let down = DispatchedEvent::MouseDown {
+        position: vec2f(pos.0, pos.1),
+        button: 0,
+    };
     let _ = root.dispatch_event(&down, &mut ctx, app);
     // Rebuild the tree (a redraw happens between down and up in the real app).
     let _ = render(root, app);
-    let up = DispatchedEvent::MouseUp { position: vec2f(pos.0, pos.1), button: 0 };
+    let up = DispatchedEvent::MouseUp {
+        position: vec2f(pos.0, pos.1),
+        button: 0,
+    };
     let _ = root.dispatch_event(&up, &mut ctx, app);
 }
 
@@ -197,10 +204,16 @@ fn click(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
 /// the real one does, because the pointer has not moved.
 fn click_with_pointer(root: &mut RootView, app: &AppContext, pos: (f32, f32)) {
     let mut ctx = EventContext;
-    let down = DispatchedEvent::MouseDown { position: vec2f(pos.0, pos.1), button: 0 };
+    let down = DispatchedEvent::MouseDown {
+        position: vec2f(pos.0, pos.1),
+        button: 0,
+    };
     let _ = root.dispatch_event(&down, &mut ctx, app);
     let _ = render_with_pointer(root, app, Some(pos));
-    let up = DispatchedEvent::MouseUp { position: vec2f(pos.0, pos.1), button: 0 };
+    let up = DispatchedEvent::MouseUp {
+        position: vec2f(pos.0, pos.1),
+        button: 0,
+    };
     let _ = root.dispatch_event(&up, &mut ctx, app);
 }
 
@@ -235,7 +248,10 @@ fn topbar_environment_menu_opens() {
     click(&mut root, &app, pos);
 
     let open = root.state_rc().borrow().env_selector_open.clone();
-    assert!(*open.borrow(), "the environment trigger should open its menu");
+    assert!(
+        *open.borrow(),
+        "the environment trigger should open its menu"
+    );
 }
 
 /// Every environment-menu row leads with its own glyph. The rows carried icons
@@ -364,7 +380,10 @@ fn topbar_environment_menu_opens_a_space_in_that_environment() {
     let (spaces_before, last_before) = {
         let state_rc = root.state_rc();
         let state = state_rc.borrow();
-        (state.spaces.len(), state.spaces.last().map(|s| s.name.clone()))
+        (
+            state.spaces.len(),
+            state.spaces.last().map(|s| s.name.clone()),
+        )
     };
     let cmds = render(&mut root, &app);
     let item = text_center(&cmds, "Remote (worker)").expect("the menu lists the environments");
@@ -486,11 +505,13 @@ fn hovering_an_environment_row_offers_make_default_in_a_tray() {
     let app = AppContext::default();
     let _ = render(&mut root, &app);
     let cmds = render(&mut root, &app);
-    let trigger = topmost_icon_center(&cmds, "chevron-down").expect("topbar environment menu trigger");
+    let trigger =
+        topmost_icon_center(&cmds, "chevron-down").expect("topbar environment menu trigger");
     click(&mut root, &app, trigger);
 
     let cmds = render(&mut root, &app);
-    let row = topmost_text_position(&cmds, "Remote (worker)").expect("the menu lists the environments");
+    let row =
+        topmost_text_position(&cmds, "Remote (worker)").expect("the menu lists the environments");
     assert!(
         text_center(&cmds, "Make default").is_none(),
         "no tray is drawn before the pointer is over a row"
@@ -566,17 +587,17 @@ fn the_tray_s_make_default_does_nothing_for_the_environment_already_default() {
     let (mut root, _desktop, _dir) = build_root();
     let app = AppContext::default();
     // The active environment is the one new spaces already start in.
-    root.media_state_rc()
-        .borrow_mut()
-        .select_medium("remote");
+    root.media_state_rc().borrow_mut().select_medium("remote");
 
     let _ = render(&mut root, &app);
     let cmds = render(&mut root, &app);
-    let trigger = topmost_icon_center(&cmds, "chevron-down").expect("topbar environment menu trigger");
+    let trigger =
+        topmost_icon_center(&cmds, "chevron-down").expect("topbar environment menu trigger");
     click(&mut root, &app, trigger);
 
     let cmds = render(&mut root, &app);
-    let row = topmost_text_position(&cmds, "Remote (worker)").expect("the menu lists the environments");
+    let row =
+        topmost_text_position(&cmds, "Remote (worker)").expect("the menu lists the environments");
     let _ = render_with_pointer(&mut root, &app, Some(row));
     let cmds = render_with_pointer(&mut root, &app, Some(row));
     let button = text_center(&cmds, "Make default").expect("the tray still offers the button");
@@ -631,7 +652,6 @@ fn the_pane_headers_expand_control_expands_the_pane() {
     );
 }
 
-
 /// Mount a `ChatComposer` that carries a menu control, click the control's
 /// trigger, and assert the app-owned open flag flips.
 ///
@@ -656,12 +676,22 @@ fn assert_composer_pill_opens(
     let renderer = Renderer::new();
     let mut paint_ctx = PaintContext::new(renderer);
     composer.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
-    let cmds = paint_ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
+    let cmds = paint_ctx
+        .renderer
+        .take()
+        .map(|r| r.commands().to_vec())
+        .unwrap_or_default();
 
     let (x, y) = trigger(&cmds).expect("composer pill trigger");
     let mut ctx = EventContext;
-    let down = DispatchedEvent::MouseDown { position: vec2f(x, y), button: 0 };
-    let up = DispatchedEvent::MouseUp { position: vec2f(x, y), button: 0 };
+    let down = DispatchedEvent::MouseDown {
+        position: vec2f(x, y),
+        button: 0,
+    };
+    let up = DispatchedEvent::MouseUp {
+        position: vec2f(x, y),
+        button: 0,
+    };
     // The composer is rebuilt each frame too, so re-lay it out + paint it
     // between down and up (a real redraw), otherwise the rebuilt trigger has no
     // origin yet and its bounds are unknown when the release arrives.
@@ -723,10 +753,7 @@ fn composer_branch_pill_opens_menu() {
     let composer = ChatComposer::new()
         .with_branch_label("main")
         .with_branch_menu(
-            vec![
-                PopupMenuItem::new("main"),
-                PopupMenuItem::new("dev"),
-            ],
+            vec![PopupMenuItem::new("main"), PopupMenuItem::new("dev")],
             open_menu,
             |_| {},
         )
@@ -773,7 +800,10 @@ fn the_rich_input_has_no_account_button() {
         icon_center(&cmds, "user").is_none(),
         "the account button is gone from the rich input"
     );
-    assert!(icon_center(&cmds, "plus").is_some(), "the attach pill is still drawn");
+    assert!(
+        icon_center(&cmds, "plus").is_some(),
+        "the attach pill is still drawn"
+    );
 }
 
 /// The turn-status footer's still-running line is information the user needs —

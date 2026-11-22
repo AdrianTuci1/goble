@@ -1659,9 +1659,10 @@ fn save_harness_form(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
             state.adopt_settings_view(view);
             close_sheet(state);
             start_harness_scan(state, desktop);
-            state
-                .settings
-                .set_status(StatusKind::Success, format!("Saved [harness.{id}] to config.toml."));
+            state.settings.set_status(
+                StatusKind::Success,
+                format!("Saved [harness.{id}] to config.toml."),
+            );
         }
         Err(error) => write_error(state, desktop, error),
     }

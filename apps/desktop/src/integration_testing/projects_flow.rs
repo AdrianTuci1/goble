@@ -10,9 +10,7 @@ use std::rc::Rc;
 use goble_app::projects::ProjectsState;
 use goble_app::root_view::RootView;
 use goble_app::ui::projects::build_projects_view;
-use goble_app::ui::{
-    AppTab, ProjectEntry, ProjectSessionEntry, ProjectsActions, ProjectsSnapshot,
-};
+use goble_app::ui::{AppTab, ProjectEntry, ProjectSessionEntry, ProjectsActions, ProjectsSnapshot};
 use goble_ui::elements::AppContext;
 use goble_ui::render::RenderCommand;
 use goble_ui::test_util::{command_counts, render_element};

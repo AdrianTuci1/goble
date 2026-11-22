@@ -55,33 +55,180 @@ fn main() -> anyhow::Result<()> {
         .canonicalize()?;
     let assets = raster::PreviewAssets::load(&assets_dir)?;
     let repo = tempfile::tempdir()?;
+    // A deterministic git working tree for the split Review previews: one
+    // committed file changed on disk, so the panel shows real git output.
+    let review_repo = tempfile::tempdir()?;
+    let repo_path = review_repo.path().to_path_buf();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo_path)
+        .status()?;
+    std::process::Command::new("git")
+        .args(["config", "user.email", "preview@goble.local"])
+        .current_dir(&repo_path)
+        .status()?;
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Goble Preview"])
+        .current_dir(&repo_path)
+        .status()?;
+    std::fs::create_dir_all(repo_path.join("src"))?;
+    std::fs::write(
+        repo_path.join("src/lib.rs"),
+        "pub fn build() -> usize {\n    1\n}\n\npub fn layout() {\n    // old\n}\n",
+    )?;
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo_path)
+        .status()?;
+    std::process::Command::new("git")
+        .args(["commit", "-qm", "seed"])
+        .current_dir(&repo_path)
+        .status()?;
+    std::fs::write(
+        repo_path.join("src/lib.rs"),
+        "pub fn build() -> usize {\n    let panes = 2;\n    panes + 1\n}\n\npub fn layout() {\n    // new\n    render();\n}\n",
+    )?;
+    std::fs::write(repo_path.join("README.md"), "# Preview repo\n")?;
     for (label, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         for (name, size, settings, page) in [
-            ("shell-wide", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("shell-narrow", vec2f(760.0, 900.0), false, SettingsCategory::General),
-            ("panel-more", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("panel-more-split", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("panel-more-copy", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("overview-popover", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("side-panel", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("side-panel-resize", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("side-tabs-multi", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("side-tabs-overflow", vec2f(1200.0, 900.0), false, SettingsCategory::General),
-            ("side-agent", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("side-terminal", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("overview", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("side-panel-max", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("terminal-dock", vec2f(1600.0, 1000.0), false, SettingsCategory::General),
-            ("settings-wide", vec2f(1600.0, 1000.0), true, SettingsCategory::General),
-            ("settings-wide-appearance", vec2f(1600.0, 1000.0), true, SettingsCategory::Appearance),
+            (
+                "shell-wide",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "shell-narrow",
+                vec2f(760.0, 900.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "panel-more",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "panel-more-split",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "panel-more-copy",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "overview-popover",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-panel",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-panel-resize",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-tabs-multi",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-tabs-overflow",
+                vec2f(1200.0, 900.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-agent",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-terminal",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "overview",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-panel-max",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "terminal-dock",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "settings-wide",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::General,
+            ),
+            (
+                "settings-wide-appearance",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::Appearance,
+            ),
             (
                 "settings-wide-appearance-palette",
                 vec2f(1600.0, 1000.0),
                 true,
                 SettingsCategory::Appearance,
             ),
-            ("settings-wide-shortcuts", vec2f(1600.0, 1000.0), true, SettingsCategory::Shortcuts),
-            ("settings-narrow", vec2f(700.0, 900.0), true, SettingsCategory::General),
+            (
+                "settings-wide-shortcuts",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::Shortcuts,
+            ),
+            (
+                "settings-narrow",
+                vec2f(700.0, 900.0),
+                true,
+                SettingsCategory::General,
+            ),
+            (
+                "split-review",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "split-review-narrow",
+                vec2f(1200.0, 900.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "split-file-viewer",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
         ] {
             let app = AppContext {
                 theme: theme.clone(),
@@ -99,6 +246,29 @@ fn main() -> anyhow::Result<()> {
                 s.settings_overlay_open = settings;
                 s.settings.page = page;
                 s.settings_overlay_wide = size.x >= 900.0;
+                if name.starts_with("split-") {
+                    // Q/O: Review is a tab in panel 2; the main pane keeps its
+                    // chat (or a file viewer), and the panel shows exactly one
+                    // file rail plus the diff.
+                    s.right_sidebar_open = true;
+                    s.side_split_ratio = if name.ends_with("narrow") { 0.58 } else { 0.52 };
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Review];
+                    s.active_side_tab = 0;
+                    let pane = s.active_pane_id;
+                    let root = repo_path.to_string_lossy().to_string();
+                    s.pane_sessions.entry(pane).or_default().path = root.clone();
+                    s.side_review = Some((pane, root));
+                    s.select_diff_file(pane, None);
+                    if name == "split-file-viewer" {
+                        let file = repo_path.join("src/lib.rs");
+                        let file = file.to_string_lossy().to_string();
+                        let _ = s.spaces[0].set_leaf_kind(
+                            pane,
+                            goble_app::state::PaneKind::File { path: file.clone() },
+                        );
+                        s.attach_pane_file(pane, file);
+                    }
+                }
                 if name == "side-panel" {
                     // Empty panel: the Overview home surface, no chip and no +.
                     s.right_sidebar_open = true;
@@ -271,8 +441,14 @@ fn main() -> anyhow::Result<()> {
                 }) {
                     let mut ctx = EventContext::default();
                     for event in [
-                        DispatchedEvent::MouseDown { position: trigger, button: 0 },
-                        DispatchedEvent::MouseUp { position: trigger, button: 0 },
+                        DispatchedEvent::MouseDown {
+                            position: trigger,
+                            button: 0,
+                        },
+                        DispatchedEvent::MouseUp {
+                            position: trigger,
+                            button: 0,
+                        },
                     ] {
                         let _ = root.dispatch_event(&event, &mut ctx, &app);
                     }
@@ -322,9 +498,7 @@ fn main() -> anyhow::Result<()> {
                 // layer, so the command list is already in the right order:
                 // the open panel is after every pane and overlay.
                 let commands = raster::render_commands(&mut root, size, &app);
-                raster::rasterize_to_png(
-                    &assets, &app, &commands, size, 2.0, None, &path,
-                )?;
+                raster::rasterize_to_png(&assets, &app, &commands, size, 2.0, None, &path)?;
             } else {
                 raster::render_element_to_png(
                     &assets, &app, &mut root, size.x, size.y, 2.0, None, &path,

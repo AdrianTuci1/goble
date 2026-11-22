@@ -331,9 +331,10 @@ fn build_scene(
             );
         }
         let runtime = s.pane_runtime.entry(pane_id).or_default();
-        runtime
-            .in_flight_tools
-            .insert("call-1".to_string(), work_call("call-1", "cargo test -p goble-ui"));
+        runtime.in_flight_tools.insert(
+            "call-1".to_string(),
+            work_call("call-1", "cargo test -p goble-ui"),
+        );
         runtime.in_flight_tools.insert(
             "call-2".to_string(),
             work_call("call-2", "cargo test -p goble-app"),
@@ -342,8 +343,16 @@ fn build_scene(
     Ok((root, state, dir))
 }
 
-fn paint_frame(app: &AppContext, root: &mut Box<dyn Element>, size: Vector2F) -> Vec<RenderCommand> {
-    let _ = root.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), app);
+fn paint_frame(
+    app: &AppContext,
+    root: &mut Box<dyn Element>,
+    size: Vector2F,
+) -> Vec<RenderCommand> {
+    let _ = root.layout(
+        SizeConstraint::loose(size),
+        &mut LayoutContext::default(),
+        app,
+    );
     let mut ctx = PaintContext::new(Renderer::new());
     root.paint(vec2f(0.0, 0.0), &mut ctx, app);
     ctx.renderer
@@ -355,11 +364,7 @@ fn paint_frame(app: &AppContext, root: &mut Box<dyn Element>, size: Vector2F) ->
 /// Run one more paint of the already-built frame with the pointer at `pointer`,
 /// so the cursor requests the tree makes are observable, and return the cursor
 /// the platform was asked for.
-fn probe_cursor(
-    app: &AppContext,
-    root: &mut Box<dyn Element>,
-    pointer: Vector2F,
-) -> CursorKind {
+fn probe_cursor(app: &AppContext, root: &mut Box<dyn Element>, pointer: Vector2F) -> CursorKind {
     let mut ctx = PaintContext::new(Renderer::new());
     ctx.cursor_inside = true;
     ctx.cursor_position = pointer;
@@ -740,9 +745,9 @@ fn print_geometry(
         }
         _ => None,
     });
-    let panel_drawn = commands.iter().any(|command| {
-        matches!(command, RenderCommand::DrawText { text, .. } if text == "Agent panel")
-    });
+    let panel_drawn = commands.iter().any(
+        |command| matches!(command, RenderCommand::DrawText { text, .. } if text == "Agent panel"),
+    );
     let frames = pane_bounds(state);
     println!(
         "\n   responsive: window {:.0} | sidebar collapsed? {} | secondary hidden? {} | focused only? {}",
@@ -824,23 +829,21 @@ fn print_geometry(
             uniform
         );
         // The surface the panels are rendered on is the sidebar's `Surface`.
-        let backdrop = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::FillRect {
-                    rect,
-                    color,
-                    corner_radius,
-                } if *color == surface
-                    && *corner_radius == 0.0
-                    && rect.min_y() > TOPBAR_HEIGHT
-                    && rect.width() > window.x / 2.0
-                    && rect.height() > window.y / 2.0 =>
-                {
-                    Some((*rect, *color))
-                }
-                _ => None,
-            });
+        let backdrop = commands.iter().find_map(|command| match command {
+            RenderCommand::FillRect {
+                rect,
+                color,
+                corner_radius,
+            } if *color == surface
+                && *corner_radius == 0.0
+                && rect.min_y() > TOPBAR_HEIGHT
+                && rect.width() > window.x / 2.0
+                && rect.height() > window.y / 2.0 =>
+            {
+                Some((*rect, *color))
+            }
+            _ => None,
+        });
         if let Some((backdrop_rect, backdrop_color)) = backdrop {
             // The sidebar fill stops at the sidebar's width; the collapsed-
             // sidebar frame's panel fill reaches the window's right edge, so it
@@ -923,22 +926,22 @@ fn print_geometry(
 
             // The tab outline keeps its 3 pt inset relative to its slot.
             let outline = commands.iter().find_map(|command| match command {
-            RenderCommand::StrokeRect {
-                rect,
-                color,
-                width,
-                corner_radius,
-            } if (*width - 1.0).abs() < 0.01
-                && (*corner_radius - 6.0).abs() < 0.01
-                && (*color == app.theme.color(ColorToken::Accent)
-                    || *color == app.theme.color(ColorToken::Border))
-                && rect.min_x() <= header.min_x() + 3.5
-                && rect.max_x() >= header.max_x() - 3.5 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        });
+                RenderCommand::StrokeRect {
+                    rect,
+                    color,
+                    width,
+                    corner_radius,
+                } if (*width - 1.0).abs() < 0.01
+                    && (*corner_radius - 6.0).abs() < 0.01
+                    && (*color == app.theme.color(ColorToken::Accent)
+                        || *color == app.theme.color(ColorToken::Border))
+                    && rect.min_x() <= header.min_x() + 3.5
+                    && rect.max_x() >= header.max_x() - 3.5 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            });
             if let Some(outline) = outline {
                 println!(
                     "     tab outline: x {:.1}..{:.1} y {:.1}..{:.1} | slot inset L {:.1} T {:.1} R {:.1} B {:.1}",
@@ -959,9 +962,9 @@ fn print_geometry(
         let close = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, size, .. } if name == "x-close" => {
-                    Some((origin.x + size / 2.0, origin.y + size / 2.0))
-                }
+                RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "x-close" => Some((origin.x + size / 2.0, origin.y + size / 2.0)),
                 _ => None,
             })
             .filter(|(x, y)| *y >= pane.min_y() && *y <= pane.min_y() + TOPBAR_HEIGHT)
@@ -1061,9 +1064,7 @@ fn print_geometry(
             )
         })
         .count();
-    println!(
-        "   pane card / outline strokes (frames, not resize rules): {frames}"
-    );
+    println!("   pane card / outline strokes (frames, not resize rules): {frames}");
     let surfaces = commands
         .iter()
         .filter(|command| {
@@ -1135,10 +1136,7 @@ fn print_panel_surface_pixels(
             sidebar_probe == Some(surface),
         )
     } else {
-        (
-            "collapsed (theme Surface reference)".to_string(),
-            true,
-        )
+        ("collapsed (theme Surface reference)".to_string(), true)
     };
 
     // The four edges of the pane area, right across the inset frame: 1.5 px
@@ -1201,10 +1199,15 @@ fn print_panel_surface_pixels(
             _ => None,
         });
         only_cards_bg &= card_fill == Some(bg);
-        cards.push(format!("pane {id} {}", color_hex(card_fill.unwrap_or(surface))));
+        cards.push(format!(
+            "pane {id} {}",
+            color_hex(card_fill.unwrap_or(surface))
+        ));
     }
     let surface_index = commands.iter().position(|command| match command {
-        RenderCommand::FillRect { rect, color, .. } => *color == surface && rect.width() > window.x / 2.0,
+        RenderCommand::FillRect { rect, color, .. } => {
+            *color == surface && rect.width() > window.x / 2.0
+        }
         _ => false,
     });
     let stray: Vec<RectF> = surface_index

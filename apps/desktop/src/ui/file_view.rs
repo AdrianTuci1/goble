@@ -32,9 +32,8 @@ use std::time::SystemTime;
 use goble_ui::elements::diff::{DiffHighlightJob, PreparedDiff};
 use goble_ui::elements::interactive::{contains, handle_mouse_event, InteractiveState};
 use goble_ui::elements::{
-    file_icon_name, AppContext, Axis, Button, ButtonVariant, Code, ConstrainedBox,
-    Container, CrossAxisAlignment, Dialog, EdgeInsets, Element, Empty, EventContext, Expanded,
-    Fill, Flex,
+    file_icon_name, AppContext, Axis, Button, ButtonVariant, Code, ConstrainedBox, Container,
+    CrossAxisAlignment, Dialog, EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex,
     Icon, KeyHandler, LayoutContext, LineRuns, MainAxisSize, PaintContext, Point, Scrollable,
     SizeConstraint, Spacer, Stack, Text, TextArea, Tooltip, TooltipPosition, TopbarButton,
 };
@@ -202,10 +201,12 @@ impl FileCache {
     /// one file per pane: each pane's answer is the last file named for it.
     #[cfg(test)]
     pub fn read(&mut self, wanted: &[(u64, String)]) -> HashMap<u64, FileContent> {
-        let active = wanted.iter().fold(HashMap::new(), |mut active, (pane, path)| {
-            active.insert(*pane, path.clone());
-            active
-        });
+        let active = wanted
+            .iter()
+            .fold(HashMap::new(), |mut active, (pane, path)| {
+                active.insert(*pane, path.clone());
+                active
+            });
         self.read_open(wanted, &active)
     }
 
@@ -264,13 +265,12 @@ impl FileCache {
     /// outside never discards an edit that was not saved. A file that can no
     /// longer be edited whole loses its buffer only while the buffer is clean,
     /// so the pane falls back to the read-only body.
-    fn settle(
-        &mut self,
-        wanted: &[(u64, String)],
-        contents: &HashMap<(u64, String), FileContent>,
-    ) {
-        self.buffers
-            .retain(|(pane_id, path), _| wanted.iter().any(|(id, open)| id == pane_id && open == path));
+    fn settle(&mut self, wanted: &[(u64, String)], contents: &HashMap<(u64, String), FileContent>) {
+        self.buffers.retain(|(pane_id, path), _| {
+            wanted
+                .iter()
+                .any(|(id, open)| id == pane_id && open == path)
+        });
         for (pane_id, path) in wanted {
             let Some(content) = contents.get(&(*pane_id, path.clone())) else {
                 continue;
@@ -498,8 +498,12 @@ impl DiffFileCache {
             .iter()
             .map(|(path, content)| (path.clone(), content.clone()))
             .collect();
-        let mut all: Vec<(String, FileContent, Rc<RefCell<FileBuffer>>, Option<Rc<LineRuns>>)> =
-            Vec::new();
+        let mut all: Vec<(
+            String,
+            FileContent,
+            Rc<RefCell<FileBuffer>>,
+            Option<Rc<LineRuns>>,
+        )> = Vec::new();
         for (path, content) in cached {
             let Some(buffer) = self.buffers.get(&path).cloned() else {
                 continue;
@@ -1222,9 +1226,7 @@ pub(crate) fn build_file_view(
     for (message, color) in marks {
         column = column.with_child(band(app, &message, color));
     }
-    let column = column
-        .with_child(Expanded::new(body).finish())
-        .finish();
+    let column = column.with_child(Expanded::new(body).finish()).finish();
     let content = Container::new(column)
         .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .with_padding(EdgeInsets::new(sm, sm, sm, sm))
@@ -1261,11 +1263,7 @@ pub(crate) fn build_file_view(
     match editor {
         // Cmd/Ctrl+S belongs to the pane rather than to the text field in it,
         // so the shortcut is answered above the body.
-        Some(buffer) => Box::new(FileKeys::new(
-            buffer,
-            state.active_pane_id == pane_id,
-            pane,
-        )),
+        Some(buffer) => Box::new(FileKeys::new(buffer, state.active_pane_id == pane_id, pane)),
         None => pane,
     }
 }
@@ -1424,13 +1422,7 @@ fn file_title(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(6.0);
         for file in &files {
-            row = row.with_child(file_chip(
-                app,
-                actions,
-                pane_id,
-                file,
-                file == path,
-            ));
+            row = row.with_child(file_chip(app, actions, pane_id, file, file == path));
         }
         if let Some(detail) = detail {
             row = row.with_child(
@@ -1473,30 +1465,25 @@ fn file_title(
         .iter()
         .any(|space| space.is_floating_overlay(pane_id));
     let float_path = path.to_string();
-    let (float_icon, float_tip, on_float): (
-        &'static str,
-        &'static str,
-        Rc<RefCell<dyn FnMut()>>,
-    ) = if floating {
-        let on_dock = actions.on_dock_float.clone();
-        let pane_id = pane_id;
-        (
-            "fullscreen-exit",
-            "Dock panel",
-            Rc::new(RefCell::new(move || {
-                (on_dock.borrow_mut())(pane_id)
-            })),
-        )
-    } else {
-        let on_open = actions.on_open_file_floating.clone();
-        (
-            "fullscreen-enter",
-            "Open in floating panel",
-            Rc::new(RefCell::new(move || {
-                (on_open.borrow_mut())(float_path.clone())
-            })),
-        )
-    };
+    let (float_icon, float_tip, on_float): (&'static str, &'static str, Rc<RefCell<dyn FnMut()>>) =
+        if floating {
+            let on_dock = actions.on_dock_float.clone();
+            let pane_id = pane_id;
+            (
+                "fullscreen-exit",
+                "Dock panel",
+                Rc::new(RefCell::new(move || (on_dock.borrow_mut())(pane_id))),
+            )
+        } else {
+            let on_open = actions.on_open_file_floating.clone();
+            (
+                "fullscreen-enter",
+                "Open in floating panel",
+                Rc::new(RefCell::new(move || {
+                    (on_open.borrow_mut())(float_path.clone())
+                })),
+            )
+        };
     row = row.with_child(
         Tooltip::new(
             TopbarButton::new(
@@ -1721,9 +1708,9 @@ impl Element for FileChip {
         let over = match event {
             DispatchedEvent::MouseDown { position, .. }
             | DispatchedEvent::MouseUp { position, .. }
-            | DispatchedEvent::MouseMove { position } => {
-                self.bounds().is_some_and(|bounds| contains(bounds, *position))
-            }
+            | DispatchedEvent::MouseMove { position } => self
+                .bounds()
+                .is_some_and(|bounds| contains(bounds, *position)),
             _ => false,
         };
         // The close "x" is hit-tested first, and only while the chip shows it:
@@ -1993,18 +1980,11 @@ fn lines_view(
         list = list.with_child(filler(lines.len() - window.end));
     }
     if total > lines.len() {
-        list = list.with_child(note(
-            app,
-            &format!("… {} more lines", total - lines.len()),
-        ));
+        list = list.with_child(note(app, &format!("… {} more lines", total - lines.len())));
     }
     // A file view opens at its first line rather than tailing, so its offset is
     // the pane's plain scroll state (not the terminal's following one).
-    let scroll = state
-        .file_scroll
-        .get(&pane_id)
-        .cloned()
-        .unwrap_or_default();
+    let scroll = state.file_scroll.get(&pane_id).cloned().unwrap_or_default();
     let hscroll = state
         .file_hscroll
         .get(&pane_id)
@@ -2115,11 +2095,7 @@ mod tests {
 
         let mut cache = FileCache::default();
         let first = cache.read(&wanted);
-        let cached = cache
-            .files
-            .get(&path)
-            .expect("the file is cached")
-            .clone();
+        let cached = cache.files.get(&path).expect("the file is cached").clone();
         let second = cache.read(&wanted);
         assert_eq!(
             first.get(&1).map(|content| &content.body),
@@ -2400,7 +2376,10 @@ mod tests {
 
         // Typing the file's own bytes back out is not an unsaved change.
         buffer.borrow_mut().set_text(edited.to_string());
-        assert!(!buffer.borrow().dirty(), "the file's own text is not a change");
+        assert!(
+            !buffer.borrow().dirty(),
+            "the file's own text is not a change"
+        );
     }
 
     /// A file the read did not take whole stays read-only, and the refusal is
@@ -2427,11 +2406,7 @@ mod tests {
         let not_text = not_text.to_string_lossy().to_string();
 
         let mut cache = FileCache::default();
-        cache.read(&[
-            (1, long.clone()),
-            (2, huge.clone()),
-            (3, not_text.clone()),
-        ]);
+        cache.read(&[(1, long.clone()), (2, huge.clone()), (3, not_text.clone())]);
 
         for (pane, path, reason, bytes) in [
             (1, &long, "too long to edit", text.len() as u64),
@@ -2565,7 +2540,11 @@ mod tests {
         let contents = cache.read(&wanted);
         match contents.get(&5).map(|content| &content.body) {
             Some(FileBody::Lines { shown, .. }) => {
-                assert_eq!(shown.as_slice(), ["let b = 2;"], "the save is what is on disk")
+                assert_eq!(
+                    shown.as_slice(),
+                    ["let b = 2;"],
+                    "the save is what is on disk"
+                )
             }
             other => panic!("expected the saved line, got {other:?}"),
         }
@@ -2905,10 +2884,7 @@ mod tests {
     /// drew — how many lines, the pitch its rows advance by, and where the last
     /// of them ends — the bottom of the region they are clipped to, and what
     /// that region measured.
-    fn long_file_body(
-        app: &AppContext,
-        path: &str,
-    ) -> (usize, f32, f32, f32, f32, f32) {
+    fn long_file_body(app: &AppContext, path: &str) -> (usize, f32, f32, f32, f32, f32) {
         use goble_ui::geometry::PointF;
         use goble_ui::render::RenderCommand;
 
@@ -3069,13 +3045,7 @@ mod tests {
             s.sync_active_view();
             file_pane
         };
-        (
-            Box::new(view),
-            state,
-            desktop,
-            pane_id,
-            store_dir,
-        )
+        (Box::new(view), state, desktop, pane_id, store_dir)
     }
 
     fn draw(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<goble_ui::render::RenderCommand> {
@@ -3197,7 +3167,9 @@ mod tests {
 
         let (mut root, state, _desktop, pane_id, _store) = file_pane(&app, &first);
         assert!(
-            state.borrow_mut().show_file_in_pane(pane_id, second.clone()),
+            state
+                .borrow_mut()
+                .show_file_in_pane(pane_id, second.clone()),
             "the pane takes a second file"
         );
         let _ = draw(&mut root, &app);
@@ -3356,9 +3328,7 @@ mod tests {
             (beta_chip.min_y() + beta_chip.max_y()) / 2.0,
         );
         root.dispatch_event(
-            &DispatchedEvent::MouseMove {
-                position: close_at,
-            },
+            &DispatchedEvent::MouseMove { position: close_at },
             &mut ctx,
             &app,
         );
@@ -3414,7 +3384,9 @@ mod tests {
         let second = second.to_string_lossy().to_string();
 
         let (mut root, state, desktop, pane_id, _store) = file_pane(&app, &first);
-        assert!(state.borrow_mut().show_file_in_pane(pane_id, second.clone()));
+        assert!(state
+            .borrow_mut()
+            .show_file_in_pane(pane_id, second.clone()));
         let _ = draw(&mut root, &app);
         let _ = draw(&mut root, &app);
         assert!(key_in(&mut root, &app, "!", ModifiersState::default()));
@@ -3433,9 +3405,7 @@ mod tests {
         let origin = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "beta.txt" => {
-                    Some(*origin)
-                }
+                RenderCommand::DrawText { text, origin, .. } if text == "beta.txt" => Some(*origin),
                 _ => None,
             })
             .expect("the pane names the second file");
@@ -3460,9 +3430,7 @@ mod tests {
         let _ = draw_at(&mut root, &app, Some(Vector2F::new(origin.x, origin.y)));
         let mut ctx = EventContext::default();
         root.dispatch_event(
-            &DispatchedEvent::MouseMove {
-                position: close_at,
-            },
+            &DispatchedEvent::MouseMove { position: close_at },
             &mut ctx,
             &app,
         );
@@ -3511,12 +3479,7 @@ mod tests {
             )),
             "the chip's close draws the save question: {commands:?}"
         );
-        assert!(key_in(
-            &mut root,
-            &app,
-            "Escape",
-            ModifiersState::default()
-        ));
+        assert!(key_in(&mut root, &app, "Escape", ModifiersState::default()));
         assert_eq!(state.borrow().pending_close_file, None);
         assert_eq!(
             state
@@ -3532,9 +3495,7 @@ mod tests {
         state
             .borrow_mut()
             .request_close_file(pane_id, second.clone(), Some(&desktop));
-        state
-            .borrow_mut()
-            .close_pending_file_save(Some(&desktop));
+        state.borrow_mut().close_pending_file_save(Some(&desktop));
         assert_eq!(
             fs::read_to_string(&second).expect("read"),
             "!beta\n",
@@ -3593,7 +3554,10 @@ mod tests {
         let at = {
             let state = state.borrow();
             let bounds = state.pane_bounds.borrow();
-            let pane = bounds.get(&pane_id).copied().expect("the pane was measured");
+            let pane = bounds
+                .get(&pane_id)
+                .copied()
+                .expect("the pane was measured");
             Vector2F::new(
                 pane.min_x() + pane.width() * 0.5,
                 pane.min_y() + pane.height() * 0.5,
@@ -3634,12 +3598,7 @@ mod tests {
 
         let (mut root, state, desktop, pane_id, _store) = file_pane(&app, &path);
         let _ = draw(&mut root, &app);
-        assert!(key_in(
-            &mut root,
-            &app,
-            "!",
-            ModifiersState::default()
-        ));
+        assert!(key_in(&mut root, &app, "!", ModifiersState::default()));
         let _ = draw(&mut root, &app);
         assert!(
             state
@@ -3670,20 +3629,13 @@ mod tests {
         );
 
         // `Escape` is Cancel: the pane stays, and so does the edit.
-        assert!(key_in(
-            &mut root,
-            &app,
-            "Escape",
-            ModifiersState::default()
-        ));
+        assert!(key_in(&mut root, &app, "Escape", ModifiersState::default()));
         assert_eq!(state.borrow().pending_close_pane, None);
         assert!(state.borrow().space_index_of_pane(pane_id).is_some());
 
         // Ask again and save: the file holds the edit, and the pane is gone.
         assert!(key_in(&mut root, &app, "w", command_w));
-        state
-            .borrow_mut()
-            .close_pending_pane_save(Some(&desktop));
+        state.borrow_mut().close_pending_pane_save(Some(&desktop));
         assert_eq!(
             fs::read_to_string(&path).expect("read"),
             "!alpha\nbeta\n",
@@ -3706,12 +3658,7 @@ mod tests {
 
         let (mut root, state, _desktop, pane_id, _store) = file_pane(&app, &path);
         let _ = draw(&mut root, &app);
-        assert!(key_in(
-            &mut root,
-            &app,
-            "!",
-            ModifiersState::default()
-        ));
+        assert!(key_in(&mut root, &app, "!", ModifiersState::default()));
         let _ = draw(&mut root, &app);
         state.borrow_mut().auto_save_on_close = true;
 

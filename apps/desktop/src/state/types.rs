@@ -409,7 +409,8 @@ impl PaneRuntime {
     /// Start the work dock's clock if it is not already running, so the dock's
     /// spinner advances from the pane's first live work.
     pub(crate) fn start_dock_clock(&mut self) {
-        self.work_started_at.get_or_insert_with(std::time::Instant::now);
+        self.work_started_at
+            .get_or_insert_with(std::time::Instant::now);
     }
 
     /// The work dock's spinner phase: the same period and frame order as the

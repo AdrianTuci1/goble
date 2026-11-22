@@ -226,27 +226,25 @@ pub(crate) fn build_diff_pane(
         }
         column = column.with_child(
             Expanded::new(
-                Container::new(
-                    body(
-                        app,
-                        actions,
-                        pane_id,
-                        detail,
-                        selected,
-                        expanded,
-                        editing,
-                        focus,
-                        editors,
-                        hscroll,
-                        visible,
-                        sidebar,
-                        state.active_pane_id == pane_id,
-                        controls.diff_scroll.clone(),
-                        controls.diff_list_scroll.clone(),
-                        controls.diff_revert_confirm.clone(),
-                        controls.diff_commit_focus.clone(),
-                    ),
-                )
+                Container::new(body(
+                    app,
+                    actions,
+                    pane_id,
+                    detail,
+                    selected,
+                    expanded,
+                    editing,
+                    focus,
+                    editors,
+                    hscroll,
+                    visible,
+                    sidebar,
+                    state.active_pane_id == pane_id,
+                    controls.diff_scroll.clone(),
+                    controls.diff_list_scroll.clone(),
+                    controls.diff_revert_confirm.clone(),
+                    controls.diff_commit_focus.clone(),
+                ))
                 .with_padding(EdgeInsets::new(sm, sm, sm, sm))
                 .finish(),
             )
@@ -287,6 +285,119 @@ pub(crate) fn build_diff_pane(
     Stack::new()
         .with_children(vec![content])
         .with_overlay(chrome.finish(), Vector2F::zero())
+        .finish()
+}
+
+/// Q: the review surface as a side-panel tab. It draws the ReviewTab header
+/// (changed-file selector, counts, split/wrap) and the diff body — with its one
+/// file-list rail — but no pane topbar, because the panel's tab strip already
+/// owns that row. The data and controls are the active pane's, so Review needs
+/// no split pane and no second file column.
+pub(crate) fn build_review_tab(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    pane_id: u64,
+) -> Box<dyn Element> {
+    let sm = app.theme.spacing_px(SpacingToken::Sm);
+    let controls = state.pane_controls.get(&pane_id).cloned();
+    let detail = state.pane_diffs.get(&pane_id);
+    let read = detail.is_some();
+    let commit_open = controls
+        .as_ref()
+        .is_some_and(|controls| *controls.diff_commit_open.borrow());
+    // A narrow panel shows the diff alone: the ReviewTab selector in the
+    // header still chooses files, and the one rail is the wide-layout list.
+    let panel_width = (state.window_size.x * state.side_split_ratio).max(240.0);
+    let show_rail = panel_width >= 760.0;
+    let compact = panel_width < 900.0;
+
+    let mut column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    let mut has_toolbar = false;
+    if let (Some(Some(detail)), Some(controls)) = (detail, controls.as_ref()) {
+        let view = crate::state::review_for(&actions.review_views, pane_id);
+        let selected = controls.diff_selected.borrow().clone();
+        let expanded = controls.diff_expanded.borrow().clone();
+        column = column.with_child(review_controls(
+            app,
+            actions,
+            pane_id,
+            detail,
+            selected.as_deref(),
+            &expanded,
+            &view,
+            // One rail in the wide tab; a narrow panel gives the diff the
+            // width and leaves selection to the ReviewTab selector.
+            show_rail,
+            compact,
+            &CommitView {
+                open: commit_open,
+                menu_open: controls.diff_commit_menu_open.clone(),
+                status: controls.diff_git_status.borrow().clone(),
+            },
+        ));
+        has_toolbar = true;
+        column = column.with_child(Divider::horizontal().finish());
+        if commit_open {
+            column = column.with_child(commit_bar(
+                app,
+                actions,
+                pane_id,
+                controls.diff_commit_message.clone(),
+                controls.diff_commit_focus.clone(),
+                controls.diff_git_status.clone(),
+            ));
+        }
+        let selected = controls.diff_selected.borrow().clone();
+        let expanded = controls.diff_expanded.borrow().clone();
+        let editing = controls.diff_editing.borrow().clone();
+        let editors = state.pane_diff_editors.get(&pane_id);
+        column = column.with_child(
+            Expanded::new(
+                Container::new(body(
+                    app,
+                    actions,
+                    pane_id,
+                    detail,
+                    selected,
+                    expanded,
+                    editing,
+                    controls.diff_edit_focus.clone(),
+                    editors,
+                    controls.diff_hscroll.clone(),
+                    controls.diff_visible.clone(),
+                    show_rail,
+                    true,
+                    controls.diff_scroll.clone(),
+                    controls.diff_list_scroll.clone(),
+                    controls.diff_revert_confirm.clone(),
+                    controls.diff_commit_focus.clone(),
+                ))
+                .with_padding(EdgeInsets::new(sm, sm, sm, sm))
+                .finish(),
+            )
+            .finish(),
+        );
+    } else {
+        let message = if read {
+            "No working tree here"
+        } else {
+            "Reading the changes…"
+        };
+        column = column.with_child(
+            Expanded::new(
+                Container::new(empty_state(app, message))
+                    .with_padding(EdgeInsets::uniform(sm))
+                    .finish(),
+            )
+            .finish(),
+        );
+    }
+    let _ = has_toolbar;
+    Container::new(column.finish())
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
         .finish()
 }
 
@@ -458,7 +569,11 @@ fn review_tab_header(
             path: file.path.clone(),
             added: u64::from(file.added),
             removed: u64::from(file.removed),
-            status: reviewer::status_of(file).letter().chars().next().unwrap_or('M'),
+            status: reviewer::status_of(file)
+                .letter()
+                .chars()
+                .next()
+                .unwrap_or('M'),
         })
         .collect();
     let paths: Vec<String> = detail.files.iter().map(|file| file.path.clone()).collect();
@@ -859,57 +974,46 @@ fn body(
         .collect();
     let selector_open = view.selector_open.clone();
     let on_diff = actions.on_diff_panel.clone();
-    Box::new(
-        KeyHandler::new(row, move |key: &str, modifiers| {
-            if modifiers.command || modifiers.ctrl || modifiers.alt {
-                return false;
-            }
-            if *commit_focus.borrow()
-                || edit_focus.borrow().is_some()
-                || *selector_open.borrow()
-            {
-                return false;
-            }
-            match key {
-                "ArrowDown" | "ArrowUp" => {
-                    if files.is_empty() {
-                        return true;
-                    }
-                    let current = selected_path
-                        .as_ref()
-                        .and_then(|path| files.iter().position(|file| file == path));
-                    let next = match (current, key) {
-                        (Some(index), "ArrowDown") => (index + 1).min(files.len() - 1),
-                        (Some(index), "ArrowUp") => index.saturating_sub(1),
-                        (None, "ArrowDown") => 0,
-                        (None, _) => files.len() - 1,
-                        _ => return true,
-                    };
-                    (on_diff.borrow_mut())(
-                        pane_id,
-                        DiffPanelAction::Select(Some(files[next].clone())),
-                    );
-                    true
+    Box::new(KeyHandler::new(row, move |key: &str, modifiers| {
+        if modifiers.command || modifiers.ctrl || modifiers.alt {
+            return false;
+        }
+        if *commit_focus.borrow() || edit_focus.borrow().is_some() || *selector_open.borrow() {
+            return false;
+        }
+        match key {
+            "ArrowDown" | "ArrowUp" => {
+                if files.is_empty() {
+                    return true;
                 }
-                "Enter" => {
-                    let Some(path) = selected_path.clone() else {
-                        return true;
-                    };
-                    let open = open_state
-                        .iter()
-                        .find(|(file, _)| *file == path)
-                        .map(|(_, open)| *open)
-                        .unwrap_or(false);
-                    (on_diff.borrow_mut())(
-                        pane_id,
-                        DiffPanelAction::SetFileOpen(path, !open),
-                    );
-                    true
-                }
-                _ => false,
+                let current = selected_path
+                    .as_ref()
+                    .and_then(|path| files.iter().position(|file| file == path));
+                let next = match (current, key) {
+                    (Some(index), "ArrowDown") => (index + 1).min(files.len() - 1),
+                    (Some(index), "ArrowUp") => index.saturating_sub(1),
+                    (None, "ArrowDown") => 0,
+                    (None, _) => files.len() - 1,
+                    _ => return true,
+                };
+                (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(files[next].clone())));
+                true
             }
-        }),
-    )
+            "Enter" => {
+                let Some(path) = selected_path.clone() else {
+                    return true;
+                };
+                let open = open_state
+                    .iter()
+                    .find(|(file, _)| *file == path)
+                    .map(|(_, open)| *open)
+                    .unwrap_or(false);
+                (on_diff.borrow_mut())(pane_id, DiffPanelAction::SetFileOpen(path, !open));
+                true
+            }
+            _ => false,
+        }
+    }))
 }
 
 /// Every changed file, folded or open and — for the files opened for editing —
@@ -1119,11 +1223,7 @@ fn file_block(
     let boxed = file_menu::context_click(
         boxed,
         Rc::new(RefCell::new(move |at| {
-            (on_file_menu.borrow_mut())(
-                menu_path.clone(),
-                menu_copy_path.clone(),
-                at,
-            );
+            (on_file_menu.borrow_mut())(menu_path.clone(), menu_copy_path.clone(), at);
         })),
     );
     Container::new(boxed)
@@ -1257,10 +1357,7 @@ fn file_header(
         "Copy file content",
         exists && !file.binary && !file.truncated,
         move || {
-            (on_content.borrow_mut())(
-                pane_id,
-                DiffPanelAction::CopyContent(content_path.clone()),
-            )
+            (on_content.borrow_mut())(pane_id, DiffPanelAction::CopyContent(content_path.clone()))
         },
     );
 
@@ -1276,15 +1373,10 @@ fn file_header(
     });
     let on_open = actions.on_diff_panel.clone();
     let absolute = file.absolute_path.clone();
-    let external_button = icon_button_enabled(
-        app,
-        "maximize-01",
-        "Open in editor",
-        exists,
-        move || {
+    let external_button =
+        icon_button_enabled(app, "maximize-01", "Open in editor", exists, move || {
             (on_open.borrow_mut())(pane_id, DiffPanelAction::OpenExternal(absolute.clone()))
-        },
-    );
+        });
     // The same file in a window of its own: the reviewer's route to the
     // floating layout, beside the explorer's and the file pane's.
     let on_float = actions.on_diff_panel.clone();
@@ -1294,9 +1386,7 @@ fn file_header(
         "fullscreen-enter",
         "Open in floating panel",
         exists,
-        move || {
-            (on_float.borrow_mut())(pane_id, DiffPanelAction::OpenFloating(float_path.clone()))
-        },
+        move || (on_float.borrow_mut())(pane_id, DiffPanelAction::OpenFloating(float_path.clone())),
     );
 
     let mut row = Flex::row()

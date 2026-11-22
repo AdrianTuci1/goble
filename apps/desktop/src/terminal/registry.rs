@@ -323,7 +323,9 @@ impl TerminalRegistry {
                 .pending_agent_commands
                 .get(&pane_id)
                 .and_then(|commands| commands.first())
-                .is_some_and(|command| now.duration_since(command.queued_at) >= AGENT_COMMAND_GRACE);
+                .is_some_and(|command| {
+                    now.duration_since(command.queued_at) >= AGENT_COMMAND_GRACE
+                });
             if !ready && !overdue {
                 continue;
             }
@@ -485,12 +487,9 @@ impl TerminalRegistry {
         // the pane's mode says. `agy` paints inline instead of taking the
         // alternate screen, and a session reattached from the daemon starts in
         // Shell mode even while its agent is still running.
-        if running
-            .as_deref()
-            .is_some_and(|command| {
-                TuiAgent::launched_by(command).is_some_and(TuiAgent::owns_screen)
-            })
-        {
+        if running.as_deref().is_some_and(|command| {
+            TuiAgent::launched_by(command).is_some_and(TuiAgent::owns_screen)
+        }) {
             return true;
         }
         if !matches!(self.mode(pane_id), TerminalMode::Agent(_)) {

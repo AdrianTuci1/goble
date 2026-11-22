@@ -12,8 +12,8 @@
 
 mod make_actions;
 mod pane_ops;
-pub mod settings_actions;
 pub(crate) mod prompt;
+pub mod settings_actions;
 
 pub use make_actions::make_actions;
 

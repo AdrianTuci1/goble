@@ -9,9 +9,7 @@ use std::sync::Arc;
 
 use goble_core::store::Store;
 use goble_desktop_service::{DesktopState, ThreadStore};
-use goble_ui::elements::conversation_list_item::{
-    SIDEBAR_ROW_HEIGHT, SIDEBAR_ROW_RADIUS,
-};
+use goble_ui::elements::conversation_list_item::{SIDEBAR_ROW_HEIGHT, SIDEBAR_ROW_RADIUS};
 use goble_ui::elements::{AppContext, Element, EventContext};
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{vec2f, Vector2F};
@@ -156,8 +154,7 @@ fn open_row_menu(
         .iter()
         .find_map(|command| match command {
             RenderCommand::DrawIcon { name, origin, .. }
-                if name == "dots-horizontal"
-                    && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                if name == "dots-horizontal" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
             {
                 Some(*origin + vec2f(8.0, 8.0))
             }
@@ -306,7 +303,10 @@ fn starring_from_the_menu_persists() {
     let commands = open_row_menu(&mut root, &state, &app, &id);
     click_menu_label(&mut root, &app, &commands, "Pin session");
 
-    assert!(desktop.chat_starred(&id).unwrap(), "the store keeps the pin");
+    assert!(
+        desktop.chat_starred(&id).unwrap(),
+        "the store keeps the pin"
+    );
     assert!(
         state.borrow().starred_conversations.contains(&id),
         "and the running UI's Starred block lists it"
@@ -336,7 +336,9 @@ fn renaming_a_conversation_from_the_menu_persists_the_title() {
         assert!(rename.focused);
     }
 
-    state.borrow_mut().rename_draft("Sidebar subjects".to_string());
+    state
+        .borrow_mut()
+        .rename_draft("Sidebar subjects".to_string());
     state.borrow_mut().commit_rename(Some(desktop.as_ref()));
     assert_eq!(
         desktop.store_clone().get_chat_title(&id).unwrap(),
@@ -417,7 +419,11 @@ fn copying_a_conversation_id_writes_the_clipboard_and_toasts() {
     let commands = open_row_menu(&mut root, &state, &app, &id);
     click_menu_label(&mut root, &app, &commands, "Copy Session ID");
 
-    assert_eq!(toast_kind(&state), Some(expected.clone()), "the copy toasted");
+    assert_eq!(
+        toast_kind(&state),
+        Some(expected.clone()),
+        "the copy toasted"
+    );
     if expected == ToastKind::ConversationIdCopied {
         assert_eq!(expected.message(), "Conversation ID copied");
     }
@@ -444,12 +450,17 @@ fn archiving_a_quiet_conversation_hides_the_row_and_persists() {
         "the archive notice is up: {:?}",
         toast_kind(&state)
     );
-    assert!(state.borrow().archive_confirm.is_none(), "no confirm was needed");
+    assert!(
+        state.borrow().archive_confirm.is_none(),
+        "no confirm was needed"
+    );
     state.borrow_mut().refresh_conversations(&desktop);
 
     let commands = render(&mut root, &app);
     assert!(
-        !drawn_texts(&commands).iter().any(|text| text == "Redesign the sidebar"),
+        !drawn_texts(&commands)
+            .iter()
+            .any(|text| text == "Redesign the sidebar"),
         "the default filter hides the archived row"
     );
 
@@ -467,7 +478,9 @@ fn archiving_a_quiet_conversation_hides_the_row_and_persists() {
     let texts = drawn_texts(&commands);
     assert!(texts.iter().any(|text| text == "Redesign the sidebar"));
     assert!(
-        !texts.iter().any(|text| text == "Automate Instagram posting"),
+        !texts
+            .iter()
+            .any(|text| text == "Automate Instagram posting"),
         "Archived only hides the listed conversation"
     );
 }
@@ -564,7 +577,10 @@ fn archiving_a_live_conversation_asks_first_then_stops_and_archives() {
             "the confirm names the turn: {:?}",
             confirm.activities
         );
-        assert!(s.conversations.iter().any(|entry| entry.id == id && !entry.archived));
+        assert!(s
+            .conversations
+            .iter()
+            .any(|entry| entry.id == id && !entry.archived));
     }
     assert!(
         !desktop.archived_chat_ids().unwrap().contains(&id),
@@ -670,11 +686,7 @@ fn the_view_options_menu_offers_the_three_archived_filters() {
     click(&mut root, &app, sliders);
     let commands = render(&mut root, &app);
     let texts = drawn_texts(&commands);
-    for expected in [
-        "Hide archived",
-        "Show archived",
-        "Archived only",
-    ] {
+    for expected in ["Hide archived", "Show archived", "Archived only"] {
         assert!(
             texts.iter().any(|text| text == expected),
             "the view options offer {expected:?}: {texts:?}"
@@ -686,7 +698,9 @@ fn the_view_options_menu_offers_the_three_archived_filters() {
     let commands = render(&mut root, &app);
     let texts = drawn_texts(&commands);
     assert!(texts.iter().any(|text| text == "Redesign the sidebar"));
-    assert!(!texts.iter().any(|text| text == "Automate Instagram posting"));
+    assert!(!texts
+        .iter()
+        .any(|text| text == "Automate Instagram posting"));
 }
 
 /// The notice runs out on its own deadline while the frame clock reports
@@ -695,7 +709,9 @@ fn the_view_options_menu_offers_the_three_archived_filters() {
 fn the_toast_runs_out_on_its_own() {
     let app = AppContext::default();
     let (mut root, state, _desktop, _dir) = seeded();
-    state.borrow_mut().show_toast(ToastKind::ConversationIdCopied);
+    state
+        .borrow_mut()
+        .show_toast(ToastKind::ConversationIdCopied);
     assert!(state.borrow().toast.is_some());
     assert!(
         root.wants_animation(),
@@ -726,20 +742,23 @@ fn the_hovered_session_row_does_not_move_the_rows_below_it() {
     let below_rest = resting
         .iter()
         .find_map(|command| match command {
-            RenderCommand::DrawText { text, origin, .. } if text == "Automate Instagram posting" => {
+            RenderCommand::DrawText { text, origin, .. }
+                if text == "Automate Instagram posting" =>
+            {
                 Some(*origin)
             }
             _ => None,
         })
         .expect("the row below is drawn");
 
-    *state.borrow_mut().sidebar_hover_row.borrow_mut() =
-        Some(format!("session:{hovered}"));
+    *state.borrow_mut().sidebar_hover_row.borrow_mut() = Some(format!("session:{hovered}"));
     let hovered_frame = render(&mut root, &app);
     let below_hover = hovered_frame
         .iter()
         .find_map(|command| match command {
-            RenderCommand::DrawText { text, origin, .. } if text == "Automate Instagram posting" => {
+            RenderCommand::DrawText { text, origin, .. }
+                if text == "Automate Instagram posting" =>
+            {
                 Some(*origin)
             }
             _ => None,

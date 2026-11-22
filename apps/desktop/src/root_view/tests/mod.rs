@@ -13,23 +13,23 @@
 use goble_ui::event::DispatchedEvent;
 use goble_ui::EventContext;
 
-    use super::*;
-    use goble_core::store::Store;
-    use goble_desktop_service::{EventBus, ThreadStore};
+use super::*;
+use goble_core::store::Store;
+use goble_desktop_service::{EventBus, ThreadStore};
 
-    /// Mount a real `RootView` over an in-memory store and a collecting bus, so
-    /// the scripted events go through the real [`RootView::drain_events`] path
-    /// rather than the state setters.
-    fn root_with_bus() -> (RootView, CollectingEventBus, tempfile::TempDir) {
-        let dir = tempfile::tempdir().expect("temp thread-store dir");
-        let desktop = Arc::new(DesktopState::new(
-            Store::open_in_memory().expect("in-memory store"),
-            ThreadStore::new(dir.path()).expect("thread store"),
-        ));
-        let bus = CollectingEventBus::new();
-        let view = RootView::new(&AppContext::default(), &desktop, Some(bus.clone()));
-        (view, bus, dir)
-    }
+/// Mount a real `RootView` over an in-memory store and a collecting bus, so
+/// the scripted events go through the real [`RootView::drain_events`] path
+/// rather than the state setters.
+fn root_with_bus() -> (RootView, CollectingEventBus, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("temp thread-store dir");
+    let desktop = Arc::new(DesktopState::new(
+        Store::open_in_memory().expect("in-memory store"),
+        ThreadStore::new(dir.path()).expect("thread store"),
+    ));
+    let bus = CollectingEventBus::new();
+    let view = RootView::new(&AppContext::default(), &desktop, Some(bus.clone()));
+    (view, bus, dir)
+}
 
 mod announcement;
 mod child_view;

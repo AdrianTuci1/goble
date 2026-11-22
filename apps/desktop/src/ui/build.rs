@@ -4,8 +4,8 @@ use std::rc::Rc;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     AppContext, Border, Container, CrossAxisAlignment, Divider, EdgeInsets, Element, EventContext,
-    Expanded, Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint,
-    Stack,
+    Expanded, Fill, Flex, LayoutContext, MainAxisSize, Padding, PaintContext, Point,
+    SizeConstraint, Stack,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, PointF, RectF, Size2F, Vector2F};
@@ -17,9 +17,8 @@ use super::actions::{AiActions, MediaActions, ProjectsActions, UiActions};
 use super::snapshot::{AiSnapshot, MediaSnapshot, ProjectsSnapshot, UiSnapshot};
 use super::types::AppTab;
 use super::{
-    agent_dashboard, chat, chrome, connectors, crons, hosts, inbox, media, model_form,
-    onboarding, panes, session_menu, settings, shell, shortcuts_help, sidebar, vault,
-    CONNECTORS_WIDTH,
+    agent_dashboard, chat, chrome, connectors, crons, hosts, inbox, media, model_form, onboarding,
+    panes, session_menu, settings, shell, shortcuts_help, sidebar, vault, CONNECTORS_WIDTH,
 };
 
 /// The thickness of the rule that wraps the whole window, warp-new's window
@@ -60,12 +59,8 @@ const SIDE_SPLIT_MAX_RATIO: f32 = 0.75;
 /// Resolve the side panel's share of `content_width`, with the width-aware
 /// minimum applied on top of the `0.25..=0.75` ratio range.
 fn resolved_side_split_ratio(ratio: f32, content_width: f32) -> f32 {
-    let ratio = if ratio.is_finite() {
-        ratio
-    } else {
-        0.5
-    }
-    .clamp(SIDE_SPLIT_MIN_RATIO, SIDE_SPLIT_MAX_RATIO);
+    let ratio = if ratio.is_finite() { ratio } else { 0.5 }
+        .clamp(SIDE_SPLIT_MIN_RATIO, SIDE_SPLIT_MAX_RATIO);
     if !content_width.is_finite() || content_width <= 0.0 {
         return ratio;
     }
@@ -218,7 +213,8 @@ impl Element for SideSplitLayout {
         // drawn around both; the only separation between them is the one
         // hairline painted over their shared edge below.
         self.main.paint(origin, ctx, app);
-        self.panel.paint(origin + vec2f(self.main_width, 0.0), ctx, app);
+        self.panel
+            .paint(origin + vec2f(self.main_width, 0.0), ctx, app);
         if let (Some(renderer), Some(size)) = (ctx.renderer.as_mut(), self.size) {
             renderer.fill_rect(
                 rectf(origin.x + self.main_width, origin.y, 1.0, size.y),
@@ -620,8 +616,8 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     stack = stack.with_overlay(
         model_form::build_llm_dialog(app, state, actions),
         vec2f(0.0, 0.0),
-    );    // "Add a new environment" dialog, opened from the topbar "+" menu. It only
-    // paints/intercepts events while open (see [`super::media::build_add_medium_dialog`]).
+    ); // "Add a new environment" dialog, opened from the topbar "+" menu. It only
+       // paints/intercepts events while open (see [`super::media::build_add_medium_dialog`]).
     stack = stack.with_overlay(
         media::build_add_medium_dialog(app, state, media_actions, actions),
         vec2f(0.0, 0.0),
@@ -890,10 +886,7 @@ impl Element for WindowBorder {
         app.hover_chips.borrow_mut().push(
             origin,
             Box::new(WindowBorderPaint {
-                rect: RectF::new(
-                    PointF::new(origin.x, origin.y),
-                    Size2F::new(size.x, size.y),
-                ),
+                rect: RectF::new(PointF::new(origin.x, origin.y), Size2F::new(size.x, size.y)),
                 color: self.color,
                 corner_radius: self.corner_radius,
                 size: Some(size),
@@ -938,8 +931,8 @@ mod tests {
 
     use crate::root_view::RootView;
     use crate::state::{PaneSession, SideTabKind, UiState};
-    use goble_core::harness::ToolCallStatus;
     use crate::ui::{Pane, PaneKind, Space, SplitDir};
+    use goble_core::harness::ToolCallStatus;
     use goble_ui::elements::{lane_column, resolve_content_width, LaneEdge};
 
     fn window() -> Vector2F {
@@ -996,11 +989,7 @@ mod tests {
     /// The one workspace sheet: the rounded surface both panels live on. It is
     /// the only `Border` rule with the sheet radius that spans the content
     /// height, so its count also proves the old per-panel casings are gone.
-    fn workspace_sheet(
-        commands: &[RenderCommand],
-        app: &AppContext,
-        size: Vector2F,
-    ) -> RectF {
+    fn workspace_sheet(commands: &[RenderCommand], app: &AppContext, size: Vector2F) -> RectF {
         // The shell's sheet is the one rounded `Surface` fill that spans the
         // workspace; it owns no Border stroke any more (the windows float with
         // a shadow instead).
@@ -1192,13 +1181,15 @@ mod tests {
             // rounded fill + corner cut keep each pane's shape clean.
             let pane_edges = commands
                 .iter()
-                .filter(|command| matches!(
-                    command,
-                    RenderCommand::StrokeRect { rect, color, width, .. }
-                        if *color == border
-                            && (*width - 1.0).abs() < 0.01
-                            && frames.contains(rect)
-                ))
+                .filter(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::StrokeRect { rect, color, width, .. }
+                            if *color == border
+                                && (*width - 1.0).abs() < 0.01
+                                && frames.contains(rect)
+                    )
+                })
                 .count();
             assert_eq!(pane_edges, 0, "no pane card paints a 1 pt Border edge");
         }
@@ -1255,13 +1246,15 @@ mod tests {
             );
             let pane_edges = commands
                 .iter()
-                .filter(|command| matches!(
-                    command,
-                    RenderCommand::StrokeRect { rect, color, width, .. }
-                        if *rect == card
-                            && *color == border
-                            && (*width - 1.0).abs() < 0.01
-                ))
+                .filter(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::StrokeRect { rect, color, width, .. }
+                            if *rect == card
+                                && *color == border
+                                && (*width - 1.0).abs() < 0.01
+                    )
+                })
                 .count();
             assert_eq!(pane_edges, 0, "the card owns no Border edge");
         }
@@ -1451,7 +1444,10 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawIcon {
-                    origin, name, color, ..
+                    origin,
+                    name,
+                    color,
+                    ..
                 } if name == "upper-left-triangle" && *color == accent => Some(*origin),
                 _ => None,
             })
@@ -1708,7 +1704,10 @@ mod tests {
         );
         {
             let s = state.borrow();
-            assert!(s.content_lane_dragging, "a press on the handle starts the drag");
+            assert!(
+                s.content_lane_dragging,
+                "a press on the handle starts the drag"
+            );
             assert_eq!(s.content_lane_drag_pane, Some(7), "the drag names its pane");
             assert_eq!(s.content_lane_drag_edge, Some(LaneEdge::Right));
         }
@@ -1735,13 +1734,7 @@ mod tests {
 
         // The left edge is mirrored: outward is pointer-left. Pane 8's drag
         // leaves pane 7's committed width alone.
-        (actions.on_content_lane_drag_start.borrow_mut())(
-            8,
-            311.0,
-            LaneEdge::Left,
-            920.0,
-            1600.0,
-        );
+        (actions.on_content_lane_drag_start.borrow_mut())(8, 311.0, LaneEdge::Left, 920.0, 1600.0);
         (actions.on_content_lane_drag_move.borrow_mut())(261.0);
         assert_eq!(
             pref(8),
@@ -1750,23 +1743,17 @@ mod tests {
         );
         assert_eq!(pref(7), Some(640.0), "the sibling pane keeps its own width");
         (actions.on_content_lane_drag_move.borrow_mut())(411.0);
-        assert_eq!(pref(8), Some(720.0), "dragging the left edge inward narrows");
+        assert_eq!(
+            pref(8),
+            Some(720.0),
+            "dragging the left edge inward narrows"
+        );
         (actions.on_content_lane_drag_end.borrow_mut())();
 
         // A narrow column is a full-width pass-through whatever is dragged.
-        (actions.on_content_lane_drag_start.borrow_mut())(
-            7,
-            400.0,
-            LaneEdge::Right,
-            800.0,
-            800.0,
-        );
+        (actions.on_content_lane_drag_start.borrow_mut())(7, 400.0, LaneEdge::Right, 800.0, 800.0);
         (actions.on_content_lane_drag_move.borrow_mut())(500.0);
-        assert_eq!(
-            pref(7),
-            Some(800.0),
-            "a narrow lane stays full width"
-        );
+        assert_eq!(pref(7), Some(800.0), "a narrow lane stays full width");
         (actions.on_content_lane_drag_end.borrow_mut())();
     }
 
@@ -1806,7 +1793,8 @@ mod tests {
 
         // The LEFT pane's right strip: 24 px outside its content column, 10 px
         // wide, under the pane header.
-        let column_right = frames[0].min_x() + (frames[0].width() - before_left.width()) / 2.0
+        let column_right = frames[0].min_x()
+            + (frames[0].width() - before_left.width()) / 2.0
             + before_left.width();
         let press = vec2f(column_right + 24.0 + 5.0, 400.0);
         let mut ctx = EventContext::default();
@@ -1823,9 +1811,20 @@ mod tests {
         );
         {
             let s = state.borrow();
-            assert_eq!(s.active_pane_id, 7, "the press focuses the pane it lands in");
-            assert_eq!(s.content_lane_drag_pane, Some(7), "only the left pane owns the drag");
-            let left = s.content_lane_prefs.get(&7).copied().expect("the dragged pane freezes its width");
+            assert_eq!(
+                s.active_pane_id, 7,
+                "the press focuses the pane it lands in"
+            );
+            assert_eq!(
+                s.content_lane_drag_pane,
+                Some(7),
+                "only the left pane owns the drag"
+            );
+            let left = s
+                .content_lane_prefs
+                .get(&7)
+                .copied()
+                .expect("the dragged pane freezes its width");
             assert!(
                 (left - (expected_left - 34.0)).abs() < 0.5,
                 "frozen at the pane's committed width: {left}"
@@ -1844,12 +1843,14 @@ mod tests {
             &mut ctx,
             &app,
         ));
-        let dragged =
-            resolve_content_width(frames[0].width(), Some(expected_left - 34.0 + 100.0));
+        let dragged = resolve_content_width(frames[0].width(), Some(expected_left - 34.0 + 100.0));
         {
             let s = state.borrow();
             let left = s.content_lane_prefs.get(&7).copied().unwrap();
-            assert!((left - dragged).abs() < 0.5, "the left pane follows the pointer: {left} against {dragged}");
+            assert!(
+                (left - dragged).abs() < 0.5,
+                "the left pane follows the pointer: {left} against {dragged}"
+            );
             assert_eq!(
                 s.content_lane_prefs.get(&8),
                 Some(&expected_right),
@@ -1932,7 +1933,11 @@ mod tests {
                 None,
                 "no motion: the pane's ratio is restored"
             );
-            assert_eq!(s.content_lane_prefs.get(&8), None, "the sibling was never touched");
+            assert_eq!(
+                s.content_lane_prefs.get(&8),
+                None,
+                "the sibling was never touched"
+            );
         }
     }
 
@@ -2065,9 +2070,8 @@ mod tests {
                 s.dragging_pane_id = split_dragging.then_some(9);
                 s.sidebar_dragging = sidebar_dragging;
             }
-            let command = || {
-                format!("split dragging {split_dragging}, sidebar dragging {sidebar_dragging}")
-            };
+            let command =
+                || format!("split dragging {split_dragging}, sidebar dragging {sidebar_dragging}");
             // Wide enough that the responsive sidebar (this lane's breakpoint
             // work) keeps it shown beside the two panes: the sidebar edge must
             // be probeable, and its own collapse has its own test.
@@ -2096,11 +2100,7 @@ mod tests {
             );
 
             // The sidebar edge.
-            paint_with_pointer(
-                &mut root,
-                &app,
-                vec2f(crate::ui::SIDEBAR_WIDTH, mid_y),
-            );
+            paint_with_pointer(&mut root, &app, vec2f(crate::ui::SIDEBAR_WIDTH, mid_y));
             assert_eq!(
                 app.window_control.cursor(),
                 CursorKind::EwResize,
@@ -2162,9 +2162,7 @@ mod tests {
     fn first_card_left() -> f32 {
         // The pane area's inset inside the one workspace sheet, plus the free
         // margin the sheet keeps from the window/sidebar edge.
-        shell::WORKSPACE_MARGIN
-            + crate::ui::panes::PANE_AREA_INSET
-            + crate::ui::panes::PANE_INSET
+        shell::WORKSPACE_MARGIN + crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET
     }
 
     /// The dashboard's roster search field names it; the dashboard is the
@@ -2219,7 +2217,11 @@ mod tests {
         );
         assert!(state.borrow().responsive.sidebar_collapsed);
         let frames = pane_frames(&state);
-        assert_eq!(frames.len(), 1, "the active pane keeps the frame: {frames:?}");
+        assert_eq!(
+            frames.len(),
+            1,
+            "the active pane keeps the frame: {frames:?}"
+        );
         assert_eq!(
             frames[0].min_x(),
             first_card_left(),
@@ -2234,7 +2236,10 @@ mod tests {
             "growing back restores the sidebar"
         );
         assert!(!state.borrow().responsive.sidebar_collapsed);
-        assert!(state.borrow().sidebar_visible, "the preference was never rewritten");
+        assert!(
+            state.borrow().sidebar_visible,
+            "the preference was never rewritten"
+        );
     }
 
     /// A wide pane tree collapses the sidebar earlier than a single pane: the
@@ -2295,9 +2300,16 @@ mod tests {
             "below 768 the dashboard leaves the view"
         );
         assert!(state.borrow().responsive.secondary_hidden);
-        assert!(!state.borrow().responsive.focused_only, "two panes still fit 760");
+        assert!(
+            !state.borrow().responsive.focused_only,
+            "two panes still fit 760"
+        );
         let frames = pane_frames(&state);
-        assert_eq!(frames.len(), 2, "the panes and the active one stay: {frames:?}");
+        assert_eq!(
+            frames.len(),
+            2,
+            "the panes and the active one stay: {frames:?}"
+        );
         assert!(
             frames.iter().any(|f| {
                 let point = vec2f(400.0, 500.0);
@@ -2312,10 +2324,7 @@ mod tests {
         // Growing restores the secondary surfaces in reverse order: the
         // dashboard comes back with the width.
         let commands = render_element(&mut root, wide, &app);
-        assert!(
-            dashboard_drawn(&commands),
-            "growing restores the dashboard"
-        );
+        assert!(dashboard_drawn(&commands), "growing restores the dashboard");
         assert!(!state.borrow().responsive.secondary_hidden);
     }
 
@@ -2464,14 +2473,14 @@ mod tests {
         let toggle = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, size, .. }
-                    if name == "left-panel-close" =>
-                {
+                RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "panel-left-outline" => {
                     Some(*origin + vec2f(*size / 2.0, *size / 2.0))
                 }
                 _ => None,
             })
-            .expect("the header draws the hide-sidebar toggle");
+            .expect("the topbar draws DSH's sidebar toggle");
         assert!(state.borrow().sidebar_visible);
         let mut ctx = EventContext;
         for event in [
@@ -2512,13 +2521,25 @@ mod tests {
             "Review",
             "Open File",
             "Terminal",
-            "Plugins",
-            "Subagents",
-            "Background Tasks",
+            "Side Question",
         ] {
             assert!(
                 texts.iter().any(|text| *text == expected),
                 "the Overview side tab draws {expected:?}: {texts:?}"
+            );
+        }
+        // M: Plugins is not in this build, and empty Subagents / Background
+        // Tasks sections are not drawn at all (not even an empty caption).
+        for gone in [
+            "Plugins",
+            "Subagents",
+            "Background Tasks",
+            "No subagents",
+            "No background tasks",
+        ] {
+            assert!(
+                !texts.iter().any(|text| *text == gone),
+                "the Overview side tab does not draw {gone:?}: {texts:?}"
             );
         }
     }
@@ -2534,7 +2555,9 @@ mod tests {
             commands
                 .iter()
                 .find_map(|command| match command {
-                    RenderCommand::DrawText { text, origin, .. } if text == needle => Some(origin.y),
+                    RenderCommand::DrawText { text, origin, .. } if text == needle => {
+                        Some(origin.y)
+                    }
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("the frame draws {needle:?}"))
@@ -2566,15 +2589,19 @@ mod tests {
             "Open File",
             "Terminal",
             "Browser",
-            "Subagents",
-            "Background Tasks",
-            "0",
         ] {
             assert!(
                 texts.iter().any(|text| *text == expected),
                 "the overview dock draws {expected:?}: {texts:?}"
             );
         }
+        assert!(
+            !texts.iter().any(|text| *text == "Subagents"
+                || *text == "Background Tasks"
+                || *text == "No subagents"
+                || *text == "No background tasks"),
+            "empty work sections stay hidden: {texts:?}"
+        );
         assert!(
             commands.iter().any(|command| matches!(
                 command,
@@ -2607,15 +2634,21 @@ mod tests {
         let more = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, size, .. } if name == "ellipsis" => {
-                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
-                }
+                RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "ellipsis" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the panel header draws its More control");
         for event in [
-            DispatchedEvent::MouseDown { position: more, button: 0 },
-            DispatchedEvent::MouseUp { position: more, button: 0 },
+            DispatchedEvent::MouseDown {
+                position: more,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: more,
+                button: 0,
+            },
         ] {
             let _ = root.dispatch_event(&event, &mut ctx, &app);
         }
@@ -2648,14 +2681,22 @@ mod tests {
         key(&mut root, &mut ctx, "ArrowRight");
         let commands = render_element(&mut root, window(), &app);
         let flyout = texts(&commands);
-        for expected in ["Split right", "Split down", "Replace with new", "⌘ Space", "⌘ ⇧ D"] {
+        for expected in [
+            "Split right",
+            "Split down",
+            "Replace with new",
+            "⌘ Space",
+            "⌘ ⇧ D",
+        ] {
             assert!(
                 flyout.iter().any(|text| text == expected),
                 "the Split flyout draws {expected:?}: {flyout:?}"
             );
         }
 
-        let before = state.borrow().spaces[state.borrow().active_space].root.leaf_count();
+        let before = state.borrow().spaces[state.borrow().active_space]
+            .root
+            .leaf_count();
         let split = commands
             .iter()
             .find_map(|command| match command {
@@ -2677,7 +2718,9 @@ mod tests {
         ] {
             let _ = root.dispatch_event(&event, &mut ctx, &app);
         }
-        let after = state.borrow().spaces[state.borrow().active_space].root.leaf_count();
+        let after = state.borrow().spaces[state.borrow().active_space]
+            .root
+            .leaf_count();
         assert_eq!(after, before + 1, "Split right splits the focused pane");
 
         // Copy opens its own flyout with the three copyable values.
@@ -2685,15 +2728,21 @@ mod tests {
         let more = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { origin, name, size, .. } if name == "ellipsis" => {
-                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
-                }
+                RenderCommand::DrawIcon {
+                    origin, name, size, ..
+                } if name == "ellipsis" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the More control");
         for event in [
-            DispatchedEvent::MouseDown { position: more, button: 0 },
-            DispatchedEvent::MouseUp { position: more, button: 0 },
+            DispatchedEvent::MouseDown {
+                position: more,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: more,
+                button: 0,
+            },
         ] {
             let _ = root.dispatch_event(&event, &mut ctx, &app);
         }
@@ -2770,10 +2819,10 @@ mod tests {
         }
     }
 
-    /// L8: the shell surface has no framing Border stroke; it floats on a
-    /// soft black shadow ring instead.
+    /// L8: the workspace surface is flat — no framing Border and no shadow /
+    /// elevation; panels are flat inside it with only the 1 pt hairline.
     #[test]
-    fn the_shell_surface_floats_without_a_framing_border() {
+    fn the_shell_surface_is_flat_without_a_frame_or_shadow() {
         let app = AppContext::default();
         let (mut root, _state, _dir) = app_root();
         let size = vec2f(1024.0, 768.0);
@@ -2790,25 +2839,15 @@ mod tests {
             )),
             "the shell surface owns no Border frame"
         );
-        let shadow = commands.iter().any(|command| match command {
-            RenderCommand::StrokeRect {
-                rect,
-                color,
-                width,
-                corner_radius,
-            } => {
-                color.a > 0
-                    && color.r == 0
-                    && color.g == 0
-                    && color.b == 0
-                    && color.a < 120
-                    && (*width - 2.0).abs() < 0.01
-                    && (*corner_radius - 14.0).abs() < 0.01
-                    && rect.width() > sheet.width()
-            }
-            _ => false,
+        let shadow = commands.iter().any(|command| {
+            matches!(
+                command,
+                RenderCommand::StrokeRect { rect, color, .. }
+                    if color.r == 0 && color.g == 0 && color.b == 0 && color.a > 0
+                        && rect.width() > sheet.width()
+            )
         });
-        assert!(shadow, "the floating sheet casts a soft shadow");
+        assert!(!shadow, "the shell surface has no shadow/elevation");
     }
 
     /// L: the settings sheet has no search field, no user footer, no row or
@@ -2832,7 +2871,12 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for gone in ["Search settings", "Search shortcuts...", "Local workspace", "You"] {
+        for gone in [
+            "Search settings",
+            "Search shortcuts...",
+            "Local workspace",
+            "You",
+        ] {
             assert!(
                 !texts.iter().any(|text| text == gone),
                 "settings no longer draw {gone:?}: {texts:?}"
@@ -2873,11 +2917,13 @@ mod tests {
         // No 1 px row/section rules across the sheet.
         let rules = commands
             .iter()
-            .filter(|command| matches!(
-                command,
-                RenderCommand::FillRect { rect, .. }
-                    if (rect.height() - 1.0).abs() < 0.01 && rect.width() > 300.0
-            ))
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::FillRect { rect, .. }
+                        if (rect.height() - 1.0).abs() < 0.01 && rect.width() > 300.0
+                )
+            })
             .count();
         assert_eq!(rules, 0, "settings draw no separator rules between rows");
     }
@@ -2997,7 +3043,10 @@ mod tests {
             &mut ctx,
             &app,
         ));
-        assert!(!state.borrow().side_split_dragging, "mouse up ends the drag");
+        assert!(
+            !state.borrow().side_split_dragging,
+            "mouse up ends the drag"
+        );
 
         // Narrower content: at 1400 the panel can be at most all but 320 pt,
         // and the main panel stops at 320 pt.
@@ -3175,12 +3224,13 @@ mod tests {
             )),
             "the side panel's search row carries the kebab"
         );
+        // M: no Plugins row, so no disclosure chevron in the launcher.
         assert!(
-            commands.iter().any(|command| matches!(
+            !commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::DrawIcon { name, .. } if name == "chevron-right"
             )),
-            "the Plugins row carries its disclosure chevron"
+            "the launcher has no Plugins disclosure row"
         );
     }
 
@@ -3225,15 +3275,17 @@ mod tests {
         // No pane card border: the only `Border` strokes are the sheet frame.
         let pane_edges = commands
             .iter()
-            .filter(|command| matches!(
-                command,
-                RenderCommand::StrokeRect { rect, color, width, .. }
-                    if *color == border
-                        && (*width - 1.0).abs() < 0.01
-                        && rect.height() > sheet.height() * 0.9
-                        && *rect != sheet
-                        && !(rect.width() == size.x && rect.height() == size.y)
-            ))
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::StrokeRect { rect, color, width, .. }
+                        if *color == border
+                            && (*width - 1.0).abs() < 0.01
+                            && rect.height() > sheet.height() * 0.9
+                            && *rect != sheet
+                            && !(rect.width() == size.x && rect.height() == size.y)
+                )
+            })
             .count();
         assert_eq!(
             pane_edges, 0,
@@ -3257,7 +3309,10 @@ mod tests {
             // A live tool call is the pane's real work: the Task output tab
             // reads it through `pane_live_work`, not from a fixture list.
             let pane_id = s.active_pane_id;
-            let runtime = s.pane_runtime.get_mut(&pane_id).expect("the active pane runtime");
+            let runtime = s
+                .pane_runtime
+                .get_mut(&pane_id)
+                .expect("the active pane runtime");
             runtime.in_flight_tools.insert(
                 "call-read".to_string(),
                 goble_ui::ToolCall {
@@ -3301,7 +3356,9 @@ mod tests {
             })
             .collect();
         assert!(
-            texts.iter().any(|text| *text == "Open a file from Explorer"),
+            texts
+                .iter()
+                .any(|text| *text == "Open a file from Explorer"),
             "Files with no file says so: {texts:?}"
         );
         assert!(!texts.iter().any(|text| *text == "Search or enter a URL"));
@@ -3324,7 +3381,10 @@ mod tests {
             "the Agent tab mounts the chat, not Overview: {texts:?}"
         );
         assert_eq!(
-            texts.iter().filter(|text| **text == "Side Question").count(),
+            texts
+                .iter()
+                .filter(|text| **text == "Side Question")
+                .count(),
             1,
             "only the strip chip names Side Question: the topbar owns the panel \
              controls, so the body has no second header: {texts:?}"
@@ -3350,8 +3410,7 @@ mod tests {
             .iter()
             .find_map(|command| match command {
                 RenderCommand::DrawText { text, origin, .. }
-                    if text == "Side Question"
-                        && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                    if text == "Side Question" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
                 {
                     Some(*origin + vec2f(2.0, 4.0))
                 }
@@ -3375,7 +3434,6 @@ mod tests {
             "no Overview chip in the strip"
         );
     }
-
 
     /// G: an open panel with no real tab draws no chip and no `+` — Overview is
     /// the body's home surface and the panel-1 launcher, never a strip chip.
@@ -3433,9 +3491,11 @@ mod tests {
         let commands = render_element(&mut root, window(), &app);
         let icon_x = |name: &str| -> Option<f32> {
             commands.iter().find_map(|command| match command {
-                RenderCommand::DrawIcon { name: drawn, origin, .. }
-                    if *drawn == name && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
-                {
+                RenderCommand::DrawIcon {
+                    name: drawn,
+                    origin,
+                    ..
+                } if *drawn == name && origin.y < crate::ui::chrome::CHROME_HEIGHT => {
                     Some(origin.x)
                 }
                 _ => None,
@@ -3497,15 +3557,25 @@ mod tests {
             })
             .collect();
         assert!(icons.contains(&"ellipsis"), "the More control: {icons:?}");
-        assert!(icons.contains(&"flat-list"), "the Overview control: {icons:?}");
+        assert!(
+            icons.contains(&"flat-list"),
+            "the Overview control: {icons:?}"
+        );
         assert!(
             !icons.contains(&"fullscreen-enter") && !icons.contains(&"fullscreen-exit"),
             "panel 1 no longer offers maximize: {icons:?}"
         );
         assert_eq!(
-            icons.iter().filter(|name| **name == "left-panel-close").count(),
+            icons
+                .iter()
+                .filter(|name| **name == "panel-left-outline")
+                .count(),
             1,
-            "only the sidebar toggle uses the close glyph while panel 2 is closed: {icons:?}"
+            "the topbar's sidebar toggle wears DSH's panel-left glyph: {icons:?}"
+        );
+        assert!(
+            !icons.contains(&"left-panel-close"),
+            "the topbar no longer uses the custom close glyph: {icons:?}"
         );
 
         state.borrow_mut().right_sidebar_open = true;
@@ -3517,6 +3587,10 @@ mod tests {
                 _ => None,
             })
             .collect();
+        assert!(
+            icons.contains(&"panel-right-outline"),
+            "the open panel 2 toggle wears DSH's mirrored panel glyph: {icons:?}"
+        );
         assert!(
             icons.contains(&"fullscreen-enter"),
             "panel 2 keeps maximize: {icons:?}"
@@ -3542,20 +3616,19 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for expected in [
-            "Overview",
-            "Review",
-            "Files",
-            "Terminal",
-            "Background Tasks",
-            "Subagents",
-            "Workflows",
-        ] {
+        for expected in ["Overview", "Review", "Files", "Terminal", "Workflows"] {
             assert!(
                 texts.iter().any(|text| *text == expected),
                 "the Overview popover draws {expected:?}: {texts:?}"
             );
         }
+        assert!(
+            !texts.iter().any(|text| *text == "Background Tasks"
+                || *text == "Subagents"
+                || *text == "No background tasks"
+                || *text == "No subagents"),
+            "empty work groups stay hidden: {texts:?}"
+        );
         let review = commands
             .iter()
             .position(|command| {
@@ -3584,9 +3657,9 @@ mod tests {
         let overview = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { name, origin, size, .. } if name == "flat-list" => {
-                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
-                }
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "flat-list" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the Overview trigger");
@@ -3598,7 +3671,8 @@ mod tests {
 
         {
             let mut s = state.borrow_mut();
-            s.collapsed_sections.insert("chrome.overview.subagents".to_string());
+            s.collapsed_sections
+                .insert("chrome.overview.subagents".to_string());
             s.collapsed_sections
                 .insert("chrome.overview.background-tasks".to_string());
             s.collapsed_sections
@@ -3612,12 +3686,18 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for header in ["Background Tasks", "Subagents", "Workflows"] {
+        for header in ["Workflows"] {
             assert!(
                 texts.iter().any(|text| *text == header),
                 "the folded group keeps its header {header:?}: {texts:?}"
             );
         }
+        assert!(
+            !texts
+                .iter()
+                .any(|text| *text == "Background Tasks" || *text == "Subagents"),
+            "empty work groups are not drawn at all: {texts:?}"
+        );
         for empty in ["No background tasks", "No subagents", "No workflows"] {
             assert!(
                 !texts.iter().any(|text| *text == empty),
@@ -3686,9 +3766,10 @@ mod tests {
         // The leading chip can scroll out of the clip, so compare every drawn
         // chip: at least one previously visible chip must have moved left.
         assert!(
-            before.iter().any(|old| after.iter().any(|new| old - new >= 40.0)),
+            before
+                .iter()
+                .any(|old| after.iter().any(|new| old - new >= 40.0)),
             "the horizontal wheel shifts the strip left ({before:?} -> {after:?})"
         );
     }
-
 }

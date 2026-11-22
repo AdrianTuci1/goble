@@ -20,11 +20,11 @@ use std::rc::Rc;
 
 use goble_ui::elements::conversation_list_item::{
     SidebarActionRow, SidebarDrag, SidebarGroupRow, SidebarGroupUi, SidebarIconButton,
-    SidebarMenuItem, SidebarSessionRow,
-    SIDEBAR_GROUP_GAP, SIDEBAR_HEADER_BUTTON, SIDEBAR_HEADER_HEIGHT, SIDEBAR_HEADER_ICON,
-    SIDEBAR_HEADER_PADDING_START, SIDEBAR_ICON_NEW_CHAT, SIDEBAR_ICON_PIN_FILL,
-    SIDEBAR_ICON_PROJECT_ADD, SIDEBAR_ICON_SLIDERS, SIDEBAR_LIST_BOTTOM_PAD, SIDEBAR_ROW_GAP,
-    SIDEBAR_SECTION_TITLE, SIDEBAR_SECTION_TOP_INSET, SIDEBAR_TITLE_LINE, SIDEBAR_TITLE_SIZE,
+    SidebarMenuItem, SidebarSessionRow, SIDEBAR_GROUP_GAP, SIDEBAR_HEADER_BUTTON,
+    SIDEBAR_HEADER_HEIGHT, SIDEBAR_HEADER_ICON, SIDEBAR_HEADER_PADDING_START,
+    SIDEBAR_ICON_NEW_CHAT, SIDEBAR_ICON_PIN_FILL, SIDEBAR_ICON_PROJECT_ADD, SIDEBAR_ICON_SLIDERS,
+    SIDEBAR_LIST_BOTTOM_PAD, SIDEBAR_ROW_GAP, SIDEBAR_SECTION_TITLE, SIDEBAR_SECTION_TOP_INSET,
+    SIDEBAR_TITLE_LINE, SIDEBAR_TITLE_SIZE,
 };
 use goble_ui::elements::{
     AgentCardUi, AppContext, ConstrainedBox, Container, ConversationStatus, CrossAxisAlignment,
@@ -65,10 +65,8 @@ fn full_menu_items() -> Vec<SidebarMenuItem> {
         SidebarMenuItem::new("Pin session", "pin-outline", || {}),
         SidebarMenuItem::new("Rename", "edit", || {}),
         SidebarMenuItem::new("Fork session", "branch", || {}),
-        SidebarMenuItem::new("Copy Session ID", "copy", || {})
-            .with_separator_before(true),
-        SidebarMenuItem::new("Archive session", "archive", || {})
-            .with_separator_before(true),
+        SidebarMenuItem::new("Copy Session ID", "copy", || {}).with_separator_before(true),
+        SidebarMenuItem::new("Archive session", "archive", || {}).with_separator_before(true),
         SidebarMenuItem::new("Delete conversation", "trash-02", || {})
             .with_separator_before(true)
             .with_danger(true),
@@ -325,38 +323,108 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
         Scene::Rest | Scene::Tall | Scene::ActionHover | Scene::ViewOptions => {
             rows.push(block(vec![
                 group("goble", true, false),
-                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Success, false, false),
-                session("s2", "Automate Instagram posting", "17h", ConversationStatus::Success, false, false),
+                session(
+                    "s1",
+                    "Redesign panouri și composer-ul",
+                    "4min",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
+                session(
+                    "s2",
+                    "Automate Instagram posting",
+                    "17h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
             rows.push(block(vec![
                 group("Projects", true, false),
-                session("s3", "Open-source project for a self-hosted VPS", "22h", ConversationStatus::Success, false, false),
+                session(
+                    "s3",
+                    "Open-source project for a self-hosted VPS",
+                    "22h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
             rows.push(block(vec![
                 group("Conductor", true, false),
-                session("s4", "Public key for the VPS server", "23h", ConversationStatus::Success, false, false),
+                session(
+                    "s4",
+                    "Public key for the VPS server",
+                    "23h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
         }
         Scene::SelectedRunning => {
             rows.push(block(vec![
                 group("goble", true, true),
-                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Running, true, false),
-                session("s2", "Automate Instagram posting", "17h", ConversationStatus::Success, false, false),
+                session(
+                    "s1",
+                    "Redesign panouri și composer-ul",
+                    "4min",
+                    ConversationStatus::Running,
+                    true,
+                    false,
+                ),
+                session(
+                    "s2",
+                    "Automate Instagram posting",
+                    "17h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
             rows.push(block(vec![
                 group("Projects", true, false),
-                session("s3", "Open-source project for a self-hosted VPS", "22h", ConversationStatus::Waiting, false, false),
+                session(
+                    "s3",
+                    "Open-source project for a self-hosted VPS",
+                    "22h",
+                    ConversationStatus::Waiting,
+                    false,
+                    false,
+                ),
             ]));
         }
         Scene::Hover => {
             rows.push(block(vec![
                 group("goble", true, false),
-                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Success, false, true),
-                session("s2", "Automate Instagram posting", "17h", ConversationStatus::Success, false, false),
+                session(
+                    "s1",
+                    "Redesign panouri și composer-ul",
+                    "4min",
+                    ConversationStatus::Success,
+                    false,
+                    true,
+                ),
+                session(
+                    "s2",
+                    "Automate Instagram posting",
+                    "17h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
             rows.push(block(vec![
                 group("Projects", true, false),
-                session("s3", "Open-source project for a self-hosted VPS", "22h", ConversationStatus::Error, false, false),
+                session(
+                    "s3",
+                    "Open-source project for a self-hosted VPS",
+                    "22h",
+                    ConversationStatus::Error,
+                    false,
+                    false,
+                ),
             ]));
         }
         Scene::WorkspaceHover => {
@@ -364,24 +432,66 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
             // disclosure triangle and the strip shows More + New session.
             rows.push(block(vec![
                 hovered_group("goble", true, false),
-                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Success, false, false),
-                session("s2", "Automate Instagram posting", "17h", ConversationStatus::Success, false, false),
+                session(
+                    "s1",
+                    "Redesign panouri și composer-ul",
+                    "4min",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
+                session(
+                    "s2",
+                    "Automate Instagram posting",
+                    "17h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
             rows.push(block(vec![
                 group("Projects", true, false),
-                session("s3", "Open-source project for a self-hosted VPS", "22h", ConversationStatus::Success, false, false),
+                session(
+                    "s3",
+                    "Open-source project for a self-hosted VPS",
+                    "22h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
         }
         Scene::WorkspaceMenu => {
             // The workspace row's tray open: DSH's workspace context menu.
             rows.push(block(vec![
                 open_menu_group("goble", true),
-                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Success, false, false),
-                session("s2", "Automate Instagram posting", "17h", ConversationStatus::Success, false, false),
+                session(
+                    "s1",
+                    "Redesign panouri și composer-ul",
+                    "4min",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
+                session(
+                    "s2",
+                    "Automate Instagram posting",
+                    "17h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
             rows.push(block(vec![
                 group("Projects", true, false),
-                session("s3", "Open-source project for a self-hosted VPS", "22h", ConversationStatus::Success, false, false),
+                session(
+                    "s3",
+                    "Open-source project for a self-hosted VPS",
+                    "22h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
         }
         Scene::HoverCard => {
@@ -393,7 +503,14 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
             let updated_at = (chrono::Utc::now() - chrono::Duration::hours(22)).to_rfc3339();
             rows.push(block(vec![
                 group("goble", true, false),
-                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Success, false, false),
+                session(
+                    "s1",
+                    "Redesign panouri și composer-ul",
+                    "4min",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
                 SidebarSessionRow::new("s3", "Open-source project for a self-hosted VPS", "22h")
                     .with_status(ConversationStatus::Running)
                     .with_hovered(true)
@@ -421,7 +538,14 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
                     .with_viewport_height(SIDEBAR_H)
                     .with_ui(Rc::new(RefCell::new(ui)))
                     .finish(),
-                session("s2", "Automate Instagram posting", "17h", ConversationStatus::Success, false, false),
+                session(
+                    "s2",
+                    "Automate Instagram posting",
+                    "17h",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
             ]));
         }
         Scene::Archived => {
@@ -433,7 +557,14 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
             let updated_at = (chrono::Utc::now() - chrono::Duration::days(3)).to_rfc3339();
             rows.push(block(vec![
                 group("goble", true, false),
-                session("s1", "Redesign panouri și composer-ul", "4min", ConversationStatus::Success, false, false),
+                session(
+                    "s1",
+                    "Redesign panouri și composer-ul",
+                    "4min",
+                    ConversationStatus::Success,
+                    false,
+                    false,
+                ),
                 SidebarSessionRow::new("s2", "Automate Instagram posting", "3d")
                     .with_status(ConversationStatus::Error)
                     .with_archived(true)
@@ -484,11 +615,9 @@ fn scene(app: &AppContext, scene: Scene) -> Box<dyn Element> {
     // the workspaces list, i.e. after the header).
     rows.insert(
         0,
-        block(vec![
-            SidebarGroupRow::new("Starred", true)
-                .with_leading_icon(SIDEBAR_ICON_PIN_FILL)
-                .finish(),
-        ]),
+        block(vec![SidebarGroupRow::new("Starred", true)
+            .with_leading_icon(SIDEBAR_ICON_PIN_FILL)
+            .finish()]),
     );
 
     let mut list = Flex::column()
@@ -670,11 +799,26 @@ fn main() -> anyhow::Result<()> {
     let scenes = [
         ("rest", Scene::Rest, SIDEBAR_W, SIDEBAR_H),
         ("rest-tall", Scene::Tall, SIDEBAR_W, TALL_H),
-        ("new-conversation-hover", Scene::ActionHover, SIDEBAR_W, SIDEBAR_H),
-        ("selected-running", Scene::SelectedRunning, SIDEBAR_W, SIDEBAR_H),
+        (
+            "new-conversation-hover",
+            Scene::ActionHover,
+            SIDEBAR_W,
+            SIDEBAR_H,
+        ),
+        (
+            "selected-running",
+            Scene::SelectedRunning,
+            SIDEBAR_W,
+            SIDEBAR_H,
+        ),
         ("hover", Scene::Hover, SIDEBAR_W, SIDEBAR_H),
         ("hover-card", Scene::HoverCard, 560.0, SIDEBAR_H),
-        ("workspace-hover", Scene::WorkspaceHover, SIDEBAR_W, SIDEBAR_H),
+        (
+            "workspace-hover",
+            Scene::WorkspaceHover,
+            SIDEBAR_W,
+            SIDEBAR_H,
+        ),
         ("workspace-menu", Scene::WorkspaceMenu, SIDEBAR_W, SIDEBAR_H),
         ("menu", Scene::Menu, SIDEBAR_W, SIDEBAR_H),
         ("archived", Scene::Archived, 560.0, SIDEBAR_H),
@@ -688,8 +832,8 @@ fn main() -> anyhow::Result<()> {
                 ..AppContext::default()
             };
             let element = scene(&app, scene_kind);
-            let out = std::path::Path::new(OUT_DIR)
-                .join(format!("sidebar-{name}-{theme_name}.png"));
+            let out =
+                std::path::Path::new(OUT_DIR).join(format!("sidebar-{name}-{theme_name}.png"));
             raster::render_scene_to_png(&assets, &app, element, width, height, 2.0, &out)?;
         }
     }

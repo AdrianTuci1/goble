@@ -85,11 +85,7 @@ impl ProjectsState {
 ///
 /// Sessions with no project identity land under the `default` project; a
 /// session with no medium falls back to `local`.
-fn group_projects(
-    projects: &[Project],
-    sessions: &[Session],
-    tasks: &[Task],
-) -> Vec<ProjectEntry> {
+fn group_projects(projects: &[Project], sessions: &[Session], tasks: &[Task]) -> Vec<ProjectEntry> {
     // project_id -> (directory, sessions)
     let mut by_project: BTreeMap<String, (String, Vec<ProjectSessionEntry>)> = BTreeMap::new();
     for p in projects {
@@ -193,10 +189,7 @@ mod tests {
     #[test]
     fn sessions_group_per_project_and_fall_back_to_default() {
         // A session with no project identity lands under `default`.
-        let sessions = vec![
-            session("s1", "alpha", "local"),
-            session("s2", "", "remote"),
-        ];
+        let sessions = vec![session("s1", "alpha", "local"), session("s2", "", "remote")];
         let projects = vec![Project {
             project_id: ProjectId::new("alpha"),
             directory: "/workspace/alpha".to_string(),

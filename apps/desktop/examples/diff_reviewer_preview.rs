@@ -30,9 +30,9 @@ use goble_core::harness::ToolCallStatus;
 use goble_ui::elements::chat_content::ToolCall;
 use goble_ui::elements::diff::{DiffLine, DiffLineKind, Hunk};
 use goble_ui::elements::{
-    AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, DiffLayout,
-    DiffSpec, Divider, EdgeInsets, Element, Empty, Expanded, FileDiffView, Fill, Flex, HoverRow,
-    Icon, MainAxisAlignment, MainAxisSize, PopupMenu, PopupMenuItem, PopupMenuPosition, ScrollState,
+    AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, DiffLayout, DiffSpec,
+    Divider, EdgeInsets, Element, Empty, Expanded, FileDiffView, Fill, Flex, HoverRow, Icon,
+    MainAxisAlignment, MainAxisSize, PopupMenu, PopupMenuItem, PopupMenuPosition, ScrollState,
     Scrollable, Stack, Text,
 };
 use goble_ui::geometry::vec2f;
@@ -57,13 +57,48 @@ struct FileItem {
 }
 
 const FILES: [FileItem; 7] = [
-    FileItem { path: "README.md", added: 36, removed: 0, status: 'M' },
-    FileItem { path: "docs/diff-reviewer.md", added: 72, removed: 0, status: 'A' },
-    FileItem { path: "src/panes.rs", added: 18, removed: 4, status: 'M' },
-    FileItem { path: "src/legacy_review.rs", added: 0, removed: 36, status: 'D' },
-    FileItem { path: "assets/diff-split.svg", added: 12, removed: 0, status: 'A' },
-    FileItem { path: "Cargo.toml", added: 2, removed: 1, status: 'M' },
-    FileItem { path: "src/ui/diff_panel.rs", added: 0, removed: 0, status: 'M' },
+    FileItem {
+        path: "README.md",
+        added: 36,
+        removed: 0,
+        status: 'M',
+    },
+    FileItem {
+        path: "docs/diff-reviewer.md",
+        added: 72,
+        removed: 0,
+        status: 'A',
+    },
+    FileItem {
+        path: "src/panes.rs",
+        added: 18,
+        removed: 4,
+        status: 'M',
+    },
+    FileItem {
+        path: "src/legacy_review.rs",
+        added: 0,
+        removed: 36,
+        status: 'D',
+    },
+    FileItem {
+        path: "assets/diff-split.svg",
+        added: 12,
+        removed: 0,
+        status: 'A',
+    },
+    FileItem {
+        path: "Cargo.toml",
+        added: 2,
+        removed: 1,
+        status: 'M',
+    },
+    FileItem {
+        path: "src/ui/diff_panel.rs",
+        added: 0,
+        removed: 0,
+        status: 'M',
+    },
 ];
 
 fn total(files: &[FileItem]) -> (u32, u32) {
@@ -100,16 +135,61 @@ fn hunk(lines: Vec<DiffLine>) -> Hunk {
 /// and the closing context.
 fn review_hunk() -> Hunk {
     hunk(vec![
-        line(DiffLineKind::Context, Some(40), Some(40), "    let panes = build_panes(state);"),
-        line(DiffLineKind::Context, Some(41), Some(41), "    for pane in panes {"),
-        line(DiffLineKind::Removed, Some(42), None, "        draw_old(pane);"),
-        line(DiffLineKind::Added, None, Some(42), "        draw_new(pane);"),
-        line(DiffLineKind::Added, None, Some(43), "        mark_visible(&pane);"),
+        line(
+            DiffLineKind::Context,
+            Some(40),
+            Some(40),
+            "    let panes = build_panes(state);",
+        ),
+        line(
+            DiffLineKind::Context,
+            Some(41),
+            Some(41),
+            "    for pane in panes {",
+        ),
+        line(
+            DiffLineKind::Removed,
+            Some(42),
+            None,
+            "        draw_old(pane);",
+        ),
+        line(
+            DiffLineKind::Added,
+            None,
+            Some(42),
+            "        draw_new(pane);",
+        ),
+        line(
+            DiffLineKind::Added,
+            None,
+            Some(43),
+            "        mark_visible(&pane);",
+        ),
         line(DiffLineKind::Context, Some(43), Some(44), "    }"),
-        line(DiffLineKind::Removed, Some(44), None, "    legacy_footer();"),
-        line(DiffLineKind::Added, None, Some(45), "    draw_reviewer(state);"),
-        line(DiffLineKind::Context, Some(45), Some(46), "    layout_panes(&panes);"),
-        line(DiffLineKind::Added, None, Some(47), "    publish_review(&panes);"),
+        line(
+            DiffLineKind::Removed,
+            Some(44),
+            None,
+            "    legacy_footer();",
+        ),
+        line(
+            DiffLineKind::Added,
+            None,
+            Some(45),
+            "    draw_reviewer(state);",
+        ),
+        line(
+            DiffLineKind::Context,
+            Some(45),
+            Some(46),
+            "    layout_panes(&panes);",
+        ),
+        line(
+            DiffLineKind::Added,
+            None,
+            Some(47),
+            "    publish_review(&panes);",
+        ),
         line(DiffLineKind::Context, Some(46), Some(48), "}"),
     ])
 }
@@ -124,8 +204,18 @@ fn add_hunk() -> Hunk {
         lines: vec![
             line(DiffLineKind::Added, None, Some(1), "# Diff reviewer"),
             line(DiffLineKind::Added, None, Some(2), ""),
-            line(DiffLineKind::Added, None, Some(3), "The review tab draws a file rail, a selector"),
-            line(DiffLineKind::Added, None, Some(4), "and a unified or split comparison."),
+            line(
+                DiffLineKind::Added,
+                None,
+                Some(3),
+                "The review tab draws a file rail, a selector",
+            ),
+            line(
+                DiffLineKind::Added,
+                None,
+                Some(4),
+                "and a unified or split comparison.",
+            ),
             line(DiffLineKind::Added, None, Some(5), ""),
         ],
     }
@@ -139,10 +229,25 @@ fn del_hunk() -> Hunk {
         new_count: 0,
         section: String::new(),
         lines: vec![
-            line(DiffLineKind::Removed, Some(1), None, "//! The old review surface."),
+            line(
+                DiffLineKind::Removed,
+                Some(1),
+                None,
+                "//! The old review surface.",
+            ),
             line(DiffLineKind::Removed, Some(2), None, "//!"),
-            line(DiffLineKind::Removed, Some(3), None, "//! One file, no selector, no statuses."),
-            line(DiffLineKind::Removed, Some(4), None, "pub fn legacy_review() {}"),
+            line(
+                DiffLineKind::Removed,
+                Some(3),
+                None,
+                "//! One file, no selector, no statuses.",
+            ),
+            line(
+                DiffLineKind::Removed,
+                Some(4),
+                None,
+                "pub fn legacy_review() {}",
+            ),
         ],
     }
 }
@@ -176,7 +281,12 @@ fn color(app: &AppContext, token: ColorToken) -> goble_ui::color::ColorU {
     app.theme.color(token)
 }
 
-fn mono(app: &AppContext, text: impl Into<String>, size: f32, token: ColorToken) -> Box<dyn Element> {
+fn mono(
+    app: &AppContext,
+    text: impl Into<String>,
+    size: f32,
+    token: ColorToken,
+) -> Box<dyn Element> {
     Text::new(text)
         .with_font_family(FontFamily::Mono)
         .with_font_size(size)
@@ -185,7 +295,13 @@ fn mono(app: &AppContext, text: impl Into<String>, size: f32, token: ColorToken)
         .finish()
 }
 
-fn label(app: &AppContext, text: impl Into<String>, size: f32, weight: FontWeight, token: ColorToken) -> Box<dyn Element> {
+fn label(
+    app: &AppContext,
+    text: impl Into<String>,
+    size: f32,
+    weight: FontWeight,
+    token: ColorToken,
+) -> Box<dyn Element> {
     Text::new(text)
         .with_font_size(size)
         .with_line_height(20.0 / size)
@@ -250,7 +366,11 @@ fn diff_body(
 ) -> Box<dyn Element> {
     let scroll = Rc::new(RefCell::new(ScrollState::default()));
     let mut view = FileDiffView::new(hunks)
-        .with_layout(if split { DiffLayout::Split } else { DiffLayout::Unified })
+        .with_layout(if split {
+            DiffLayout::Split
+        } else {
+            DiffLayout::Unified
+        })
         .with_wrap(wrap)
         .with_viewport(Rc::clone(&scroll))
         .with_fill_width(true);
@@ -326,7 +446,13 @@ fn file_rail(app: &AppContext, files: &[FileItem], selected: Option<usize>) -> B
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(8.0)
-        .with_child(label(app, format!("Changes · {}", files.len()), 11.0, FontWeight::Medium, ColorToken::Muted))
+        .with_child(label(
+            app,
+            format!("Changes · {}", files.len()),
+            11.0,
+            FontWeight::Medium,
+            ColorToken::Muted,
+        ))
         .with_child(Expanded::new(Empty::new().finish()).finish())
         .with_child(counts(app, added, removed, 10.0))
         .finish();
@@ -360,7 +486,13 @@ fn file_rail(app: &AppContext, files: &[FileItem], selected: Option<usize>) -> B
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_spacing(6.0)
                     .with_child(icon(app, "flat-list", 13.0, ColorToken::Muted))
-                    .with_child(label(app, "All changes", 11.0, FontWeight::Regular, ColorToken::Muted))
+                    .with_child(label(
+                        app,
+                        "All changes",
+                        11.0,
+                        FontWeight::Regular,
+                        ColorToken::Muted,
+                    ))
                     .finish(),
             )
             .with_padding(EdgeInsets::new(6.0, 10.0, 6.0, 10.0))
@@ -415,7 +547,11 @@ fn selector_button(app: &AppContext, path: &str, open: bool) -> Box<dyn Element>
             .with_corner_radius(6.0)
             .with_background(Fill::Solid(color(
                 app,
-                if open { ColorToken::Hover } else { ColorToken::Bg },
+                if open {
+                    ColorToken::Hover
+                } else {
+                    ColorToken::Bg
+                },
             )))
             .finish(),
     )
@@ -428,13 +564,21 @@ fn tool_glyph(app: &AppContext, glyph: &'static str, active: bool) -> Box<dyn El
         app,
         glyph,
         DiffSpec::REVIEW_TOOL_GLYPH,
-        if active { ColorToken::Text } else { ColorToken::Muted },
+        if active {
+            ColorToken::Text
+        } else {
+            ColorToken::Muted
+        },
     ))
     .with_padding(EdgeInsets::uniform(6.5))
     .with_corner_radius(6.0)
     .with_background(Fill::Solid(color(
         app,
-        if active { ColorToken::Hover } else { ColorToken::Bg },
+        if active {
+            ColorToken::Hover
+        } else {
+            ColorToken::Bg
+        },
     )))
     .finish()
 }
@@ -444,14 +588,25 @@ fn tool_text(app: &AppContext, text: &str, active: bool) -> Box<dyn Element> {
         Text::new(text.to_string())
             .with_font_size(10.0)
             .with_line_height(16.0 / 10.0)
-            .with_theme_color(if active { ColorToken::Text } else { ColorToken::Muted }, app)
+            .with_theme_color(
+                if active {
+                    ColorToken::Text
+                } else {
+                    ColorToken::Muted
+                },
+                app,
+            )
             .finish(),
     )
     .with_padding(EdgeInsets::new(5.0, 7.0, 5.0, 7.0))
     .with_corner_radius(6.0)
     .with_background(Fill::Solid(color(
         app,
-        if active { ColorToken::Hover } else { ColorToken::Bg },
+        if active {
+            ColorToken::Hover
+        } else {
+            ColorToken::Bg
+        },
     )))
     .finish()
 }
@@ -461,14 +616,25 @@ fn tool_wrap(app: &AppContext, wrap: bool) -> Box<dyn Element> {
         Text::new(if wrap { "Wrap on" } else { "Wrap" })
             .with_font_size(10.0)
             .with_line_height(16.0 / 10.0)
-            .with_theme_color(if wrap { ColorToken::Text } else { ColorToken::Muted }, app)
+            .with_theme_color(
+                if wrap {
+                    ColorToken::Text
+                } else {
+                    ColorToken::Muted
+                },
+                app,
+            )
             .finish(),
     )
     .with_padding(EdgeInsets::new(5.0, 7.0, 5.0, 7.0))
     .with_corner_radius(6.0)
     .with_background(Fill::Solid(color(
         app,
-        if wrap { ColorToken::Hover } else { ColorToken::Bg },
+        if wrap {
+            ColorToken::Hover
+        } else {
+            ColorToken::Bg
+        },
     )))
     .finish()
 }
@@ -480,7 +646,9 @@ fn review_header(
     wrap: bool,
     menu_open: bool,
 ) -> Box<dyn Element> {
-    let (added, removed) = file.map(|file| (file.added, file.removed)).unwrap_or((0, 0));
+    let (added, removed) = file
+        .map(|file| (file.added, file.removed))
+        .unwrap_or((0, 0));
     let mut left = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(DiffSpec::REVIEW_HEADER_GAP);
@@ -489,9 +657,15 @@ fn review_header(
         left = left.with_child(counts(app, added, removed, 11.0));
     } else {
         left = left.with_child(
-            Container::new(label(app, "Review", 13.0, FontWeight::Medium, ColorToken::Text))
-                .with_padding_left(10.0)
-                .finish(),
+            Container::new(label(
+                app,
+                "Review",
+                13.0,
+                FontWeight::Medium,
+                ColorToken::Text,
+            ))
+            .with_padding_left(10.0)
+            .finish(),
         );
     }
     left = left.with_child(Expanded::new(Empty::new().finish()).finish());
@@ -595,7 +769,10 @@ fn changed_files_card_scene(_app: &AppContext, open: bool) -> Box<dyn Element> {
     ChatView::new()
         .without_composer()
         .with_messages(vec![
-            ChatMessage::new(ChatRole::User, vec![ChatFragment::text("Review the diff surface.")]),
+            ChatMessage::new(
+                ChatRole::User,
+                vec![ChatFragment::text("Review the diff surface.")],
+            ),
             message,
         ])
         .with_changed_files_open(Rc::new(RefCell::new(open)))
@@ -670,7 +847,13 @@ fn reviewer_list_scene(app: &AppContext) -> Box<dyn Element> {
                 Flex::row()
                     .with_main_axis_size(MainAxisSize::Max)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(label(app, "Changed files", 14.0, FontWeight::Medium, ColorToken::Text))
+                    .with_child(label(
+                        app,
+                        "Changed files",
+                        14.0,
+                        FontWeight::Medium,
+                        ColorToken::Text,
+                    ))
                     .with_child(Expanded::new(Empty::new().finish()).finish())
                     .with_child(counts(app, 140, 41, 11.0))
                     .finish(),
@@ -721,7 +904,11 @@ fn hunk_scene(app: &AppContext, split: bool) -> Box<dyn Element> {
 }
 
 fn one_sided_scene(app: &AppContext, add: bool, split: bool) -> Box<dyn Element> {
-    let hunks = if add { vec![add_hunk()] } else { vec![del_hunk()] };
+    let hunks = if add {
+        vec![add_hunk()]
+    } else {
+        vec![del_hunk()]
+    };
     let selected = if add { 1 } else { 3 };
     let note = if add {
         if split {
@@ -784,7 +971,11 @@ fn selector_open_scene(app: &AppContext) -> Box<dyn Element> {
             let item = PopupMenuItem::new(format!("{}  {}", file.status, file.path))
                 .with_icon("file")
                 .with_diff(file.added, file.removed);
-            if index == 2 { item.selected() } else { item }
+            if index == 2 {
+                item.selected()
+            } else {
+                item
+            }
         })
         .collect();
     let menu = PopupMenu::new(selector_button(app, FILES[2].path, true), items)
@@ -877,7 +1068,9 @@ fn floating_file_panel(app: &AppContext) -> Box<dyn Element> {
                     Container::new(icon(app, "file-rust", 20.0, ColorToken::Muted))
                         .with_padding(EdgeInsets::uniform(10.0))
                         .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+                        .with_border(
+                            Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)),
+                        )
                         .with_corner_radius(10.0)
                         .finish(),
                 )
@@ -913,22 +1106,27 @@ fn floating_file_panel(app: &AppContext) -> Box<dyn Element> {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(header)
             .with_child(hairline())
-            .with_child(Expanded::new(diff_body(
-                app,
-                vec![review_hunk()],
-                false,
-                false,
-                None,
-                None,
-            ))
-            .finish())
+            .with_child(
+                Expanded::new(diff_body(
+                    app,
+                    vec![review_hunk()],
+                    false,
+                    false,
+                    None,
+                    None,
+                ))
+                .finish(),
+            )
             .finish(),
     )
     .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
     .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
     .with_corner_radius(14.0)
     .finish();
-    let panel = ConstrainedBox::new(panel).with_width(650.0).with_height(440.0).finish();
+    let panel = ConstrainedBox::new(panel)
+        .with_width(650.0)
+        .with_height(440.0)
+        .finish();
 
     Stack::new()
         .with_children(vec![backdrop])
@@ -975,28 +1173,87 @@ fn main() -> anyhow::Result<()> {
             ..AppContext::default()
         };
         let mut scenes: Vec<(&str, Box<dyn Element>, f32, f32)> = vec![
-            ("changed-files-card-folded", changed_files_card_scene(&app, false), 900.0, 560.0),
-            ("changed-files-card-expanded", changed_files_card_scene(&app, true), 900.0, 560.0),
-            ("file-reviewer-list", reviewer_list_scene(&app), 380.0, 540.0),
-            ("filediff-unified-hunk", hunk_scene(&app, false), 1100.0, 680.0),
+            (
+                "changed-files-card-folded",
+                changed_files_card_scene(&app, false),
+                900.0,
+                560.0,
+            ),
+            (
+                "changed-files-card-expanded",
+                changed_files_card_scene(&app, true),
+                900.0,
+                560.0,
+            ),
+            (
+                "file-reviewer-list",
+                reviewer_list_scene(&app),
+                380.0,
+                540.0,
+            ),
+            (
+                "filediff-unified-hunk",
+                hunk_scene(&app, false),
+                1100.0,
+                680.0,
+            ),
             ("filediff-split-hunk", hunk_scene(&app, true), 1100.0, 680.0),
-            ("filediff-unified-add-only", one_sided_scene(&app, true, false), 1100.0, 560.0),
-            ("filediff-unified-del-only", one_sided_scene(&app, false, false), 1100.0, 560.0),
-            ("filediff-split-add-only", one_sided_scene(&app, true, true), 1100.0, 560.0),
-            ("filediff-split-del-only", one_sided_scene(&app, false, true), 1100.0, 560.0),
+            (
+                "filediff-unified-add-only",
+                one_sided_scene(&app, true, false),
+                1100.0,
+                560.0,
+            ),
+            (
+                "filediff-unified-del-only",
+                one_sided_scene(&app, false, false),
+                1100.0,
+                560.0,
+            ),
+            (
+                "filediff-split-add-only",
+                one_sided_scene(&app, true, true),
+                1100.0,
+                560.0,
+            ),
+            (
+                "filediff-split-del-only",
+                one_sided_scene(&app, false, true),
+                1100.0,
+                560.0,
+            ),
             ("filediff-empty", empty_diff_scene(&app), 1100.0, 640.0),
             ("reviewer-clean", clean_scene(&app), 1100.0, 680.0),
-            ("filediff-selector-open", selector_open_scene(&app), 1100.0, 720.0),
+            (
+                "filediff-selector-open",
+                selector_open_scene(&app),
+                1100.0,
+                720.0,
+            ),
             ("filediff-wrap-off", wrap_scene(&app, false), 1100.0, 560.0),
             ("filediff-wrap-on", wrap_scene(&app, true), 1100.0, 560.0),
-            ("filediff-highlight-gap", highlight_gap_scene(&app), 1100.0, 560.0),
-            ("floating-file-panel", floating_file_panel(&app), 1180.0, 760.0),
+            (
+                "filediff-highlight-gap",
+                highlight_gap_scene(&app),
+                1100.0,
+                560.0,
+            ),
+            (
+                "floating-file-panel",
+                floating_file_panel(&app),
+                1180.0,
+                760.0,
+            ),
         ];
         for (name, root, width, height) in &mut scenes {
             let path = dir.join(format!("{name}-{theme_label}.png"));
             raster::render_element_to_png(&assets, &app, root, *width, *height, 2.0, None, &path)?;
         }
-        println!("{theme_label}: {} scenes written to {}", scenes.len(), dir.display());
+        println!(
+            "{theme_label}: {} scenes written to {}",
+            scenes.len(),
+            dir.display()
+        );
     }
     println!(
         "note: comparison bodies are the product FileDiffView; the changed-files card is the \

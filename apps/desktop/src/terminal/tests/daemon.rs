@@ -480,9 +480,9 @@ fn a_conversation_command_runs_in_its_own_shell() {
     let terminal = state.terminal.borrow();
     let terminal_blocks = terminal.visible_blocks(pane_id, &BlockView::Terminal);
     assert!(
-        !terminal_blocks
-            .iter()
-            .any(|block| block.command.contains("AGENT-ONLY") || block.output.contains("AGENT-ONLY")),
+        !terminal_blocks.iter().any(
+            |block| block.command.contains("AGENT-ONLY") || block.output.contains("AGENT-ONLY")
+        ),
         "the terminal never sees the conversation's command; terminal blocks: {:?}",
         terminal_blocks
             .iter()

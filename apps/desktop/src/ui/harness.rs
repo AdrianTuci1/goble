@@ -12,7 +12,9 @@ use goble_ui::elements::{
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use super::{CostEntry, ExecutionEntry, TaskEntry, TimelineEntry, UiActions, UiSnapshot, WorkflowEntry};
+use super::{
+    CostEntry, ExecutionEntry, TaskEntry, TimelineEntry, UiActions, UiSnapshot, WorkflowEntry,
+};
 
 /// Build an observability page scaffold: a back-to-chat header plus a
 /// scrollable content column. `header_title` is the page name, `content` is the
@@ -32,20 +34,24 @@ fn build_page(
     let on_back = actions.on_settings_back.clone();
     let back_button = Button::new(
         Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(4.0)
-        .with_child(
-            Icon::new("arrow-left")
-                .with_size(13.0)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        )
-        .with_child(Text::new("Back").with_theme_color(ColorToken::Text, app).finish())
-        .finish(),
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(4.0)
+            .with_child(
+                Icon::new("arrow-left")
+                    .with_size(13.0)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new("Back")
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .finish(),
     )
-        .with_variant(ButtonVariant::Ghost)
-        .with_on_click(move || (on_back.borrow_mut())())
-        .finish();
+    .with_variant(ButtonVariant::Ghost)
+    .with_on_click(move || (on_back.borrow_mut())())
+    .finish();
 
     let header = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -112,7 +118,10 @@ fn status(app: &AppContext, status: &str) -> (ColorToken, Box<dyn Element>) {
         "failure" | "failed" | "error" => (ColorToken::Error, "failed"),
         "cancelled" => (ColorToken::Muted, "cancelled"),
         "idle" => (ColorToken::Muted, "idle"),
-        _ => (ColorToken::Muted, if status.is_empty() { "—" } else { status }),
+        _ => (
+            ColorToken::Muted,
+            if status.is_empty() { "—" } else { status },
+        ),
     };
     (
         color,
@@ -140,7 +149,11 @@ pub fn build_workflows_page(
     state: &UiSnapshot,
     actions: &UiActions,
 ) -> Box<dyn Element> {
-    let rows: Vec<Box<dyn Element>> = state.workflows.iter().map(|wf| build_workflow_row(app, wf)).collect();
+    let rows: Vec<Box<dyn Element>> = state
+        .workflows
+        .iter()
+        .map(|wf| build_workflow_row(app, wf))
+        .collect();
     let count = if state.workflows.is_empty() {
         String::new()
     } else {
@@ -170,10 +183,15 @@ pub(crate) fn build_workflow_row(app: &AppContext, wf: &WorkflowEntry) -> Box<dy
                 .finish(),
         )
         .with_child(
-            Text::new(format!("{} · {} · created {}", wf.trigger, if wf.enabled { "enabled" } else { "disabled" }, wf.created_at))
-                .with_font_size(11.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
+            Text::new(format!(
+                "{} · {} · created {}",
+                wf.trigger,
+                if wf.enabled { "enabled" } else { "disabled" },
+                wf.created_at
+            ))
+            .with_font_size(11.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
         )
         .finish();
     card(
@@ -341,7 +359,13 @@ fn build_timeline_row(app: &AppContext, entry: &TimelineEntry) -> Box<dyn Elemen
     let sm = app.theme.spacing_px(SpacingToken::Sm);
     let (color, status_el) = match &entry.status {
         Some(s) => status(app, s),
-        None => (ColorToken::Muted, Text::new("—").with_font_size(11.0).with_theme_color(ColorToken::Muted, app).finish()),
+        None => (
+            ColorToken::Muted,
+            Text::new("—")
+                .with_font_size(11.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        ),
     };
     let info = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
@@ -380,7 +404,11 @@ pub fn build_costs_page(
     state: &UiSnapshot,
     actions: &UiActions,
 ) -> Box<dyn Element> {
-    let rows: Vec<Box<dyn Element>> = state.costs.iter().map(|cost| build_cost_row(app, cost)).collect();
+    let rows: Vec<Box<dyn Element>> = state
+        .costs
+        .iter()
+        .map(|cost| build_cost_row(app, cost))
+        .collect();
     let count = if state.costs.is_empty() {
         String::new()
     } else {

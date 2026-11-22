@@ -454,7 +454,10 @@ fn the_shortcuts_search_filters_the_page_and_survives_a_rebuild() {
 
     fixture.dispatch(SettingsAction::ShortcutsClearSearch);
     let model = fixture.model(SettingsCategory::Shortcuts);
-    assert!(model.sections[0].rows.len() > 1, "clearing restores the list");
+    assert!(
+        model.sections[0].rows.len() > 1,
+        "clearing restores the list"
+    );
 }
 
 /// The focus order the keyboard walks is the render order: the focused slot
@@ -697,15 +700,16 @@ fn the_settings_header_is_compact_and_its_x_closes_the_pane() {
     assert!(texts.iter().any(|text| text == "Open file"), "{texts:?}");
     // The X is drawn at the trailing end and a press on it runs the close.
     let x = commands.iter().find_map(|command| match command {
-        goble_ui::render::RenderCommand::DrawIcon { origin, name, size, .. }
-            if name == "x" || name == "x-close" =>
-        {
-            Some((*origin, *size))
-        }
+        goble_ui::render::RenderCommand::DrawIcon {
+            origin, name, size, ..
+        } if name == "x" || name == "x-close" => Some((*origin, *size)),
         _ => None,
     });
     let (origin, size) = x.expect("the header draws the X icon");
-    assert!(origin.x > 800.0, "the X sits at the trailing edge: {origin:?}");
+    assert!(
+        origin.x > 800.0,
+        "the X sits at the trailing edge: {origin:?}"
+    );
     let mut ctx = goble_ui::elements::EventContext::default();
     let at = vec2f(origin.x + size / 2.0, origin.y + size / 2.0);
     let handled = header.dispatch_event(
@@ -760,11 +764,9 @@ fn provider_accounts_render_real_accounts_and_local_cli_detection() {
         account.hint
     );
     assert!(
-        account
-            .status
-            .as_ref()
-            .is_some_and(|(text, kind)| text.contains("API key stored")
-                && *kind == StatusKind::Success),
+        account.status.as_ref().is_some_and(
+            |(text, kind)| text.contains("API key stored") && *kind == StatusKind::Success
+        ),
         "the account's status is the file's key state: {:?}",
         account.status
     );
@@ -790,12 +792,11 @@ fn provider_accounts_render_real_accounts_and_local_cli_detection() {
         .rows
         .iter()
         .any(|row| row.id == "oauth-codex" && row.disabled));
-    assert!(accounts
-        .rows
-        .iter()
-        .any(|row| row.id == "oauth-codex"
-            && row.status.as_ref().is_some_and(|(text, _)| text
-                .contains("no OAuth sign-in"))));
+    assert!(accounts.rows.iter().any(|row| row.id == "oauth-codex"
+        && row
+            .status
+            .as_ref()
+            .is_some_and(|(text, _)| text.contains("no OAuth sign-in"))));
 }
 
 /// The agent-CLI list folds per CLI: the heading carries the detection summary,
@@ -818,7 +819,10 @@ fn the_agent_cli_groups_collapse_and_expand_in_ui_state() {
         .expect("the fold");
     assert!(!closed.is_open());
     assert!(closed.rows.is_empty(), "a closed fold draws no rows");
-    assert!(!closed.description.is_empty(), "the heading carries the summary");
+    assert!(
+        !closed.description.is_empty(),
+        "the heading carries the summary"
+    );
     let before = model.interactive_rows().len();
     fixture.dispatch(SettingsAction::ToggleFold(fold_id.clone()));
     assert!(fixture.state.borrow().settings.folds.contains(&fold_id));
@@ -860,8 +864,8 @@ fn the_add_host_form_is_a_docked_side_sheet_and_saves() {
         assert_eq!(state.settings.region, SettingsRegion::Sheet);
         assert!(matches!(state.settings.form, Some(SettingsForm::Host(_))));
     }
-    let sheet = pages::form_section(&fixture.state.borrow().settings)
-        .expect("the side sheet has a form");
+    let sheet =
+        pages::form_section(&fixture.state.borrow().settings).expect("the side sheet has a form");
     assert_eq!(sheet.title, "Add host");
     assert!(fixture
         .model(SettingsCategory::Hosts)
@@ -951,7 +955,10 @@ fn escape_from_the_rail_closes_the_settings_pane() {
         ModifiersState::default(),
     );
     assert!(handled, "the settings surface consumes Escape");
-    assert!(closed.get(), "Escape from the rail closes the settings pane");
+    assert!(
+        closed.get(),
+        "Escape from the rail closes the settings pane"
+    );
 }
 
 /// A press on the sheet's dimmed page dismisses the sheet (the focus trap),
@@ -987,7 +994,10 @@ fn the_sheet_dims_the_page_and_its_x_cancels_the_form() {
         &mut ctx,
         &app,
     ));
-    assert!(dismissed.get(), "a press on the dimmed page dismisses the sheet");
+    assert!(
+        dismissed.get(),
+        "a press on the dimmed page dismisses the sheet"
+    );
 
     // The sheet's header X dispatches the form's Cancel.
     let cancelled = Rc::new(Cell::new(false));
@@ -1000,15 +1010,17 @@ fn the_sheet_dims_the_page_and_its_x_cancels_the_form() {
     let settings = SettingsUiState::default();
     let section = crate::ui::settings::SectionModel::new("host-form", "Add host")
         .with_description("Saved as one [hosts.<name>] entry in hosts.toml.")
-        .with_row(crate::ui::settings::RowModel::new("host-form.name", "Name", ""));
+        .with_row(crate::ui::settings::RowModel::new(
+            "host-form.name",
+            "Name",
+            "",
+        ));
     let mut sheet = render::render_side_sheet(&app, &section, &settings, &actions);
     let commands = render_element(&mut sheet, vec2f(380.0, 600.0), &app);
     let x = commands.iter().find_map(|command| match command {
-        goble_ui::render::RenderCommand::DrawIcon { origin, name, size, .. }
-            if name == "x" || name == "x-close" =>
-        {
-            Some((*origin, *size))
-        }
+        goble_ui::render::RenderCommand::DrawIcon {
+            origin, name, size, ..
+        } if name == "x" || name == "x-close" => Some((*origin, *size)),
         _ => None,
     });
     let (origin, size) = x.expect("the sheet header draws its X");

@@ -243,20 +243,22 @@ impl Element for SpaceBar {
             self.tab_rects.push(rectf(x, 0.0, size.x, size.y));
             self.tab_roots.push(tab);
             // The trailing "x" occupies the last ~18px of the tab.
-            let close_w = if self.on_close_space.is_some() { 18.0 } else { 0.0 };
-            self.close_rects.push(rectf(
-                x + size.x - close_w,
-                0.0,
-                close_w,
-                size.y,
-            ));
+            let close_w = if self.on_close_space.is_some() {
+                18.0
+            } else {
+                0.0
+            };
+            self.close_rects
+                .push(rectf(x + size.x - close_w, 0.0, close_w, size.y));
             x += size.x + TAB_SPACING;
             row_height = row_height.max(size.y);
         }
         // Trailing "+" add-space button, laid out like a tab but never drag
         // reorderable. It creates a new space so the topbar can grow.
         if self.on_add_space.is_some() {
-            let plus = Text::new("+").with_theme_color(ColorToken::Accent, app).finish();
+            let plus = Text::new("+")
+                .with_theme_color(ColorToken::Accent, app)
+                .finish();
             let mut add: Box<dyn Element> = Container::new(plus)
                 .with_padding(EdgeInsets::new(pad, pad * 0.5, pad, pad * 0.5))
                 .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
@@ -268,11 +270,7 @@ impl Element for SpaceBar {
             self.add_root = Some(add);
             row_height = row_height.max(size.y);
         }
-        let mut width = self
-            .tab_rects
-            .iter()
-            .map(|r| r.width())
-            .sum::<f32>()
+        let mut width = self.tab_rects.iter().map(|r| r.width()).sum::<f32>()
             + self.tab_rects.len().saturating_sub(1) as f32 * TAB_SPACING;
         if let Some(add_rect) = self.add_rect {
             width += add_rect.width() + TAB_SPACING;
@@ -286,7 +284,11 @@ impl Element for SpaceBar {
         // Strip background so the gap between tabs matches the tab fill.
         if let Some(renderer) = ctx.renderer.as_mut() {
             if let Some(size) = self.size {
-                renderer.fill_rounded_rect(rectf(origin.x, origin.y, size.x, size.y), app.theme.color(ColorToken::Bg), 0.0);
+                renderer.fill_rounded_rect(
+                    rectf(origin.x, origin.y, size.x, size.y),
+                    app.theme.color(ColorToken::Bg),
+                    0.0,
+                );
             }
         }
         for (i, r) in self.tab_rects.iter().enumerate() {
@@ -302,7 +304,8 @@ impl Element for SpaceBar {
     }
 
     fn origin(&self) -> Option<Point> {
-        self.origin.map(|o| Point::from_vec2f(o, Default::default()))
+        self.origin
+            .map(|o| Point::from_vec2f(o, Default::default()))
     }
 
     fn dispatch_event(
@@ -437,10 +440,7 @@ mod tests {
     /// Lay out a three-tab bar and return it plus each tab's center x.
     fn laid_out() -> (SpaceBar, [f32; 3]) {
         let app = app();
-        let mut bar = SpaceBar::new(
-            vec!["A".to_string(), "B".to_string(), "C".to_string()],
-            0,
-        );
+        let mut bar = SpaceBar::new(vec!["A".to_string(), "B".to_string(), "C".to_string()], 0);
         bar.layout(
             SizeConstraint::loose(vec2f(400.0, 40.0)),
             &mut LayoutContext,
@@ -648,6 +648,9 @@ mod tests {
             &app,
         );
         assert_eq!(*closed.borrow(), Some(0), "release on the x closes it");
-        assert!(!*selected.borrow(), "closing via the x does not select the tab");
+        assert!(
+            !*selected.borrow(),
+            "closing via the x does not select the tab"
+        );
     }
 }

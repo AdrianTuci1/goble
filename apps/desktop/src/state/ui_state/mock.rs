@@ -326,6 +326,7 @@ impl UiState {
             chrome_more_open: Rc::new(RefCell::new(false)),
             side_panel_maximized: false,
             side_tabs: vec![SideTabKind::Overview],
+            side_review: None,
             active_side_tab: 0,
             side_tab_add_menu_open: Rc::new(RefCell::new(false)),
             side_swipe_accum: Rc::new(RefCell::new(0.0)),

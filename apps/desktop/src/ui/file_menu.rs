@@ -23,8 +23,8 @@ use goble_ui::elements::{
 use goble_ui::event::{DispatchedEvent, BUTTON_SECONDARY};
 use goble_ui::geometry::{rectf, Vector2F};
 
-use crate::state::FileMenu;
 use super::UiActions;
+use crate::state::FileMenu;
 
 /// One action a file's context menu can take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,9 +61,9 @@ pub(crate) fn rows(target: &FileMenu) -> Vec<(&'static str, FileMenuAction)> {
 /// Whether a row is enabled for this target.
 fn enabled(target: &FileMenu, action: FileMenuAction) -> bool {
     match action {
-        FileMenuAction::Open
-        | FileMenuAction::OpenFloating
-        | FileMenuAction::OpenEditor => Path::new(&target.path).exists(),
+        FileMenuAction::Open | FileMenuAction::OpenFloating | FileMenuAction::OpenEditor => {
+            Path::new(&target.path).exists()
+        }
         FileMenuAction::CopyPath | FileMenuAction::Revert => true,
     }
 }
@@ -175,7 +175,9 @@ impl Element for ContextClick {
     ) -> bool {
         if let DispatchedEvent::MouseDown { position, button } = event {
             if *button == BUTTON_SECONDARY
-                && self.bounds().is_some_and(|bounds| contains(bounds, *position))
+                && self
+                    .bounds()
+                    .is_some_and(|bounds| contains(bounds, *position))
             {
                 (self.on_context.borrow_mut())(*position);
                 // The right press opens the menu; it is not also a click on
@@ -246,7 +248,10 @@ mod tests {
         let (without_revert_target, _dir) = target(true, false);
         let without_revert = rows(&without_revert_target);
         assert_eq!(
-            without_revert.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
+            without_revert
+                .iter()
+                .map(|(label, _)| *label)
+                .collect::<Vec<_>>(),
             vec![
                 "Open",
                 "Open in floating panel",
@@ -320,11 +325,7 @@ mod tests {
         let app = AppContext::default();
         let (target, _dir) = target(true, false);
         let mut state = crate::state::UiState::mock();
-        state.open_file_menu(
-            target.path,
-            "src/main.rs".to_string(),
-            vec2f(40.0, 40.0),
-        );
+        state.open_file_menu(target.path, "src/main.rs".to_string(), vec2f(40.0, 40.0));
         let state = Rc::new(RefCell::new(state));
         let actions = crate::actions::make_actions(
             state.clone(),
@@ -354,11 +355,7 @@ mod tests {
         let app = AppContext::default();
         let (target, _dir) = target(true, false);
         let mut state = crate::state::UiState::mock();
-        state.open_file_menu(
-            target.path,
-            "src/main.rs".to_string(),
-            vec2f(40.0, 40.0),
-        );
+        state.open_file_menu(target.path, "src/main.rs".to_string(), vec2f(40.0, 40.0));
         let state = Rc::new(RefCell::new(state));
         let actions = crate::actions::make_actions(
             state.clone(),

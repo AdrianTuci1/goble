@@ -222,8 +222,7 @@ fn toolbar_y(cmds: &[RenderCommand]) -> f32 {
     cmds.iter()
         .filter_map(|command| match command {
             RenderCommand::DrawIcon { origin, name, .. }
-                if name == "layers-three-01"
-                    && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                if name == "layers-three-01" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
             {
                 Some(origin.y)
             }
@@ -273,7 +272,12 @@ fn toolbar_text_origin(cmds: &[RenderCommand], text: &str) -> Vector2F {
             } if drawn == text && in_toolbar_band(origin.y, bar_y) => Some(*origin),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("the review's controls bar draws {text:?}: {:?}", texts(cmds)))
+        .unwrap_or_else(|| {
+            panic!(
+                "the review's controls bar draws {text:?}: {:?}",
+                texts(cmds)
+            )
+        })
 }
 
 /// A press on one of the review's controls-bar icons.
@@ -372,7 +376,9 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
         cmds.iter().find_map(|command| match command {
             RenderCommand::FillRect {
                 rect, color: drawn, ..
-            } if *drawn == color && in_toolbar_band(rect.min_y() + rect.height() / 2.0, toolbar) => {
+            } if *drawn == color
+                && in_toolbar_band(rect.min_y() + rect.height() / 2.0, toolbar) =>
+            {
                 Some(*rect)
             }
             _ => None,
@@ -455,7 +461,6 @@ fn a_long_path_stops_at_the_copy_control_and_fades() {
         )),
         "the header still names the file, cut at the copy control: {commands:?}"
     );
-
 }
 
 #[test]
@@ -912,11 +917,7 @@ fn a_wheel_over_the_review_glides_instead_of_jumping() {
         &mut ctx,
         &app,
     );
-    let consumed = root.dispatch_event(
-        &DispatchedEvent::scroll(vec2f(0.0, -40.0)),
-        &mut ctx,
-        &app,
-    );
+    let consumed = root.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -40.0)), &mut ctx, &app);
     assert!(consumed, "the wheel lands on the review column");
     let scroll = state.borrow().pane_controls(7).diff_scroll.clone();
     assert_eq!(
@@ -1432,7 +1433,9 @@ fn the_commit_chevron_opens_the_push_and_pull_request_menu() {
     // file list must not cover it.
     let push_at = commands
         .iter()
-        .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "Push"))
+        .position(
+            |command| matches!(command, RenderCommand::DrawText { text, .. } if text == "Push"),
+        )
         .expect("the menu draws Push");
     let card_at = commands
         .iter()

@@ -14,8 +14,8 @@ use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
     file_icon_name, AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, HoverButton, Icon,
-    LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Spacer, SplitNode, Stack,
-    Text, TopbarButton,
+    LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Spacer, SplitNode,
+    Stack, Text, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -70,13 +70,11 @@ pub fn build_active_space(
             // itself is left alone, so retracting puts the pane back in the
             // place it had. An id that names no leaf of *this* space (it was
             // closed, or it belongs to another space) falls through to the tree.
-            let maximized_pane = focused_pane
-                .map(|(id, kind)| (id, kind, true))
-                .or_else(|| {
-                    state
-                        .maximized_pane
-                        .and_then(|id| leaf_kind_of(&space.root, id).map(|kind| (id, kind, false)))
-                });
+            let maximized_pane = focused_pane.map(|(id, kind)| (id, kind, true)).or_else(|| {
+                state
+                    .maximized_pane
+                    .and_then(|id| leaf_kind_of(&space.root, id).map(|kind| (id, kind, false)))
+            });
             if let Some((id, kind, responsive_focus)) = maximized_pane {
                 let leaf = build_leaf(app, state, actions, id, kind);
                 // A responsive focus keeps the tab's own frame gutter, so the
@@ -441,9 +439,7 @@ fn build_pane(
             // surface shows between two neighbouring panes. The card casts no
             // shadow: that gutter has to read as the panel surface, not as a
             // darkened shadow.
-            Some(
-                Padding::new(leaf, EdgeInsets::uniform(PANE_INSET)).finish(),
-            )
+            Some(Padding::new(leaf, EdgeInsets::uniform(PANE_INSET)).finish())
         }
         Pane::Split {
             id,
@@ -1632,9 +1628,7 @@ mod tests {
                 PaneKind::File {
                     path: String::from("/tmp/x"),
                 },
-                PaneKind::Diff {
-                    cwd: String::new(),
-                },
+                PaneKind::Diff { cwd: String::new() },
                 PaneKind::Settings {
                     page: crate::ui::SettingsCategory::General,
                 },

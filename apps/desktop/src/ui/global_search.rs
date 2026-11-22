@@ -208,7 +208,10 @@ impl SearchWorker {
 
 /// Start the walking thread. `None` when the machine refuses one, which leaves
 /// the caller to walk on its own thread.
-fn spawn_worker(latest: Arc<AtomicU64>, done: Arc<Mutex<Option<SearchOutcome>>>) -> Option<Sender<Job>> {
+fn spawn_worker(
+    latest: Arc<AtomicU64>,
+    done: Arc<Mutex<Option<SearchOutcome>>>,
+) -> Option<Sender<Job>> {
     let (jobs, inbox) = mpsc::channel::<Job>();
     std::thread::Builder::new()
         .name("global-search".to_string())
@@ -410,11 +413,15 @@ fn search_in_process(
             return Ok(None);
         }
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else { continue };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
         if metadata.len() > MAX_FILE_BYTES {
             continue;
         }
-        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
         // A NUL byte in the head means binary: ripgrep refuses those too, and
         // the band has nothing to show for one.
         if bytes.iter().take(1024).any(|byte| *byte == 0) {
@@ -828,8 +835,12 @@ mod tests {
         );
 
         // A query with nothing behind it is an answer, not a failure.
-        assert!(search(&dir.path().to_string_lossy(), "absent").expect("runs").is_empty());
-        assert!(search(&dir.path().to_string_lossy(), "").expect("runs").is_empty());
+        assert!(search(&dir.path().to_string_lossy(), "absent")
+            .expect("runs")
+            .is_empty());
+        assert!(search(&dir.path().to_string_lossy(), "")
+            .expect("runs")
+            .is_empty());
     }
 
     /// The in-process engine is the one this machine actually runs, so it is
@@ -959,13 +970,13 @@ mod sidebar_scroll_tests {
     /// so the pointer has to be over the band while the tree is painted.
     const OVER_THE_BAND_Y: f32 = 400.0;
 
-    fn paint(root: &mut Box<dyn Element>, app: &AppContext, cursor: Vector2F) -> Vec<RenderCommand> {
+    fn paint(
+        root: &mut Box<dyn Element>,
+        app: &AppContext,
+        cursor: Vector2F,
+    ) -> Vec<RenderCommand> {
         let window = vec2f(1024.0, 768.0);
-        let _ = root.layout(
-            SizeConstraint::loose(window),
-            &mut LayoutContext,
-            app,
-        );
+        let _ = root.layout(SizeConstraint::loose(window), &mut LayoutContext, app);
         let mut ctx = PaintContext::new(Renderer::new());
         ctx.cursor_inside = true;
         ctx.cursor_position = cursor;
@@ -1261,7 +1272,10 @@ mod sidebar_scroll_tests {
             whole = whole.with_child(result_row(&app, row, &actions));
         }
         let height = whole.finish().layout(
-            SizeConstraint::new(vec2f(0.0, 0.0), vec2f(crate::ui::SIDEBAR_WIDTH, f32::INFINITY)),
+            SizeConstraint::new(
+                vec2f(0.0, 0.0),
+                vec2f(crate::ui::SIDEBAR_WIDTH, f32::INFINITY),
+            ),
             &mut LayoutContext,
             &app,
         );
@@ -1347,8 +1361,12 @@ mod sidebar_scroll_tests {
                 RenderCommand::DrawText {
                     text, font_size, ..
                 } => {
-                    let measured =
-                        goble_ui::elements::text::measure_text(text, *font_size, 1.2, f32::INFINITY);
+                    let measured = goble_ui::elements::text::measure_text(
+                        text,
+                        *font_size,
+                        1.2,
+                        f32::INFINITY,
+                    );
                     Some(measured.x * measured.y)
                 }
                 _ => None,

@@ -32,12 +32,12 @@ pub mod palette;
 pub mod panes;
 pub mod pickers;
 pub mod projects;
+pub mod reviewer;
+pub mod session_menu;
 pub mod shell;
 pub mod shortcuts_help;
-pub mod reviewer;
 pub mod sidebar;
 pub mod space_bar;
-pub mod session_menu;
 pub mod tab_menu;
 pub mod terminal;
 pub mod vault;
@@ -57,6 +57,7 @@ pub use actions::{
     ProjectsActions, SideChatAction, UiActions,
 };
 pub use build::{build_ui, BuildContext};
+pub use file_menu::FileMenuAction;
 pub use pane::{
     default_floating_rect, DropSide, FloatingDrag, FloatingDragMode, FloatingPane, LayoutKind,
     NavDir, Pane, PaneDropTarget, PaneKind, PaneRect, Space, SplitDir,
@@ -66,14 +67,13 @@ pub use snapshot::{
     PaneChatSnapshot, ProjectEntry, ProjectSessionEntry, ProjectsSnapshot, SubAgentViewSnapshot,
     UiSnapshot, WorkerPaneSnapshot, WorkflowViewSnapshot,
 };
-pub use file_menu::FileMenuAction;
 pub use tab_menu::{TabMenuAction, TabMenuTab};
 pub use types::{
     AgentDashboardGrouping, AgentDashboardState, AppTab, ArchivedFilter, CostEntry, CronEntry,
     ExecutionEntry, ExplorerRow, HarnessEntry, HarnessKind, LlmFormField, McpSearchEntry,
     McpServerEntry, OnboardingAction, RemoteAgentEntry, RemoteDeploy, SearchRow, SettingsCategory,
-    SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry,
-    WorkflowEntry, WorkflowRunEntry, WorkflowRunStepEntry, WorkflowStepEntry, WorkspaceRouting,
+    SidebarView, TaskEntry, TimelineEntry, VaultSecretEntry, WorkflowEntry, WorkflowRunEntry,
+    WorkflowRunStepEntry, WorkflowStepEntry, WorkspaceRouting,
 };
 
 /// Width of the left conversation sidebar.
@@ -85,10 +85,10 @@ pub const CONNECTORS_WIDTH: f32 = 480.0;
 #[cfg(test)]
 mod diff_panel_tests;
 #[cfg(test)]
-mod pane_tests;
-#[cfg(test)]
 mod open_menu_tests;
 #[cfg(test)]
-mod sidebar_menu_tests;
+mod pane_tests;
 #[cfg(test)]
 mod settings_category_tests;
+#[cfg(test)]
+mod sidebar_menu_tests;

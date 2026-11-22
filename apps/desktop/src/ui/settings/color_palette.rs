@@ -1119,9 +1119,7 @@ impl Element for AppearanceMenuLayer {
             .borrow()
             .painted_viewport()
             .filter(|viewport| {
-                viewport.width() > 0.0
-                    && viewport.height() > 0.0
-                    && viewport.contains(anchor_point)
+                viewport.width() > 0.0 && viewport.height() > 0.0 && viewport.contains(anchor_point)
             })
             .unwrap_or_else(|| {
                 let width = if constraint.max.x.is_finite() {

@@ -169,8 +169,7 @@ impl UiState {
         // Second step: the secondary surfaces leave the view below DSH's
         // drawer breakpoint, or as soon as the panes can no longer keep their
         // minimum beside/under them.
-        let secondary_hidden =
-            window_width < SECONDARY_PANEL_BREAKPOINT || available < panes_min;
+        let secondary_hidden = window_width < SECONDARY_PANEL_BREAKPOINT || available < panes_min;
         // Last resort: the panes themselves keep their minimum by drawing only
         // the active one over the whole pane area.
         let focused_only = available < panes_min;
@@ -247,7 +246,10 @@ mod tests {
         assert_eq!(one, pane_slot_min_width() + 2.0 * PANE_AREA_INSET);
 
         state = two_panes();
-        assert_eq!(state.panes_min_width(), 2.0 * pane_slot_min_width() + 2.0 * PANE_AREA_INSET);
+        assert_eq!(
+            state.panes_min_width(),
+            2.0 * pane_slot_min_width() + 2.0 * PANE_AREA_INSET
+        );
 
         // Stacked panes do not add width: the widest child is the floor.
         state.spaces[0].root = Pane::Split {

@@ -245,7 +245,10 @@ impl UiState {
             // surface until the user clicks back into the composer.
             self.composer_focused = false;
         } else {
-            *self.pane_controls(pane_id).terminal_dock_dragging.borrow_mut() = false;
+            *self
+                .pane_controls(pane_id)
+                .terminal_dock_dragging
+                .borrow_mut() = false;
             self.composer_focused = true;
         }
         true

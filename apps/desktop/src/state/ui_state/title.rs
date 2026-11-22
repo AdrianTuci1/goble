@@ -62,46 +62,130 @@ If the messages give little to name, still return a short best-effort title, suc
 /// while they lead a prompt, so `Arata un text colorat in chat` starts at
 /// `text` and `Can you add a title` starts at `title`.
 const LEADING_REQUESTS: &[&str] = &[
-    "a", "add", "adauga", "adaugă", "afiseaza", "afișează", "ajuta", "ajută", "an", "arata",
-    "arată", "ask", "build", "can", "check", "could", "create", "creeaza", "creează", "cum",
-    "do", "does", "explain", "fa", "fă", "find", "fix", "give", "help", "how", "i", "implement",
-    "just", "let", "make", "modifica", "modifică", "my", "o", "our", "please", "pls", "poti",
-    "poți", "pot", "scrie", "show", "spune", "tell", "the", "test", "this", "un", "update",
-    "use", "vreau", "want", "what", "when", "where", "which", "who", "why", "with", "would",
-    "write", "you",
+    "a",
+    "add",
+    "adauga",
+    "adaugă",
+    "afiseaza",
+    "afișează",
+    "ajuta",
+    "ajută",
+    "an",
+    "arata",
+    "arată",
+    "ask",
+    "build",
+    "can",
+    "check",
+    "could",
+    "create",
+    "creeaza",
+    "creează",
+    "cum",
+    "do",
+    "does",
+    "explain",
+    "fa",
+    "fă",
+    "find",
+    "fix",
+    "give",
+    "help",
+    "how",
+    "i",
+    "implement",
+    "just",
+    "let",
+    "make",
+    "modifica",
+    "modifică",
+    "my",
+    "o",
+    "our",
+    "please",
+    "pls",
+    "poti",
+    "poți",
+    "pot",
+    "scrie",
+    "show",
+    "spune",
+    "tell",
+    "the",
+    "test",
+    "this",
+    "un",
+    "update",
+    "use",
+    "vreau",
+    "want",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "with",
+    "would",
+    "write",
+    "you",
 ];
 
 /// Words a subject never carries: articles, pronouns, auxiliaries, politeness
 /// and the connectives a phrase can do without. They are dropped anywhere, so a
 /// keyword subject is the topics the prompt names.
 const STOP_WORDS: &[&str] = &[
-    "a", "about", "acel", "acea", "acest", "aceasta", "aceste", "acesti", "ai", "al", "ale",
-    "am", "an", "and", "are", "as", "at", "avem", "aveți", "be", "been", "being", "bine", "but",
-    "by", "ca", "că", "can", "care", "ce", "could", "cu", "da", "dar", "de", "did", "din", "do",
-    "does", "dacă", "după", "ea", "ei", "el", "ele", "era", "este", "eu", "fara", "fără", "fie",
-    "foarte", "for", "from", "had", "has", "have", "he", "her", "his", "how", "i", "if", "in",
-    "intre", "între", "is", "it", "its", "just", "la", "let", "mai", "me", "meu", "my", "noi",
-    "nostru", "not", "now", "nu", "o", "ok", "okay", "or", "our", "over", "pe", "please", "pls",
-    "pot", "poti", "poți", "prin", "sau", "sa", "să", "she", "should", "si", "și", "so", "sunt",
-    "sub", "thank", "thanks", "that", "the", "their", "them", "then", "these", "they", "this",
-    "those", "to", "tot", "toate", "totți", "tu", "un", "under", "unei", "unui", "us", "vă",
-    "voastru", "voi", "vrea", "vreau", "was", "we", "were", "what", "when", "where", "which",
-    "who", "why", "will", "with", "would", "yes", "you", "your", "și",
+    "a", "about", "acel", "acea", "acest", "aceasta", "aceste", "acesti", "ai", "al", "ale", "am",
+    "an", "and", "are", "as", "at", "avem", "aveți", "be", "been", "being", "bine", "but", "by",
+    "ca", "că", "can", "care", "ce", "could", "cu", "da", "dar", "de", "did", "din", "do", "does",
+    "dacă", "după", "ea", "ei", "el", "ele", "era", "este", "eu", "fara", "fără", "fie", "foarte",
+    "for", "from", "had", "has", "have", "he", "her", "his", "how", "i", "if", "in", "intre",
+    "între", "is", "it", "its", "just", "la", "let", "mai", "me", "meu", "my", "noi", "nostru",
+    "not", "now", "nu", "o", "ok", "okay", "or", "our", "over", "pe", "please", "pls", "pot",
+    "poti", "poți", "prin", "sau", "sa", "să", "she", "should", "si", "și", "so", "sunt", "sub",
+    "thank", "thanks", "that", "the", "their", "them", "then", "these", "they", "this", "those",
+    "to", "tot", "toate", "totți", "tu", "un", "under", "unei", "unui", "us", "vă", "voastru",
+    "voi", "vrea", "vreau", "was", "we", "were", "what", "when", "where", "which", "who", "why",
+    "will", "with", "would", "yes", "you", "your", "și",
 ];
 
 /// Connectives that read as part of a topic phrase. A subject keeps them when
 /// they sit between the words it keeps, so the fallback reads
 /// `Text colorat in chat` rather than `Text colorat chat`.
 const CONNECTORS: &[&str] = &[
-    "about", "and", "at", "by", "cu", "de", "despre", "din", "for", "from", "in", "în", "la",
-    "of", "on", "or", "pe", "pentru", "sau", "și", "to", "via", "vs", "with",
+    "about", "and", "at", "by", "cu", "de", "despre", "din", "for", "from", "in", "în", "la", "of",
+    "on", "or", "pe", "pentru", "sau", "și", "to", "via", "vs", "with",
 ];
 
 /// Messages that are only a greeting or a pleasantry name no topic at all.
 const GREETINGS: &[&str] = &[
-    "afternoon", "all", "bonjour", "buna", "bună", "ciao", "day", "evening", "everyone", "good",
-    "hallo", "hei", "hello", "helo", "hey", "hi", "hola", "morning", "salut", "thanks", "thank",
-    "there", "yo", "ok", "okay", "yes", "no",
+    "afternoon",
+    "all",
+    "bonjour",
+    "buna",
+    "bună",
+    "ciao",
+    "day",
+    "evening",
+    "everyone",
+    "good",
+    "hallo",
+    "hei",
+    "hello",
+    "helo",
+    "hey",
+    "hi",
+    "hola",
+    "morning",
+    "salut",
+    "thanks",
+    "thank",
+    "there",
+    "yo",
+    "ok",
+    "okay",
+    "yes",
+    "no",
 ];
 
 /// The subject a prompt names deterministically, or `None` when it names no
@@ -156,11 +240,7 @@ pub fn title_request_input(prompt: &str) -> String {
 }
 
 /// The completion request one title generation sends to `provider`.
-pub(crate) fn title_request(
-    provider_name: &str,
-    model: &str,
-    prompt: &str,
-) -> CompletionRequest {
+pub(crate) fn title_request(provider_name: &str, model: &str, prompt: &str) -> CompletionRequest {
     CompletionRequest::new(provider_name, model)
         .with_system(TITLE_SYSTEM_PROMPT)
         .with_user(title_request_input(prompt))
@@ -177,7 +257,10 @@ pub(crate) fn title_request(
 /// line that reads as an explanation (more than [`MAX_EXPLANATION_WORDS`] words)
 /// or as a refusal is rejected so the deterministic subject stands.
 pub fn parse_title(output: &str) -> Option<String> {
-    let line = output.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
     let mut line = clean_title_line(line);
     if line.is_empty() {
         return None;
@@ -298,7 +381,10 @@ fn capitalize_first(text: &str) -> String {
 /// normalised for the case of their first letter.
 fn words(text: &str) -> Vec<String> {
     text.split_whitespace()
-        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .map(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
         .filter(|word| !word.is_empty())
         .collect()
 }
@@ -511,10 +597,7 @@ mod tests {
             &self.name
         }
 
-        async fn complete(
-            &self,
-            request: CompletionRequest,
-        ) -> anyhow::Result<CompletionResponse> {
+        async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
             *self.request.lock().expect("the recorded request") = Some(request);
             match &self.reply {
                 Ok(content) => Ok(CompletionResponse::new(content.clone(), Vec::new())),
@@ -527,11 +610,7 @@ mod tests {
             _request: CompletionRequest,
         ) -> anyhow::Result<
             std::pin::Pin<
-                Box<
-                    dyn futures::Stream<
-                            Item = goble_core::llm::CompletionStreamEvent,
-                        > + Send,
-                >,
+                Box<dyn futures::Stream<Item = goble_core::llm::CompletionStreamEvent> + Send>,
             >,
         > {
             anyhow::bail!("the title request uses complete(), not the stream")
@@ -569,7 +648,10 @@ mod tests {
         assert_ne!(subject, prompt);
         assert!(subject.split_whitespace().count() <= MAX_WORDS, "{subject}");
         assert!(subject.chars().count() <= MAX_CHARS, "{subject}");
-        assert!(!subject.ends_with('…'), "a subject is not a truncated sentence");
+        assert!(
+            !subject.ends_with('…'),
+            "a subject is not a truncated sentence"
+        );
     }
 
     /// A greeting or a pleasantry names no topic at all: the neutral placeholder

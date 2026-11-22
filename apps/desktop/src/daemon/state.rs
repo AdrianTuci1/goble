@@ -32,9 +32,7 @@ impl Route {
     /// user has not chosen yet) defaults to local.
     fn resolve(routing: Option<WorkspaceRouting>) -> Self {
         match routing {
-            Some(WorkspaceRouting::Remote) if feature_enabled(FeatureFlag::Daemon) => {
-                Route::Remote
-            }
+            Some(WorkspaceRouting::Remote) if feature_enabled(FeatureFlag::Daemon) => Route::Remote,
             _ => Route::Local,
         }
     }
@@ -158,12 +156,7 @@ impl DaemonModel {
                     )
                 })?;
                 let turn = build_remote_turn(
-                    chat_id,
-                    prompt,
-                    medium_id,
-                    project_id,
-                    session_id,
-                    harness_id,
+                    chat_id, prompt, medium_id, project_id, session_id, harness_id,
                 );
                 client.run(turn)?;
                 Ok(spawn_waiter(client, SessionId::new(session_id)))
@@ -175,12 +168,18 @@ impl DaemonModel {
 /// Spawn a task that completes when the daemon streams `TraceFinished` for the
 /// session. Mirrors the waiter the desktop service spawns for local turns so
 /// both routes return a handle that resolves when the turn is done.
-fn spawn_waiter(client: &Arc<dyn DaemonClient>, session_id: SessionId) -> tokio::task::JoinHandle<()> {
+fn spawn_waiter(
+    client: &Arc<dyn DaemonClient>,
+    session_id: SessionId,
+) -> tokio::task::JoinHandle<()> {
     use goble_daemon_protocol::DaemonEvent;
     let mut rx = client.subscribe();
     tokio::spawn(async move {
         while let Ok(ev) = rx.recv().await {
-            if let DaemonEvent::TraceFinished { session_id: sid, .. } = &ev {
+            if let DaemonEvent::TraceFinished {
+                session_id: sid, ..
+            } = &ev
+            {
                 if sid == &session_id {
                     break;
                 }

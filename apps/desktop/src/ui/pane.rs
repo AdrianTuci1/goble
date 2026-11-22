@@ -218,15 +218,21 @@ pub enum PaneKind {
     Worker,
     /// A read-only view of one file, opened from the explorer tree or a search
     /// result.
-    File { path: String },
+    File {
+        path: String,
+    },
     /// The settings surface: the page rail, the page and the footer. The page
     /// the pane shows rides in the leaf, so it comes back with the pane and
     /// travels with it when the pane is lifted into another space.
-    Settings { page: SettingsCategory },
+    Settings {
+        page: SettingsCategory,
+    },
     /// The working tree's changes: a file list beside the unified diffs of the
     /// repository `cwd` sits in. The directory rides in the leaf, so the pane
     /// reopens on the same repository after a restart.
-    Diff { cwd: String },
+    Diff {
+        cwd: String,
+    },
 }
 
 /// Which way a pane tree splits.
@@ -287,9 +293,17 @@ pub fn drop_side_in(pane: RectF, position: Vector2F) -> Option<DropSide> {
         return None;
     }
     if dy.abs() > dx.abs() {
-        Some(if dy > 0.0 { DropSide::Bottom } else { DropSide::Top })
+        Some(if dy > 0.0 {
+            DropSide::Bottom
+        } else {
+            DropSide::Top
+        })
     } else {
-        Some(if dx > 0.0 { DropSide::Right } else { DropSide::Left })
+        Some(if dx > 0.0 {
+            DropSide::Right
+        } else {
+            DropSide::Left
+        })
     }
 }
 
@@ -305,10 +319,7 @@ pub fn pane_drop_target(
         if *id == dragged || !goble_ui::elements::interactive::contains(*rect, position) {
             return None;
         }
-        drop_side_in(*rect, position).map(|side| PaneDropTarget {
-            pane_id: *id,
-            side,
-        })
+        drop_side_in(*rect, position).map(|side| PaneDropTarget { pane_id: *id, side })
     })
 }
 
@@ -337,7 +348,10 @@ pub enum NavDir {
 /// A pane in a space. A leaf hosts content; a `Split` divides into two panes.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Pane {
-    Leaf { id: u64, kind: PaneKind },
+    Leaf {
+        id: u64,
+        kind: PaneKind,
+    },
     Split {
         id: u64,
         dir: SplitDir,
@@ -372,10 +386,7 @@ impl Pane {
         match self {
             Pane::Leaf { id, .. } => *id,
             Pane::Split {
-                id,
-                first,
-                second,
-                ..
+                id, first, second, ..
             } => (*id).max(first.max_id()).max(second.max_id()),
         }
     }
@@ -384,7 +395,9 @@ impl Pane {
     pub fn contains_leaf(&self, target: u64) -> bool {
         match self {
             Pane::Leaf { id, .. } => *id == target,
-            Pane::Split { first, second, .. } => first.contains_leaf(target) || second.contains_leaf(target),
+            Pane::Split { first, second, .. } => {
+                first.contains_leaf(target) || second.contains_leaf(target)
+            }
         }
     }
 
@@ -652,7 +665,11 @@ impl Pane {
         match self {
             Pane::Leaf { id, .. } => out.push((*id, rect)),
             Pane::Split {
-                dir, ratio, first, second, ..
+                dir,
+                ratio,
+                first,
+                second,
+                ..
             } => {
                 let (first_rect, second_rect) = match dir {
                     SplitDir::Horizontal => {
@@ -710,21 +727,19 @@ impl Pane {
             Pane::Leaf { .. } => None,
             Pane::Split { first, second, .. } => {
                 if first.is_leaf(target) {
-                    let survivor = std::mem::replace(
-                        second,
-                        Box::new(Pane::leaf(0, PaneKind::Chat)),
-                    );
+                    let survivor =
+                        std::mem::replace(second, Box::new(Pane::leaf(0, PaneKind::Chat)));
                     *self = *survivor;
                     Some(self.first_leaf_id())
                 } else if second.is_leaf(target) {
-                    let survivor = std::mem::replace(
-                        first,
-                        Box::new(Pane::leaf(0, PaneKind::Chat)),
-                    );
+                    let survivor =
+                        std::mem::replace(first, Box::new(Pane::leaf(0, PaneKind::Chat)));
                     *self = *survivor;
                     Some(self.first_leaf_id())
                 } else {
-                    first.remove_leaf(target).or_else(|| second.remove_leaf(target))
+                    first
+                        .remove_leaf(target)
+                        .or_else(|| second.remove_leaf(target))
                 }
             }
         }
@@ -845,7 +860,10 @@ impl Space {
         *next_id += 1;
         let second_id = *next_id;
         *next_id += 1;
-        if self.root.split_leaf_into(target, dir, split_id, second_id, second_kind) {
+        if self
+            .root
+            .split_leaf_into(target, dir, split_id, second_id, second_kind)
+        {
             self.recompute_layout();
             Some(second_id)
         } else {
@@ -905,7 +923,8 @@ impl Space {
             if self.floating.iter().any(|pane| pane.pane_id == *id) {
                 continue;
             }
-            self.floating.push(FloatingPane::new(*id, default_floating_rect(index)));
+            self.floating
+                .push(FloatingPane::new(*id, default_floating_rect(index)));
         }
     }
 
@@ -948,14 +967,22 @@ impl Space {
     /// Move or resize the floating pane `pane_id`. The rect is clamped into the
     /// space so a drag can never park a pane where it cannot be reached.
     pub fn set_floating_rect(&mut self, pane_id: u64, rect: PaneRect) {
-        if let Some(pane) = self.floating.iter_mut().find(|pane| pane.pane_id == pane_id) {
+        if let Some(pane) = self
+            .floating
+            .iter_mut()
+            .find(|pane| pane.pane_id == pane_id)
+        {
             pane.rect = rect.clamped();
         }
     }
 
     /// Put the floating pane `pane_id` on top: a click on it raises it.
     pub fn raise_pane(&mut self, pane_id: u64) {
-        if let Some(index) = self.floating.iter().position(|pane| pane.pane_id == pane_id) {
+        if let Some(index) = self
+            .floating
+            .iter()
+            .position(|pane| pane.pane_id == pane_id)
+        {
             let pane = self.floating.remove(index);
             self.floating.push(pane);
         }
@@ -1164,7 +1191,9 @@ impl Space {
             return Some(leaves[(index + step) % leaves.len()].0);
         }
         let regions = self.layout_regions();
-        let current = regions.iter().find_map(|(id, r)| (*id == from).then_some(*r))?;
+        let current = regions
+            .iter()
+            .find_map(|(id, r)| (*id == from).then_some(*r))?;
 
         let center_x = |r: &goble_ui::RectF| r.min_x() + r.width() * 0.5;
         let center_y = |r: &goble_ui::RectF| r.min_y() + r.height() * 0.5;
@@ -1219,8 +1248,7 @@ impl Space {
             let better = match best {
                 None => true,
                 Some((_, bp, bs)) => {
-                    primary < bp - 1e-6
-                        || ((primary - bp).abs() < 1e-6 && secondary < bs - 1e-6)
+                    primary < bp - 1e-6 || ((primary - bp).abs() < 1e-6 && secondary < bs - 1e-6)
                 }
             };
             if better {
@@ -1248,7 +1276,12 @@ pub fn master_stack_regions(leaves: &[(u64, PaneKind)]) -> Vec<(u64, goble_ui::R
     for (index, (id, _)) in rest.iter().enumerate() {
         out.push((
             *id,
-            rectf(MASTER_RATIO, index as f32 * height, 1.0 - MASTER_RATIO, height),
+            rectf(
+                MASTER_RATIO,
+                index as f32 * height,
+                1.0 - MASTER_RATIO,
+                height,
+            ),
         ));
     }
     out
@@ -1272,10 +1305,7 @@ const CAROUSEL_STEP: f32 = 0.16;
 ///
 /// Positions are clamped into the unit square, so a long row stacks its outer
 /// windows at the edges instead of parking them where they cannot be clicked.
-pub fn carousel_regions(
-    leaves: &[(u64, PaneKind)],
-    focused: u64,
-) -> Vec<(u64, goble_ui::RectF)> {
+pub fn carousel_regions(leaves: &[(u64, PaneKind)], focused: u64) -> Vec<(u64, goble_ui::RectF)> {
     if leaves.is_empty() {
         return Vec::new();
     }

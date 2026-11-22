@@ -21,17 +21,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use goble_ui::elements::{
-    AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets, Element,
-    EventContext, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext, MainAxisSize,
-    PaintContext, Point, ScrollState, Scrollable, ShortcutHint, ShortcutHints, SizeConstraint,
-    Spacer, Text, TopbarButton, caret_beam,
+    caret_beam, AppContext, Axis, ConstrainedBox, Container, CrossAxisAlignment, Divider,
+    EdgeInsets, Element, EventContext, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
+    MainAxisSize, PaintContext, Point, ScrollState, Scrollable, ShortcutHint, ShortcutHints,
+    SizeConstraint, Spacer, Text, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
-use goble_ui::geometry::{Vector2F, vec2f};
+use goble_ui::geometry::{vec2f, Vector2F};
 use goble_ui::theme::{ColorToken, SpacingToken};
 
-use super::UiActions;
 use super::snapshot::UiSnapshot;
+use super::UiActions;
 
 /// The panel's width: wide enough for the longest chord plus its name, and
 /// narrower than a settings page so it reads as a sheet over the workspace.
@@ -321,8 +321,13 @@ pub fn build_shortcuts_help(
         .with_padding(EdgeInsets::uniform(spacing))
         .finish()
     } else {
-        ShortcutList::new(items, highlighted_item, sm, state.shortcuts_help_scroll.clone())
-            .finish()
+        ShortcutList::new(
+            items,
+            highlighted_item,
+            sm,
+            state.shortcuts_help_scroll.clone(),
+        )
+        .finish()
     };
 
     // The panel's own keys, in the caps the rows draw: what answers right now.
@@ -486,13 +491,10 @@ impl Element for ShortcutList {
         // viewport is the shorter of the content and the list's own cap, so the
         // list is as tall as it needs to be until the rows no longer fit.
         let viewport_height = content_height.min(LIST_MAX_HEIGHT);
-        let mut scrollable = Scrollable::new(column.finish(), Axis::Vertical)
-            .with_state(Rc::clone(&self.scroll));
+        let mut scrollable =
+            Scrollable::new(column.finish(), Axis::Vertical).with_state(Rc::clone(&self.scroll));
         let size = scrollable.layout(
-            SizeConstraint::new(
-                vec2f(width, viewport_height),
-                vec2f(width, viewport_height),
-            ),
+            SizeConstraint::new(vec2f(width, viewport_height), vec2f(width, viewport_height)),
             ctx,
             app,
         );
@@ -628,9 +630,9 @@ mod tests {
     }
 
     fn drawn(commands: &[RenderCommand], text: &str) -> bool {
-        commands.iter().any(|command| {
-            matches!(command, RenderCommand::DrawText { text: run, .. } if run == text)
-        })
+        commands.iter().any(
+            |command| matches!(command, RenderCommand::DrawText { text: run, .. } if run == text),
+        )
     }
 
     /// The leaves of a pane tree — one per visible pane, splits included.
@@ -728,10 +730,7 @@ mod tests {
                     assert_eq!(pane_count(&state), 1, "⌘W closes a pane");
                 }
                 "workflow runs" => {
-                    assert!(
-                        chord(&mut root, &app, &keys[0], modifiers),
-                        "⌘⇧W answers"
-                    );
+                    assert!(chord(&mut root, &app, &keys[0], modifiers), "⌘⇧W answers");
                     let active = state.borrow().active_pane_id;
                     assert!(
                         state.borrow().workflow_view(active).is_some(),
@@ -776,10 +775,7 @@ mod tests {
                     // The chord cycles the active space; prove the layout it
                     // lands on is the next one the cycle names.
                     let before = state.borrow().spaces[0].layout;
-                    assert!(
-                        chord(&mut root, &app, &keys[0], modifiers),
-                        "⌘⇧L answers"
-                    );
+                    assert!(chord(&mut root, &app, &keys[0], modifiers), "⌘⇧L answers");
                     assert_eq!(
                         state.borrow().spaces[0].layout,
                         before.cycle(),
@@ -876,7 +872,12 @@ mod tests {
     }
 
     /// Open the panel on a fresh workspace, the way `Ctrl+.` does.
-    fn open_panel() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir, AppContext) {
+    fn open_panel() -> (
+        Box<dyn Element>,
+        Rc<RefCell<UiState>>,
+        tempfile::TempDir,
+        AppContext,
+    ) {
         let app = AppContext::default();
         let (mut root, state, dir) = workspace();
         assert!(toggle(&mut root, &app), "Ctrl+. is consumed");
@@ -1032,7 +1033,10 @@ mod tests {
         let commands = frame(&mut root, &app);
         assert!(drawn(&commands, "send (queues while a turn runs)"));
         assert!(drawn(&commands, "Input"));
-        assert!(!drawn(&commands, "Workspace"), "a heading leaves with its rows");
+        assert!(
+            !drawn(&commands, "Workspace"),
+            "a heading leaves with its rows"
+        );
 
         // Nothing matches: the panel says so instead of drawing an empty box.
         type_text(&mut root, &app, "zzz");
@@ -1064,7 +1068,10 @@ mod tests {
             chord(&mut root, &app, "Escape", ModifiersState::none()),
             "Escape is consumed"
         );
-        assert!(state.borrow().shortcuts_help_open, "the first Escape only clears");
+        assert!(
+            state.borrow().shortcuts_help_open,
+            "the first Escape only clears"
+        );
         assert!(state.borrow().shortcuts_help_filter.is_empty());
         let commands = frame(&mut root, &app);
         assert!(drawn(&commands, "new terminal"), "the whole table is back");
@@ -1074,7 +1081,10 @@ mod tests {
         );
 
         assert!(chord(&mut root, &app, "Escape", ModifiersState::none()));
-        assert!(!state.borrow().shortcuts_help_open, "the second Escape closes");
+        assert!(
+            !state.borrow().shortcuts_help_open,
+            "the second Escape closes"
+        );
     }
 
     /// The panel's own chord still toggles it, filter or no filter, and opening
@@ -1090,7 +1100,10 @@ mod tests {
             toggle(&mut root, &app),
             "Ctrl+. is the panel's own chord, not the filter's"
         );
-        assert!(!state.borrow().shortcuts_help_open, "Ctrl+. closes the panel");
+        assert!(
+            !state.borrow().shortcuts_help_open,
+            "Ctrl+. closes the panel"
+        );
         let commands = frame(&mut root, &app);
         assert!(!drawn(&commands, "Keyboard shortcuts"));
 
@@ -1098,7 +1111,10 @@ mod tests {
         assert!(state.borrow().shortcuts_help_open, "Ctrl+. opens it again");
         let commands = frame(&mut root, &app);
         assert!(drawn(&commands, "Keyboard shortcuts"));
-        assert!(state.borrow().shortcuts_help_filter.is_empty(), "reopened clean");
+        assert!(
+            state.borrow().shortcuts_help_filter.is_empty(),
+            "reopened clean"
+        );
         assert_eq!(state.borrow().shortcuts_help_index, 0);
         assert!(drawn(&commands, "new terminal"));
         assert!(drawn(&commands, "Filter shortcuts"));
@@ -1141,7 +1157,11 @@ mod tests {
         }
         let commands = frame(&mut root, &app);
         let last = visible_row_count("") - 1;
-        assert_eq!(state.borrow().shortcuts_help_index, last, "the end of the table");
+        assert_eq!(
+            state.borrow().shortcuts_help_index,
+            last,
+            "the end of the table"
+        );
         let (top, bottom) = the_highlighted_band(&commands, &app);
         let y = label_y(&commands, "shell command");
         assert!(

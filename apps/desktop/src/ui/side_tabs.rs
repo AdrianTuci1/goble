@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, CrossAxisAlignment, Element, EventContext, Flex, Icon, LayoutContext,
-    MainAxisSize, PaintContext, Point, SizeConstraint, Text,
+    AppContext, CrossAxisAlignment, Element, EventContext, Flex, Icon, LayoutContext, MainAxisSize,
+    PaintContext, Point, SizeConstraint, Text,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY};
 use goble_ui::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
@@ -196,9 +196,11 @@ impl Element for SideTabChip {
             };
         let leading = TAB_PADDING_X + TAB_ICON_SIZE + TAB_GAP;
         let max_label_width = (constraint.max.x - leading - trailing).max(0.0);
-        self.icon_size = self
-            .icon
-            .layout(SizeConstraint::tight(vec2f(TAB_ICON_SIZE, TAB_ICON_SIZE)), ctx, app);
+        self.icon_size = self.icon.layout(
+            SizeConstraint::tight(vec2f(TAB_ICON_SIZE, TAB_ICON_SIZE)),
+            ctx,
+            app,
+        );
         self.label_size = self.label.layout(
             SizeConstraint::new(
                 Vector2F::zero(),
@@ -217,16 +219,11 @@ impl Element for SideTabChip {
             Vector2F::zero()
         };
         let width = (leading + self.label_size.x + trailing).min(constraint.max.x.max(0.0));
-        let height = self
-            .label_size
-            .y
-            .max(TAB_ICON_SIZE)
-            .max(if self.closeable {
-                TAB_CLOSE_SIZE
-            } else {
-                0.0
-            })
-            + TAB_PADDING_Y * 2.0;
+        let height = self.label_size.y.max(TAB_ICON_SIZE).max(if self.closeable {
+            TAB_CLOSE_SIZE
+        } else {
+            0.0
+        }) + TAB_PADDING_Y * 2.0;
         let size = vec2f(width.max(constraint.min.x.min(constraint.max.x)), height);
         self.size = Some(size);
         size
@@ -235,10 +232,7 @@ impl Element for SideTabChip {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
-        let bounds = RectF::new(
-            PointF::new(origin.x, origin.y),
-            Size2F::new(size.x, size.y),
-        );
+        let bounds = RectF::new(PointF::new(origin.x, origin.y), Size2F::new(size.x, size.y));
         let hovered = ctx.hovered(bounds);
         let background = if self.selected {
             Some(ColorToken::Selected)
@@ -419,10 +413,7 @@ fn work_icon(kind: crate::state::PaneWorkKind) -> &'static str {
 /// The Task output tab's list: one row per live work item of the active pane,
 /// with the item's own description and its kind. The rows are the pane's real
 /// work, not a static sample; an idle pane says so.
-pub fn build_task_output(
-    app: &AppContext,
-    state: &UiSnapshot,
-) -> Box<dyn Element> {
+pub fn build_task_output(app: &AppContext, state: &UiSnapshot) -> Box<dyn Element> {
     let items = state
         .pane_live_work
         .get(&state.active_pane_id)
@@ -536,7 +527,10 @@ mod tests {
     fn adding_a_tab_selects_it_once() {
         let mut state = UiState::mock();
         state.add_side_tab(SideTabKind::Agent);
-        assert_eq!(state.side_tabs, vec![SideTabKind::Overview, SideTabKind::Agent]);
+        assert_eq!(
+            state.side_tabs,
+            vec![SideTabKind::Overview, SideTabKind::Agent]
+        );
         assert_eq!(state.active_side_tab, 1);
         state.add_side_tab(SideTabKind::Files);
         state.add_side_tab(SideTabKind::Agent);
@@ -586,7 +580,11 @@ mod tests {
     #[test]
     fn cycling_tabs_wraps() {
         let mut state = state_with(
-            &[SideTabKind::Overview, SideTabKind::Agent, SideTabKind::Terminal],
+            &[
+                SideTabKind::Overview,
+                SideTabKind::Agent,
+                SideTabKind::Terminal,
+            ],
             0,
         );
         state.cycle_side_tab(1);
@@ -622,7 +620,10 @@ mod tests {
             &mut LayoutContext::default(),
             app,
         );
-        assert!(size.x > TAB_CLOSE_SIZE && size.y > 0.0, "chip laid out: {size:?}");
+        assert!(
+            size.x > TAB_CLOSE_SIZE && size.y > 0.0,
+            "chip laid out: {size:?}"
+        );
         chip
     }
 
@@ -659,10 +660,7 @@ mod tests {
         assert_eq!(select.get(), 1, "the label selects the tab");
         assert_eq!(close.get(), 0);
 
-        let on_the_x = vec2f(
-            size.x - TAB_PADDING_X - TAB_CLOSE_SIZE / 2.0,
-            size.y / 2.0,
-        );
+        let on_the_x = vec2f(size.x - TAB_PADDING_X - TAB_CLOSE_SIZE / 2.0, size.y / 2.0);
         chip.dispatch_event(
             &DispatchedEvent::MouseDown {
                 position: on_the_x,

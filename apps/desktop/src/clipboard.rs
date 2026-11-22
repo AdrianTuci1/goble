@@ -243,10 +243,7 @@ pub fn copy_text(text: &str) {
 /// copy still holds the text). The session menu's "Copy conversation ID" uses
 /// this so a missing helper is an honest warning toast, not a false success.
 pub fn copy_text_checked(text: &str) -> bool {
-    copy_text_with_checked(
-        clipboard_candidates(HOST_PLATFORM, ClipboardOp::Copy),
-        text,
-    )
+    copy_text_with_checked(clipboard_candidates(HOST_PLATFORM, ClipboardOp::Copy), text)
 }
 
 pub struct SystemClipboard;

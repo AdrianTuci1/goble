@@ -89,12 +89,7 @@ impl ExplorerCache {
     /// they were opened; closing the explorer drops everything, so it is fresh
     /// the next time it is opened. A directory closed and opened again is read
     /// again, which is how a file created in the meantime appears.
-    pub fn rows(
-        &mut self,
-        root: &str,
-        expanded: &HashSet<String>,
-        open: bool,
-    ) -> Vec<ExplorerRow> {
+    pub fn rows(&mut self, root: &str, expanded: &HashSet<String>, open: bool) -> Vec<ExplorerRow> {
         if !open {
             self.root.clear();
             self.listings.clear();
@@ -269,9 +264,7 @@ pub(crate) fn build_explorer(
                             .finish(),
                     )
                     .with_size(vec2f(20.0, 20.0))
-                    .with_on_click(move || {
-                        (on_open_floating.borrow_mut())(float_path.clone())
-                    })
+                    .with_on_click(move || (on_open_floating.borrow_mut())(float_path.clone()))
                     .finish(),
                     "Open in floating panel",
                 )
@@ -471,7 +464,11 @@ mod tests {
             );
         }
         assert_eq!(file_icon_name(".gitignore"), "file", "an absent extension");
-        assert_eq!(file_icon_name(".eslintrc.json"), "file-json", "a dot name has a type too");
+        assert_eq!(
+            file_icon_name(".eslintrc.json"),
+            "file-json",
+            "a dot name has a type too"
+        );
     }
 
     /// A hidden directory opens and closes like any other: its children are the
@@ -501,7 +498,10 @@ mod tests {
                 (".gitignore".to_string(), 0),
             ]
         );
-        assert!(rows[0].is_dir && rows[0].expanded, "the open dot directory says so");
+        assert!(
+            rows[0].is_dir && rows[0].expanded,
+            "the open dot directory says so"
+        );
 
         expanded.clear();
         let rows = cache.rows(&root, &expanded, true);

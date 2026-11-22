@@ -51,11 +51,11 @@ pub use state::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use goble_ui::color::ColorU;
 use goble_ui::elements::{
     AppContext, ConstrainedBox, CrossAxisAlignment, Divider, Element, Expanded, Flex, KeyHandler,
     MainAxisAlignment, MainAxisSize, Scrollable, ShortcutHint, ShortcutHints, Text,
 };
-use goble_ui::color::ColorU;
 use goble_ui::event::ModifiersState;
 use goble_ui::theme::ColorToken;
 
@@ -124,10 +124,9 @@ pub fn build_settings_pane(
     if let Some(sheet_section) = pages::form_section(settings) {
         let sheet = render::render_side_sheet(app, &sheet_section, settings, actions);
         let dismiss_dispatch = actions.dispatch.clone();
-        let dismiss: Rc<RefCell<dyn FnMut()>> =
-            Rc::new(RefCell::new(move || {
-                (dismiss_dispatch.borrow_mut())(SettingsAction::CancelForm);
-            }));
+        let dismiss: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
+            (dismiss_dispatch.borrow_mut())(SettingsAction::CancelForm);
+        }));
         let bg = app.theme.color(ColorToken::Bg);
         let tint = ColorU::new(bg.r, bg.g, bg.b, 150);
         let trapped: Box<dyn Element> = Box::new(render::DismissLayer::new(content, tint, dismiss));
@@ -312,8 +311,6 @@ pub fn settings_key_with_close(
         _ => false,
     }
 }
-
-
 
 fn dispatch_action(dispatch: &Rc<RefCell<dyn FnMut(SettingsAction)>>, action: SettingsAction) {
     (dispatch.borrow_mut())(action);

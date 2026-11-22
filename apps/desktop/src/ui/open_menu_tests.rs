@@ -152,7 +152,11 @@ fn icon_center(commands: &[RenderCommand], name: &str) -> Option<Vector2F> {
 /// The origin of a drawn run of text, when the frame drew it.
 fn text_origin(commands: &[RenderCommand], text: &str) -> Option<Vector2F> {
     commands.iter().find_map(|command| match command {
-        RenderCommand::DrawText { text: drawn, origin, .. } if drawn == text => Some(*origin),
+        RenderCommand::DrawText {
+            text: drawn,
+            origin,
+            ..
+        } if drawn == text => Some(*origin),
         _ => None,
     })
 }
@@ -173,10 +177,7 @@ fn point_inside_open_menu(app: &AppContext) -> Vector2F {
 }
 
 /// Open the sidebar header's view-options menu by pressing its sliders control.
-fn open_sidebar_view_options(
-    root: &mut Box<dyn Element>,
-    app: &AppContext,
-) -> Vec<RenderCommand> {
+fn open_sidebar_view_options(root: &mut Box<dyn Element>, app: &AppContext) -> Vec<RenderCommand> {
     let commands = frame(root, app, None);
     let at = icon_center(&commands, "sliders-two").expect("the header draws the view options");
     click(root, app, at);
@@ -281,11 +282,7 @@ fn the_sidebar_view_options_menu_registers_isolates_hover_and_closes() {
 
 /// Open a session row's "..." tray, the way a pointer on the row and a press on
 /// its ellipsis does.
-fn open_session_tray(
-    root: &mut Box<dyn Element>,
-    state: &Rc<RefCell<UiState>>,
-    app: &AppContext,
-) {
+fn open_session_tray(root: &mut Box<dyn Element>, state: &Rc<RefCell<UiState>>, app: &AppContext) {
     let id = state
         .borrow()
         .conversations
@@ -298,8 +295,7 @@ fn open_session_tray(
         .iter()
         .find_map(|command| match command {
             RenderCommand::DrawIcon { name, origin, .. }
-                if name == "dots-horizontal"
-                    && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
+                if name == "dots-horizontal" && origin.y > crate::ui::shell::TOPBAR_HEIGHT =>
             {
                 Some(*origin + vec2f(8.0, 8.0))
             }
@@ -346,10 +342,7 @@ fn the_session_row_tray_registers_and_closes_from_outside() {
     assert!(app.open_menus.is_open());
     key(&mut root, &app, "Escape");
     let _ = frame(&mut root, &app, None);
-    assert!(
-        !app.open_menus.is_open(),
-        "Escape closed the row tray"
-    );
+    assert!(!app.open_menus.is_open(), "Escape closed the row tray");
 }
 
 /// The composer's model card (the DSH two-level menu above the model chip) is

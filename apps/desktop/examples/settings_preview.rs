@@ -285,7 +285,15 @@ fn render_scene(
     name: &str,
     mutate: impl FnOnce(&mut UiState),
 ) -> anyhow::Result<()> {
-    render_scene_on(assets, desktop, size, name, SettingsCategory::Providers, 0.0, mutate)
+    render_scene_on(
+        assets,
+        desktop,
+        size,
+        name,
+        SettingsCategory::Providers,
+        0.0,
+        mutate,
+    )
 }
 
 /// Render a scene scrolled down the page (the CLI fold list sits below the

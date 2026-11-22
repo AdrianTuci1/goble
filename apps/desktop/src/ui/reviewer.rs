@@ -31,7 +31,7 @@ use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::platform::text_atlas::{wrapped_lines, FontWeight};
 use goble_ui::theme::{ColorToken, FontFamily};
 
-use super::pickers::{DiffFileDetail, DiffDetail};
+use super::pickers::{DiffDetail, DiffFileDetail};
 use super::{DiffPanelAction, UiActions};
 
 #[cfg(feature = "file-diff-view")]
@@ -142,7 +142,9 @@ pub fn tree_rows(files: &[DiffFileDetail], folded: &BTreeSet<String>) -> Vec<Rev
 }
 
 fn parent_of(path: &str) -> &str {
-    path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("")
+    path.rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("")
 }
 
 fn append_level(
@@ -237,7 +239,14 @@ pub(crate) fn file_list(
         );
     }
     for row in tree_rows(&detail.files, folded) {
-        column = column.with_child(tree_row(app, actions, pane_id, &detail.files, &row, selected));
+        column = column.with_child(tree_row(
+            app,
+            actions,
+            pane_id,
+            &detail.files,
+            &row,
+            selected,
+        ));
     }
     ConstrainedBox::new(
         Scrollable::new(
@@ -566,7 +575,12 @@ impl VisualRow {
             .as_ref()
             .map(|cell| cell.chunks.len())
             .unwrap_or(0)
-            .max(self.right.as_ref().map(|cell| cell.chunks.len()).unwrap_or(0))
+            .max(
+                self.right
+                    .as_ref()
+                    .map(|cell| cell.chunks.len())
+                    .unwrap_or(0),
+            )
             .max(1)
     }
 }
@@ -700,7 +714,10 @@ impl ReviewDiff {
     fn natural_width(&self) -> f32 {
         let mut longest = 0.0f32;
         for row in &self.visual {
-            for cell in [row.left.as_ref(), row.right.as_ref()].into_iter().flatten() {
+            for cell in [row.left.as_ref(), row.right.as_ref()]
+                .into_iter()
+                .flatten()
+            {
                 for chunk in &cell.chunks {
                     longest = longest.max(measure_mono(chunk));
                 }
@@ -746,7 +763,10 @@ impl ReviewDiff {
     ) {
         let y = origin.y + line as f32 * DIFF_ROW_HEIGHT;
         if cell.kind != DiffLineKind::Context {
-            renderer.fill_rect(rectf(origin.x, y, width, DIFF_ROW_HEIGHT), Self::row_bg(cell.kind, app));
+            renderer.fill_rect(
+                rectf(origin.x, y, width, DIFF_ROW_HEIGHT),
+                Self::row_bg(cell.kind, app),
+            );
             renderer.fill_rect(
                 rectf(origin.x, y, DIFF_RAIL, DIFF_ROW_HEIGHT),
                 Self::text_color(cell.kind, app),
@@ -757,17 +777,57 @@ impl ReviewDiff {
         let muted = app.theme.color(ColorToken::Muted);
         if self.split {
             if let Some(number) = cell.old_no {
-                draw_number(renderer, origin.x + gutter - 12.0, y, number, if cell.kind == DiffLineKind::Removed { color } else { muted });
+                draw_number(
+                    renderer,
+                    origin.x + gutter - 12.0,
+                    y,
+                    number,
+                    if cell.kind == DiffLineKind::Removed {
+                        color
+                    } else {
+                        muted
+                    },
+                );
             }
             if let Some(number) = cell.new_no {
-                draw_number(renderer, origin.x + gutter - 12.0, y, number, if cell.kind == DiffLineKind::Added { color } else { muted });
+                draw_number(
+                    renderer,
+                    origin.x + gutter - 12.0,
+                    y,
+                    number,
+                    if cell.kind == DiffLineKind::Added {
+                        color
+                    } else {
+                        muted
+                    },
+                );
             }
         } else {
             if let Some(number) = cell.old_no {
-                draw_number(renderer, origin.x + 24.0, y, number, if cell.kind == DiffLineKind::Removed { color } else { muted });
+                draw_number(
+                    renderer,
+                    origin.x + 24.0,
+                    y,
+                    number,
+                    if cell.kind == DiffLineKind::Removed {
+                        color
+                    } else {
+                        muted
+                    },
+                );
             }
             if let Some(number) = cell.new_no {
-                draw_number(renderer, origin.x + gutter - 12.0, y, number, if cell.kind == DiffLineKind::Added { color } else { muted });
+                draw_number(
+                    renderer,
+                    origin.x + gutter - 12.0,
+                    y,
+                    number,
+                    if cell.kind == DiffLineKind::Added {
+                        color
+                    } else {
+                        muted
+                    },
+                );
             }
         }
         let marker = Self::sign(cell.kind);
@@ -870,10 +930,7 @@ impl Element for ReviewDiff {
         let first = window
             .map(|window| {
                 let top = window.min_y() - origin.y;
-                self.top
-                    .iter()
-                    .rposition(|y| *y <= top)
-                    .unwrap_or(0)
+                self.top.iter().rposition(|y| *y <= top).unwrap_or(0)
             })
             .unwrap_or(0);
         let last = window
@@ -917,7 +974,12 @@ impl Element for ReviewDiff {
                     }
                 } else {
                     renderer.fill_rect(
-                        rectf(left_origin.x, top, half, DIFF_ROW_HEIGHT * row.height() as f32),
+                        rectf(
+                            left_origin.x,
+                            top,
+                            half,
+                            DIFF_ROW_HEIGHT * row.height() as f32,
+                        ),
                         app.theme.color(ColorToken::SurfaceRaised),
                     );
                 }
@@ -927,12 +989,22 @@ impl Element for ReviewDiff {
                     }
                 } else {
                     renderer.fill_rect(
-                        rectf(right_origin.x, top, half, DIFF_ROW_HEIGHT * row.height() as f32),
+                        rectf(
+                            right_origin.x,
+                            top,
+                            half,
+                            DIFF_ROW_HEIGHT * row.height() as f32,
+                        ),
                         app.theme.color(ColorToken::SurfaceRaised),
                     );
                 }
                 renderer.fill_rect(
-                    rectf(origin.x + DIFF_PAD + half - 1.0, top, 1.0, DIFF_ROW_HEIGHT * row.height() as f32),
+                    rectf(
+                        origin.x + DIFF_PAD + half - 1.0,
+                        top,
+                        1.0,
+                        DIFF_ROW_HEIGHT * row.height() as f32,
+                    ),
                     app.theme.color(ColorToken::Border),
                 );
             } else if let Some(cell) = &row.left {
@@ -958,18 +1030,17 @@ fn split_rows(hunk: &Hunk) -> Vec<LogicalRow> {
     let mut rows = Vec::new();
     let mut dels: Vec<LogicalCell> = Vec::new();
     let mut adds: Vec<LogicalCell> = Vec::new();
-    let flush = |dels: &mut Vec<LogicalCell>,
-                 adds: &mut Vec<LogicalCell>,
-                 rows: &mut Vec<LogicalRow>| {
-        for index in 0..dels.len().max(adds.len()) {
-            rows.push(LogicalRow::Split(
-                dels.get(index).cloned(),
-                adds.get(index).cloned(),
-            ));
-        }
-        dels.clear();
-        adds.clear();
-    };
+    let flush =
+        |dels: &mut Vec<LogicalCell>, adds: &mut Vec<LogicalCell>, rows: &mut Vec<LogicalRow>| {
+            for index in 0..dels.len().max(adds.len()) {
+                rows.push(LogicalRow::Split(
+                    dels.get(index).cloned(),
+                    adds.get(index).cloned(),
+                ));
+            }
+            dels.clear();
+            adds.clear();
+        };
     for line in &hunk.lines {
         match line.kind {
             DiffLineKind::Removed => dels.push(LogicalCell {
@@ -1077,7 +1148,6 @@ fn digit_count(mut n: u32) -> u32 {
     }
     digits
 }
-
 
 #[cfg(test)]
 mod ui_tests {
@@ -1264,8 +1334,7 @@ mod ui_tests {
         std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
         std::fs::write(repo.path().join("new.txt"), "gamma\n").unwrap();
         let cwd = repo.path().to_string_lossy().to_string();
-        let (mut root, state, _desktop, _dir, app) =
-            root_with(PaneKind::Diff { cwd });
+        let (mut root, state, _desktop, _dir, app) = root_with(PaneKind::Diff { cwd });
 
         click_icon(&mut root, &app, "layers-three-01");
         click_text(&mut root, &app, "new.txt");
@@ -1282,7 +1351,12 @@ mod ui_tests {
         );
 
         press(&mut root, &app, "ArrowDown");
-        let selected = state.borrow().pane_controls(7).diff_selected.borrow().clone();
+        let selected = state
+            .borrow()
+            .pane_controls(7)
+            .diff_selected
+            .borrow()
+            .clone();
         assert_eq!(
             selected,
             Some("tracked.txt".to_string()),
@@ -1306,8 +1380,7 @@ mod ui_tests {
         let repo = repository();
         std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
         let cwd = repo.path().to_string_lossy().to_string();
-        let (mut root, state, _desktop, _dir, app) =
-            root_with(PaneKind::Diff { cwd });
+        let (mut root, state, _desktop, _dir, app) = root_with(PaneKind::Diff { cwd });
 
         click_text(&mut root, &app, "Split");
         assert!(state.borrow().diff_review(7).view.is_split());
@@ -1340,9 +1413,8 @@ mod ui_tests {
         let path = dir.path().join("notes.md");
         std::fs::write(&path, "hello\n").expect("file");
         let path = path.to_string_lossy().to_string();
-        let (mut root, state, _desktop, _dir, app) = root_with(PaneKind::File {
-            path: path.clone(),
-        });
+        let (mut root, state, _desktop, _dir, app) =
+            root_with(PaneKind::File { path: path.clone() });
 
         let commands = frame(&mut root, &app);
         let origin = commands
@@ -1353,7 +1425,9 @@ mod ui_tests {
                 }
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("the file pane header draws its floating control: {commands:?}"));
+            .unwrap_or_else(|| {
+                panic!("the file pane header draws its floating control: {commands:?}")
+            });
         click(&mut root, &app, origin + vec2f(6.0, 6.0));
 
         let s = state.borrow();

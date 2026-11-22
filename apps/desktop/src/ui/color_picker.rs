@@ -162,7 +162,12 @@ impl ColorWheel {
     fn abs_sv(&self) -> Option<RectF> {
         let o = self.origin?;
         let r = self.sv_rect?;
-        Some(rectf(o.x() + r.min_x(), o.y() + r.min_y(), r.width(), r.height()))
+        Some(rectf(
+            o.x() + r.min_x(),
+            o.y() + r.min_y(),
+            r.width(),
+            r.height(),
+        ))
     }
 
     /// Absolute rect of the whole wheel.
@@ -212,11 +217,12 @@ impl Element for ColorWheel {
         app: &AppContext,
     ) -> Vector2F {
         let _ = app;
-        let side = WHEEL_SIZE.min(constraint.max.x).min(constraint.max.y).max(0.0);
-        // The square sits inside the ring's inner circle, with a small gap.
-        let sv = SV_SIZE
-            .min((side - RING_WIDTH * 2.0).max(0.0))
+        let side = WHEEL_SIZE
+            .min(constraint.max.x)
+            .min(constraint.max.y)
             .max(0.0);
+        // The square sits inside the ring's inner circle, with a small gap.
+        let sv = SV_SIZE.min((side - RING_WIDTH * 2.0).max(0.0)).max(0.0);
         self.sv_rect = Some(rectf((side - sv) * 0.5, (side - sv) * 0.5, sv, sv));
         let size = vec2f(side, side);
         self.size = Some(size);
@@ -316,8 +322,9 @@ impl Element for ColorWheel {
                 if let Some(r) = self.abs_sv() {
                     if contains(r, *position) {
                         let color = self.color_at_sv(r, *position);
-                        *dragging.borrow_mut() =
-                            Some(ColorPickerDrag { region: ColorRegion::Sv });
+                        *dragging.borrow_mut() = Some(ColorPickerDrag {
+                            region: ColorRegion::Sv,
+                        });
                         if let Some(cb) = &self.on_change {
                             (cb.borrow_mut())(color);
                         }
@@ -327,8 +334,9 @@ impl Element for ColorWheel {
                 if let Some(r) = self.abs_wheel() {
                     if self.ring_contains(r, *position) {
                         let color = self.color_at_ring(r, *position);
-                        *dragging.borrow_mut() =
-                            Some(ColorPickerDrag { region: ColorRegion::Ring });
+                        *dragging.borrow_mut() = Some(ColorPickerDrag {
+                            region: ColorRegion::Ring,
+                        });
                         if let Some(cb) = &self.on_change {
                             (cb.borrow_mut())(color);
                         }
@@ -420,29 +428,45 @@ mod tests {
             &mut LayoutContext,
             &app,
         );
-        wheel.paint(vec2f(0.0, 0.0), &mut PaintContext::new(goble_ui::render::Renderer::new()), &app);
+        wheel.paint(
+            vec2f(0.0, 0.0),
+            &mut PaintContext::new(goble_ui::render::Renderer::new()),
+            &app,
+        );
 
         // Mid-band at 3 o'clock is hue 0 (red); mid-band at the bottom is 90.
         let center = WHEEL_SIZE * 0.5;
         let radius = center - RING_WIDTH * 0.5;
         let right = vec2f(center + radius, center);
         assert!(wheel.dispatch_event(
-            &DispatchedEvent::MouseDown { position: right, button: 0 },
+            &DispatchedEvent::MouseDown {
+                position: right,
+                button: 0
+            },
             &mut ctx,
             &app,
         ));
         let (hue, _, _) = rgb_to_hsv(changed.borrow().unwrap());
-        assert!(!(5.0..=355.0).contains(&hue), "3 o'clock is red, got hue {hue}");
+        assert!(
+            !(5.0..=355.0).contains(&hue),
+            "3 o'clock is red, got hue {hue}"
+        );
 
         let mut ctx = EventContext;
         let below = vec2f(center, center + radius);
         assert!(wheel.dispatch_event(
-            &DispatchedEvent::MouseDown { position: below, button: 0 },
+            &DispatchedEvent::MouseDown {
+                position: below,
+                button: 0
+            },
             &mut ctx,
             &app,
         ));
         let (hue, _, _) = rgb_to_hsv(changed.borrow().unwrap());
-        assert!((hue - 90.0).abs() < 5.0, "clockwise from red is hue 90, got {hue}");
+        assert!(
+            (hue - 90.0).abs() < 5.0,
+            "clockwise from red is hue 90, got {hue}"
+        );
     }
 
     #[test]
@@ -458,7 +482,11 @@ mod tests {
             &mut LayoutContext,
             &app,
         );
-        wheel.paint(vec2f(0.0, 0.0), &mut PaintContext::new(goble_ui::render::Renderer::new()), &app);
+        wheel.paint(
+            vec2f(0.0, 0.0),
+            &mut PaintContext::new(goble_ui::render::Renderer::new()),
+            &app,
+        );
 
         // Top-right corner of the square: saturation and value near maximum.
         let sv = wheel.abs_sv().expect("the square is laid out");
@@ -486,7 +514,11 @@ mod tests {
             &mut LayoutContext,
             &app,
         );
-        wheel.paint(vec2f(0.0, 0.0), &mut PaintContext::new(goble_ui::render::Renderer::new()), &app);
+        wheel.paint(
+            vec2f(0.0, 0.0),
+            &mut PaintContext::new(goble_ui::render::Renderer::new()),
+            &app,
+        );
 
         // The top-left corner of the wheel's box is outside the ring.
         assert!(!wheel.dispatch_event(
@@ -503,16 +535,16 @@ mod tests {
     fn the_wheel_paints_the_ring_image_and_both_knobs() {
         let app = AppContext::default();
         let mut element = wheel_box(ColorU::new(255, 0, 0, 255));
-        let commands = goble_ui::test_util::render_element(
-            &mut element,
-            vec2f(WHEEL_SIZE, WHEEL_SIZE),
-            &app,
-        );
+        let commands =
+            goble_ui::test_util::render_element(&mut element, vec2f(WHEEL_SIZE, WHEEL_SIZE), &app);
 
         let ring = commands.iter().find_map(|c| match c {
-            RenderCommand::DrawImage { rect, source, width, .. } => {
-                Some((*rect, source.clone(), *width))
-            }
+            RenderCommand::DrawImage {
+                rect,
+                source,
+                width,
+                ..
+            } => Some((*rect, source.clone(), *width)),
             _ => None,
         });
         let (rect, source, width) = ring.expect("the hue ring is one image command");
@@ -527,4 +559,3 @@ mod tests {
         assert_eq!(rows, SV_ROWS, "the square is one fade row per value step");
     }
 }
-

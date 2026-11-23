@@ -751,6 +751,11 @@ impl UiState {
                     messages: rt.map(|r| r.messages.clone()).unwrap_or_default(),
                     composer_draft: session.draft.clone(),
                     composer_path: session.path.clone(),
+                    composer_focused: if *pane_id == super::SIDE_AGENT_PANE_ID {
+                        self.side_composer_focused
+                    } else {
+                        self.composer_focused && self.active_pane_id == *pane_id
+                    },
                     // A viewer pane's connection state is the same map the
                     // events write; a pane with no entry is not a viewer pane
                     // and draws no connection line.

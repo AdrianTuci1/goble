@@ -1982,12 +1982,21 @@ pub fn build_side_panel(
         content
     } else {
         let topbar = side_tab_topbar(app, state, actions, kind);
+        let inner_pad = if kind == SideTabKind::Terminal {
+            EdgeInsets::new(0.0, 0.0, 0.0, 0.0)
+        } else {
+            EdgeInsets::uniform(
+                crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET + 8.0,
+            )
+        };
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(topbar)
             .with_child(Divider::horizontal().finish());
-        column = column.with_child(Expanded::new(content).finish());
+        column = column.with_child(
+            Expanded::new(Container::new(content).with_padding(inner_pad).finish()).finish(),
+        );
         column.finish()
     };
     // A horizontal swipe on the content steps the strip; vertical travel goes
@@ -2011,24 +2020,14 @@ pub fn build_side_panel(
     // frame: the `Bg` runs to the boundary so no gap or line separates it from
     // the main card (which crosses under it by the canceled gutter).
     let inset = crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET;
-    // Terminal content applies its own side padding per row; adding the
-    // panel-level inset on top would double it. The other tabs keep the
-    // reference's 16 pt content inset.
-    let content_padding = if kind == SideTabKind::Terminal || kind == SideTabKind::Review {
-        EdgeInsets::new(0.0, 0.0, 0.0, 0.0)
-    } else {
-        EdgeInsets::uniform(inset + 8.0)
-    };
     let body = Container::new(body)
         .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
-        .with_padding(content_padding)
         .finish();
     // The side panel is its own black surface (agent, terminal, files and
     // review tabs all sit on `Bg`), so it reads apart from the grey sidebar and
     // topbar material.
     Container::new(body)
         .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
-        .with_padding(EdgeInsets::new(0.0, inset, inset, inset))
         .finish()
 }
 

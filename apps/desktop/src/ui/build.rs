@@ -3928,6 +3928,53 @@ mod tests {
         assert!(!state.borrow().spaces[0].is_floating_overlay(pane));
     }
 
+    /// 279: the Side Question composer takes a real click, focus and a typed
+    /// character on the reserved side pane.
+    #[test]
+    fn the_side_question_composer_takes_focus_and_typing() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![crate::state::SideTabKind::Agent];
+            s.active_side_tab = 0;
+        }
+        let size = vec2f(1600.0, 1000.0);
+        let commands = render_element(&mut root, size, &app);
+        let placeholder = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Ask anything..." && origin.x > size.x * 0.55 =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Side Question composer placeholder");
+        click(&mut root, &app, placeholder + vec2f(12.0, 8.0));
+        assert!(
+            state.borrow().side_composer_focused,
+            "the side composer takes focus"
+        );
+        let _ = render_element(&mut root, size, &app);
+        let mut ctx = EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "a".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert_eq!(
+            state.borrow().pane_sessions[&crate::state::SIDE_AGENT_PANE_ID].draft,
+            "a",
+            "typing reaches the side composer's draft"
+        );
+    }
+
     /// AF: every side tab gets a content topbar; Terminal/TaskOutput add the
     /// shared Terminals + Background Tasks rail.
     #[test]

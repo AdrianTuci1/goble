@@ -420,14 +420,6 @@ fn build_window_dock(
         .finish()
 }
 
-/// The first leaf id in a pane subtree, used by a stacked split's close control.
-fn first_leaf_id(pane: &Pane) -> Option<u64> {
-    match pane {
-        Pane::Leaf { id, .. } => Some(*id),
-        Pane::Split { first, .. } => first_leaf_id(first),
-    }
-}
-
 fn build_pane(
     app: &AppContext,
     state: &UiSnapshot,
@@ -465,7 +457,7 @@ fn build_pane(
             let slot_min = crate::state::pane_slot_min_width();
             let min_first = pane_min_width(first, slot_min);
             let min_second = pane_min_width(second, slot_min);
-            let second_leaf = first_leaf_id(second);
+            let second_leaf_id = second.first_leaf_id();
             let first = build_pane(app, state, actions, first);
             let second = build_pane(app, state, actions, second);
             // A split with one side lifted collapses onto the side that stays:
@@ -479,59 +471,6 @@ fn build_pane(
                 SplitDir::Horizontal => Axis::Horizontal,
                 SplitDir::Vertical => Axis::Vertical,
             };
-            // A stacked split carries a topbar-height bar above its lower
-            // pane: the gutter between the two panes, with the close "x" at its
-            // right. The bar belongs to the lower pane, so the panes keep one
-            // divider between them and the drag boundary stays where it was.
-            let second = if *dir == SplitDir::Vertical {
-                let close_id = second_leaf;
-                let on_activate = actions.on_pane_activate.clone();
-                let on_close = actions.on_close_pane.clone();
-                let close = Tooltip::new(
-                    TopbarButton::new(
-                        Icon::new("x")
-                            .with_size(12.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
-                    )
-                    .with_size(24.0)
-                    .with_corner_radius(6.0)
-                    .with_on_click(move || {
-                        if let Some(id) = close_id {
-                            (on_activate.borrow_mut())(id);
-                        }
-                        (on_close.borrow_mut())();
-                    })
-                    .finish(),
-                    "Close pane",
-                )
-                .with_position(TooltipPosition::Below)
-                .finish();
-                let bar = Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(Spacer::new().finish())
-                    .with_child(close)
-                    .finish();
-                let bar = Container::new(bar)
-                    // The gutter band reads as shell chrome: grey surface, a
-                    // touch taller than the topbar itself.
-                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                    .with_padding(EdgeInsets::new(8.0, 0.0, 8.0, 0.0))
-                    .finish();
-                let bar = ConstrainedBox::new(bar)
-                    .with_height(crate::ui::chrome::CHROME_HEIGHT + 6.0)
-                    .finish();
-                Flex::column()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                    .with_child(bar)
-                    .with_child(Divider::horizontal().with_thickness(1.0).finish())
-                    .with_child(Expanded::new(second).finish())
-                    .finish()
-            } else {
-                second
-            };
             let dragging = state.dragging_pane_id == Some(*id);
             let on_start = actions.on_pane_drag_start.clone();
             let on_move = actions.on_pane_drag_move.clone();
@@ -544,7 +483,14 @@ fn build_pane(
                 .with_on_drag_end(move || (on_end.borrow_mut())());
             let node = match dir {
                 SplitDir::Horizontal => node.with_min_panes(min_first, min_second),
-                SplitDir::Vertical => node,
+                SplitDir::Vertical => {
+                    let on_activate = actions.on_pane_activate.clone();
+                    let on_close = actions.on_close_pane.clone();
+                    node.with_gap(36.0).with_on_close(move || {
+                        (on_activate.borrow_mut())(second_leaf_id);
+                        (on_close.borrow_mut())();
+                    })
+                }
             };
             Some(Box::new(node))
         }

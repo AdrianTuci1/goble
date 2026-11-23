@@ -113,6 +113,8 @@ pub struct PaneChatSnapshot {
     pub messages: Vec<UiChatMessage>,
     pub composer_draft: String,
     pub composer_path: String,
+    /// Whether this pane's composer owns the keyboard.
+    pub composer_focused: bool,
     /// This pane's viewer session, when the pane is a viewer pane: the worker
     /// its conversation runs on and the state of that connection. `None` for
     /// every other pane, including a chat pane — which is what makes the two

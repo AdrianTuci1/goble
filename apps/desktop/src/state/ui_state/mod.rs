@@ -207,6 +207,9 @@ pub struct UiState {
     pub queued_prompt: Option<String>,
     pub composer_draft: String,
     pub composer_focused: bool,
+    /// AF: the Side Question composer's own focus, independent of the active
+    /// pane's composer.
+    pub side_composer_focused: bool,
     /// Model choices shown in the composer's model dropdown.
     pub models: Vec<String>,
     /// The same models grouped the way the model tray lists them: one column

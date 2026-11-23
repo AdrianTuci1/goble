@@ -1251,10 +1251,8 @@ pub fn make_actions(
                         .slash_dismissed
                         .borrow_mut() = false;
                 }
-                SideChatAction::Focus(_focused) => {
-                    // Focus is per element tree: the frame that draws the side
-                    // composer is the one that owns its caret, so there is no
-                    // app-wide flag to flip here.
+                SideChatAction::Focus(focused) => {
+                    state.side_composer_focused = focused;
                 }
                 SideChatAction::Attach => {
                     if let Some(path) = goble_ui::platform::current::pick_file() {

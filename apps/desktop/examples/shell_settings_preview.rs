@@ -328,6 +328,12 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "stacked-split",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "floating-file",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -381,6 +387,27 @@ fn main() -> anyhow::Result<()> {
                             goble_app::state::PaneKind::File { path: file.clone() },
                         );
                         s.attach_pane_file(pane, file);
+                    }
+                }
+                if name == "stacked-split" {
+                    let space_index = s.active_space;
+                    let pane = s.active_pane_id;
+                    let mut next = s.next_pane_id;
+                    if let Some(space) = s.spaces.get_mut(space_index) {
+                        if let Some(second) = space.split_with_kind(
+                            pane,
+                            goble_app::ui::SplitDir::Vertical,
+                            &mut next,
+                            goble_app::state::PaneKind::Terminal,
+                        ) {
+                            s.next_pane_id = next;
+                            s.terminal.borrow_mut().sessions.insert(
+                                second,
+                                goble_app::terminal::TerminalSession::preview_screen(
+                                    "user@goble ~ % echo lower\r\nlower\r\nuser@goble ~ % ",
+                                ),
+                            );
+                        }
                     }
                 }
                 if name.starts_with("floating-file") {

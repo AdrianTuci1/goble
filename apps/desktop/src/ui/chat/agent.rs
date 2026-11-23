@@ -490,7 +490,7 @@ pub fn build_agent_chat(
         .with_composer_value(session.composer_draft.clone())
         // Only the active pane's composer is focused, so a background chat pane
         // never swallows keys before the active pane (e.g. a terminal) sees them.
-        .with_composer_focused(active && state.composer_focused)
+        .with_composer_focused(active && session.composer_focused)
         .with_composer_caret(controls.caret.clone())
         .with_composer_anchor(controls.selection_anchor.clone())
         // The clipboard is the pane's own: a copy, a cut and a paste in the

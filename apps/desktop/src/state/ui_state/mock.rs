@@ -75,6 +75,7 @@ impl UiState {
             queued_prompt: None,
             composer_draft: String::new(),
             composer_focused: false,
+            side_composer_focused: false,
             models: vec![
                 "goble-agent".to_string(),
                 "goble-agent (fast)".to_string(),

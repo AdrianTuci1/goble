@@ -133,6 +133,7 @@ impl UiState {
             queued_prompt: None,
             composer_draft: String::new(),
             composer_focused: false,
+            side_composer_focused: false,
             models: Vec::new(),
             model_groups: Vec::new(),
             composer_catalog: goble_harness_types::HarnessCatalog::empty(),

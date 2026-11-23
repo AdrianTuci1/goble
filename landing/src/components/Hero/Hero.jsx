@@ -87,6 +87,12 @@ const Hero = () => {
         </div>
       </div>
 
+      {/* The spotlight showcase image moved here from the second section:
+          the first section owns the product visual now. */}
+      <div className="hero-showcase">
+        <img src="/misc/second.png" alt="Octomus spotlight launcher" />
+      </div>
+
       <HeroVisual phase="hud" />
     </section>
   );

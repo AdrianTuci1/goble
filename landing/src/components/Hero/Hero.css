@@ -158,3 +158,27 @@
     font-size: 0.9rem;
   }
 }
+
+/* The spotlight showcase image moved into the hero section. */
+.hero-showcase {
+  width: 100%;
+  max-width: var(--container-width);
+  margin: 2.5rem auto 0;
+  padding: 0 2.5rem;
+}
+
+.hero-showcase img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 18px;
+  border: 1px solid #232328;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+}
+
+@media (max-width: 900px) {
+  .hero-showcase {
+    padding: 0 1.5rem;
+    margin-top: 1.5rem;
+  }
+}

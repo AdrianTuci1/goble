@@ -1,176 +1,357 @@
-.gpu-section {
+/* The two-up "teammate" section: dark marketing cards with real product
+   visuals, mirroring the reference layout (visual on top, caption, heading,
+   paragraph) on the app's dark theme. */
+.teammate-section {
   width: 100%;
-  position: relative;
-  overflow: hidden;
+  background: #0a0a0b;
+  border-top: 1px solid #1b1b1e;
+  border-bottom: 1px solid #1b1b1e;
 }
 
-.gpu-container {
-  width: 100%;
+.teammate-container {
   max-width: var(--container-width);
   margin: 0 auto;
-  padding: 8rem 2.5rem;
+  padding: 6rem 2.5rem 7rem;
+}
+
+.teammate-title {
+  font-size: clamp(2rem, 3.4vw, 3.1rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: #f2f2f4;
+  margin: 0 0 3rem;
+}
+
+.teammate-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+}
+
+.teammate-card {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+}
+
+.teammate-visual {
   position: relative;
-  z-index: 1;
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(140deg, #6f8592 0%, #93a8b4 42%, #c3d0d8 68%, #8ea3ae 100%);
+  min-height: 420px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
-
-
-.gpu-top-label {
+/* left visual: app window + testing timeline */
+.test-visual {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: var(--fs-small);
+  align-items: stretch;
+  gap: 0.9rem;
+  padding: 1.6rem 1.4rem;
+}
+
+.test-screenshot {
+  position: relative;
+  flex: 1.35;
+  min-width: 0;
+  background: #101114;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+}
+
+.test-window-bar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #0c0d10;
+  border-bottom: 1px solid #202127;
+}
+
+.test-window-bar .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #2a2b31;
+}
+
+.test-screenshot img {
+  display: block;
+  width: 100%;
+  height: calc(100% - 31px);
+  object-fit: cover;
+  object-position: top left;
+}
+
+.test-cursor {
+  position: absolute;
+  left: 38%;
+  top: 62%;
+  width: 0;
+  height: 0;
+  border-left: 9px solid #f2f2f4;
+  border-bottom: 14px solid transparent;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.8));
+}
+
+.test-timeline {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.2rem 0.4rem 0.6rem;
+  color: #101114;
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
+.test-timeline-head {
+  font-size: 0.78rem;
   font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.1rem;
-  margin-bottom: 2rem;
+  margin-bottom: 0.7rem;
+  color: #101114;
 }
 
-.gpu-content-top {
+.test-step {
   display: flex;
-  justify-content: space-between;
-  gap: var(--gap-lg);
-  margin-bottom: 4rem;
+  align-items: flex-start;
+  gap: 0.35rem;
+  padding: 0.22rem 0;
 }
 
-.gpu-title {
-  font-size: var(--fs-title-lg);
-  font-weight: 400;
-  line-height: 1.1;
-  letter-spacing: -1px;
-  max-width: 600px;
-  color: var(--text-primary);
-  text-align: left;
-  /* Left aligned on padding line */
+.test-step-time {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+  flex: 0 0 26px;
 }
 
-.gpu-description-box {
-  max-width: 450px;
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.gpu-text {
-  font-size: var(--fs-body);
-  color: var(--text-secondary);
+.test-step-state {
+  flex: 0 0 12px;
+  font-size: 0.62rem;
   line-height: 1.6;
 }
 
-.gpu-logos {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-md);
-  margin-top: 1rem;
+.test-step-state.done {
+  color: #1f8a4c;
 }
 
-.gpu-logo-item {
+.test-step-state.run {
+  color: #5b6670;
+}
+
+.test-step-label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* right visual: model picker + detail */
+.model-visual {
+  padding: 2.4rem 2rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  background: linear-gradient(140deg, #6f8592 0%, #93a8b4 42%, #c3d0d8 68%, #8ea3ae 100%);
+}
+
+.model-picker,
+.model-detail {
+  background: #f6f6f7;
+  color: #101114;
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  font-size: 0.78rem;
+}
+
+.model-picker {
+  width: 46%;
+  padding: 0.7rem;
+  transform: translateY(-8px);
+  z-index: 2;
+}
+
+.model-search {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: var(--text-primary);
+  color: #8a8f97;
+  padding: 0.5rem 0.6rem 0.7rem;
+  border-bottom: 1px solid #e3e4e7;
+}
+
+.model-search-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.model-list {
+  padding-top: 0.4rem;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.46rem 0.6rem;
+  border-radius: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-row.selected {
+  background: #e9eaec;
+}
+
+.model-glyph {
+  width: 16px;
+  text-align: center;
   opacity: 0.8;
 }
 
-.gpu-square {
-  width: 8px;
-  height: 8px;
-  border-radius: 1px;
-  flex-shrink: 0;
+.model-divider {
+  height: 1px;
+  background: #e3e4e7;
+  margin: 0.35rem 0.2rem;
 }
 
-.gpu-square.commands {
-  background-color: #3b82f6;
+.model-section-label {
+  color: #7d838c;
+  font-size: 0.68rem;
+  padding: 0.3rem 0.6rem 0.2rem;
 }
 
-.gpu-square.autocomplete {
-  background-color: #10b981;
+.model-detail {
+  width: 54%;
+  margin-left: -14px;
+  padding: 1rem 1rem 0.9rem;
+  transform: translateY(18px);
 }
 
-.gpu-square.agents {
-  background-color: #ec4899;
+.model-detail-title {
+  font-size: 0.95rem;
+  font-weight: 500;
+  margin-bottom: 0.35rem;
 }
 
-.gpu-dashboard-placeholder {
-  width: 100%;
-  /* The screenshot sits lower than the copy block, and inside a frame that
-     carries the frosted colour behind it. */
-  margin-top: 2.5rem;
-  padding: 4.5rem 0 0;
-  position: relative;
-  overflow: hidden;
+.model-detail-desc {
+  color: #6e747d;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  margin-bottom: 0.8rem;
+}
+
+.model-detail-row {
   display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  border: 1px solid var(--border-color);
-  /* Blue at the top left, orange at the bottom right, with a dark spine
-     between them so the screenshot keeps its contrast. */
-  background:
-    radial-gradient(120% 140% at 6% -10%, rgba(64, 132, 255, 0.62), transparent 62%),
-    radial-gradient(110% 130% at 102% 108%, rgba(255, 138, 61, 0.5), transparent 64%),
-    linear-gradient(155deg, #0a1226 0%, #0b1220 52%, #1a100a 100%);
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.34rem 0;
+  border-bottom: 1px solid #e9eaec;
 }
 
-/* Frost: a soft haze over the gradient, so the colour reads as ice rather
-   than a clean wash. */
-.gpu-dashboard-placeholder::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(60% 80% at 22% 8%, rgba(226, 240, 255, 0.24), transparent 68%),
-    radial-gradient(50% 70% at 82% 96%, rgba(255, 233, 214, 0.18), transparent 70%),
-    radial-gradient(120% 40% at 50% 0%, rgba(255, 255, 255, 0.08), transparent 70%);
-  backdrop-filter: blur(0.5px);
-  pointer-events: none;
+.model-detail-row:last-of-type {
+  border-bottom: 0;
 }
 
-/* Grain on top of the haze: a fractal-noise tile, blended so it texturises the
-   gradient instead of greying it. */
-.gpu-dashboard-placeholder::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 180px 180px;
-  opacity: 0.22;
-  mix-blend-mode: overlay;
-  pointer-events: none;
+.model-detail-value {
+  color: #7d838c;
+  font-size: 0.72rem;
 }
 
-.gpu-dashboard-img {
-  width: 85%;
-  height: auto;
-  object-fit: contain;
-  display: block;
+.model-toggle {
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: #3b6ef5;
   position: relative;
-  z-index: 1;
 }
 
-@media (max-width: 1024px) {
-  .gpu-content-top {
-    flex-direction: column;
-    gap: 2rem;
-  }
+.model-toggle::after {
+  content: '';
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
 }
 
-@media (max-width: 640px) {
-  .gpu-container {
-    padding: 6rem 1.25rem;
+.model-detail-fusion {
+  border-bottom: 0;
+  padding-bottom: 0.2rem;
+}
+
+.model-gradient-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  margin-top: 0.4rem;
+  background: linear-gradient(90deg, #2f9e63 0%, #d9a13b 38%, #e2564d 66%, #8b5cf6 100%);
+}
+
+.model-gradient-knob {
+  position: absolute;
+  top: -4px;
+  left: 54%;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* caption under the visual */
+.teammate-caption {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  color: #8b9097;
+  font-size: 0.78rem;
+}
+
+.teammate-chip {
+  background: #1c1d21;
+  border: 1px solid #2a2b30;
+  color: #d8d9dc;
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.teammate-caption-text {
+  color: #8b9097;
+}
+
+/* heading + copy under each visual */
+.teammate-heading {
+  font-size: clamp(1.35rem, 1.7vw, 1.7rem);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: #f2f2f4;
+  margin: 1.6rem 0 0.7rem;
+}
+
+.teammate-text {
+  color: #9a9ea5;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin: 0;
+  max-width: 560px;
+}
+
+@media (max-width: 900px) {
+  .teammate-grid {
+    grid-template-columns: 1fr;
   }
 
-  .gpu-content-top {
-    margin-bottom: 3rem;
+  .teammate-container {
+    padding: 4rem 1.5rem;
   }
 
-  .gpu-dashboard-placeholder {
-    width: min(760px, 190vw);
-    max-width: none;
-    align-self: flex-start;
+  .test-visual,
+  .model-visual {
+    min-height: 340px;
   }
 }

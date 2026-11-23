@@ -179,10 +179,11 @@ unchanged composer (`slash-menu-*`), the Review tab beside the main chat
 (`split-review-*`), the file viewer with Review beside it
 (`split-file-viewer-*`) and the narrow split (`split-review-narrow-*`). The
 review surface has no inner header band: directly under the one general topbar
-its file column sits on the left as full-width bordered cards (real
-per-extension file icon, bold filename, muted tail-truncated path, counts, fold
-chevron and inline stacked diff) and the fixed 260 pt "Files Changed" rail on
-the right. The topbar's right edge ends in exactly the More kebab and the round
+its file column sits on the left as a flat list (per-extension letter badge,
+bold filename, muted tail-truncated path, counts, fold chevron, thin row
+dividers and inline stacked diff; no per-row outer border) and the "Files
+Changed" flat rail on the right at about 40% of the panel width (no per-row
+border). The topbar's right edge ends in exactly the More kebab and the round
 panel menu, with a 1 px rule between panel 1 and panel 2. The
 chat's changed-files card is the simpler T3 model: one collapsible bordered
 card on the chat background, "N files changed" + counts + chevron and a

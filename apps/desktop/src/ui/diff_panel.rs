@@ -309,12 +309,24 @@ pub(crate) fn build_review_tab(
         .is_some_and(|controls| *controls.diff_commit_open.borrow());
     // A narrow panel shows the diff alone: the ReviewTab selector in the
     // header still chooses files, and the one rail is the wide-layout list.
+    // The side panel is the trailing share of the content area the sidebar
+    // leaves, not of the whole window. Using the window width here made the
+    // rail too wide and squeezed the file list.
+    let area_width = (state.window_size.x
+        - if state.sidebar_visible {
+            state.sidebar_width
+        } else {
+            0.0
+        })
+    .max(240.0);
     let panel_width = if state.side_panel_maximized {
-        state.window_size.x.max(900.0)
+        area_width.max(900.0)
     } else {
-        (state.window_size.x * state.side_split_ratio).max(240.0)
+        (area_width
+            * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, area_width))
+        .max(240.0)
     };
-    let show_rail = panel_width >= 760.0;
+    let show_rail = panel_width >= 520.0;
     let compact = panel_width < 900.0;
 
     let mut column = Flex::column()
@@ -334,7 +346,11 @@ pub(crate) fn build_review_tab(
         }
         let selected = controls.diff_selected.borrow().clone();
         let expanded = controls.diff_expanded.borrow().clone();
-        let rail_width = if show_rail { 260.0 } else { 0.0 };
+        let rail_width = if show_rail {
+            (panel_width * 0.40).clamp(200.0, 420.0)
+        } else {
+            0.0
+        };
         let editing = controls.diff_editing.borrow().clone();
         let editors = state.pane_diff_editors.get(&pane_id);
         column = column.with_child(
@@ -1225,23 +1241,22 @@ fn file_block(
             content_width,
         ));
     }
-    // 202: every file is a full-width card with a 1 px rounded Border; the
-    // inline diff lives inside it and hover/selection paint over the border.
-    let card = Container::new(column.finish())
-        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-        .with_corner_radius(8.0)
-        .finish();
-    let card: Box<dyn Element> = if content_width > 0.0 {
-        ConstrainedBox::new(card).with_width(content_width).finish()
+    // 214: the file list is flat — no per-file card or outer border. One thin
+    // divider closes each row and the expanded diff sits inside that row.
+    column = column.with_child(Divider::horizontal().finish());
+    let row: Box<dyn Element> = if content_width > 0.0 {
+        ConstrainedBox::new(column.finish())
+            .with_width(content_width)
+            .finish()
     } else {
-        card
+        column.finish()
     };
-    // The whole card is still the file's context-menu target.
+    // The whole row is still the file's context-menu target.
     let on_file_menu = actions.on_file_menu.clone();
     let menu_path = file.absolute_path.clone();
     let menu_copy_path = file.path.clone();
     file_menu::context_click(
-        card,
+        row,
         Rc::new(RefCell::new(move |at| {
             (on_file_menu.borrow_mut())(menu_path.clone(), menu_copy_path.clone(), at);
         })),
@@ -1278,8 +1293,11 @@ fn file_header(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(10.0)
         .with_child(
-            Icon::new(reviewer::file_type_icon(&file.path))
-                .with_size(14.0)
+            Text::new(reviewer::type_badge(&file.path))
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(11.0)
+                .with_weight(FontWeight::Bold)
+                .with_theme_color(reviewer::badge_color(&file.path), app)
                 .finish(),
         )
         .with_child(

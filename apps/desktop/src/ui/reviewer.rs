@@ -1374,20 +1374,17 @@ mod ui_tests {
         );
     }
 
-    /// 204: each extension gets its real file-type asset; unknown text files
-    /// fall back to the generic document.
+    /// 218: the letter badge is per-extension and keeps the reference's glyphs.
     #[test]
-    fn file_rows_use_the_per_extension_assets() {
-        assert_eq!(super::file_type_icon("src/lib.rs"), "file-rust");
-        assert_eq!(super::file_type_icon("include/wheel.h"), "file-c");
-        assert_eq!(super::file_type_icon("wheel.c"), "file-c");
-        assert_eq!(super::file_type_icon("queue.cpp"), "file-cpp");
-        assert_eq!(super::file_type_icon("README.md"), "file-markdown");
-        assert_eq!(super::file_type_icon("package.json"), "file-json");
-        assert_eq!(super::file_type_icon("config.yaml"), "file-json");
-        assert_eq!(super::file_type_icon("run.sh"), "terminal");
-        assert_eq!(super::file_type_icon("Makefile"), "file");
-        assert_eq!(super::file_type_icon("LICENSE"), "file");
+    fn file_rows_use_per_extension_badges() {
+        assert_eq!(super::type_badge("src/lib.rs"), "R");
+        assert_eq!(super::type_badge("include/wheel.h"), "h");
+        assert_eq!(super::type_badge("wheel.c"), "c");
+        assert_eq!(super::type_badge("queue.cpp"), "c++");
+        assert_eq!(super::type_badge("README.md"), "M+");
+        assert_eq!(super::type_badge("package.json"), "{}");
+        assert_eq!(super::type_badge("config.yaml"), "Y");
+        assert_eq!(super::type_badge("run.sh"), ">_");
     }
 
     /// The toolbar toggles are real: the state flips and the bar's own label
@@ -1512,8 +1509,11 @@ pub(crate) fn files_changed_rail(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(7.0)
             .with_child(
-                Icon::new(file_type_icon(&file.path))
-                    .with_size(14.0)
+                Text::new(type_badge(&file.path))
+                    .with_font_family(FontFamily::Mono)
+                    .with_font_size(10.0)
+                    .with_weight(FontWeight::SemiBold)
+                    .with_theme_color(badge_color(&file.path), app)
                     .finish(),
             )
             .with_child(
@@ -1537,8 +1537,7 @@ pub(crate) fn files_changed_rail(
                 .finish(),
             )
             .finish();
-        // 210: the Files Changed rows wear the same 1 px rounded border as the
-        // left file cards; hover/selection only changes the fill inside.
+        // 216: flat Files Changed rows, no per-row border.
         let row = HoverRow::new(
             Container::new(row)
                 .with_padding(EdgeInsets::new(7.0, 9.0, 7.0, 9.0))
@@ -1551,10 +1550,6 @@ pub(crate) fn files_changed_rail(
             (on_files.borrow_mut())(absolute.clone());
         })
         .finish();
-        let row = Container::new(row)
-            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-            .with_corner_radius(8.0)
-            .finish();
         column = column.with_child(row);
     }
     ConstrainedBox::new(
@@ -1578,41 +1573,6 @@ fn short_dir(path: &str) -> String {
         String::new()
     } else {
         format!("…/{tail}")
-    }
-}
-
-/// 204: the per-extension asset the file rows draw instead of a generic
-/// document/letter badge. Unknown text files fall back to the generic file.
-pub(crate) fn file_type_icon(path: &str) -> &'static str {
-    let name = short_name(path);
-    let lower = name.to_ascii_lowercase();
-    if lower == "makefile" {
-        return "file";
-    }
-    if lower == "readme.md" {
-        return "file-markdown";
-    }
-    let ext = lower.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
-    match ext {
-        "rs" => "file-rust",
-        "c" | "h" => "file-c",
-        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "mm" => "file-cpp",
-        "py" | "pyi" => "file-python",
-        "js" | "jsx" | "mjs" | "cjs" => "file-javascript",
-        "ts" | "tsx" => "file-typescript",
-        "json" | "jsonc" | "yaml" | "yml" | "toml" => "file-json",
-        "md" | "mdx" => "file-markdown",
-        "go" => "file-go",
-        "sql" => "file-sql",
-        "zig" => "file-zig",
-        "wasm" => "file-wasm",
-        "kt" | "kts" => "file-kotlin",
-        "php" => "file-php",
-        "pl" | "pm" => "file-perl",
-        "tf" | "tfvars" => "file-terraform",
-        "mmd" => "file-mermaid",
-        "sh" | "bash" | "zsh" | "fish" => "terminal",
-        _ => "file",
     }
 }
 
@@ -1648,9 +1608,13 @@ pub(crate) fn badge_color(path: &str) -> ColorToken {
         .map(|(_, ext)| ext.to_string())
         .unwrap_or_default();
     match ext.as_str() {
-        "h" | "hpp" | "c" | "cc" | "cpp" | "rs" | "ts" | "tsx" | "js" | "jsx" => ColorToken::Accent,
-        "json" => ColorToken::Warning,
-        "yaml" | "yml" | "sh" | "bash" | "zsh" => ColorToken::Success,
+        "h" | "hpp" => ColorToken::Focus,
+        "c" | "cc" | "cpp" => ColorToken::Success,
+        "rs" => ColorToken::Error,
+        "ts" | "tsx" | "js" | "jsx" => ColorToken::Warning,
+        "json" | "yaml" | "yml" => ColorToken::Warning,
+        "sh" | "bash" | "zsh" => ColorToken::Success,
+        "md" => ColorToken::Text,
         _ => ColorToken::Muted,
     }
 }

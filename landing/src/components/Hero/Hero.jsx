@@ -89,8 +89,17 @@ const Hero = () => {
       {/* The spotlight showcase image moved here from the second section,
           inside the same gradient frame it had there. The animated hero
           visual (motion design) is gone from the landing page. */}
-      <div className="hero-showcase">
-        <img src="/misc/second.png" alt="Octomus spotlight launcher" />
+      {/* The splash visual moved here from the second section, rebuilt with the
+          exact original frame (gradient ground, grain, 85% screenshot, no side
+          space in the frame's own padding). */}
+      <div className="hero-showcase-wrap">
+        <div className="gpu-dashboard-placeholder">
+          <img
+            src="/misc/second.png"
+            alt="Octomus spotlight launcher"
+            className="gpu-dashboard-img"
+          />
+        </div>
       </div>
     </section>
   );

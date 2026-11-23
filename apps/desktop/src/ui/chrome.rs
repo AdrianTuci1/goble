@@ -650,28 +650,33 @@ pub fn build_chrome_row(
                 SECTION_VERTICAL_PADDING,
             ))
             .finish();
-        // The strip's panel-2 section takes exactly the width the side panel
-        // takes on the sheet, so dragging the split moves the topbar boundary
-        // with it. It mirrors the body: the sidebar (or its controls) on the
-        // left, the sheet margin, no left pane inset and the right one.
+        // The strip's panel-2 section must start on the body's own split
+        // boundary, so the topbar rule and the panel hairline are the same
+        // vertical line. Mirror the body's geometry exactly: the sheet keeps
+        // `WORKSPACE_MARGIN` inside the shell (sidebar or window edge), the pane
+        // area cancels its right inset by `PANE_INSET + 1`, and the split takes
+        // its ratio of that area.
+        let window_width = state.window_size.x;
         let body_sidebar_width = if sidebar_shown {
             state.sidebar_width
         } else {
             0.0
         };
-        let content_width = (state.window_size.x
+        let area_width = (window_width
             - body_sidebar_width
-            - 2.0 * crate::ui::shell::WORKSPACE_MARGIN
-            - crate::ui::panes::PANE_AREA_INSET)
+            - 2.0 * crate::ui::shell::WORKSPACE_MARGIN)
             .max(0.0);
-        let side_width = content_width
-            * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, content_width);
+        let side_width = area_width
+            * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, area_width);
+        let boundary_x =
+            body_sidebar_width + crate::ui::shell::WORKSPACE_MARGIN + (area_width - side_width);
+        let side_section_width = (window_width - boundary_x - SEPARATOR_WIDTH).max(0.0);
         // The first frame (and a headless test) can build before the window
         // measures itself: fall back to the flexible section until the width is
         // known, so the chips are never laid out at zero width.
-        let side_section = if state.window_size.x > 0.0 {
+        let side_section = if window_width > 0.0 {
             ConstrainedBox::new(side_section)
-                .with_width(side_width)
+                .with_width(side_section_width)
                 .finish()
         } else {
             Expanded::new(side_section).finish()

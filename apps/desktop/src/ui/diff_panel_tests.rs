@@ -426,46 +426,6 @@ fn the_topbar_draws_the_tree_totals_and_its_controls_above_the_cards() {
     }
 }
 
-/// The header's path keeps inside the room the copy control leaves: a deep
-/// path is cut there and fades into the card, instead of painting under the
-/// control.
-#[test]
-fn a_long_path_stops_at_the_copy_control_and_fades() {
-    if !git_available() {
-        return;
-    }
-    let repo = repository();
-    let nested = "alpha-one/beta-two/gamma-three/delta-four/epsilon-five/zeta-six/eta-seven/theta-eight/iota-nine/kappa-ten";
-    let dir = repo.path().join(nested);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("a_really_long_file_name_for_the_review.txt"),
-        "changed\n",
-    )
-    .unwrap();
-    let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
-
-    let commands = frame(&mut root, &app);
-    let copy = commands
-        .iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawIcon { origin, name, .. } if name == "copy" => Some(*origin),
-            _ => None,
-        })
-        .expect("the card header draws its copy control");
-    assert!(
-        commands.iter().any(|command| matches!(
-            command,
-            RenderCommand::DrawText { text, .. } if text.contains("a_really_long_file_name")
-        )),
-        "the header still names the file, cut at the copy control: {commands:?}"
-    );
-}
-
-/// Y: clicking a file row in the review's Files Changed rail opens the side
-/// panel's Files tab on that file (and selects it in the review). No main pane
-/// is split or retargeted.
 #[test]
 fn clicking_a_review_file_opens_the_side_files_tab() {
     if !git_available() {
@@ -476,6 +436,15 @@ fn clicking_a_review_file_opens_the_side_files_tab() {
     std::fs::write(repo.path().join("new.txt"), "gamma\n").unwrap();
     let cwd = repo.path().to_string_lossy().to_string();
     let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
+    {
+        let mut s = state.borrow_mut();
+        s.right_sidebar_open = true;
+        s.side_panel_maximized = true;
+        s.side_split_ratio = 0.75;
+        s.side_tabs = vec![crate::state::SideTabKind::Review];
+        s.active_side_tab = 0;
+        s.select_diff_file(7, None);
+    }
     let pane_before = state.borrow().active_pane_id;
     let max_before = state.borrow().spaces[0].root.max_id();
 
@@ -524,8 +493,10 @@ fn a_clean_tree_says_there_are_no_open_changes() {
     assert!(drawn.iter().any(|text| text == "0 files"));
 }
 
+/// Y: selecting a file in the rail expands its inline diff but leaves every
+/// file row in the list; there is no "All changes" restoration row.
 #[test]
-fn selecting_a_file_narrows_the_view_and_all_changes_restores_it() {
+fn selecting_a_file_expands_it_but_keeps_the_whole_list() {
     if !git_available() {
         return;
     }
@@ -535,8 +506,6 @@ fn selecting_a_file_narrows_the_view_and_all_changes_restores_it() {
     let cwd = repo.path().to_string_lossy().to_string();
     let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
 
-    // R: selecting a row of the Files Changed rail narrows the stack to that
-    // file (the rail click path is covered by the reviewer rail tests).
     {
         let mut s = state.borrow_mut();
         let active = s.active_pane_id;
@@ -545,18 +514,23 @@ fn selecting_a_file_narrows_the_view_and_all_changes_restores_it() {
     let drawn = texts(&frame(&mut root, &app));
     assert!(
         drawn.iter().any(|text| text == "gamma"),
-        "the file's diff stays"
+        "the new file's diff"
     );
     assert!(
-        !drawn.iter().any(|text| text == "beta"),
-        "the other file's diff is out of the view: {drawn:?}"
+        drawn.iter().any(|text| text == "beta"),
+        "the other file row and its diff stay in the list: {drawn:?}"
     );
-    assert!(drawn.iter().any(|text| text == "All changes"));
-
-    click_text(&mut root, &app, "All changes");
-    let drawn = texts(&frame(&mut root, &app));
-    assert!(drawn.iter().any(|text| text == "beta"));
-    assert!(drawn.iter().any(|text| text == "gamma"));
+    assert!(
+        !drawn.iter().any(|text| text == "All changes"),
+        "the rail has no All changes row: {drawn:?}"
+    );
+    assert_eq!(
+        state.borrow().pane_controls[&state.borrow().active_pane_id]
+            .diff_selected
+            .borrow()
+            .as_deref(),
+        Some("new.txt")
+    );
 }
 
 #[test]
@@ -655,18 +629,14 @@ fn a_directory_outside_a_repository_says_there_is_no_working_tree() {
     assert!(!drawn.iter().any(|text| text == "Reading the changes…"));
 }
 
-/// A file's body is its diff; the header's "File" swaps in the whole text —
-/// the lines a unified diff leaves out included — through the same parser and
-/// highlighter the file pane uses, and "Diff" puts the diff back.
+/// Y: a file row expands its diff directly underneath; no second header.
 #[test]
-fn a_file_shows_its_diff_and_the_header_opens_the_whole_text() {
+fn a_file_shows_its_diff_under_its_row() {
     if !git_available() {
         return;
     }
     let repo = repository();
     let body: String = (1..=10).map(|index| format!("line-{index}\n")).collect();
-    // Commit the body, then change only its last line: the unified diff then
-    // carries three lines of context instead of every line of the file.
     std::fs::write(repo.path().join("tracked.txt"), &body).unwrap();
     git(repo.path(), &["add", "tracked.txt"]);
     git(repo.path(), &["commit", "-q", "-m", "body"]);
@@ -678,7 +648,8 @@ fn a_file_shows_its_diff_and_the_header_opens_the_whole_text() {
     let cwd = repo.path().to_string_lossy().to_string();
     let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
 
-    let diff = texts(&frame(&mut root, &app));
+    let commands = frame(&mut root, &app);
+    let diff = texts(&commands);
     assert!(
         diff.iter().any(|text| text == "changed"),
         "the changed line is drawn without a press: {diff:?}"
@@ -688,31 +659,15 @@ fn a_file_shows_its_diff_and_the_header_opens_the_whole_text() {
         "a unified diff leaves the untouched head of the file out: {diff:?}"
     );
     assert!(
-        diff.iter().any(|text| text == "File"),
-        "the header offers the file's text: {diff:?}"
-    );
-
-    click_text(&mut root, &app, "File");
-    let edited = texts(&frame(&mut root, &app));
-    assert!(
-        edited.iter().any(|text| text == "line-1"),
-        "the whole file is parsed and drawn: {edited:?}"
+        !diff.iter().any(|text| text == "File"),
+        "the row has no toolbar: {diff:?}"
     );
     assert!(
-        edited.iter().any(|text| text == "changed"),
-        "and its last line too: {edited:?}"
-    );
-
-    click_text(&mut root, &app, "Diff");
-    let restored = texts(&frame(&mut root, &app));
-    assert!(
-        !restored.iter().any(|text| text == "line-1"),
-        "the diff is back: {restored:?}"
+        !diff.iter().any(|text| text.starts_with("@@")),
+        "the inline diff has no second hunk header: {diff:?}"
     );
 }
 
-/// A file card paints the change itself: the added row's insert band and the
-/// removed row's delete band, both from the theme's diff colours.
 #[test]
 fn a_file_card_paints_the_added_and_removed_bands_by_default() {
     if !git_available() {
@@ -840,52 +795,6 @@ fn a_diff_card_is_coloured_beside_the_frame() {
     );
 }
 
-/// Typing in the in-place editor and pressing Cmd+S writes the file through the
-/// file pane's own save, exact bytes and all.
-#[test]
-fn the_inline_editor_saves_the_file_with_cmd_s() {
-    if !git_available() {
-        return;
-    }
-    let repo = repository();
-    let body: String = (1..=10).map(|index| format!("line-{index}\n")).collect();
-    std::fs::write(repo.path().join("tracked.txt"), &body).unwrap();
-    let path = repo.path().join("tracked.txt");
-    let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
-
-    // The body is the diff; the header's toggle swaps in the file's text.
-    click_text(&mut root, &app, "File");
-    let commands = frame(&mut root, &app);
-    let line = text_origin(&commands, "line-1");
-    click(&mut root, &app, line + vec2f(1.0, 4.0));
-
-    let mut ctx = EventContext;
-    let typed = DispatchedEvent::KeyDown {
-        key: "Z".to_string(),
-        modifiers: ModifiersState::none(),
-    };
-    let _ = root.dispatch_event(&typed, &mut ctx, &app);
-    let save = DispatchedEvent::KeyDown {
-        key: "s".to_string(),
-        modifiers: ModifiersState {
-            command: true,
-            ..ModifiersState::none()
-        },
-    };
-    let _ = root.dispatch_event(&save, &mut ctx, &app);
-
-    let written = std::fs::read_to_string(&path).expect("the file is written");
-    assert!(
-        written.contains('Z'),
-        "the typed character reached the file: {written:?}"
-    );
-    assert_ne!(written, body, "and the file differs from what it held");
-}
-
-/// The review list is one continuous document: the editor of an open file
-/// reads the shared scroll offset against its own top, and scrolling past the
-/// end of one file carries into the next.
 #[test]
 fn scrolling_through_an_editor_continues_into_the_next_file() {
     if !git_available() {
@@ -1063,68 +972,10 @@ fn a_large_inline_editor_draws_only_the_rows_in_view() {
     );
 }
 
-/// The code inside an editor is painted in the internal highlighter's own
-/// colours: the file pane's parser and `goble_ui::syntax` do the colouring, and
-/// the field draws the runs rather than one flat text colour.
+/// Y: changed files are flat full-width rows with one thin divider under each,
+/// not rounded cards or bordered boxes.
 #[test]
-fn the_inline_editor_paints_code_in_the_highlighters_colours() {
-    if !git_available() {
-        return;
-    }
-    let repo = repository();
-    std::fs::write(
-        repo.path().join("main.rs"),
-        "fn main() {\n    let x = 1;\n}\n",
-    )
-    .unwrap();
-    let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
-
-    // The body is the diff; the header's toggle puts the file's text in it.
-    click_text(&mut root, &app, "File");
-    let commands = frame_until(&mut root, &app, |commands| {
-        commands
-            .iter()
-            .any(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "fn"))
-    });
-    let highlighted = goble_ui::syntax::highlight("fn main() {", "main.rs")
-        .expect("Rust resolves through the internal highlighter");
-    let keyword = highlighted[0]
-        .iter()
-        .find(|span| span.text == "fn")
-        .map(|span| span.color)
-        .expect("the highlighter styles the keyword");
-    let name = highlighted[0]
-        .iter()
-        .find(|span| span.text == "main")
-        .map(|span| span.color)
-        .expect("the highlighter styles the name");
-    let drawn: Vec<(String, goble_ui::color::ColorU)> = commands
-        .iter()
-        .filter_map(|command| match command {
-            RenderCommand::DrawText { text, color, .. } => Some((text.clone(), *color)),
-            _ => None,
-        })
-        .collect();
-    assert!(
-        drawn
-            .iter()
-            .any(|(text, color)| text == "fn" && *color == keyword),
-        "the keyword is drawn in the highlighter's colour: {drawn:?}"
-    );
-    assert!(
-        drawn
-            .iter()
-            .any(|(text, color)| text == "main" && *color == name),
-        "and the name in its own: {drawn:?}"
-    );
-    assert_ne!(keyword, name, "the palette is doing more than one colour");
-}
-
-/// Each changed file is its own bordered box, square-cornered like the rest of
-/// the pane.
-#[test]
-fn every_file_is_drawn_inside_its_own_border() {
+fn every_file_row_is_flat_with_a_thin_divider() {
     if !git_available() {
         return;
     }
@@ -1133,155 +984,37 @@ fn every_file_is_drawn_inside_its_own_border() {
     std::fs::write(repo.path().join("new.txt"), "gamma\n").unwrap();
     let cwd = repo.path().to_string_lossy().to_string();
     let (mut root, _desktop, _state, _dir, app) = review_root(&cwd);
-
     let commands = frame(&mut root, &app);
     let border = app.theme.color(goble_ui::theme::ColorToken::Border);
-    let boxes: Vec<_> = commands
+    let dividers = commands
         .iter()
-        .filter_map(|command| match command {
-            RenderCommand::StrokeRect {
-                rect,
-                color,
-                width,
-                corner_radius,
-            } if *color == border && *width == 1.0 => Some((*rect, *corner_radius)),
-            _ => None,
+        .filter(|command| {
+            matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == border
+                        && rect.height() <= 1.01
+                        && rect.width() > 200.0
+            )
         })
-        .collect();
-    assert!(
-        boxes.len() >= 2,
-        "both files wear a border: {:?}",
-        texts(&commands)
-    );
-    // Not file cards: the window's own rule (the app's accent outline, see
-    // `ui::build_window_border`) spans the whole window, and the pane card under
-    // the review wears the ordinary `Border` `PANE_INSET` inside it. A file card
-    // is at most a few hundred points tall.
-    let file_boxes: Vec<_> = boxes
-        .into_iter()
-        .filter(|(rect, radius)| {
-            (*radius - 8.0).abs() < 0.01
-                && rect.height() > 30.0
-                && rect.height() < 300.0
-                && rect.width() < window().x
-        })
-        .collect();
-    assert!(
-        file_boxes.len() >= 2
-            && file_boxes
-                .iter()
-                .all(|(rect, radius)| *radius == 8.0 && rect.width() > 200.0),
-        "the cards are rounded and enclose a header and a body: {file_boxes:?}"
-    );
-}
-
-/// The first time `name` is drawn as an icon, and where.
-fn icon_origin(cmds: &[RenderCommand], name: &str) -> Vector2F {
-    cmds.iter()
-        .find_map(|command| match command {
-            RenderCommand::DrawIcon {
-                origin,
-                name: drawn,
-                ..
-            } if drawn == name => Some(*origin),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the pane draws the {name:?} icon"))
-}
-
-/// R: a card's header is text/badge led — the fold chevron, a File/Diff swap,
-/// Revert and copy. The old warp-new icon cluster (link, undo glyph, open in
-/// editor, float) is gone.
-#[test]
-fn every_card_header_wears_the_compact_controls() {
-    if !git_available() {
-        return;
-    }
-    let repo = repository();
-    std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
-    std::fs::write(repo.path().join("new.txt"), "gamma\n").unwrap();
-    let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, _state, _desktop, _dir, app) = review_root(&cwd);
-
-    let commands = frame(&mut root, &app);
-    let icons: Vec<String> = commands
+        .count();
+    assert!(dividers >= 2, "each row ends in a thin divider: {dividers}");
+    let file_boxes = commands
         .iter()
-        .filter_map(|command| match command {
-            RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
-            _ => None,
+        .filter(|command| {
+            matches!(
+                command,
+                RenderCommand::StrokeRect { rect, corner_radius, .. }
+                    if (*corner_radius - 8.0).abs() < 0.01
+                        && rect.height() > 30.0
+                        && rect.height() < 300.0
+                        && rect.width() < window().x
+            )
         })
-        .collect();
-    assert!(
-        icons.iter().filter(|name| *name == "copy").count() >= 2,
-        "both cards keep the copy affordance: {icons:?}"
-    );
-    for heavy in ["link", "undo"] {
-        assert!(
-            !icons.iter().any(|name| name == heavy),
-            "the icon cluster dropped {heavy:?}: {icons:?}"
-        );
-    }
-    let labels = texts(&commands);
-    for label in ["File", "Revert"] {
-        assert!(
-            labels.iter().filter(|text| *text == label).count() >= 2,
-            "both cards draw the {label:?} text control: {labels:?}"
-        );
-    }
-    assert!(
-        icons.iter().any(|name| name == "chevron-down"),
-        "an open card draws its fold chevron: {icons:?}"
-    );
+        .count();
+    assert_eq!(file_boxes, 0, "no per-file rounded card survives");
 }
 
-/// Revert asks in the header before it discards a change, then restores the
-/// file to `HEAD` off the frame.
-#[test]
-fn reverting_a_file_asks_first_and_restores_its_head_version() {
-    if !git_available() {
-        return;
-    }
-    let repo = repository();
-    std::fs::write(repo.path().join("tracked.txt"), "alpha\nbeta\n").unwrap();
-    let cwd = repo.path().to_string_lossy().to_string();
-    let (mut root, state, _desktop, _dir, app) = review_root(&cwd);
-
-    click_text(&mut root, &app, "Revert");
-    let asked = texts(&frame(&mut root, &app));
-    assert!(
-        asked.iter().any(|text| text == "Discard changes?"),
-        "the header asks before it reverts: {asked:?}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(),
-        "alpha\nbeta\n",
-        "the first press changes nothing"
-    );
-
-    click_text(&mut root, &app, "Revert");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut status = git_status(&state);
-    while !matches!(status.as_ref(), Some((text, _)) if text.starts_with("Reverted"))
-        && std::time::Instant::now() < deadline
-    {
-        let _ = frame(&mut root, &app);
-        status = git_status(&state);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert_eq!(
-        status,
-        Some(("Reverted tracked.txt".to_string(), true)),
-        "the revert's word reaches the pane"
-    );
-    assert_eq!(
-        std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(),
-        "alpha\n",
-        "the file is back to its committed text"
-    );
-}
-
-/// A box whose lines are wider than the pane swipes sideways on its own: the
-/// horizontal offset moves the code, while the list keeps its vertical place.
 #[test]
 fn a_long_line_swipes_sideways_inside_its_file_box() {
     if !git_available() {

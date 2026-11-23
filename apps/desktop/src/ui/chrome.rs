@@ -489,7 +489,7 @@ pub fn build_chrome_row(
         })
         .finish();
     // The panel must not be covered by the panes painted after the chrome.
-    let more = TopLayer::new(more).finish();
+    let mut more = Some(TopLayer::new(more).finish());
     let panel_open = state.right_sidebar_open;
 
     // Panel 1's trailing controls are the More menu and the Overview popover
@@ -519,9 +519,15 @@ pub fn build_chrome_row(
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(CONTROL_SPACING)
-        .with_child(Expanded::new(title).finish())
-        .with_child(more)
-        .with_child(overview_button);
+        .with_child(Expanded::new(title).finish());
+    // The side panel owns the general topbar's trailing cluster when it is
+    // open (kebab, search, panel menu); the launcher controls stay on the main
+    // section only when the panel is closed.
+    if !panel_open {
+        main_section = main_section
+            .with_child(more.take().expect("the More menu"))
+            .with_child(overview_button);
+    }
     // Panel 1 keeps the control that OPENS the side panel: with the panel
     // closed nothing in the strip could bring it back (the close control lives
     // in panel 2's section, which is only built while the panel is open).
@@ -578,47 +584,47 @@ pub fn build_chrome_row(
         } else {
             Empty::new().finish()
         };
-        let on_max = actions.on_toggle_side_panel_maximized.clone();
+        let _ = maximized;
         let on_close = actions.on_toggle_right_sidebar.clone();
+        // The reference's three trailing icons: kebab (More), search, and the
+        // round hamburger/menu that folds the panel away.
+        let on_search = actions.on_spotlight.clone();
+        let search_button = Tooltip::new(
+            TopbarButton::new(glyph(app, "search"))
+                .with_size(CONTROL_BUTTON_SIZE)
+                .with_corner_radius(8.0)
+                .with_on_click(move || {
+                    (on_search.borrow_mut())(crate::ui::spotlight::SpotlightAction::Open)
+                })
+                .finish(),
+            "Search",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish();
+        let close_button = Tooltip::new(
+            TopbarButton::new(
+                Icon::new("menu-01")
+                    .with_size(CONTROL_ICON_SIZE)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_size(CONTROL_BUTTON_SIZE)
+            .with_corner_radius(CONTROL_BUTTON_SIZE / 2.0)
+            .with_active(true)
+            .with_on_click(move || (on_close.borrow_mut())())
+            .finish(),
+            "Close side panel",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish();
         let side_section = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(CONTROL_SPACING)
             .with_child(Expanded::new(tab_strip).finish())
-            .with_child(button_click(
-                app,
-                if maximized {
-                    "fullscreen-exit"
-                } else {
-                    "fullscreen-enter"
-                },
-                if maximized {
-                    "Restore side panel"
-                } else {
-                    "Maximize side panel"
-                },
-                move || (on_max.borrow_mut())(),
-            ))
-            .with_child({
-                // Mirrored DSH panel glyph for the right-hand panel.
-                let on_close = on_close.clone();
-                Tooltip::new(
-                    TopbarButton::new(
-                        Icon::new("panel-right-outline")
-                            .with_size(CONTROL_ICON_SIZE)
-                            .with_theme_color(ColorToken::Text, app)
-                            .finish(),
-                    )
-                    .with_size(CONTROL_BUTTON_SIZE)
-                    .with_corner_radius(8.0)
-                    .with_active(true)
-                    .with_on_click(move || (on_close.borrow_mut())())
-                    .finish(),
-                    "Toggle side panel",
-                )
-                .with_position(TooltipPosition::Below)
-                .finish()
-            })
+            .with_child(more.take().expect("the More menu"))
+            .with_child(search_button)
+            .with_child(close_button)
             .finish();
         let side_section = Container::new(side_section)
             .with_padding(EdgeInsets::new(
@@ -1982,8 +1988,10 @@ fn build_overview_content(
         .with_focused(state.global_search_focused)
         .with_caret(state.global_search_caret.clone())
         .with_placeholder("Search or enter a URL")
-        .with_text_size(13.5)
-        .with_extra_height(18.0)
+        .with_text_size(13.0)
+        .with_extra_height(0.0)
+        .with_corner_radius(22.0)
+        .with_background(ColorToken::ContentBg)
         .with_on_change(move |value| (on_search_change.borrow_mut())(value))
         .with_on_focus_change(move |focused| (on_search_focus.borrow_mut())(focused))
         .finish();
@@ -2158,32 +2166,39 @@ fn build_overview_content(
     // Terminal and Side Question open as panel-2 tabs from this launcher (the
     // Overview icon is the way to add a surface without the strip's `+`).
     let on_side_tab = actions.on_side_tab.clone();
+    let on_plugins = actions.on_plugins.clone();
     let active = state.active_pane_id;
     let mut rows = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0);
+        .with_spacing(4.0);
     for (icon, label, action, trailing) in [
         ("file", "Review", 0u8, None),
         ("folder", "Open File", 1, None),
         ("terminal", "Terminal", 2, None),
         ("environment-cloud", "Browser", 3, None),
         ("message-plus-square", "Side Question", 4, None),
+        ("plug", "Plugins", 5, Some("chevron-right")),
     ] {
         let disabled = matches!(action, 3);
         let row = if disabled {
-            Container::new(panel_row(app, icon, label, true, trailing)).finish()
+            HoverRow::new(panel_row(app, icon, label, true, trailing))
+                .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
+                .with_corner_radius(8.0)
+                .finish()
         } else {
             let on_diff = on_diff.clone();
             let on_files_tab = actions.on_open_files_tab.clone();
             let on_side_tab = on_side_tab.clone();
+            let on_plugins = on_plugins.clone();
             HoverRow::new(panel_row(app, icon, label, false, trailing))
-                .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
+                .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
                 .with_corner_radius(8.0)
                 .with_on_click(move || match action {
                     0 => (on_diff.borrow_mut())(active, DiffPanelAction::Open(None)),
                     1 => (on_files_tab.borrow_mut())(),
                     2 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Terminal)),
                     4 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Agent)),
+                    5 => (on_plugins.borrow_mut())(),
                     _ => {}
                 })
                 .finish()
@@ -2249,14 +2264,38 @@ fn build_overview_content(
                 .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
                 .finish(),
         );
-        for task in tasks {
-            sections = sections.with_child(panel_row(
-                app,
-                "terminal-input",
-                &task.description,
-                false,
-                None,
-            ));
+        for (index, task) in tasks.iter().take(4).enumerate() {
+            sections = sections.with_child(
+                HoverRow::new(panel_row(
+                    app,
+                    if index == 0 {
+                        "circle-x"
+                    } else {
+                        "terminal-input"
+                    },
+                    &task.description,
+                    false,
+                    None,
+                ))
+                .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
+                .with_corner_radius(8.0)
+                .finish(),
+            );
+        }
+        if tasks.len() > 4 {
+            let on_side_tab = on_side_tab.clone();
+            sections = sections.with_child(
+                HoverRow::new(
+                    Container::new(muted_line(app, "See all"))
+                        .with_padding(EdgeInsets::new(10.0, 4.0, 4.0, 4.0))
+                        .finish(),
+                )
+                .with_corner_radius(6.0)
+                .with_on_click(move || {
+                    (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::TaskOutput))
+                })
+                .finish(),
+            );
         }
     }
 
@@ -2279,7 +2318,7 @@ fn build_overview_content(
             .with_padding(EdgeInsets::new(20.0, 0.0, 20.0, 0.0))
             .finish(),
     )
-    .with_max_width(540.0)
+    .with_max_width(980.0)
     .finish();
     Scrollable::new(body, goble_ui::elements::Axis::Vertical).finish()
 }
@@ -2297,7 +2336,7 @@ fn panel_row(
         .with_spacing(10.0)
         .with_child(
             Icon::new(icon)
-                .with_size(17.0)
+                .with_size(15.0)
                 .with_theme_color(
                     if disabled {
                         ColorToken::Border
@@ -2310,7 +2349,7 @@ fn panel_row(
         )
         .with_child(
             Text::new(label)
-                .with_font_size(15.0)
+                .with_font_size(13.0)
                 .with_theme_color(
                     if disabled {
                         ColorToken::Muted
@@ -2344,10 +2383,16 @@ fn section_header(app: &AppContext, label: &str, count: usize) -> Box<dyn Elemen
                 .finish(),
         )
         .with_child(
-            Text::new(count.to_string())
-                .with_font_size(10.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
+            Container::new(
+                Text::new(count.to_string())
+                    .with_font_size(10.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_corner_radius(9.0)
+            .with_padding(EdgeInsets::new(2.0, 6.0, 2.0, 6.0))
+            .finish(),
         )
         .finish()
 }

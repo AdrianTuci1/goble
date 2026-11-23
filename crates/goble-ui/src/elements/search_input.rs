@@ -20,6 +20,8 @@ pub struct SearchInput {
     text_size: Option<f32>,
     /// The box's corner radius; `None` keeps the square field.
     corner_radius: Option<f32>,
+    /// The box's fill token; `None` keeps the historical `Surface`.
+    background: Option<ColorToken>,
     /// The insertion point, shared with the host so it survives the per-frame
     /// rebuild. Without one the field edits at the end of its value.
     caret: Option<Rc<RefCell<usize>>>,
@@ -41,6 +43,7 @@ impl SearchInput {
             extra_height: 0.0,
             text_size: None,
             corner_radius: None,
+            background: None,
             caret: None,
             on_change: None,
             on_focus_change: None,
@@ -115,6 +118,13 @@ impl SearchInput {
     /// radius). The default stays square.
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = Some(radius);
+        self
+    }
+
+    /// The fill behind the field. The launcher uses the content material so the
+    /// capsule reads as part of the black panel instead of a grey box.
+    pub fn with_background(mut self, token: ColorToken) -> Self {
+        self.background = Some(token);
         self
     }
 
@@ -241,7 +251,10 @@ impl SearchInput {
         let v_pad = padding + self.extra_height;
         let mut container = Container::new(row)
             .with_padding(EdgeInsets::new(padding, v_pad, padding, v_pad))
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)));
+            .with_background(Fill::Solid(
+                app.theme
+                    .color(self.background.unwrap_or(ColorToken::Surface)),
+            ));
         if let Some(radius) = self.corner_radius {
             container = container.with_corner_radius(radius);
         }

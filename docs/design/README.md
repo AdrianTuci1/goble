@@ -193,7 +193,15 @@ query field, sort/filter menu and real conversation rows. `spotlight-compare-*`
 puts the supplied reference and the Goble render side by side at the same full
 window scale. Files open in the right panel's Files tab (`side-files-*`), not a
 main pane; the left sidebar carries Projects/Conversations only and no file
-tree (`sidebar-no-files-*`). The tab-strip
+tree (`sidebar-no-files-*`). The review surface follows `review_target.webp`:
+a flat file list with type badge, bold name, left-truncated path, counts and a
+trailing chevron; the expanded file shows its inline diff with line numbers,
+full-width add/del bands and syntax colours; a fixed-width Files Changed rail
+sits on the right. `review-compare-*` is the same-scale side-by-side. The side
+panel launcher follows `side_panel_launcher_target.webp`: capsule search with
+a blue focus ring, hover-card rows (Review/Open File/Terminal/Browser/Side
+Question/Plugins), a Background Tasks count pill with four rows and See all;
+`launcher-compare-*` is the same-scale comparison. The tab-strip
 evidence shows multiple chips, a hovered chip with its close X and the pinned
 `+` menu (`side-tabs-hover-*`, `side-tabs-add-*`). The shell material (topbar, sidebar) is the grey `Surface`; the content
 material (`ContentBg`, the shell Bg pushed toward black) is shared by the

@@ -345,6 +345,10 @@ fn main() -> anyhow::Result<()> {
                     s.pane_sessions.entry(pane).or_default().path = root.clone();
                     s.side_review = Some((pane, root));
                     s.select_diff_file(pane, None);
+                    if !name.ends_with("narrow") {
+                        // The reference's wrapped inline diff.
+                        s.toggle_diff_wrap(pane);
+                    }
                     if name == "split-file-viewer" {
                         let file = repo_path.join("src/lib.rs");
                         let file = file.to_string_lossy().to_string();
@@ -521,6 +525,39 @@ fn main() -> anyhow::Result<()> {
                 }
                 if name == "overview" {
                     s.right_sidebar_open = true;
+                    s.global_search_focused = true;
+                    let active = s.active_pane_id;
+                    let runtime = s.pane_runtime.entry(active).or_default();
+                    for (index, command) in [
+                        "wait for GHCR build to finish",
+                        "watch Release v1.1.0 run",
+                        "watch CI run",
+                        "watch Release workflow run 44804857294",
+                        "watch background job 5",
+                        "watch background job 6",
+                        "watch background job 7",
+                        "watch background job 8",
+                        "watch background job 9",
+                        "watch background job 10",
+                        "watch background job 11",
+                        "watch background job 12",
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let id = format!("preview-task-{index:02}");
+                        runtime.in_flight_tools.insert(
+                            id.clone(),
+                            goble_ui::ToolCall {
+                                id,
+                                name: "Shell".to_string(),
+                                arguments: format!("{{\"command\":\"{command}\"}}"),
+                                status: goble_core::harness::ToolCallStatus::Running,
+                                result: None,
+                                diff: None,
+                            },
+                        );
+                    }
                 }
                 if name == "side-panel-max" {
                     s.right_sidebar_open = true;
@@ -572,6 +609,29 @@ fn main() -> anyhow::Result<()> {
                         size.y,
                         1.0,
                         origin + vec2f(20.0, 6.0),
+                        None,
+                        &path,
+                    );
+                }
+            }
+            if name == "overview" {
+                // Z: capture the Browser row's dark hover band, as in the
+                // reference launcher.
+                let commands = raster::render_commands(&mut root, size, &app);
+                if let Some(origin) = commands.iter().find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. } if text == "Browser" => {
+                        Some(*origin)
+                    }
+                    _ => None,
+                }) {
+                    let _ = raster::render_element_to_png_at(
+                        &assets,
+                        &app,
+                        &mut root,
+                        size.x,
+                        size.y,
+                        1.0,
+                        origin + vec2f(20.0, 4.0),
                         None,
                         &path,
                     );

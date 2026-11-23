@@ -20,12 +20,12 @@ use goble_ui::ColorU;
 /// topbar, window edges). It is painted with the shell's own `Surface`, the same
 /// grey as the topbar and the sidebar, so the content space reads as one light
 /// grey material around the sheet rather than a dark frame.
-pub const WORKSPACE_MARGIN: f32 = 0.0;
+pub const WORKSPACE_MARGIN: f32 = 6.0;
 
 /// The workspace surface's outer corner radius. It is larger than a pane
 /// card's because it wraps BOTH panels; the shared main/side-panel boundary is
 /// square.
-const WORKSPACE_RADIUS: f32 = 0.0;
+const WORKSPACE_RADIUS: f32 = 12.0;
 
 /// The one rounded sheet the whole workspace (main panel + side panel) lives
 /// on. The shell renders this; the panels are flat children inside it.
@@ -46,7 +46,9 @@ impl WorkspaceSurface {
         // One flat dark surface for the whole pane area, edges included: no
         // rounded sheet and no band, so the resize zone reads as the same
         // black material as the panels.
-        let backdrop = app.theme.color(ColorToken::ContentBg);
+        // AA: the 6 pt shell margin is the grey `Surface`; the 12 pt sheet
+        // inside it is the black content material.
+        let backdrop = app.theme.color(ColorToken::Surface);
         Self {
             child,
             fill: app.theme.color(ColorToken::ContentBg),

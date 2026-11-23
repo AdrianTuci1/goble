@@ -481,6 +481,7 @@ pub(crate) fn comparison(
     file: &DiffFileDetail,
     split: bool,
     wrap: bool,
+    hunk_headers: bool,
     scroll: Rc<RefCell<ScrollState>>,
 ) -> Box<dyn Element> {
     #[cfg(feature = "file-diff-view")]
@@ -492,6 +493,7 @@ pub(crate) fn comparison(
                 DiffLayout::Unified
             })
             .with_wrap(wrap)
+            .with_hunk_headers(hunk_headers)
             .with_viewport(Rc::clone(&scroll))
             .with_fill_width(true);
         return Box::new(view);
@@ -1348,8 +1350,8 @@ mod ui_tests {
         let drawn = texts(&frame(&mut root, &app));
         assert!(drawn.iter().any(|text| text == "gamma"), "its diff shows");
         assert!(
-            !drawn.iter().any(|text| text == "beta"),
-            "the other file's diff is out of the view: {drawn:?}"
+            drawn.iter().any(|text| text == "beta"),
+            "every file row and diff stays in the flat list: {drawn:?}"
         );
 
         press(&mut root, &app, "ArrowDown");
@@ -1466,6 +1468,7 @@ pub(crate) fn files_changed_rail(
     pane_id: u64,
     detail: &DiffDetail,
     selected: Option<&str>,
+    width: f32,
 ) -> Box<dyn Element> {
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
@@ -1482,32 +1485,6 @@ pub(crate) fn files_changed_rail(
             .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
             .finish(),
         );
-    // The rail's way back to the whole tree.
-    {
-        let on_diff = actions.on_diff_panel.clone();
-        let all = HoverRow::new(
-            Container::new(
-                Text::new("All changes")
-                    .with_font_size(12.0)
-                    .with_theme_color(
-                        if selected.is_none() {
-                            ColorToken::Text
-                        } else {
-                            ColorToken::Muted
-                        },
-                        app,
-                    )
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
-            .with_corner_radius(6.0)
-            .finish(),
-        )
-        .with_selected(selected.is_none())
-        .with_on_click(move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(None)))
-        .finish();
-        column = column.with_child(all);
-    }
     for file in &detail.files {
         let path = file.path.clone();
         let absolute = file.absolute_path.clone();
@@ -1566,7 +1543,7 @@ pub(crate) fn files_changed_rail(
             .with_padding(EdgeInsets::new(4.0, 4.0, 4.0, 4.0))
             .finish(),
     )
-    .with_width(220.0)
+    .with_width(width)
     .finish()
 }
 

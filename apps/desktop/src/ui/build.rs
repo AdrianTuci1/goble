@@ -2532,16 +2532,15 @@ mod tests {
             "Open File",
             "Terminal",
             "Side Question",
+            "Plugins",
         ] {
             assert!(
                 texts.iter().any(|text| *text == expected),
                 "the Overview side tab draws {expected:?}: {texts:?}"
             );
         }
-        // M: Plugins is not in this build, and empty Subagents / Background
-        // Tasks sections are not drawn at all (not even an empty caption).
+        // Empty Subagents / Background Tasks sections are not drawn at all.
         for gone in [
-            "Plugins",
             "Subagents",
             "Background Tasks",
             "No subagents",
@@ -2615,9 +2614,9 @@ mod tests {
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { name, .. } if name == "fullscreen-enter"
+                RenderCommand::DrawIcon { name, .. } if name == "menu-01"
             )),
-            "the dock offers maximize"
+            "the dock offers the round trailing menu"
         );
     }
 
@@ -3170,17 +3169,33 @@ mod tests {
 
         // Remote flat-square shell: the surface reaches the chrome, the
         // sidebar and the window's right/bottom edges; no margin or radius.
+        for (label, actual) in [
+            ("left", sheet.min_x() - crate::ui::SIDEBAR_WIDTH),
+            ("top", sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT),
+            ("right", size.x - sheet.max_x()),
+            ("bottom", size.y - sheet.max_y()),
+        ] {
+            assert!(
+                (actual - shell::WORKSPACE_MARGIN).abs() < 0.51,
+                "the {label} shell margin is 6 pt, got {actual}: {sheet:?}"
+            );
+        }
         assert!(
-            (sheet.min_x() - crate::ui::SIDEBAR_WIDTH).abs() < 1.0,
-            "the surface starts at the sidebar: {sheet:?}"
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, corner_radius, .. }
+                    if *rect == sheet && (*corner_radius - 12.0).abs() < 0.01
+            )),
+            "the sheet keeps the 12 pt outer radius"
         );
+        let margin_at = vec2f(sheet.min_x() - 2.0, sheet.min_y() + 4.0);
         assert!(
-            (sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT).abs() < 1.0,
-            "the surface starts under the chrome: {sheet:?}"
-        );
-        assert!(
-            (size.x - sheet.max_x()).abs() < 1.0 && (size.y - sheet.max_y()).abs() < 1.0,
-            "the surface reaches the window's right/bottom edges: {sheet:?}"
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == app.theme.color(ColorToken::Surface) && contains(*rect, margin_at)
+            )),
+            "the 6 pt margin is the shell's Surface material"
         );
 
         // The side panel body paints the content material across the boundary,
@@ -3217,13 +3232,13 @@ mod tests {
             )),
             "the side panel's search row carries the kebab"
         );
-        // M: no Plugins row, so no disclosure chevron in the launcher.
+        // Z: the launcher keeps Plugins with its disclosure chevron.
         assert!(
-            !commands.iter().any(|command| matches!(
+            commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::DrawIcon { name, .. } if name == "chevron-right"
             )),
-            "the launcher has no Plugins disclosure row"
+            "the launcher's Plugins row carries its chevron"
         );
     }
 
@@ -3516,15 +3531,15 @@ mod tests {
             })
             .expect("the Side Question chip");
         let plus = icon_x("plus").expect("the add button");
-        let maximize = icon_x("fullscreen-enter").expect("the maximize control");
+        let menu = icon_x("menu-01").expect("the trailing menu control");
         assert!(terminal < side_question, "the chips keep strip order");
         assert!(
             plus > side_question,
             "the + sits after the chips: plus {plus}, chip {side_question}"
         );
         assert!(
-            maximize - plus > 20.0,
-            "the + stays left of the window controls: plus {plus}, maximize {maximize}"
+            menu - plus > 20.0,
+            "the + stays left of the trailing icons: plus {plus}, menu {menu}"
         );
     }
 
@@ -3814,6 +3829,62 @@ mod tests {
         );
     }
 
+    /// Z: the launcher keeps Plugins and shows a Background Tasks header with
+    /// a count pill, four live task rows and a See all action.
+    #[test]
+    fn the_side_panel_launcher_shows_plugins_and_background_tasks() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![crate::state::SideTabKind::Overview];
+            s.active_side_tab = 0;
+            s.global_search_focused = true;
+            let active = s.active_pane_id;
+            let runtime = s.pane_runtime.entry(active).or_default();
+            for index in 0..12 {
+                let id = format!("task-{index}");
+                runtime.in_flight_tools.insert(
+                    id.clone(),
+                    goble_ui::ToolCall {
+                        id,
+                        name: "Shell".to_string(),
+                        arguments: format!("{{\"command\":\"build {index}\"}}"),
+                        status: goble_core::harness::ToolCallStatus::Running,
+                        result: None,
+                        diff: None,
+                    },
+                );
+            }
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for expected in [
+            "Search or enter a URL",
+            "Plugins",
+            "Background Tasks",
+            "12",
+            "See all",
+        ] {
+            assert!(
+                texts.iter().any(|text| *text == expected),
+                "the launcher draws {expected:?}: {texts:?}"
+            );
+        }
+        let task_rows = texts
+            .iter()
+            .filter(|text| text.starts_with("Run build"))
+            .count();
+        assert_eq!(task_rows, 4, "only the first four tasks are listed");
+    }
+
     /// Y: the Files side tab renders the real file content a click named,
     /// without splitting or retargeting the main pane.
     #[test]
@@ -3984,7 +4055,7 @@ mod tests {
             "Beta build",
         ] {
             assert!(
-                texts.iter().any(|text| text == expected),
+                texts.iter().any(|text| *text == expected),
                 "the spotlight draws {expected:?}: {texts:?}"
             );
         }
@@ -4104,7 +4175,7 @@ mod tests {
             s.add_side_tab(SideTabKind::Agent);
             s.active_side_tab = 2;
         }
-        let commands = render_element(&mut root, window(), &app);
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
         let label = |text: &str| {
             commands.iter().find_map(|command| match command {
                 RenderCommand::DrawText {
@@ -4126,7 +4197,7 @@ mod tests {
 
         // The hover X sits at the chip's trailing square; the fixed + is the
         // last icon before the window controls.
-        let commands = render_element(&mut root, window(), &app);
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
         let plus = commands
             .iter()
             .find_map(|command| match command {
@@ -4195,7 +4266,7 @@ mod tests {
             *state.borrow().side_tab_add_menu_open.borrow(),
             "the fixed + opens its add menu"
         );
-        let commands = render_element(&mut root, window(), &app);
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
         let texts: Vec<&str> = commands
             .iter()
             .filter_map(|command| match command {
@@ -4259,12 +4330,16 @@ mod tests {
             })
             .collect();
         assert!(
-            icons.contains(&"panel-right-outline"),
-            "the open panel 2 toggle wears DSH's mirrored panel glyph: {icons:?}"
+            icons.contains(&"menu-01"),
+            "the open panel's trailing menu is the round hamburger: {icons:?}"
         );
         assert!(
-            icons.contains(&"fullscreen-enter"),
-            "panel 2 keeps maximize: {icons:?}"
+            icons.iter().filter(|name| **name == "search").count() >= 2,
+            "the open panel keeps the topbar search: {icons:?}"
+        );
+        assert!(
+            !icons.contains(&"fullscreen-enter") && !icons.contains(&"panel-right-outline"),
+            "the target has three trailing icons, not maximize/panel: {icons:?}"
         );
     }
 

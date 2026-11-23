@@ -113,10 +113,69 @@
 }
 
 .test-timeline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   font-size: 0.78rem;
   font-weight: 600;
-  margin-bottom: 0.7rem;
   color: #101114;
+}
+
+.test-timeline-count {
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: #4c5560;
+}
+
+.test-progress {
+  height: 3px;
+  border-radius: 0;
+  background: rgba(16, 17, 20, 0.18);
+  margin: 0.45rem 0 0.6rem;
+  overflow: hidden;
+}
+
+.test-progress-fill {
+  display: block;
+  width: 25%;
+  height: 100%;
+  background: #1f8a4c;
+}
+
+.test-timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 268px;
+  overflow: hidden;
+}
+
+.test-step.is-running {
+  background: rgba(16, 17, 20, 0.06);
+}
+
+.test-shot-overlay {
+  position: absolute;
+  left: 1.1rem;
+  bottom: 1rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.7rem;
+  background: rgba(12, 13, 16, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e6e7ea;
+  font-size: 0.68rem;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+
+.test-shot-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
 }
 
 .test-step {

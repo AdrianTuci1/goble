@@ -44,28 +44,43 @@ const GpuProfiling = () => {
                 <img src="/media/composer.png" alt="Octomus running an end-to-end test" />
                 <span className="test-cursor" />
               </div>
+              <div className="test-shot-overlay">
+                <span className="test-shot-dot" />
+                Running tests in the built app
+              </div>
               <div className="test-timeline">
-                <div className="test-timeline-head">Testing 3/12</div>
-                {TESTING_STEPS.map((step) => (
-                  <div className="test-step" key={step.time + step.label}>
-                    <span className="test-step-time">{step.time}</span>
-                    <span className={`test-step-state ${step.state}`}>
-                      {step.state === 'done' ? '✓' : '◌'}
-                    </span>
-                    <span className="test-step-label">{step.label}</span>
-                  </div>
-                ))}
+                <div className="test-timeline-head">
+                  <span>Testing 3/12</span>
+                  <span className="test-timeline-count">25%</span>
+                </div>
+                <div className="test-progress">
+                  <span className="test-progress-fill" />
+                </div>
+                <div className="test-timeline-list">
+                  {TESTING_STEPS.map((step) => (
+                    <div
+                      className={`test-step ${step.state === 'run' ? 'is-running' : ''}`}
+                      key={step.time + step.label}
+                    >
+                      <span className="test-step-time">{step.time}</span>
+                      <span className={`test-step-state ${step.state}`}>
+                        {step.state === 'done' ? '✓' : '◌'}
+                      </span>
+                      <span className="test-step-label">{step.label}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
             <div className="teammate-caption">
-              <span className="teammate-chip">Devin&rsquo;s computer</span>
+              <span className="teammate-chip">Agent&rsquo;s computer</span>
               <span className="teammate-caption-text">Flag enabled; mobile viewport on enterprise child org</span>
             </div>
             <h3 className="teammate-heading">Tests end to end on its own computer</h3>
             <p className="teammate-text">
-              Devin spins up its own Windows, Mac, and Linux virtual machines as
-              needed to build, test in its browser, and record itself clicking
-              through what it built
+              Octomus spins up its own Windows, Mac, and Linux virtual machines
+              as needed to build, test in its browser, and record itself
+              clicking through what it built
             </p>
           </article>
 
@@ -130,7 +145,7 @@ const GpuProfiling = () => {
             </div>
             <h3 className="teammate-heading">Gets the best from every frontier model</h3>
             <p className="teammate-text">
-              Access frontier performance for up to 60% less. Devin mixes and
+              Access frontier performance for up to 60% less. Octomus mixes and
               matches models to get the most from each
             </p>
           </article>

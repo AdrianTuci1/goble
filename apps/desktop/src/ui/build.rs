@@ -2645,7 +2645,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     origin, name, size, ..
-                } if name == "ellipsis" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "dots-vertical" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the panel header draws its More control");
@@ -2739,7 +2739,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     origin, name, size, ..
-                } if name == "ellipsis" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "dots-vertical" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the More control");
@@ -3862,7 +3862,7 @@ mod tests {
             .map(|(name, _)| *name)
             .collect();
         assert!(
-            trailing.contains(&"ellipsis"),
+            trailing.contains(&"dots-vertical"),
             "the More kebab: {trailing:?}"
         );
         assert!(
@@ -4366,7 +4366,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(icons.contains(&"ellipsis"), "the More control: {icons:?}");
+        assert!(
+            icons.contains(&"dots-vertical"),
+            "the More control: {icons:?}"
+        );
         assert!(
             icons.contains(&"flat-list"),
             "the Overview control: {icons:?}"

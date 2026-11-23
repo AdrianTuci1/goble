@@ -474,7 +474,7 @@ pub fn build_chrome_row(
         PopupMenuItem::new("Close pane").with_separator_before(),
     ];
     let (submenu_index, submenu_highlight, submenu_keyboard) = more_submenu_state();
-    let more = PopupMenu::new(button(app, "ellipsis", "More"), more_items)
+    let more = PopupMenu::new(button(app, "dots-vertical", "More"), more_items)
         .with_open(state.chrome_more_open.clone())
         .with_position(PopupMenuPosition::BelowEnd)
         .with_max_width(240.0)
@@ -639,10 +639,8 @@ pub fn build_chrome_row(
         } else {
             0.0
         };
-        let area_width = (window_width
-            - body_sidebar_width
-            - 2.0 * crate::ui::shell::WORKSPACE_MARGIN)
-            .max(0.0);
+        let area_width =
+            (window_width - body_sidebar_width - 2.0 * crate::ui::shell::WORKSPACE_MARGIN).max(0.0);
         let side_width = area_width
             * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, area_width);
         let boundary_x =

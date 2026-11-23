@@ -2972,6 +2972,7 @@ pub fn make_actions(
                 SideTabAction::ToggleRail => {
                     state.side_rail_open = !state.side_rail_open;
                 }
+                SideTabAction::Reorder(from, to) => state.reorder_side_tab(from, to),
             }
             // The Terminal tab mounts the live grid: make sure the active
             // pane's PTY exists before that surface reads it (the dock starts

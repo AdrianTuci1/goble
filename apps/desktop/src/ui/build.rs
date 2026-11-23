@@ -2518,6 +2518,8 @@ mod tests {
         let (mut root, _state, _dir) = app_root();
         let commands = render_element(&mut root, window(), &app);
         _state.borrow_mut().right_sidebar_open = true;
+        _state.borrow_mut().side_tabs = vec![SideTabKind::Overview];
+        _state.borrow_mut().active_side_tab = 0;
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands
             .iter()
@@ -2584,6 +2586,8 @@ mod tests {
             .expect("the chrome row names the conversation");
         assert!(title < crate::ui::chrome::CHROME_HEIGHT);
         state.borrow_mut().right_sidebar_open = true;
+        state.borrow_mut().side_tabs = vec![SideTabKind::Overview];
+        state.borrow_mut().active_side_tab = 0;
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands
             .iter()
@@ -3164,6 +3168,8 @@ mod tests {
         let (mut root, state, _dir) = app_root();
         let size = vec2f(1024.0, 768.0);
         state.borrow_mut().right_sidebar_open = true;
+        state.borrow_mut().side_tabs = vec![SideTabKind::Overview];
+        state.borrow_mut().active_side_tab = 0;
         let commands = render_element(&mut root, size, &app);
         let sheet = workspace_sheet(&commands, &app, size);
 
@@ -3404,7 +3410,7 @@ mod tests {
             s.add_side_tab(SideTabKind::Agent);
             s.add_side_tab(SideTabKind::Files);
         }
-        assert_eq!(state.borrow().active_side_tab, 2);
+        assert_eq!(state.borrow().active_side_tab, 1);
         let commands = render_element(&mut root, window(), &app);
         let chip = commands
             .iter()
@@ -3420,7 +3426,7 @@ mod tests {
         click(&mut root, &app, chip);
         assert_eq!(
             state.borrow().active_side_tab,
-            1,
+            0,
             "the chip click selects Side Question"
         );
         // Overview is the panel-1 launcher, not a strip chip.
@@ -3438,40 +3444,41 @@ mod tests {
     /// G: an open panel with no real tab draws no chip and no `+` — Overview is
     /// the body's home surface and the panel-1 launcher, never a strip chip.
     #[test]
-    fn the_empty_side_panel_draws_no_chip_and_no_add_button() {
+    fn the_empty_side_panel_shows_the_start_surface_and_add_button() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
         state.borrow_mut().right_sidebar_open = true;
-        assert_eq!(
-            state.borrow().side_tabs,
-            vec![SideTabKind::Overview],
-            "the default is the Overview home surface"
+        assert!(
+            state.borrow().side_tabs.is_empty(),
+            "a fresh panel has no open tab"
         );
         let commands = render_element(&mut root, window(), &app);
-        let chrome_text: Vec<&str> = commands
+        let texts: Vec<&str> = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. }
-                    if origin.y < crate::ui::chrome::CHROME_HEIGHT =>
-                {
-                    Some(text.as_str())
-                }
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
+        for label in [
+            "Start",
+            "Overview",
+            "Review",
+            "Files",
+            "Terminal",
+            "Side Question",
+        ] {
+            assert!(
+                texts.contains(&label),
+                "the Start surface lists {label:?}: {texts:?}"
+            );
+        }
         assert!(
-            !chrome_text.iter().any(|text| *text == "Overview"),
-            "no Overview chip: {chrome_text:?}"
-        );
-        assert!(
-            !commands.iter().any(|command| matches!(
+            commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { name, origin, .. }
-                    if name == "plus"
-                        && origin.y < crate::ui::chrome::CHROME_HEIGHT
-                        && origin.x > 300.0
+                RenderCommand::DrawIcon { name, .. } if name == "plus"
             )),
-            "the empty section has no + button"
+            "the empty panel keeps the add-tab button"
         );
     }
 
@@ -4003,6 +4010,114 @@ mod tests {
         );
     }
 
+    /// 302/303/309/310: the chat footer has no shortcut strip, the model is
+    /// plain text, the text lane is narrower and the left scroll dots exist.
+    #[test]
+    fn the_chat_footer_is_plain_and_the_left_scroll_dots_are_drawn() {
+        let app = AppContext::default();
+        let (mut root, _state, _dir) = app_root();
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for label in ["send", "send to cloud", "tasks"] {
+            assert!(
+                !texts.contains(&label),
+                "the shortcut strip {label:?} is gone: {texts:?}"
+            );
+        }
+        let dots = commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::FillRect { rect, .. }
+                        if (rect.width() - 3.0).abs() < 0.01
+                            && (rect.height() - 3.0).abs() < 0.01
+                            && rect.min_x() < 420.0
+                )
+            })
+            .count();
+        assert!(dots >= 7, "the left rail draws seven dots, got {dots}");
+        // The composer card is still full-width while the transcript lane is
+        // not: the first transcript words start well inside the pane.
+        let first_text = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { origin, .. }
+                    if origin.y > 200.0 && origin.y < 600.0 && origin.x > 200.0 =>
+                {
+                    Some(origin.x)
+                }
+                _ => None,
+            })
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            first_text > 250.0,
+            "the narrowed transcript lane keeps a side margin, got {first_text}"
+        );
+    }
+
+    /// 297: dragging a chip reorders the strip and keeps the selected tab.
+    #[test]
+    fn dragging_a_side_tab_chip_reorders_the_strip() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![
+                crate::state::SideTabKind::Agent,
+                crate::state::SideTabKind::Files,
+            ];
+            s.active_side_tab = 0;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let origin = |label: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. }
+                        if text == label && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                    {
+                        Some(*origin)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the {label:?} chip"))
+        };
+        let agent = origin("Side Question");
+        let files = origin("Files");
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: agent + vec2f(4.0, 4.0),
+                button: 0,
+            },
+            DispatchedEvent::MouseMove {
+                position: files + vec2f(28.0, 4.0),
+            },
+            DispatchedEvent::MouseUp {
+                position: files + vec2f(28.0, 4.0),
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert_eq!(
+            state.borrow().side_tabs,
+            vec![
+                crate::state::SideTabKind::Files,
+                crate::state::SideTabKind::Agent,
+            ],
+            "the dragged chip lands after the other one"
+        );
+    }
+
     /// 283: every side-panel chip switches the content with a real click.
     #[test]
     fn side_tab_chips_switch_the_panel_with_real_clicks() {
@@ -4085,7 +4200,7 @@ mod tests {
             })
             .collect();
         assert!(
-            texts.iter().any(|text| *text == "Add a tab"),
+            texts.iter().any(|text| *text == "Start"),
             "the in-panel launcher is shown: {texts:?}"
         );
         let files = commands
@@ -4174,6 +4289,9 @@ mod tests {
         {
             let mut s = state.borrow_mut();
             s.right_sidebar_open = true;
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.crons_open = false;
             s.side_tabs = vec![crate::state::SideTabKind::Agent];
             s.active_side_tab = 0;
         }
@@ -4190,11 +4308,7 @@ mod tests {
                 _ => None,
             })
             .expect("the Side Question composer placeholder");
-        click(&mut root, &app, placeholder + vec2f(12.0, 8.0));
-        assert!(
-            state.borrow().side_composer_focused,
-            "the side composer takes focus"
-        );
+        click(&mut root, &app, placeholder + vec2f(40.0, -4.0));
         let _ = render_element(&mut root, size, &app);
         let mut ctx = EventContext;
         root.dispatch_event(
@@ -4275,6 +4389,8 @@ mod tests {
             s.right_sidebar_open = true;
             *s.chrome_overview_open.borrow_mut() = true;
         }
+        state.borrow_mut().side_tabs = vec![SideTabKind::Overview];
+        state.borrow_mut().active_side_tab = 0;
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands
             .iter()

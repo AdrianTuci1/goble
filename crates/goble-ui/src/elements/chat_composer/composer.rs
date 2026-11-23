@@ -1367,8 +1367,18 @@ impl ChatComposer {
                 .map(|model| model.name.clone())
                 .filter(|name| !name.trim().is_empty())
         });
+        let provider = self.model_tray.as_ref().and_then(|tray| {
+            tray.harnesses
+                .iter()
+                .find(|group| group.models.iter().any(|model| model.id == tray.model))
+                .map(|group| group.label.clone())
+                .filter(|name| !name.trim().is_empty())
+        });
         let text = match catalogue_label {
-            Some(name) => name,
+            Some(name) => match provider {
+                Some(provider) if !name.starts_with(&provider) => format!("{provider} · {name}"),
+                _ => name,
+            },
             None if label.trim().is_empty() => MODEL_NOT_CONFIGURED.to_string(),
             None => label,
         };
@@ -1434,22 +1444,15 @@ impl ChatComposer {
                     .finish(),
             );
         }
-        content = content.with_child(
-            Icon::new(if open { "chevron-up" } else { "chevron-down" })
-                .with_size(12.0)
-                .with_color(caption_color(app))
-                .finish(),
-        );
-        // DSH's chip padding is asymmetric — 8pt before the label, 4pt after the
-        // chevron — so the content carries the inset and the button's own
-        // symmetric pad is zero.
-        let content = Padding::new(content.finish(), EdgeInsets::new(8.0, 0.0, 4.0, 0.0)).finish();
+        // 303: in the composer the model is a plain text selector, with no
+        // pill, outline, chevron or hover fill.
+        let content = Padding::new(content.finish(), EdgeInsets::new(4.0, 0.0, 4.0, 0.0)).finish();
         let button = ComposerButton::new(content)
             .with_height(28.0)
             .with_h_pad(0.0)
-            .with_radius(MODEL_CHIP_RADIUS)
+            .with_radius(0.0)
             .with_outline(false)
-            .with_hover_fill(ColorToken::Selected);
+            .with_hover_fill(ColorToken::ContentBg);
         // Opening the card makes this composer the keyboard's owner as well as
         // the pointer's. Without it, a chip pressed in a pane that had lost
         // focus opened a card whose Up/Down/Enter went nowhere (the composer
@@ -1543,10 +1546,16 @@ impl ChatComposer {
     fn approval_control(&self, app: &AppContext, mode: ApprovalMode) -> Box<dyn Element> {
         // No glyph: the mode's word is the control, and its colour says which
         // policy is in force.
-        let mut pill = ContextPill::new("sliders", mode.label())
+        let display = |mode: ApprovalMode| match mode {
+            ApprovalMode::AlwaysApprove => "Full access",
+            ApprovalMode::Manual => "Default",
+            ApprovalMode::Plan => "Plan",
+            ApprovalMode::AutoReview => "Auto-review",
+        };
+        let mut pill = ContextPill::new("sliders", display(mode))
             .without_icon()
             .with_label_color(mode.color())
-            .with_hover_fill(ColorToken::Selected)
+            .with_hover_fill(ColorToken::ContentBg)
             .with_tooltip(format!(
                 "Approval mode · {} · shift+tab to cycle",
                 mode.description()
@@ -1556,7 +1565,7 @@ impl ChatComposer {
             let items = ApprovalMode::ALL
                 .iter()
                 .map(|option| {
-                    let mut item = PopupMenuItem::new(option.label());
+                    let mut item = PopupMenuItem::new(display(*option));
                     if *option == mode {
                         item = item.selected();
                     }

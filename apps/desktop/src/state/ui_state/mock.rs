@@ -327,7 +327,7 @@ impl UiState {
             chrome_overview_open: Rc::new(RefCell::new(false)),
             chrome_more_open: Rc::new(RefCell::new(false)),
             side_panel_maximized: false,
-            side_tabs: vec![SideTabKind::Overview],
+            side_tabs: Vec::new(),
             side_review: None,
             side_file: None,
             active_side_tab: 0,

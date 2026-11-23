@@ -11,11 +11,11 @@ use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
     Container, ContentLane, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
-    Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
-    QuickActionButton, Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
-    TurnStatus, TurnStatusFooter,
+    Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, Point,
+    QuickActionButton, ScrollState, Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip,
+    TooltipPosition, TurnStatus, TurnStatusFooter,
 };
-use crate::geometry::Vector2F;
+use crate::geometry::{rectf, Vector2F};
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
@@ -317,6 +317,106 @@ mod failure_tests {
             narrow_size.x, 280.0,
             "the block takes the width it is given"
         );
+    }
+}
+
+/// 310: the transcript's left scroll rail: seven dots, the active one
+/// highlighted, clicking a dot scrolls the transcript to that fraction.
+struct ScrollDotsRail {
+    scroll: Rc<RefCell<ScrollState>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+const SCROLL_DOTS: usize = 7;
+
+impl ScrollDotsRail {
+    fn new(scroll: Rc<RefCell<ScrollState>>) -> Self {
+        Self {
+            scroll,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn dot_y(&self, index: usize) -> f32 {
+        let height = self.size.map(|size| size.y).unwrap_or(0.0);
+        let inset = 24.0;
+        12.0 + (height - inset * 2.0) * index as f32 / (SCROLL_DOTS - 1) as f32
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for ScrollDotsRail {
+    fn layout(
+        &mut self,
+        constraint: crate::elements::SizeConstraint,
+        ctx: &mut crate::elements::LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let _ = (ctx, app);
+        self.size = Some(constraint.max);
+        constraint.max
+    }
+
+    fn paint(
+        &mut self,
+        origin: Vector2F,
+        ctx: &mut crate::elements::PaintContext,
+        app: &AppContext,
+    ) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let scroll = self.scroll.borrow();
+        let max = scroll.max_offset().max(1.0);
+        let active = ((scroll.offset() / max) * (SCROLL_DOTS - 1) as f32).round() as usize;
+        if let Some(renderer) = ctx.renderer.as_mut() {
+            for index in 0..SCROLL_DOTS {
+                let y = origin.y + self.dot_y(index);
+                let color = if index == active.min(SCROLL_DOTS - 1) {
+                    ColorToken::Text
+                } else {
+                    ColorToken::Muted
+                };
+                renderer.fill_rect(rectf(origin.x + 5.0, y, 3.0, 3.0), app.theme.color(color));
+            }
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &crate::event::DispatchedEvent,
+        ctx: &mut crate::elements::EventContext,
+        app: &AppContext,
+    ) -> bool {
+        let _ = (ctx, app);
+        if let crate::event::DispatchedEvent::MouseDown { position, .. } = event {
+            if let Some(origin) = self.origin {
+                if (position.x - origin.x()).abs() < 12.0 {
+                    for index in 0..SCROLL_DOTS {
+                        let y = origin.y() + self.dot_y(index);
+                        if (position.y - y).abs() < 6.0 {
+                            let current = self.scroll.borrow().offset();
+                            let max = self.scroll.borrow().max_offset();
+                            let target = max * index as f32 / (SCROLL_DOTS - 1) as f32;
+                            self.scroll.borrow_mut().scroll_by(target - current);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 }
 
@@ -1591,6 +1691,14 @@ impl ChatView {
         } else {
             content
         };
+        // 310: a left rail of scroll dots, matching the transcript's position.
+        let content: Box<dyn Element> = Stack::new()
+            .with_children(vec![content])
+            .with_overlay(
+                ScrollDotsRail::new(self.scroll.clone()).finish(),
+                Vector2F::zero(),
+            )
+            .finish();
         // The pane's tree: the full-width chrome band above the laned content
         // column. The chrome takes its own height (the bar's reserved height
         // and the dock's own); the lane fills the rest.

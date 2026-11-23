@@ -18,7 +18,7 @@ use goble_ui::elements::{
     TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY};
-use goble_ui::geometry::{vec2f, PointF, RectF, Size2F, Vector2F};
+use goble_ui::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
 use goble_ui::platform::text_atlas::{advance_width, FontWeight};
 use goble_ui::theme::{ColorToken, FontFamily};
 
@@ -592,7 +592,8 @@ pub fn build_chrome_row(
         let tab_strip: Box<dyn Element> = if has_tabs {
             TabStripScroller::new(app, state, actions).finish()
         } else {
-            Empty::new().finish()
+            // 294: an empty panel still shows the "+" beside Start.
+            side_tab_add_menu(app, state, actions)
         };
         let on_close = actions.on_toggle_right_sidebar.clone();
         // The general topbar keeps only the chips plus maximize and the
@@ -886,16 +887,18 @@ fn build_add_tab_surface(app: &AppContext, actions: &UiActions) -> Box<dyn Eleme
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(4.0)
         .with_child(
-            Text::new("Add a tab")
+            Text::new("Start")
                 .with_font_size(14.0)
                 .with_weight(FontWeight::Medium)
                 .with_theme_color(ColorToken::Text, app)
                 .finish(),
         );
     for kind in [
-        SideTabKind::Agent,
+        SideTabKind::Overview,
+        SideTabKind::Review,
         SideTabKind::Files,
         SideTabKind::Terminal,
+        SideTabKind::Agent,
         SideTabKind::TaskOutput,
     ] {
         let on_add = on_add.clone();
@@ -968,6 +971,9 @@ struct TabStripScroller {
     widths: Vec<f32>,
     active: usize,
     tabs: usize,
+    indices: Vec<usize>,
+    on_reorder: Rc<RefCell<dyn FnMut(SideTabAction)>>,
+    drag: Option<(f32, usize, usize)>,
     scroll: Rc<RefCell<ScrollState>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -980,6 +986,7 @@ const TAB_STRIP_ADD_GAP: f32 = 4.0;
 impl TabStripScroller {
     fn new(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Self {
         let mut widths = Vec::new();
+        let mut indices = Vec::new();
         let mut active = 0;
         for (index, kind) in state.side_tabs.iter().enumerate() {
             if *kind == SideTabKind::Overview {
@@ -995,6 +1002,7 @@ impl TabStripScroller {
                 FontFamily::System,
                 false,
             );
+            indices.push(index);
             widths.push(
                 TAB_STRIP_PADDING_X * 2.0
                     + TAB_STRIP_ICON
@@ -1023,6 +1031,9 @@ impl TabStripScroller {
             widths,
             active,
             tabs,
+            indices,
+            on_reorder: actions.on_side_tab.clone(),
+            drag: None,
             scroll,
             size: None,
             origin: None,
@@ -1070,6 +1081,25 @@ impl TabStripScroller {
     }
 }
 
+impl TabStripScroller {
+    /// The visual chip index under `x`, relative to the strip origin.
+    fn chip_at(&self, x: f32) -> Option<usize> {
+        let mut left = -self.scroll.borrow().offset();
+        for (index, width) in self.widths.iter().enumerate() {
+            if x >= left && x < left + width {
+                return Some(index);
+            }
+            left += width + TAB_STRIP_GAP;
+        }
+        None
+    }
+
+    fn chip_left(&self, index: usize) -> f32 {
+        let widths: f32 = self.widths.iter().take(index).sum();
+        -self.scroll.borrow().offset() + widths + TAB_STRIP_GAP * index as f32
+    }
+}
+
 impl Element for TabStripScroller {
     fn layout(
         &mut self,
@@ -1109,6 +1139,15 @@ impl Element for TabStripScroller {
         let size = self.size.unwrap_or(Vector2F::zero());
         let chips_y = origin.y + ((size.y - self.scroll_size.y) / 2.0).max(0.0);
         self.scrollable.paint(vec2f(origin.x, chips_y), ctx, app);
+        if let Some((_, _, target)) = self.drag {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                let x = origin.x + self.chip_left(target) - TAB_STRIP_GAP / 2.0;
+                renderer.fill_rect(
+                    rectf(x, origin.y + 4.0, 2.0, self.scroll_size.y - 8.0),
+                    app.theme.color(ColorToken::Accent),
+                );
+            }
+        }
         let add_size = self.add.size().unwrap_or(Vector2F::zero());
         // The + sits right beside the visible chips; only when they overflow
         // the viewport is it pushed to the viewport's fixed trailing edge.
@@ -1135,6 +1174,53 @@ impl Element for TabStripScroller {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
+        if let DispatchedEvent::MouseDown { position, button } = event {
+            if *button == 0 {
+                if let Some(origin) = self.origin {
+                    let x = position.x - origin.x();
+                    if x >= 0.0 && x <= self.scroll_size.x {
+                        if let Some(index) = self.chip_at(x) {
+                            self.drag = Some((x, index, index));
+                            let _ = self.scrollable.dispatch_event(event, ctx, app);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((start, from, _target)) = self.drag {
+            match event {
+                DispatchedEvent::MouseMove { position } => {
+                    if let Some(origin) = self.origin {
+                        let x = position.x - origin.x();
+                        let mut target = self.tabs.saturating_sub(1);
+                        for index in 0..self.tabs {
+                            if x < self.chip_left(index) + self.widths[index] / 2.0 {
+                                target = index;
+                                break;
+                            }
+                        }
+                        self.drag = Some((start, from, target));
+                        return true;
+                    }
+                }
+                DispatchedEvent::MouseUp { .. } => {
+                    if let Some((_, from, to)) = self.drag.take() {
+                        if from != to {
+                            let from_state = self.indices.get(from).copied();
+                            let to_state = self.indices.get(to).copied();
+                            if let (Some(from_state), Some(to_state)) = (from_state, to_state) {
+                                (self.on_reorder.borrow_mut())(SideTabAction::Reorder(
+                                    from_state, to_state,
+                                ));
+                            }
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         if self.scrollable.dispatch_event(event, ctx, app) {
             return true;
         }
@@ -1952,7 +2038,8 @@ pub fn build_side_panel(
     // Terminal and Files mount the real pane views rather than a static
     // overview.
     let add_open = *state.side_tab_add_menu_open.borrow();
-    let content: Box<dyn Element> = if add_open {
+    let start_surface = add_open || state.side_tabs.is_empty();
+    let content: Box<dyn Element> = if start_surface {
         build_add_tab_surface(app, actions)
     } else {
         match kind {
@@ -2054,7 +2141,7 @@ pub fn build_side_panel(
     };
     // AF: every tab except Review (which already owns its row) gets its own
     // 1 pt-separated topbar inside the panel content.
-    let content: Box<dyn Element> = if kind == SideTabKind::Review || add_open {
+    let content: Box<dyn Element> = if kind == SideTabKind::Review || start_surface {
         content
     } else {
         let topbar = side_tab_topbar(app, state, actions, kind);

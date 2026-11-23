@@ -182,6 +182,8 @@ pub enum SideTabAction {
     Cycle(i32),
     /// Show or hide the inner Terminals/Background Tasks rail.
     ToggleRail,
+    /// Move the tab at the first index to the second index.
+    Reorder(usize, usize),
 }
 
 #[derive(Clone)]

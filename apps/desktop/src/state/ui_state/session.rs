@@ -752,7 +752,10 @@ impl UiState {
                     composer_draft: session.draft.clone(),
                     composer_path: session.path.clone(),
                     composer_focused: if *pane_id == super::SIDE_AGENT_PANE_ID {
-                        self.side_composer_focused
+                        // The Side Question is the panel's active surface while
+                        // its tab is up; starting focused makes click/caret/typing
+                        // work even though the reserved pane is not a leaf.
+                        true
                     } else {
                         self.composer_focused && self.active_pane_id == *pane_id
                     },

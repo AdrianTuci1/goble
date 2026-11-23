@@ -8,9 +8,6 @@ impl UiState {
     /// left out of range (a test fixture, a stale layout) falls back to the
     /// first tab instead of drawing nothing.
     pub fn ensure_side_tabs(&mut self) {
-        if self.side_tabs.is_empty() {
-            self.side_tabs.push(SideTabKind::Overview);
-        }
         if self.active_side_tab >= self.side_tabs.len() {
             self.active_side_tab = 0;
         }
@@ -72,6 +69,23 @@ impl UiState {
         }
     }
 
+    /// 297: move a tab, keeping the active tab selected.
+    pub fn reorder_side_tab(&mut self, from: usize, to: usize) {
+        if from >= self.side_tabs.len() || to >= self.side_tabs.len() || from == to {
+            return;
+        }
+        let active = self.side_tabs.get(self.active_side_tab).copied();
+        let tab = self.side_tabs.remove(from);
+        self.side_tabs.insert(to, tab);
+        if let Some(active) = active {
+            self.active_side_tab = self
+                .side_tabs
+                .iter()
+                .position(|tab| *tab == active)
+                .unwrap_or(0);
+        }
+    }
+
     /// Close the tab at `index`. Closing the active tab selects its neighbour —
     /// the next one when there is one, the previous one otherwise — and closing
     /// the last tab brings Overview back, so the panel always has a surface.
@@ -81,7 +95,6 @@ impl UiState {
         }
         self.side_tabs.remove(index);
         if self.side_tabs.is_empty() {
-            self.side_tabs.push(SideTabKind::Overview);
             self.active_side_tab = 0;
             return;
         }
@@ -331,7 +344,7 @@ impl UiState {
             chrome_overview_open: Rc::new(RefCell::new(false)),
             chrome_more_open: Rc::new(RefCell::new(false)),
             side_panel_maximized: false,
-            side_tabs: vec![SideTabKind::Overview],
+            side_tabs: Vec::new(),
             side_review: None,
             side_file: None,
             active_side_tab: 0,

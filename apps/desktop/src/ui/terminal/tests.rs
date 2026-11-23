@@ -612,9 +612,10 @@ fn the_shells_bottom_bar_is_the_shared_composer() {
             "the shell bar draws no instruction {label:?}: {shell_runs:?}"
         );
     }
+    // 302: the chat surface no longer draws a shortcut strip under its card.
     assert!(
-        pane_has(&chat_runs, "send") && pane_has(&chat_runs, "send to cloud"),
-        "the chat pane draws its own instructions: {chat_runs:?}"
+        !pane_has(&chat_runs, "send") && !pane_has(&chat_runs, "send to cloud"),
+        "the chat pane draws no shortcut strip: {chat_runs:?}"
     );
 
     // The shell's one instruction is the exception to the pane's rule that
@@ -1993,8 +1994,8 @@ fn the_panes_mode_decides_its_surface_and_the_switch_puts_the_agent_surface_up()
     );
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, "send to cloud"),
-        "the agent surface's own instruction strip is drawn: {runs:?}"
+        !pane_has(&runs, "send to cloud"),
+        "the agent surface draws no instruction strip: {runs:?}"
     );
     assert!(
         !pane_has(&runs, "for terminal") && !pane_has(&runs, "esc"),
@@ -2141,8 +2142,8 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
     let runs = pane_runs(&mut root, &app);
     for label in AGENT_SURFACE_RUNS {
         assert!(
-            pane_has(&runs, label),
-            "the agent surface is up over the same shell, so {label:?} is drawn: {runs:?}"
+            !pane_has(&runs, label),
+            "the agent surface draws no shortcut strip, so {label:?} is absent: {runs:?}"
         );
     }
     assert!(

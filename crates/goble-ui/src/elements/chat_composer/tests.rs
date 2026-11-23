@@ -904,8 +904,8 @@ fn the_menu_backed_controls_draw_a_trailing_chevron() {
             .iter()
             .filter(|name| name.as_str() == "chevron-down")
             .count(),
-        1,
-        "only the closed model chip points down now: {icons:?}"
+        0,
+        "the plain model selector draws no chevron: {icons:?}"
     );
     assert!(
         !icons
@@ -942,8 +942,8 @@ fn the_menu_backed_controls_draw_a_trailing_chevron() {
             .iter()
             .filter(|name| name.as_str() == "chevron-up")
             .count(),
-        1,
-        "the open chip flips its chevron up: {opened_icons:?}"
+        0,
+        "the plain selector never draws a chevron: {opened_icons:?}"
     );
 }
 
@@ -1258,9 +1258,7 @@ fn a_custom_harness_footer_draws_its_mark_in_place_of_model_and_approval() {
         "a custom harness draws no model control: {commands:?}"
     );
     assert!(
-        !texts
-            .iter()
-            .any(|text| text == ApprovalMode::AutoReview.label()),
+        !texts.iter().any(|text| text == "Auto-review"),
         "a custom harness draws no approval control: {commands:?}"
     );
 
@@ -1276,9 +1274,7 @@ fn a_custom_harness_footer_draws_its_mark_in_place_of_model_and_approval() {
         "the native footer keeps its model control: {commands:?}"
     );
     assert!(
-        texts
-            .iter()
-            .any(|text| text == ApprovalMode::AutoReview.label()),
+        texts.iter().any(|text| text == "Auto-review"),
         "the native footer keeps its approval control: {commands:?}"
     );
     assert!(
@@ -2149,7 +2145,17 @@ fn the_approval_mode_is_a_word_whose_colour_names_the_policy() {
         let drawn = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text, color, .. } if text == mode.label() => Some(*color),
+                RenderCommand::DrawText { text, color, .. }
+                    if text
+                        == match mode {
+                            ApprovalMode::AlwaysApprove => "Full access",
+                            ApprovalMode::Manual => "Default",
+                            ApprovalMode::Plan => "Plan",
+                            ApprovalMode::AutoReview => "Auto-review",
+                        } =>
+                {
+                    Some(*color)
+                }
                 _ => None,
             })
             .unwrap_or_else(|| panic!("{:?}'s label is drawn", mode));
@@ -2189,7 +2195,13 @@ fn the_approval_mode_menu_lists_words_without_icons() {
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawText { text, .. } if text == mode.label()
+                RenderCommand::DrawText { text, .. }
+                    if text == match mode {
+                        ApprovalMode::AlwaysApprove => "Full access",
+                        ApprovalMode::Manual => "Default",
+                        ApprovalMode::Plan => "Plan",
+                        ApprovalMode::AutoReview => "Auto-review",
+                    }
             )),
             "{:?} is listed in the open menu",
             mode
@@ -3802,7 +3814,9 @@ fn the_model_chip_opens_its_card_and_takes_the_keyboard() {
     let chip = commands
         .iter()
         .find_map(|command| match command {
-            crate::render::RenderCommand::DrawText { origin, text, .. } if text == "Model One" => {
+            crate::render::RenderCommand::DrawText { origin, text, .. }
+                if text.contains("Model One") =>
+            {
                 Some(*origin)
             }
             _ => None,

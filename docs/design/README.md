@@ -176,10 +176,13 @@ Previews: `side-terminal-*`, `side-task-output-*`, `side-question-*`,
 `docs/design/previews/` holds the headless-rendered screenshots used to check
 parity with the reference photos in `.refs/t3-new/`: shell (wide/narrow, dark
 and light), topbar with More open (plain, Split flyout, Copy flyout) and
-Overview open, the empty side panel (no chip, no `+`), the Terminal tab, the
-Side Question conversation, multiple tabs with `+` beside them, the tight-width
-overflow strip, the split mid-resize state with the 1 pt inter-panel hairline,
-the terminal shell (an interactive `user@host ~ %` prompt), Settings (General, Appearance with its in-field swatch,
+Overview open, the empty side panel's Start surface with its `+`, the Terminal
+tab, the Side Question conversation, multiple tabs with `+` beside them and a
+reordered strip, the tight-width overflow strip, the split mid-resize state
+with the 1 pt inter-panel hairline, a stacked split's gutter band and close X,
+the file explorer opened from Files, the terminal shell (an interactive
+`user@host ~ %` prompt), the composer's model and permission trays, Settings
+(with an open select above later rows, integrations, General, Appearance with its in-field swatch,
 Appearance with the colour palette open, Shortcuts, narrow; no descriptions,
 floating close x), the diff reviewer, the floating file window and the
 changed-files card. Next to them: the DSH-style right-aligned user bubble and

@@ -286,6 +286,18 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "tool-inline",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-tabs-reordered",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "side-panel-max",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -296,6 +308,30 @@ fn main() -> anyhow::Result<()> {
                 vec2f(1600.0, 1000.0),
                 false,
                 SettingsCategory::General,
+            ),
+            (
+                "composer-model-open",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "composer-permissions-open",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "settings-select-open",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::General,
+            ),
+            (
+                "settings-integrations",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::Providers,
             ),
             (
                 "settings-wide",
@@ -445,9 +481,9 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 if name == "side-panel" {
-                    // Empty panel: the Overview home surface, no chip and no +.
+                    // Empty panel: the Start surface, no chip, with "+".
                     s.right_sidebar_open = true;
-                    s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
+                    s.side_tabs = Vec::new();
                     s.active_side_tab = 0;
                 }
                 if name == "side-panel-resize" {
@@ -533,6 +569,15 @@ fn main() -> anyhow::Result<()> {
                         *s.spotlight.options_menu_open.borrow_mut() = true;
                     }
                 }
+                if name == "side-tabs-reordered" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Files,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Terminal,
+                    ];
+                    s.active_side_tab = 0;
+                }
                 if name == "side-tabs-hover" || name == "side-tabs-add" {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![
@@ -598,6 +643,18 @@ fn main() -> anyhow::Result<()> {
                         ),
                     );
                 }
+                if name == "composer-model-open" {
+                    let pane = s.active_pane_id;
+                    *s.pane_controls_mut(pane).model_menu_open.borrow_mut() = true;
+                }
+                if name == "composer-permissions-open" {
+                    let pane = s.active_pane_id;
+                    *s.pane_controls_mut(pane).approval_menu_open.borrow_mut() = true;
+                }
+                if name == "settings-select-open" {
+                    let (open, _) = s.settings.select_menu("app.approval_mode");
+                    *open.borrow_mut() = true;
+                }
                 if name == "settings-wide-appearance-palette" {
                     // The in-field swatch's palette popover, opened on the
                     // accent channel so the square and the anchored grid are
@@ -643,6 +700,26 @@ fn main() -> anyhow::Result<()> {
                             },
                         );
                     }
+                }
+                if name == "tool-inline" {
+                    let mut message = ChatMessage::new(
+                        ChatRole::Assistant,
+                        vec![ChatFragment::text("Let me inspect the change.")],
+                    );
+                    message.tool_calls.push(goble_ui::ToolCall {
+                        id: "preview-tool-inline".into(),
+                        name: "Read".into(),
+                        arguments: r#"{"path":"src/lib.rs"}"#.into(),
+                        status: goble_core::harness::ToolCallStatus::Finished,
+                        result: Some("pub fn build() {}".into()),
+                        diff: None,
+                    });
+                    let active = s.active_pane_id;
+                    s.pane_runtime
+                        .entry(active)
+                        .or_default()
+                        .messages
+                        .push(message);
                 }
                 if name == "sidebar-collapsed" {
                     s.sidebar_visible = false;

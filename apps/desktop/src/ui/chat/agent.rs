@@ -295,7 +295,13 @@ pub fn build_agent_chat(
     // lane only meters this pane's conversation column (drawn on the darker
     // `Bg`); the topbar and the work dock stay full-pane-width chrome bands and
     // never follow the adjustable width.
-    let content_lane_pref = state.content_lane_prefs.get(&pane_id).copied();
+    // 309: the transcript/text lane is narrower than the composer band, so a
+    // full-width line can never run into the composer controls.
+    let content_lane_pref = state
+        .content_lane_prefs
+        .get(&pane_id)
+        .copied()
+        .or(Some(820.0));
     // The window's single chrome row owns the title and actions now; the panel
     // starts directly under it with no second header row.
     let header: Box<dyn Element> = goble_ui::elements::Empty::new()
@@ -502,11 +508,6 @@ pub fn build_agent_chat(
         .with_composer_ssh_session(ssh_session)
         .with_composer_attachments(session.composer_attachments.clone())
         .with_composer_stop_visible(session.agent_busy)
-        // The instructions the composer draws above its editor: grok-build's
-        // own hints, as this GUI binds them.
-        .with_composer_hints(crate::ui::shortcut_hints::agent_rich_input_hints(
-            session.agent_busy,
-        ))
         // The live turn-status footer, fed by C1's real live state per pane. It
         // is information only, so it carries no click handler.
         .with_turn_status(session.turn_status.clone())

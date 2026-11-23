@@ -501,13 +501,12 @@ mod tests {
         state
     }
 
-    /// The panel starts on the Overview home surface, but reopening keeps the
-    /// tab that was up when it was collapsed: Overview is not re-selected and
-    /// no chip is added for it.
+    /// 294: a fresh panel opens on the Start surface and reopens on the tab
+    /// that was up when it was collapsed.
     #[test]
-    fn the_side_panel_starts_on_overview_and_reopens_on_its_last_tab() {
+    fn the_side_panel_starts_on_start_and_reopens_on_its_last_tab() {
         let mut state = UiState::mock();
-        assert_eq!(state.side_tabs, vec![SideTabKind::Overview]);
+        assert!(state.side_tabs.is_empty());
         assert_eq!(state.active_side_tab, 0);
         assert_eq!(state.active_side_tab_kind(), SideTabKind::Overview);
 
@@ -527,29 +526,22 @@ mod tests {
     fn adding_a_tab_selects_it_once() {
         let mut state = UiState::mock();
         state.add_side_tab(SideTabKind::Agent);
-        assert_eq!(
-            state.side_tabs,
-            vec![SideTabKind::Overview, SideTabKind::Agent]
-        );
-        assert_eq!(state.active_side_tab, 1);
+        assert_eq!(state.side_tabs, vec![SideTabKind::Agent]);
+        assert_eq!(state.active_side_tab, 0);
         state.add_side_tab(SideTabKind::Files);
         state.add_side_tab(SideTabKind::Agent);
         assert_eq!(
             state.side_tabs,
-            vec![
-                SideTabKind::Overview,
-                SideTabKind::Agent,
-                SideTabKind::Files
-            ],
+            vec![SideTabKind::Agent, SideTabKind::Files],
             "Agent is not added twice"
         );
-        assert_eq!(state.active_side_tab, 1, "the existing Agent tab is shown");
+        assert_eq!(state.active_side_tab, 0, "the existing Agent tab is shown");
     }
 
     /// Closing the active tab selects its next neighbour, or the previous one
-    /// when it was the last; closing the only tab brings Overview back.
+    /// when it was the last; closing the only tab returns to Start.
     #[test]
-    fn closing_tabs_selects_a_neighbour_and_never_leaves_the_panel_empty() {
+    fn closing_tabs_selects_a_neighbour_and_returns_to_start() {
         let mut state = state_with(
             &[
                 SideTabKind::Overview,
@@ -572,8 +564,9 @@ mod tests {
 
         let mut only = state_with(&[SideTabKind::Agent], 0);
         only.close_side_tab(0);
-        assert_eq!(only.side_tabs, vec![SideTabKind::Overview]);
+        assert!(only.side_tabs.is_empty());
         assert_eq!(only.active_side_tab, 0);
+        assert_eq!(only.active_side_tab_kind(), SideTabKind::Overview);
     }
 
     /// A horizontal swipe steps the strip and wraps at both ends.

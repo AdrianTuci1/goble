@@ -9,9 +9,10 @@ use std::rc::Rc;
 use goble_ui::elements::conversation_list_item::sidebar_relative_time;
 use goble_ui::elements::{
     caret_beam, AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
-    Element, Empty, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, MainAxisSize, Scrollable,
-    Text,
+    Element, Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
+    MainAxisSize, PaintContext, Point, Scrollable, SizeConstraint, Text,
 };
+use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{vec2f, Vector2F};
 use goble_ui::platform::text_atlas::FontWeight;
 use goble_ui::theme::ColorToken;
@@ -248,22 +249,24 @@ pub fn build_spotlight(
     }
     let dispatch = actions.on_spotlight.clone();
     let close = dispatch.clone();
-    let scrim = HoverRow::new(
-        Container::new(Empty::new().with_size(window).finish())
-            .with_background(Fill::Solid(ColorU::new(0, 0, 0, 0)))
-            .finish(),
-    )
-    .with_on_click(move || (close.borrow_mut())(SpotlightAction::Close))
+    // The scrim only catches presses: it paints nothing at any hover state, so
+    // the workspace behind the spotlight stays fully visible.
+    let scrim = Scrim::new(window, move || {
+        (close.borrow_mut())(SpotlightAction::Close)
+    })
     .finish();
 
     let width = (window.x * CARD_WIDTH_RATIO).clamp(520.0, 1000.0);
     let x = (window.x - width) * 0.5;
     let y = (window.y * CARD_TOP_RATIO).max(48.0);
+    // The card lives inside the window: its results scroll in the room that is
+    // actually left, never past the bottom edge.
+    let content_max_height = (window.y - y - 24.0).max(160.0);
 
     let scope_width = (width * 0.21).max(132.0);
     let options_width = (width * 0.30).max(178.0);
 
-    let card = build_window(app, state, actions, width);
+    let card = build_window(app, state, actions, width, content_max_height);
     let scope_menu = *spotlight.scope_menu_open.borrow();
     let options_menu = *spotlight.options_menu_open.borrow();
 
@@ -323,11 +326,80 @@ pub fn build_spotlight(
     element
 }
 
+/// The spotlight's outside-press catcher: full-window, paints nothing (the
+/// workspace stays visible), consumes the pointer and closes on a press.
+struct Scrim {
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+    window: Vector2F,
+    on_close: Rc<RefCell<dyn FnMut()>>,
+}
+
+impl Scrim {
+    fn new(window: Vector2F, on_close: impl FnMut() + 'static) -> Self {
+        Self {
+            size: None,
+            origin: None,
+            window,
+            on_close: Rc::new(RefCell::new(on_close)),
+        }
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for Scrim {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        self.size = Some(self.window.min(constraint.max));
+        self.window
+    }
+
+    fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        match event {
+            // The scrim owns the pointer: no hover, scroll or press reaches the
+            // workspace behind the open spotlight.
+            DispatchedEvent::MouseDown { .. } => {
+                (self.on_close.borrow_mut())();
+                true
+            }
+            DispatchedEvent::MouseMove { .. }
+            | DispatchedEvent::MouseUp { .. }
+            | DispatchedEvent::Scroll { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 fn build_window(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
     width: f32,
+    content_max_height: f32,
 ) -> Box<dyn Element> {
     let spotlight = &state.spotlight;
     let colors = palette(app);
@@ -406,7 +478,7 @@ fn build_window(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(header)
         .with_child(separator)
-        .with_child(build_results(app, state, actions));
+        .with_child(build_results(app, state, actions, content_max_height));
     ConstrainedBox::new(
         Container::new(column.finish())
             .with_background(Fill::Solid(colors.card))
@@ -457,7 +529,12 @@ fn filter_bar(colors: &SpotPalette, width: f32) -> Box<dyn Element> {
         .finish()
 }
 
-fn build_results(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+fn build_results(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    content_max_height: f32,
+) -> Box<dyn Element> {
     let spotlight = &state.spotlight;
     let dispatch = actions.on_spotlight.clone();
     let mut rows = Flex::column()
@@ -566,7 +643,7 @@ fn build_results(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> B
     let height = if count == 0 {
         ROW_HEIGHT
     } else {
-        (count as f32 * ROW_HEIGHT).min(340.0)
+        (count as f32 * ROW_HEIGHT).min(340.0).min((content_max_height - 52.0).max(36.0))
     };
     ConstrainedBox::new(Scrollable::new(rows.finish(), goble_ui::elements::Axis::Vertical).finish())
         .with_height(height)

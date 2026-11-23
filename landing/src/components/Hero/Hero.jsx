@@ -1,5 +1,4 @@
 import './Hero.css';
-import HeroVisual from './HeroVisual/HeroVisual';
 import { getActionLinkProps, githubUrl } from '../../config/actionLinks';
 import { primaryDownload } from '../../config/install';
 import { useDetectOS } from '../../hooks/useDetectOS';
@@ -87,13 +86,14 @@ const Hero = () => {
         </div>
       </div>
 
-      {/* The spotlight showcase image moved here from the second section:
-          the first section owns the product visual now. */}
+      {/* The spotlight showcase image moved here from the second section,
+          inside the same gradient frame it had there. The animated hero
+          visual (motion design) is gone from the landing page. */}
       <div className="hero-showcase">
-        <img src="/misc/second.png" alt="Octomus spotlight launcher" />
+        <div className="hero-showcase-frame">
+          <img src="/misc/second.png" alt="Octomus spotlight launcher" />
+        </div>
       </div>
-
-      <HeroVisual phase="hud" />
     </section>
   );
 };

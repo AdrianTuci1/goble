@@ -159,7 +159,8 @@
   }
 }
 
-/* The spotlight showcase image moved into the hero section. */
+/* The spotlight showcase image moved into the hero section, keeping the
+   gradient frame it had in the second section (static, no motion design). */
 .hero-showcase {
   width: 100%;
   max-width: var(--container-width);
@@ -167,13 +168,24 @@
   padding: 0 2.5rem;
 }
 
-.hero-showcase img {
+.hero-showcase-frame {
+  padding: 1.4rem;
+  border-radius: 26px;
+  background:
+    radial-gradient(60% 80% at 12% 20%, rgba(72, 96, 220, 0.75) 0%, transparent 60%),
+    radial-gradient(55% 70% at 82% 18%, rgba(214, 88, 190, 0.55) 0%, transparent 62%),
+    radial-gradient(70% 80% at 55% 100%, rgba(120, 92, 232, 0.6) 0%, transparent 62%),
+    linear-gradient(135deg, #2430a8 0%, #3b49cf 34%, #8a4fd0 66%, #d059b0 100%);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+}
+
+.hero-showcase-frame img {
   display: block;
   width: 100%;
   height: auto;
-  border-radius: 18px;
-  border: 1px solid #232328;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0c0c0e;
 }
 
 @media (max-width: 900px) {

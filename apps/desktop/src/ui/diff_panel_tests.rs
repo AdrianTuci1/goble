@@ -975,7 +975,7 @@ fn a_large_inline_editor_draws_only_the_rows_in_view() {
 /// Y: changed files are flat full-width rows with one thin divider under each,
 /// not rounded cards or bordered boxes.
 #[test]
-fn expanded_file_rows_wear_one_casing_and_headers_have_dividers() {
+fn file_rows_are_flat_with_full_width_dividers() {
     if !git_available() {
         return;
     }
@@ -1014,10 +1014,7 @@ fn expanded_file_rows_wear_one_casing_and_headers_have_dividers() {
             )
         })
         .count();
-    assert_eq!(
-        bordered_rows, 2,
-        "each expanded file has one casing around header and body"
-    );
+    assert_eq!(bordered_rows, 0, "the list has no per-row card casing");
 }
 
 #[test]

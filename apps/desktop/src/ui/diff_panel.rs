@@ -246,7 +246,6 @@ pub(crate) fn build_diff_pane(
                     (state.window_size.x.max(1200.0) * 0.55).max(300.0),
                     0.0,
                 ))
-                .with_padding(EdgeInsets::new(sm, sm, sm, sm))
                 .finish(),
             )
             .finish(),
@@ -428,11 +427,11 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
     let kebab = Tooltip::new(
         TopbarButton::new(
             Icon::new("dots-vertical")
-                .with_size(15.0)
+                .with_size(14.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
         )
-        .with_size(28.0)
+        .with_size(26.0)
         .with_corner_radius(7.0)
         .with_on_click(toggle_files)
         .finish(),
@@ -443,11 +442,11 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
     let search = Tooltip::new(
         TopbarButton::new(
             Icon::new("search")
-                .with_size(15.0)
+                .with_size(14.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
         )
-        .with_size(28.0)
+        .with_size(26.0)
         .with_corner_radius(7.0)
         .with_on_click(move || {
             (on_search.borrow_mut())(crate::ui::spotlight::SpotlightAction::Open)
@@ -460,11 +459,11 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
     let menu = Tooltip::new(
         TopbarButton::new(
             Icon::new("menu-01")
-                .with_size(15.0)
+                .with_size(14.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
         )
-        .with_size(28.0)
+        .with_size(26.0)
         .with_corner_radius(14.0)
         .with_on_click(toggle_menu)
         .finish(),
@@ -481,13 +480,7 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
         .with_child(search)
         .with_child(menu)
         .finish();
-    ConstrainedBox::new(
-        Container::new(row)
-            .with_padding(EdgeInsets::new(8.0, 2.0, 8.0, 2.0))
-            .finish(),
-    )
-    .with_height(36.0)
-    .finish()
+    ConstrainedBox::new(row).with_height(32.0).finish()
 }
 
 /// The topbar's leading content: the directory this review covers, its branch
@@ -1322,16 +1315,9 @@ fn file_block(
             content_width,
         ));
     }
-    // 224: only the expanded file gets the card casing, one 1 px Border around
-    // its header and body; a collapsed row stays flat.
-    let block: Box<dyn Element> = if open {
-        Container::new(column.finish())
-            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-            .with_corner_radius(8.0)
-            .finish()
-    } else {
-        column.finish()
-    };
+    // 252: the expanded diff sits directly in the flat list — no card, border,
+    // radius or inset around the row.
+    let block = column.finish();
     let row: Box<dyn Element> = if content_width > 0.0 {
         ConstrainedBox::new(block)
             .with_width(content_width)

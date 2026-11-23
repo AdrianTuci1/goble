@@ -23,9 +23,9 @@ use goble_ui::color::ColorU;
 use goble_ui::elements::diff::{DiffLineKind, Hunk};
 use goble_ui::elements::{
     file_icon_name, AppContext, Axis, Border, Button, ButtonVariant, ConstrainedBox, Container,
-    CrossAxisAlignment, EdgeInsets, Element, Empty, Expanded, Flex, HoverRow, Icon, LayoutContext,
-    MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ScrollState,
-    Scrollable, SizeConstraint, Text, TextSpan, Tooltip, TooltipPosition,
+    CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Flex, HoverRow, Icon,
+    LayoutContext, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition,
+    ScrollState, Scrollable, SizeConstraint, Text, TextSpan, Tooltip, TooltipPosition,
 };
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::platform::text_atlas::{wrapped_lines, FontWeight};
@@ -1556,27 +1556,10 @@ pub(crate) fn files_changed_rail(
             .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
             .finish(),
         )
-        .with_child(
-            Expanded::new(
-                Scrollable::new(
-                    Container::new(list.finish())
-                        .with_padding(EdgeInsets::new(4.0, 4.0, 4.0, 4.0))
-                        .finish(),
-                    Axis::Vertical,
-                )
-                .finish(),
-            )
-            .finish(),
-        )
+        .with_child(Divider::horizontal().finish())
+        .with_child(Expanded::new(Scrollable::new(list.finish(), Axis::Vertical).finish()).finish())
         .finish();
-    ConstrainedBox::new(
-        Container::new(rail)
-            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-            .with_corner_radius(8.0)
-            .finish(),
-    )
-    .with_width(width)
-    .finish()
+    ConstrainedBox::new(rail).with_width(width).finish()
 }
 
 fn short_name(path: &str) -> String {

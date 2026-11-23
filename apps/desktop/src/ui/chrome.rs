@@ -2016,7 +2016,7 @@ pub fn build_side_panel(
     // Terminal content applies its own side padding per row; adding the
     // panel-level inset on top would double it. The other tabs keep the
     // reference's 16 pt content inset.
-    let content_padding = if kind == SideTabKind::Terminal {
+    let content_padding = if kind == SideTabKind::Terminal || kind == SideTabKind::Review {
         EdgeInsets::new(0.0, 0.0, 0.0, 0.0)
     } else {
         EdgeInsets::uniform(inset + 8.0)

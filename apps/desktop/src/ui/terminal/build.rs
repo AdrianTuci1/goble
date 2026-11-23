@@ -150,10 +150,10 @@ pub fn build_terminal(
     // same card closes the agent transcript. The bar's own keys decide it, so
     // the shell shows what those keys will act on. A full-screen program owns
     // the pane's screen, so it has no output of ours to close.
-    // The terminal pane is a plain terminal: the old block-list surface with
-    // its chat-style composer is gone, so there is no approval card here either
-    // (the agent surface owns that interaction).
-    let approval: Option<(Box<dyn Element>, f32)> = None;
+    let approval = (!owns_screen)
+        .then(|| chat::build_pending_approval(app, state, actions, pane_id))
+        .flatten()
+        .map(|approval| (approval.element, approval.height));
     // While the card waits it is the pane's only typing surface: the shell bar
     // is not drawn, so there is no rich input under the decision. It comes back
     // with the pane's draft once the command is approved or rejected.
@@ -165,9 +165,18 @@ pub fn build_terminal(
         Some(spec) => format!("Message {}…", spec.name),
         None => goble_ui::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER.to_string(),
     };
-    // The custom terminal composer (the old surface) is retired.
-    let bar: Option<Box<dyn Element>> = None;
-    let _ = bar_placeholder;
+    let bar = if approval.is_none() && (!owns_screen || agent.is_some()) {
+        Some(chat::build_terminal_composer(
+            state,
+            actions,
+            pane_id,
+            bar_focused,
+            agent,
+            bar_placeholder,
+        ))
+    } else {
+        None
+    };
     // Why the pane's last Cmd+Enter was refused, if it was. The reason is only
     // good while the state that produced it holds, so it is read while the
     // pane's shell is still running the command that refused the switch: a
@@ -214,9 +223,6 @@ pub fn build_terminal(
         state.terminal_global_filters.get(&pane_id).cloned(),
         Some(actions.on_copy_terminal.clone()),
     ))
-    // A terminal pane draws the live alacritty grid only: no blocks, cards or
-    // composer surface.
-    .with_grid_only(true)
     .finish();
     // The pane's topbar floats on its own layer above the shell, so the tray
     // the dots open hangs over the output instead of being painted over by it.

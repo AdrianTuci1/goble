@@ -1383,11 +1383,14 @@ fn file_header(
                 .finish(),
         )
         .with_child(
-            Text::new(dir)
-                .with_font_size(12.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .with_max_lines(1)
-                .finish(),
+            Expanded::new(
+                Text::new(dir)
+                    .with_font_size(12.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .with_max_lines(1)
+                    .finish(),
+            )
+            .finish(),
         )
         .finish();
 
@@ -1516,9 +1519,7 @@ fn file_body(
                 .with_state(horizontal_state(&hscroll, &file.absolute_path))
                 .finish()
         };
-        Container::new(diff)
-            .with_padding(EdgeInsets::new(8.0, DIFF_PAD_TOP, 8.0, DIFF_PAD_BOTTOM))
-            .finish()
+        diff
     }
 }
 

@@ -3902,6 +3902,32 @@ mod tests {
         assert!(separators >= 1, "a 1 px rule separates the rows");
     }
 
+    /// AG: Escape hides the topmost floating file window; the pane docks back
+    /// into the layout instead of disappearing from the tree.
+    #[test]
+    fn escape_docks_the_floating_file_window() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let pane = {
+            let mut s = state.borrow_mut();
+            assert!(s.open_file_in_floating("/tmp/float.rs".to_string(), None));
+            s.active_pane_id
+        };
+        assert!(state.borrow().spaces[0].is_floating_overlay(pane));
+        let _ = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let mut ctx = EventContext;
+        let handled = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(handled);
+        assert!(!state.borrow().spaces[0].is_floating_overlay(pane));
+    }
+
     /// AF: every side tab gets a content topbar; Terminal/TaskOutput add the
     /// shared Terminals + Background Tasks rail.
     #[test]

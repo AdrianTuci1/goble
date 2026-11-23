@@ -233,6 +233,22 @@ impl Element for RootView {
                     self.redraw_requested = true;
                     return true;
                 }
+                // AG: Escape hides the topmost floating file window (it docks
+                // back into the layout its close control docks into).
+                let floating = state.spaces.get(state.active_space).and_then(|space| {
+                    space
+                        .floating
+                        .iter()
+                        .rev()
+                        .find(|pane| pane.overlay && !pane.minimized)
+                        .map(|pane| pane.pane_id)
+                });
+                if let Some(pane) = floating {
+                    if state.dock_floating_pane(pane, None) {
+                        self.redraw_requested = true;
+                        return true;
+                    }
+                }
             }
         }
         // Global shortcuts (warp-new style pane splitting + pane focus

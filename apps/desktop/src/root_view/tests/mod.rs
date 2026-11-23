@@ -40,7 +40,6 @@ mod hover_chip;
 mod nested_child;
 mod return_to_shell;
 mod sub_agent_events;
-mod sub_agent_panel;
 mod topbar;
 #[cfg(target_os = "macos")]
 mod transcript_copy;

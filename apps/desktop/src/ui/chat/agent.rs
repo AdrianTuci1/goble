@@ -354,61 +354,9 @@ pub fn build_agent_chat(
             (stop.borrow_mut())(pane_id, child_id)
         }))
     };
-    // The dock under the header owns the pane's in-flight work: one collapsible
-    // group per kind, its rows carrying the controls that enter and stop them.
-    // A child view draws no dock of its own — the early return above keeps the
-    // child's surface free of the parent's.
-    let work_dock: Option<Box<dyn Element>> = {
-        let groups = session.work_dock.clone();
-        if groups.is_empty() {
-            None
-        } else {
-            let on_toggle = actions.on_toggle_work_section.clone();
-            let on_show_all = actions.on_show_all_work_section.clone();
-            let open_workflow_run = actions.on_open_workflow_run.clone();
-            let on_open: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
-                let open_sub_agent = on_open_sub_agent.clone();
-                let open_workflow_run = open_workflow_run.clone();
-                Rc::new(RefCell::new(move |section: WorkSection, id: String| {
-                    match section {
-                        WorkSection::Subagents => (open_sub_agent.borrow_mut())(id),
-                        // A workflow row opens that run's detail in this pane,
-                        // the way a sub-agent row opens the child in it.
-                        WorkSection::Workflows => (open_workflow_run.borrow_mut())(pane_id, id),
-                        // A task is a tool call already drawn in the transcript;
-                        // there is no separate surface to open. A watcher is the
-                        // same call under the monitor tool.
-                        WorkSection::Tasks | WorkSection::Watchers => {}
-                    }
-                }))
-            };
-            let on_stop: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
-                let stop_sub_agent = on_stop_sub_agent.clone();
-                Rc::new(RefCell::new(move |section: WorkSection, id: String| {
-                    if section == WorkSection::Subagents {
-                        (stop_sub_agent.borrow_mut())(id);
-                    }
-                }))
-            };
-            Some(
-                // The dock's band spans the whole pane, flush with the pane's
-                // slot like the topbar above it (the body card keeps its own
-                // inset); only the cards inside it are bounded to the pane's
-                // content lane, exactly as the header row is.
-                goble_ui::WorkDock::new(groups)
-                    .with_phase(session.work_dock_phase)
-                    .with_content_lane(content_lane_pref)
-                    .with_band_bleed(crate::ui::panes::PANE_INSET)
-                    .with_on_toggle(move |section| (on_toggle.borrow_mut())(section))
-                    .with_on_show_all(move |section| (on_show_all.borrow_mut())(section))
-                    .with_on_open(on_open)
-                    .with_on_stop(on_stop)
-                    .finish(),
-            )
-        }
-    };
-    // No tasks/sub-agents strip in the chat panel header: the pane renders the
-    // transcript only. Work items live in the side panel's rail/Overview.
+    // No tasks/sub-agents strip in the chat panel header: work items live in
+    // the side panel's rail/Overview.
+    let work_dock: Option<Box<dyn Element>> = None;
     let work_dock: Option<Box<dyn Element>> = None;
     let on_select_harness = actions.on_select_harness.clone();
     let on_select_dir = actions.on_select_dir.clone();

@@ -73,7 +73,7 @@ const COMPACT_COMMIT: f32 = 280.0;
 /// heights those blocks are laid out at, and a test pins the editor's rows to
 /// the same box the field uses.
 /// DSH's changed-file card header: a 40pt file tile in a 60pt row.
-const FILE_HEADER_HEIGHT: f32 = 60.0;
+const FILE_HEADER_HEIGHT: f32 = 48.0;
 const FILE_TILE_SIZE: f32 = 40.0;
 /// The height of the review's controls bar under the pane's topbar, and of the
 /// hairline that separates the two. The bars are the pane's overlay chrome, so
@@ -1367,11 +1367,15 @@ fn file_header(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(10.0)
         .with_child(
-            Text::new(reviewer::type_badge(&file.path))
+            Icon::new(reviewer::file_type_icon(&file.path))
+                .with_size(16.0)
+                .finish(),
+        )
+        .with_child(
+            Text::new(reviewer::status_of(file).letter())
                 .with_font_family(FontFamily::Mono)
-                .with_font_size(11.0)
-                .with_weight(FontWeight::Bold)
-                .with_theme_color(reviewer::badge_color(&file.path), app)
+                .with_font_size(10.0)
+                .with_theme_color(reviewer::status_of(file).color(), app)
                 .finish(),
         )
         .with_child(

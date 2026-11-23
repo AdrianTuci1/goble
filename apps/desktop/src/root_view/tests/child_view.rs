@@ -166,10 +166,6 @@ fn entering_a_sub_agent_row_shows_the_childs_conversation_and_esc_returns() {
             root.dispatch_event(&event, &mut ctx, &app);
         }
     };
-    let click_icon = |root: &mut Box<dyn Element>, name: &str| {
-        let position = icon_position(root, name, false);
-        click_at(root, position);
-    };
     let press_escape = |root: &mut Box<dyn Element>| {
         let mut ctx = EventContext;
         root.dispatch_event(
@@ -202,14 +198,11 @@ fn entering_a_sub_agent_row_shows_the_childs_conversation_and_esc_returns() {
             .any(|t| t.contains("CHILD CONVERSATION MARKER")),
         "the child's conversation is not on screen yet: {texts:?}"
     );
-    // The strip under the header owns the control that enters the child.
-    assert!(
-        pane_texts(&mut root).iter().any(|t| t == "Subagents"),
-        "the pane's strip names the group the spawned child belongs to"
-    );
-
-    // Trip one: the strip's open control shows the child's own conversation.
-    click_icon(&mut root, "arrow-up");
+    // 265: the chat surface has no work strip; entering comes from the side
+    // panel's rail/Overview action, which calls this state method.
+    state
+        .borrow_mut()
+        .open_sub_agent(1, "conv-child-1", Some(&desktop));
     assert_eq!(
         state.borrow().pane_view(1),
         BlockView::Agent {

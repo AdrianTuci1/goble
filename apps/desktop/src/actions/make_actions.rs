@@ -3344,16 +3344,16 @@ pub fn make_actions(
         })),
         on_split_down: Rc::new(RefCell::new(move || {
             let (mut state, media) = (on_split_down.borrow_mut(), media_split_down.borrow());
+            // A stacked split opens a chat pane, not a terminal: the terminal
+            // lives in the side panel / dock.
             split_active_pane(
                 &mut state,
                 SplitDir::Vertical,
                 desktop_split_down.as_ref(),
                 &media,
-                PaneKind::Terminal,
+                PaneKind::Chat,
             );
             drop(media);
-            let pane_id = state.active_pane_id;
-            open_pane_harness(&mut state, pane_id, desktop_split_down.as_ref());
             if let Some(desktop) = &desktop_split_down {
                 state.save_panes(desktop);
             }

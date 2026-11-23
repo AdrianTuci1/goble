@@ -4043,8 +4043,8 @@ mod tests {
             })
             .count();
         assert_eq!(
-            dots, 3,
-            "the left rail keeps only a few compact dots, got {dots}"
+            dots, 8,
+            "the left rail keeps eight round dots, got {dots}"
         );
         let long_segment = commands.iter().any(|command| {
             matches!(

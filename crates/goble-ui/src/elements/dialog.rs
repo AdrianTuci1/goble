@@ -40,6 +40,9 @@ pub struct Dialog {
     origin: Option<Point>,
     panel_origin: Vector2F,
     panel_size: Vector2F,
+    /// The pointer position from the last move, so scroll events (which carry
+    /// no position) can be consumed while the dialog is up.
+    cursor: Option<Vector2F>,
 }
 
 impl Dialog {
@@ -55,6 +58,7 @@ impl Dialog {
             origin: None,
             panel_origin: Vector2F::zero(),
             panel_size: Vector2F::zero(),
+            cursor: None,
         }
     }
 
@@ -186,6 +190,16 @@ impl Element for Dialog {
             Size2F::new(self.panel_size.x, self.panel_size.y),
         );
         let cb = self.on_close.clone();
+        if let DispatchedEvent::MouseMove { position } = event {
+            self.cursor = Some(*position);
+            // A modal owns the pointer: the app behind it must not see hover.
+            return full_bounds.contains(PointF::new(position.x, position.y));
+        }
+        if let DispatchedEvent::Scroll { .. } = event {
+            if let Some(cursor) = self.cursor {
+                return full_bounds.contains(PointF::new(cursor.x, cursor.y));
+            }
+        }
 
         match event {
             DispatchedEvent::KeyDown { key, .. } if self.close_on_escape && key == "Escape" => {

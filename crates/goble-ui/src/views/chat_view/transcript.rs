@@ -330,7 +330,7 @@ struct ScrollDotsRail {
     origin: Option<Point>,
 }
 
-const SCROLL_DOTS: usize = 3;
+const SCROLL_DOTS: usize = 8;
 const DOT_SIZE: f32 = 3.0;
 /// The dots sit close together instead of spanning the whole column.
 const DOT_GAP: f32 = 12.0;
@@ -340,9 +340,18 @@ const RAIL_WIDTH: f32 = 3.0;
 const RAIL_HOVER_GAP: f32 = 14.0;
 const HOVER_CARD_WIDTH: f32 = 118.0;
 const HOVER_CARD_HEIGHT: f32 = 24.0;
-const DOT_TARGETS: [f32; 3] = [0.0, 0.25, 0.5];
+
 const LONG_SEGMENT_TARGET: f32 = 1.0;
-const DOT_LABELS: [&str; 3] = ["Start of the chat", "Earlier turns", "Middle of the chat"];
+const DOT_LABELS: [&str; 8] = [
+    "Early turns",
+    "Early turns",
+    "Earlier turns",
+    "Earlier turns",
+    "Middle of the chat",
+    "Middle of the chat",
+    "Later turns",
+    "Latest turns",
+];
 const LONG_SEGMENT_LABEL: &str = "Latest turns";
 
 impl ScrollDotsRail {
@@ -355,7 +364,9 @@ impl ScrollDotsRail {
     }
 
     fn rail_height() -> f32 {
-        DOT_GAP * (SCROLL_DOTS as f32 - 1.0) + DOT_GAP + LONG_SEGMENT
+        // The long segment sits at the START of the chat, then the eight round
+        // dots follow it.
+        LONG_SEGMENT + DOT_GAP + DOT_GAP * (SCROLL_DOTS as f32 - 1.0)
     }
 
     fn rail_top(&self) -> f32 {
@@ -363,12 +374,12 @@ impl ScrollDotsRail {
         ((height - Self::rail_height()) / 2.0).max(0.0)
     }
 
-    fn dot_y(&self, index: usize) -> f32 {
-        self.rail_top() + index as f32 * DOT_GAP
+    fn long_segment_y(&self) -> f32 {
+        self.rail_top()
     }
 
-    fn long_segment_y(&self) -> f32 {
-        self.rail_top() + (SCROLL_DOTS as f32 - 1.0) * DOT_GAP + DOT_GAP
+    fn dot_y(&self, index: usize) -> f32 {
+        self.rail_top() + LONG_SEGMENT + DOT_GAP + index as f32 * DOT_GAP
     }
 
     /// The indicator the pointer is on, as (index, is_long_segment).
@@ -383,17 +394,17 @@ impl ScrollDotsRail {
         {
             return None;
         }
-        for index in 0..SCROLL_DOTS {
-            let y = origin.y() + self.dot_y(index);
-            if (ctx.cursor_position.y - (y + DOT_SIZE / 2.0)).abs() <= DOT_GAP / 2.0 {
-                return Some((index, false));
-            }
-        }
         let long_y = origin.y() + self.long_segment_y();
         if ctx.cursor_position.y >= long_y - 4.0
             && ctx.cursor_position.y <= long_y + LONG_SEGMENT + 4.0
         {
             return Some((0, true));
+        }
+        for index in 0..SCROLL_DOTS {
+            let y = origin.y() + self.dot_y(index);
+            if (ctx.cursor_position.y - (y + DOT_SIZE / 2.0)).abs() <= DOT_GAP / 2.0 {
+                return Some((index, false));
+            }
         }
         None
     }
@@ -402,10 +413,11 @@ impl ScrollDotsRail {
         let scroll = self.scroll.borrow();
         let max = scroll.max_offset().max(1.0);
         let fraction = (scroll.offset() / max).clamp(0.0, 1.0);
-        if fraction > 0.5 {
+        let step = 1.0 / SCROLL_DOTS as f32;
+        if fraction < step {
             return (0, true);
         }
-        let index = ((fraction / 0.25).floor() as usize).min(SCROLL_DOTS - 1);
+        let index = ((fraction / step).floor() as usize).saturating_sub(1).min(SCROLL_DOTS - 1);
         (index, false)
     }
 
@@ -413,7 +425,7 @@ impl ScrollDotsRail {
         if long {
             LONG_SEGMENT_TARGET
         } else {
-            DOT_TARGETS[index.min(SCROLL_DOTS - 1)]
+            (index + 1) as f32 / SCROLL_DOTS as f32
         }
     }
 
@@ -449,15 +461,8 @@ impl Element for ScrollDotsRail {
         let muted = app.theme.color(ColorToken::Muted);
         let ink = app.theme.color(ColorToken::Text);
         let x = origin.x + 5.0;
-        for index in 0..SCROLL_DOTS {
-            let y = origin.y + self.dot_y(index);
-            let is_active = !active_long && index == active_index;
-            let is_hovered = hovered.is_some_and(|(i, long)| !long && i == index);
-            let color = if is_active || is_hovered { ink } else { muted };
-            renderer.fill_rect(rectf(x, y, DOT_SIZE, DOT_SIZE), color);
-        }
-        // The trailing segment is deliberately longer: it stands for all the
-        // recent turns, not one point in the scroll.
+        // The longer segment opens the rail: it stands for the start of the
+        // chat, then eight round dots walk through the turns to its end.
         let long_y = origin.y + self.long_segment_y();
         let long_color = if active_long || hovered.is_some_and(|(_, long)| long) {
             ink
@@ -469,6 +474,17 @@ impl Element for ScrollDotsRail {
             long_color,
             RAIL_WIDTH / 2.0,
         );
+        for index in 0..SCROLL_DOTS {
+            let y = origin.y + self.dot_y(index);
+            let is_active = !active_long && index == active_index;
+            let is_hovered = hovered.is_some_and(|(i, long)| !long && i == index);
+            let color = if is_active || is_hovered { ink } else { muted };
+            renderer.fill_rounded_rect(
+                rectf(x, y, DOT_SIZE, DOT_SIZE),
+                color,
+                DOT_SIZE / 2.0,
+            );
+        }
         // Hover card: a small rounded label to the right of the indicator.
         if let Some((index, long)) = hovered {
             let label = if long {
@@ -521,19 +537,19 @@ impl Element for ScrollDotsRail {
         if let crate::event::DispatchedEvent::MouseDown { position, .. } = event {
             if let Some(origin) = self.origin {
                 if (position.x - origin.x()).abs() < RAIL_WIDTH + RAIL_HOVER_GAP {
-                    for index in 0..SCROLL_DOTS {
-                        let y = origin.y() + self.dot_y(index) + DOT_SIZE / 2.0;
-                        if (position.y - y).abs() <= DOT_GAP / 2.0 {
-                            self.scroll_to(Self::target_fraction(index, false));
-                            return true;
-                        }
-                    }
                     let long_y = origin.y() + self.long_segment_y();
                     if position.y >= long_y - 4.0
                         && position.y <= long_y + LONG_SEGMENT + 4.0
                     {
                         self.scroll_to(Self::target_fraction(0, true));
                         return true;
+                    }
+                    for index in 0..SCROLL_DOTS {
+                        let y = origin.y() + self.dot_y(index) + DOT_SIZE / 2.0;
+                        if (position.y - y).abs() <= DOT_GAP / 2.0 {
+                            self.scroll_to(Self::target_fraction(index, false));
+                            return true;
+                        }
                     }
                 }
             }

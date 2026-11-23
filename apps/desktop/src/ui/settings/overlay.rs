@@ -276,8 +276,10 @@ impl RailSurface {
     fn new(child: Box<dyn Element>, app: &AppContext) -> Self {
         Self {
             child,
-            fill: app.theme.color(ColorToken::SurfaceRaised),
-            radius: 16.0,
+            // No secondary background: the rail is the sheet's own full-height
+            // surface, so there is only one casing in settings.
+            fill: app.theme.color(ColorToken::ContentBg),
+            radius: 0.0,
             size: None,
             origin: None,
         }

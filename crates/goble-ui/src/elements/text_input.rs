@@ -8,6 +8,7 @@ use crate::elements::{
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, PointF, Vector2F};
+use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, SpacingToken};
 
 pub struct TextInput {
@@ -25,6 +26,11 @@ pub struct TextInput {
     /// frame. A placeholder is still drawn as written — it is the call site's
     /// sentence, not the value.
     masked: bool,
+    /// Optional text styling for the field's own run. A caller that overlays a
+    /// field on an existing label passes the label's size/weight so the text
+    /// does not change metrics when the field appears.
+    font_size: Option<f32>,
+    font_weight: Option<FontWeight>,
     /// V: the inline title editor starts with the whole value selected; the
     /// first typed character replaces it and Backspace clears it.
     select_all: bool,
@@ -45,6 +51,8 @@ impl TextInput {
             full_width: false,
             plain: false,
             masked: false,
+            font_size: None,
+            font_weight: None,
             select_all: false,
             on_change: None,
             on_focus_change: None,
@@ -101,6 +109,16 @@ impl TextInput {
     /// Draw the value write-only: one dot per character, never the text. The
     /// placeholder still says what to type, and the caret still moves with the
     /// value the field holds (the mask has the same length).
+    pub fn with_font_size(mut self, size: f32) -> Self {
+        self.font_size = Some(size);
+        self
+    }
+
+    pub fn with_font_weight(mut self, weight: FontWeight) -> Self {
+        self.font_weight = Some(weight);
+        self
+    }
+
     pub fn with_masked(mut self, masked: bool) -> Self {
         self.masked = masked;
         self
@@ -137,10 +155,16 @@ impl TextInput {
         } else {
             ColorToken::Text
         };
-        let text = Text::new(display)
+        let mut text = Text::new(display)
             .with_theme_color(color, app)
-            .with_max_lines(1)
-            .finish();
+            .with_max_lines(1);
+        if let Some(size) = self.font_size {
+            text = text.with_font_size(size);
+        }
+        if let Some(weight) = self.font_weight {
+            text = text.with_weight(weight);
+        }
+        let text = text.finish();
         // A focused field shows its insertion beam in front of the text while
         // the field is empty — over the placeholder's first character, where the
         // user's own text starts — and after it once there is a value. The beam

@@ -1755,7 +1755,9 @@ mod tests {
 /// in.
 pub fn conversation_group(directory: Option<&str>) -> String {
     let Some(directory) = directory.map(str::trim).filter(|d| !d.is_empty()) else {
-        return "Not in project".to_string();
+        // Conversations that have not run in a directory are listed under a
+        // plain "Conversations" heading: no folder icon and no workspace menu.
+        return "Conversations".to_string();
     };
     let path = std::path::Path::new(directory);
     let in_home = std::env::var_os("HOME")

@@ -1146,7 +1146,10 @@ fn workspaces_list(
             &shown_ids,
             None,
             contains_selected,
-            Some(workspace),
+            // The fallback "Conversations" group is a plain heading: no
+            // workspace icon, no three-dot menu, the label starts where the
+            // leading icon used to be.
+            (workspace.folder != "Conversations").then_some(workspace),
         ));
     }
 

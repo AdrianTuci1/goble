@@ -318,6 +318,8 @@ pub fn build_chrome_row(
             .with_focused(rename.focused)
             .with_select_all(true)
             .with_plain(true)
+            .with_font_size(14.5)
+            .with_font_weight(FontWeight::Medium)
             .with_on_change(move |value| (on_change.borrow_mut())(value))
             .with_on_submit(move || (on_submit.borrow_mut())())
             .with_on_focus_change(move |focused| {
@@ -326,8 +328,11 @@ pub fn build_chrome_row(
                 }
             })
             .finish();
+        // Exactly the resting pill's box: same 10 pt side padding, same 26 pt
+        // height, no vertical padding of its own, so the text does not move or
+        // resize when editing starts.
         let editor = Container::new(input)
-            .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
+            .with_padding(EdgeInsets::new(10.0, 1.5, 10.0, 0.0))
             .finish();
         let editor = ConstrainedBox::new(editor)
             .with_max_width(360.0)
@@ -365,7 +370,7 @@ pub fn build_chrome_row(
         // No chip at rest: the title is plain text and the rounded band only
         // appears under the pointer (where the tooltip names the action).
         let pill = HoverRow::new(label)
-            .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
+            .with_padding(EdgeInsets::new(10.0, 6.0, 10.0, 6.0))
             .with_corner_radius(8.0)
             .with_on_click(move || (on_start.borrow_mut())(id.clone()))
             .finish();
@@ -500,7 +505,7 @@ pub fn build_chrome_row(
     let overview_active = *overview_open.borrow();
     let toggle_overview = overview_open.clone();
     let overview_button = Tooltip::new(
-        TopbarButton::new(glyph(app, "flat-list"))
+        TopbarButton::new(glyph(app, "square-text"))
             .with_size(CONTROL_BUTTON_SIZE)
             .with_corner_radius(8.0)
             .with_active(overview_active)
@@ -574,9 +579,6 @@ pub fn build_chrome_row(
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(leading);
-    if sidebar_shown {
-        strip = strip.with_child(vertical_separator(app));
-    }
     if panel_open {
         let maximized = panel_maximized;
         // The chip strip and its `+` are one measured row: the `+` sits

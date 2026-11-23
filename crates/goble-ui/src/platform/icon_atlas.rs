@@ -100,6 +100,10 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     // atlas has to know them, or the renderer falls back to `x-close`.
     icon_bytes!("dots-vertical", "dots-vertical.svg"),
     icon_bytes!("ellipsis", "ellipsis.svg"),
+    // The owner-supplied overview panel icon (square with text lines) and the
+    // vertical ellipsis used for the More actions control.
+    icon_bytes!("square-text", "square-text.svg"),
+    icon_bytes!("ellipsis-vertical", "ellipsis-vertical.svg"),
     icon_bytes!("trash-02", "trash-02.svg"),
     icon_bytes!("paperclip", "paperclip.svg"),
     icon_bytes!("send", "send.svg"),

@@ -419,6 +419,8 @@ pub struct UiActions {
     pub on_open_file_side: Rc<RefCell<dyn FnMut(String)>>,
     /// Y: show the Files tab without naming a new file.
     pub on_open_files_tab: Rc<RefCell<dyn FnMut()>>,
+    /// 285: open the workspace file explorer from the Files side tab.
+    pub on_open_explorer: Rc<RefCell<dyn FnMut()>>,
     /// Open a file in a file pane and arrange the active space as floating
     /// windows (DSH's "Open in floating panel"). The file pane opens first, so
     /// the window the gesture is about is the one on top.

@@ -429,7 +429,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         shell::build_workspace_surface(app, row)
     };
     let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
-    let body: Box<dyn Element> = if sidebar_shown && !state.side_panel_maximized {
+    let body: Box<dyn Element> = if sidebar_shown {
         let on_drag_start = actions.on_sidebar_drag_start.clone();
         let on_drag_move = actions.on_sidebar_drag_move.clone();
         let on_drag_end = actions.on_sidebar_drag_end.clone();
@@ -3155,11 +3155,11 @@ mod tests {
         );
     }
 
-    /// F: the whole workspace is one rounded sheet with a 5 pt free margin of
-    /// the shell's own material, and the side panel is the same flat `Bg` as
-    /// the main panel (no second casing, no border or radius on the boundary).
+    /// The workspace surface is flush to the chrome/sidebar/window edges (the
+    /// sheet has no margin or radius), and the side panel shares the content
+    /// material.
     #[test]
-    fn the_workspace_sheet_keeps_the_margin_and_both_panels_share_its_material() {
+    fn the_workspace_surface_is_flush_and_both_panels_share_its_material() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
         let size = vec2f(1024.0, 768.0);
@@ -3167,35 +3167,27 @@ mod tests {
         let commands = render_element(&mut root, size, &app);
         let sheet = workspace_sheet(&commands, &app, size);
 
-        // Remote flat-square shell: the surface reaches the chrome, the
-        // sidebar and the window's right/bottom edges; no margin or radius.
-        for (label, actual) in [
-            ("left", sheet.min_x() - crate::ui::SIDEBAR_WIDTH),
-            ("top", sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT),
-            ("right", size.x - sheet.max_x()),
-            ("bottom", size.y - sheet.max_y()),
-        ] {
-            assert!(
-                (actual - shell::WORKSPACE_MARGIN).abs() < 0.51,
-                "the {label} shell margin is 6 pt, got {actual}: {sheet:?}"
-            );
-        }
+        // Flush content surface: it reaches the chrome, the sidebar and the
+        // window's right/bottom edges; no margin or radius.
+        assert!(
+            (sheet.min_x() - crate::ui::SIDEBAR_WIDTH).abs() < 1.0,
+            "the surface starts at the sidebar: {sheet:?}"
+        );
+        assert!(
+            (sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT).abs() < 1.0,
+            "the surface starts under the chrome: {sheet:?}"
+        );
+        assert!(
+            (size.x - sheet.max_x()).abs() < 1.0 && (size.y - sheet.max_y()).abs() < 1.0,
+            "the surface reaches the window's right/bottom edges: {sheet:?}"
+        );
         assert!(
             commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::FillRect { rect, corner_radius, .. }
-                    if *rect == sheet && (*corner_radius - 12.0).abs() < 0.01
+                    if *rect == sheet && *corner_radius == 0.0
             )),
-            "the sheet keeps the 12 pt outer radius"
-        );
-        let margin_at = vec2f(sheet.min_x() - 2.0, sheet.min_y() + 4.0);
-        assert!(
-            commands.iter().any(|command| matches!(
-                command,
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::Bg) && contains(*rect, margin_at)
-            )),
-            "the 6 pt margin is the shell's black Bg material"
+            "the surface is square, not a rounded sheet"
         );
 
         // The side panel body paints the content material across the boundary,
@@ -3900,6 +3892,251 @@ mod tests {
             })
             .count();
         assert!(separators >= 1, "a 1 px rule separates the rows");
+    }
+
+    /// 289/290: the two topbar rules land on the body's sidebar and split
+    /// boundaries at a normal ratio.
+    #[test]
+    fn topbar_rules_align_with_the_body_columns() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.sidebar_visible = true;
+            s.right_sidebar_open = true;
+            s.side_split_ratio = 0.5;
+            s.side_tabs = vec![crate::state::SideTabKind::Terminal];
+            s.active_side_tab = 0;
+        }
+        let size = vec2f(1600.0, 1000.0);
+        let commands = render_element(&mut root, size, &app);
+        let border = app.theme.color(ColorToken::Border);
+        let rules: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if matches!(command, RenderCommand::FillRect { color, .. } if *color == border)
+                        && rect.width() <= 1.01
+                        && rect.height() >= 40.0
+                        && rect.min_y() < 5.0 =>
+                {
+                    Some(rect.min_x())
+                }
+                _ => None,
+            })
+            .collect();
+        let sidebar = state.borrow().sidebar_width;
+        let content = size.x - sidebar - 1.0;
+        let boundary = sidebar + 1.0 + content * 0.5;
+        assert_eq!(rules.len(), 2, "sidebar and split rules: {rules:?}");
+        assert!(
+            (rules[0] - sidebar).abs() < 2.0,
+            "sidebar rule {} vs {sidebar}",
+            rules[0]
+        );
+        assert!(
+            (rules[1] - boundary).abs() < 3.0,
+            "split rule {} vs {boundary}",
+            rules[1]
+        );
+    }
+
+    /// 282/289: maximized panel keeps the sidebar column and gives panel 2 the
+    /// rest; the panel-1 title is not drawn.
+    #[test]
+    fn the_maximized_panel_topbar_hides_the_panel_one_title() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.sidebar_visible = true;
+            s.right_sidebar_open = true;
+            s.side_panel_maximized = true;
+            s.side_tabs = vec![crate::state::SideTabKind::Terminal];
+            s.active_side_tab = 0;
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let topbar: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !topbar.contains(&"New Agent"),
+            "the panel-1 title is hidden while maximized: {topbar:?}"
+        );
+        assert!(
+            topbar.contains(&"Terminal"),
+            "the panel-2 chips span the content column: {topbar:?}"
+        );
+        let sidebar = state.borrow().sidebar_width;
+        let border = app.theme.color(ColorToken::Border);
+        let rules: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == border
+                        && rect.width() <= 1.01
+                        && rect.height() >= 40.0
+                        && rect.min_y() < 5.0 =>
+                {
+                    Some(rect.min_x())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rules.len(),
+            1,
+            "maximized keeps only the sidebar rule: {rules:?}"
+        );
+        assert!(
+            (rules[0] - sidebar).abs() < 2.0,
+            "the rule sits on the sidebar edge: {} vs {sidebar}",
+            rules[0]
+        );
+    }
+
+    /// 283: every side-panel chip switches the content with a real click.
+    #[test]
+    fn side_tab_chips_switch_the_panel_with_real_clicks() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![
+                crate::state::SideTabKind::Overview,
+                crate::state::SideTabKind::Agent,
+                crate::state::SideTabKind::Files,
+                crate::state::SideTabKind::Terminal,
+                crate::state::SideTabKind::TaskOutput,
+            ];
+            s.active_side_tab = 4;
+        }
+        for (label, kind) in [
+            ("Side Question", crate::state::SideTabKind::Agent),
+            ("Files", crate::state::SideTabKind::Files),
+            ("Terminal", crate::state::SideTabKind::Terminal),
+            ("Task output", crate::state::SideTabKind::TaskOutput),
+        ] {
+            let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+            let origin = commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. }
+                        if text == label && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                    {
+                        Some(*origin)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the {label:?} chip"));
+            click(&mut root, &app, origin + vec2f(6.0, 6.0));
+            assert_eq!(
+                state.borrow().active_side_tab_kind(),
+                kind,
+                "the {label:?} chip switches the panel"
+            );
+        }
+    }
+
+    /// 284: "+" opens the in-panel Add-tab surface, not a popup, and a row adds
+    /// the tab.
+    #[test]
+    fn plus_opens_the_in_panel_add_tab_surface() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![
+                crate::state::SideTabKind::Overview,
+                crate::state::SideTabKind::Terminal,
+            ];
+            s.active_side_tab = 1;
+            *s.side_tab_add_menu_open.borrow_mut() = false;
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let plus = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "plus" && origin.y < crate::ui::chrome::CHROME_HEIGHT => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the add-tab button");
+        click(&mut root, &app, plus);
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| *text == "Add a tab"),
+            "the in-panel launcher is shown: {texts:?}"
+        );
+        let files = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Files" => Some(*origin),
+                _ => None,
+            })
+            .expect("the Files row");
+        click(&mut root, &app, files + vec2f(8.0, 6.0));
+        assert_eq!(
+            state.borrow().active_side_tab_kind(),
+            crate::state::SideTabKind::Files
+        );
+        assert!(!*state.borrow().side_tab_add_menu_open.borrow());
+    }
+
+    /// 285: the Files tab's explorer control opens the real explorer in the
+    /// workspace.
+    #[test]
+    fn the_files_tab_opens_the_workspace_explorer() {
+        let app = AppContext::default();
+        let (mut root, state, dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![crate::state::SideTabKind::Files];
+            s.active_side_tab = 0;
+            s.side_file = Some(dir.path().join("note.md").to_string_lossy().to_string());
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let folder = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "folder" && origin.y < 100.0 => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the Files topbar explorer control");
+        click(&mut root, &app, folder);
+        let has_explorer = state.borrow().spaces.iter().any(|space| {
+            let mut leaves = Vec::new();
+            space.root.leaves(&mut leaves);
+            leaves
+                .iter()
+                .any(|(_, kind)| matches!(kind, crate::state::PaneKind::Explorer))
+        });
+        assert!(has_explorer, "the workspace gets an Explorer pane");
     }
 
     /// AG: Escape hides the topmost floating file window; the pane docks back

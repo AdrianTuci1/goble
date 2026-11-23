@@ -216,6 +216,8 @@ pub enum PaneKind {
     /// stops being one (the routing goes back to local — the pane then returns
     /// as a plain chat pane, never as a shell).
     Worker,
+    /// The workspace file explorer, opened from the Files side tab.
+    Explorer,
     /// A read-only view of one file, opened from the explorer tree or a search
     /// result.
     File {

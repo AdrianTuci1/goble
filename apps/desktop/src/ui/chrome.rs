@@ -209,8 +209,7 @@ pub fn build_chrome_row(
     // section takes exactly that width so the rule falls on the same boundary.
     // With the sidebar retracted the section shrinks to its controls, and the
     // main section starts immediately after them.
-    let sidebar_shown =
-        state.responsive.sidebar_shown(state.sidebar_visible) && !state.side_panel_maximized;
+    let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
     let sidebar_width = if sidebar_shown {
         state.sidebar_width
     } else {
@@ -491,6 +490,7 @@ pub fn build_chrome_row(
     // The panel must not be covered by the panes painted after the chrome.
     let mut more = Some(TopLayer::new(more).finish());
     let panel_open = state.right_sidebar_open;
+    let panel_maximized = panel_open && state.side_panel_maximized;
 
     // Panel 1's trailing controls are the More menu and the Overview popover
     // only. Maximize/collapse and the side-panel toggle moved into panel 2's
@@ -574,9 +574,9 @@ pub fn build_chrome_row(
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(leading)
-        .with_child(Expanded::new(main_section).finish());
+        .with_child(vertical_separator(app));
     if panel_open {
-        let maximized = state.side_panel_maximized;
+        let maximized = panel_maximized;
         // The chip strip and its `+` are one measured row: the `+` sits
         // immediately after the last chip and travels/scrolls with it, so it is
         // never pinned over the window controls. Only the maximize/toggle
@@ -663,13 +663,19 @@ pub fn build_chrome_row(
         } else {
             0.0
         };
-        let area_width =
-            (window_width - body_sidebar_width - 2.0 * crate::ui::shell::WORKSPACE_MARGIN).max(0.0);
-        let side_width = area_width
-            * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, area_width);
-        let boundary_x =
-            body_sidebar_width + crate::ui::shell::WORKSPACE_MARGIN + (area_width - side_width);
-        let side_section_width = (window_width - boundary_x - SEPARATOR_WIDTH).max(0.0);
+        let content_width = (window_width - body_sidebar_width - SEPARATOR_WIDTH).max(0.0);
+        let side_width = if maximized {
+            content_width
+        } else {
+            content_width
+                * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, content_width)
+        };
+        let boundary_x = body_sidebar_width + SEPARATOR_WIDTH + (content_width - side_width);
+        let side_section_width = if maximized {
+            content_width
+        } else {
+            (window_width - boundary_x - SEPARATOR_WIDTH).max(0.0)
+        };
         // The first frame (and a headless test) can build before the window
         // measures itself: fall back to the flexible section until the width is
         // known, so the chips are never laid out at zero width.
@@ -680,10 +686,19 @@ pub fn build_chrome_row(
         } else {
             Expanded::new(side_section).finish()
         };
-        // 206: one 1 px rule separates panel 1 from panel 2.
-        strip = strip
-            .with_child(vertical_separator(app))
-            .with_child(side_section);
+        if maximized {
+            // 282: panel 2 owns the whole content column; the sidebar column
+            // and its rule stay in place and the panel-1 title is not drawn.
+            strip = strip.with_child(side_section);
+        } else {
+            strip = strip.with_child(Expanded::new(main_section).finish());
+            // 206/289: one 1 px rule separates panel 1 from panel 2.
+            strip = strip
+                .with_child(vertical_separator(app))
+                .with_child(side_section);
+        }
+    } else {
+        strip = strip.with_child(Expanded::new(main_section).finish());
     }
     // The strip is the full bar height; each section carries the 2 pt quiet band
     // as its own top inset, so its controls center in the 40 pt content band.
@@ -832,39 +847,89 @@ fn active_conversation_name(state: &UiSnapshot) -> String {
         .unwrap_or_else(|| "New Agent".to_string())
 }
 
-/// The side-panel section's "+": a popup menu that appends one of the active
-/// pane's surfaces to the tab strip. Selecting a kind that is already a tab
-/// shows that tab instead of stacking a duplicate.
+/// 284: the "+" control opens the in-panel Add-tab surface, not a popup.
 fn side_tab_add_menu(
     app: &AppContext,
     state: &UiSnapshot,
-    actions: &UiActions,
+    _actions: &UiActions,
 ) -> Box<dyn Element> {
+    let open = state.side_tab_add_menu_open.clone();
+    let toggle = move || {
+        let mut flag = open.borrow_mut();
+        *flag = !*flag;
+    };
+    let button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("plus")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(7.0)
+        .with_on_click(toggle)
+        .finish(),
+        "Add tab",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    button
+}
+
+/// The in-panel launcher shown by the strip's "+".
+fn build_add_tab_surface(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
     let on_add = actions.on_side_tab.clone();
-    let items = vec![
-        PopupMenuItem::new(SideTabKind::Agent.title()).with_icon(SideTabKind::Agent.icon()),
-        PopupMenuItem::new(SideTabKind::Files.title()).with_icon(SideTabKind::Files.icon()),
-        PopupMenuItem::new(SideTabKind::Terminal.title()).with_icon(SideTabKind::Terminal.icon()),
-        PopupMenuItem::new(SideTabKind::TaskOutput.title())
-            .with_icon(SideTabKind::TaskOutput.icon()),
-    ];
-    let menu = PopupMenu::new(button(app, "plus", "Add tab"), items)
-        .with_open(state.side_tab_add_menu_open.clone())
-        .with_position(PopupMenuPosition::BelowEnd)
-        .with_max_width(200.0)
-        .with_on_select(move |index| {
-            let kind = match index {
-                0 => SideTabKind::Agent,
-                1 => SideTabKind::Files,
-                2 => SideTabKind::Terminal,
-                3 => SideTabKind::TaskOutput,
-                _ => return,
-            };
-            (on_add.borrow_mut())(SideTabAction::Add(kind));
-        })
-        .finish();
-    // The `+` panel is above the panes, like the More menu.
-    TopLayer::new(menu).finish()
+    let mut rows = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(4.0)
+        .with_child(
+            Text::new("Add a tab")
+                .with_font_size(14.0)
+                .with_weight(FontWeight::Medium)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        );
+    for kind in [
+        SideTabKind::Agent,
+        SideTabKind::Files,
+        SideTabKind::Terminal,
+        SideTabKind::TaskOutput,
+    ] {
+        let on_add = on_add.clone();
+        rows = rows.with_child(
+            HoverRow::new(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(8.0)
+                    .with_child(
+                        Icon::new(kind.icon())
+                            .with_size(15.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        Text::new(kind.title())
+                            .with_font_size(13.0)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
+            .with_corner_radius(7.0)
+            .with_on_click(move || (on_add.borrow_mut())(SideTabAction::Add(kind)))
+            .finish(),
+        );
+    }
+    ConstrainedBox::new(
+        Container::new(rows.finish())
+            .with_padding(EdgeInsets::uniform(16.0))
+            .finish(),
+    )
+    .with_max_width(520.0)
+    .finish()
 }
 
 /// Fit a label into a one-line chip without inventing different text: take a
@@ -1884,101 +1949,110 @@ pub fn build_side_panel(
     // of its own (the reserved side pane id, never the active pane's chat);
     // Terminal and Files mount the real pane views rather than a static
     // overview.
-    let content: Box<dyn Element> = match kind {
-        SideTabKind::Overview => build_overview_content(app, state, actions),
-        SideTabKind::Agent => {
-            // The side composer routes to the side conversation's own session.
-            // The pane target is the reserved id, so the active pane's draft and
-            // transcript are untouched; activating the reserved id would be
-            // meaningless (it is not a leaf), so the side chat's submit/focus
-            // paths are wired to no-op activation and side actions instead.
-            let mut side_actions = actions.clone();
-            let on_side = actions.on_side_chat.clone();
-            let on_side_change = on_side.clone();
-            side_actions.on_composer_change = Rc::new(RefCell::new(move |value: String| {
-                (on_side_change.borrow_mut())(SideChatAction::Draft(value))
-            }));
-            let on_side_send = on_side.clone();
-            side_actions.on_send_message = Rc::new(RefCell::new(move |text: String| {
-                (on_side_send.borrow_mut())(SideChatAction::Send(text))
-            }));
-            let on_side_enter = on_side.clone();
-            side_actions.on_cmd_enter = Rc::new(RefCell::new(move |text: String| {
-                (on_side_enter.borrow_mut())(SideChatAction::Send(text))
-            }));
-            let on_side_attach = on_side.clone();
-            side_actions.on_attach = Rc::new(RefCell::new(move || {
-                (on_side_attach.borrow_mut())(SideChatAction::Attach)
-            }));
-            let on_side_focus = on_side;
-            side_actions.on_composer_focus_change = Rc::new(RefCell::new(move |focused: bool| {
-                (on_side_focus.borrow_mut())(SideChatAction::Focus(focused))
-            }));
-            // Focusing or submitting in the side chat must not move the pane
-            // tree's active pane to the reserved id.
-            side_actions.on_pane_activate = Rc::new(RefCell::new(|_pane: u64| {}));
-            crate::ui::chat::build_agent_chat(
-                app,
-                state,
-                &side_actions,
-                crate::state::SIDE_AGENT_PANE_ID,
-                true,
-                false,
-                None,
-            )
-        }
-        SideTabKind::Terminal => {
-            let cwd = state
-                .pane_chat
-                .get(&active)
-                .map(|pane| pane.composer_path.clone())
-                .filter(|cwd| !cwd.trim().is_empty())
-                .unwrap_or_else(|| state.composer_path.clone());
-            let grid =
-                crate::ui::terminal::build_terminal_dock(app, state, actions, active, cwd, true);
-            if state.side_rail_open {
-                side_body_with_rail(app, state, actions, grid)
-            } else {
-                grid
+    let add_open = *state.side_tab_add_menu_open.borrow();
+    let content: Box<dyn Element> = if add_open {
+        build_add_tab_surface(app, actions)
+    } else {
+        match kind {
+            SideTabKind::Overview => build_overview_content(app, state, actions),
+            SideTabKind::Agent => {
+                // The side composer routes to the side conversation's own session.
+                // The pane target is the reserved id, so the active pane's draft and
+                // transcript are untouched; activating the reserved id would be
+                // meaningless (it is not a leaf), so the side chat's submit/focus
+                // paths are wired to no-op activation and side actions instead.
+                let mut side_actions = actions.clone();
+                let on_side = actions.on_side_chat.clone();
+                let on_side_change = on_side.clone();
+                side_actions.on_composer_change = Rc::new(RefCell::new(move |value: String| {
+                    (on_side_change.borrow_mut())(SideChatAction::Draft(value))
+                }));
+                let on_side_send = on_side.clone();
+                side_actions.on_send_message = Rc::new(RefCell::new(move |text: String| {
+                    (on_side_send.borrow_mut())(SideChatAction::Send(text))
+                }));
+                let on_side_enter = on_side.clone();
+                side_actions.on_cmd_enter = Rc::new(RefCell::new(move |text: String| {
+                    (on_side_enter.borrow_mut())(SideChatAction::Send(text))
+                }));
+                let on_side_attach = on_side.clone();
+                side_actions.on_attach = Rc::new(RefCell::new(move || {
+                    (on_side_attach.borrow_mut())(SideChatAction::Attach)
+                }));
+                let on_side_focus = on_side;
+                side_actions.on_composer_focus_change =
+                    Rc::new(RefCell::new(move |focused: bool| {
+                        (on_side_focus.borrow_mut())(SideChatAction::Focus(focused))
+                    }));
+                // Focusing or submitting in the side chat must not move the pane
+                // tree's active pane to the reserved id.
+                side_actions.on_pane_activate = Rc::new(RefCell::new(|_pane: u64| {}));
+                crate::ui::chat::build_agent_chat(
+                    app,
+                    state,
+                    &side_actions,
+                    crate::state::SIDE_AGENT_PANE_ID,
+                    true,
+                    false,
+                    None,
+                )
             }
-        }
-        SideTabKind::Files => {
-            // Y: the tab shows the file a click named (SIDE_FILE_PANE_ID), or
-            // the file the active pane already shows. It never retargets the
-            // main pane just to read a file.
-            let (pane_id, path) = if let Some(path) = state.side_file.clone() {
-                (crate::state::SIDE_FILE_PANE_ID, Some(path))
-            } else {
-                let path = state
-                    .spaces
-                    .get(state.active_space)
-                    .and_then(|space| space.leaf_kind(active))
-                    .and_then(|kind| match kind {
-                        PaneKind::File { path } => Some(path.clone()),
-                        _ => None,
-                    });
-                (active, path)
-            };
-            match (state.pane_files.contains_key(&pane_id), path) {
-                (true, Some(path)) => {
-                    crate::ui::file_view::build_file_view(app, state, actions, pane_id, &path)
+            SideTabKind::Terminal => {
+                let cwd = state
+                    .pane_chat
+                    .get(&active)
+                    .map(|pane| pane.composer_path.clone())
+                    .filter(|cwd| !cwd.trim().is_empty())
+                    .unwrap_or_else(|| state.composer_path.clone());
+                let grid = crate::ui::terminal::build_terminal_dock(
+                    app, state, actions, active, cwd, true,
+                );
+                if state.side_rail_open {
+                    side_body_with_rail(app, state, actions, grid)
+                } else {
+                    grid
                 }
-                _ => side_tabs::no_file_message(app),
+            }
+            SideTabKind::Files => {
+                // Y: the tab shows the file a click named (SIDE_FILE_PANE_ID), or
+                // the file the active pane already shows. It never retargets the
+                // main pane just to read a file.
+                let (pane_id, path) = if let Some(path) = state.side_file.clone() {
+                    (crate::state::SIDE_FILE_PANE_ID, Some(path))
+                } else {
+                    let path = state
+                        .spaces
+                        .get(state.active_space)
+                        .and_then(|space| space.leaf_kind(active))
+                        .and_then(|kind| match kind {
+                            PaneKind::File { path } => Some(path.clone()),
+                            _ => None,
+                        });
+                    (active, path)
+                };
+                match (state.pane_files.contains_key(&pane_id), path) {
+                    (true, Some(path)) => {
+                        crate::ui::file_view::build_file_view(app, state, actions, pane_id, &path)
+                    }
+                    _ => side_tabs::no_file_message(app),
+                }
+            }
+            SideTabKind::TaskOutput => {
+                let output = task_output_view(app, state);
+                if state.side_rail_open {
+                    side_body_with_rail(app, state, actions, output)
+                } else {
+                    output
+                }
+            }
+            SideTabKind::Review => {
+                crate::ui::diff_panel::build_review_tab(app, state, actions, active)
             }
         }
-        SideTabKind::TaskOutput => {
-            let output = task_output_view(app, state);
-            if state.side_rail_open {
-                side_body_with_rail(app, state, actions, output)
-            } else {
-                output
-            }
-        }
-        SideTabKind::Review => crate::ui::diff_panel::build_review_tab(app, state, actions, active),
     };
     // AF: every tab except Review (which already owns its row) gets its own
     // 1 pt-separated topbar inside the panel content.
-    let content: Box<dyn Element> = if kind == SideTabKind::Review {
+    let content: Box<dyn Element> = if kind == SideTabKind::Review || add_open {
         content
     } else {
         let topbar = side_tab_topbar(app, state, actions, kind);
@@ -2491,7 +2565,27 @@ fn side_tab_topbar(
                         })
                 })
                 .unwrap_or_else(|| "Files".to_string());
-            (label, None)
+            let on_open = actions.on_open_explorer.clone();
+            (
+                label,
+                Some(
+                    Tooltip::new(
+                        TopbarButton::new(
+                            Icon::new("folder")
+                                .with_size(14.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .finish(),
+                        )
+                        .with_size(26.0)
+                        .with_corner_radius(6.0)
+                        .with_on_click(move || (on_open.borrow_mut())())
+                        .finish(),
+                        "Open file explorer",
+                    )
+                    .with_position(TooltipPosition::Below)
+                    .finish(),
+                ),
+            )
         }
         SideTabKind::Overview => ("Overview".to_string(), None),
         SideTabKind::Review => ("Review".to_string(), None),

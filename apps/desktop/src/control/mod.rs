@@ -258,6 +258,7 @@ fn kind_name(kind: &PaneKind) -> String {
         PaneKind::Chat => "chat",
         PaneKind::Terminal => "terminal",
         PaneKind::Worker => "worker",
+        PaneKind::Explorer => "explorer",
         PaneKind::File { .. } => "file",
         PaneKind::Settings { .. } => "settings",
         PaneKind::Diff { .. } => "diff",

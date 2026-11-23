@@ -1471,6 +1471,7 @@ fn window_icon(kind: &PaneKind) -> &'static str {
     match kind {
         PaneKind::Chat | PaneKind::Worker => "agent",
         PaneKind::Terminal => "terminal",
+        PaneKind::Explorer => "folder",
         PaneKind::File { path } => file_icon_name(&file_view::file_name(path)),
         PaneKind::Settings { .. } => "settings",
         PaneKind::Diff { .. } => "code",
@@ -1482,6 +1483,7 @@ fn window_title(kind: &PaneKind) -> String {
     match kind {
         PaneKind::Chat | PaneKind::Worker => "Agent".to_string(),
         PaneKind::Terminal => "Terminal".to_string(),
+        PaneKind::Explorer => "Files".to_string(),
         PaneKind::File { path } => file_view::file_name(path),
         PaneKind::Settings { .. } => "Settings".to_string(),
         PaneKind::Diff { .. } => "Changes".to_string(),
@@ -1565,6 +1567,7 @@ fn build_leaf_column(
             }
             // A file view is read-only: no composer, no shell, just the file the
             // pane was opened on.
+            PaneKind::Explorer => crate::ui::explorer::build_explorer(app, state, actions),
             PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),
             // The review pane: the file list and every changed file's diff, with
             // the options that shape the view (refresh, expand/collapse, sidebar).

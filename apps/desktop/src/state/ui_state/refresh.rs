@@ -62,6 +62,7 @@ impl UiState {
     /// Add a tab kind, or show it when it is already in the strip: one tab per
     /// kind, so the "+" menu never stacks duplicates of the same pane view.
     pub fn add_side_tab(&mut self, kind: SideTabKind) {
+        *self.side_tab_add_menu_open.borrow_mut() = false;
         match self.side_tabs.iter().position(|tab| *tab == kind) {
             Some(index) => self.active_side_tab = index,
             None => {

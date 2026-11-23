@@ -15,8 +15,8 @@ use goble_ui::theme::ThemePreset;
 use goble_ui::{ChatMessage, ChatRole};
 
 use super::pane_ops::{
-    close_space_at, ensure_pane_hover, open_diff_pane, open_file_pane, open_pane_harness,
-    open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
+    close_space_at, ensure_pane_hover, open_diff_pane, open_explorer_pane, open_file_pane,
+    open_pane_harness, open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
 };
 use super::prompt::{
     run_terminal_command, send_agent_prompt, send_agent_prompt_with_attachments,
@@ -305,6 +305,8 @@ pub fn make_actions(
     let on_explorer_file_click = Rc::clone(&state);
     let on_open_file_side = Rc::clone(&state);
     let on_open_files_tab = Rc::clone(&state);
+    let on_open_explorer = Rc::clone(&state);
+    let desktop_explorer = desktop.clone();
     let on_open_file_floating = Rc::clone(&state);
     let desktop_open_file_floating = desktop.clone();
     let on_dock_float = Rc::clone(&state);
@@ -2769,6 +2771,10 @@ pub fn make_actions(
         })),
         on_open_files_tab: Rc::new(RefCell::new(move || {
             on_open_files_tab.borrow_mut().open_files_tab();
+        })),
+        on_open_explorer: Rc::new(RefCell::new(move || {
+            let mut state = on_open_explorer.borrow_mut();
+            open_explorer_pane(&mut state, desktop_explorer.as_ref());
         })),
         // DSH's "Open in floating panel": the file pane opens first (beside the
         // active pane, or as a chip in the file pane already in front), then the

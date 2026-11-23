@@ -244,6 +244,18 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "side-add-tab",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "files-explorer",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "side-task-output",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -263,6 +275,12 @@ fn main() -> anyhow::Result<()> {
             ),
             (
                 "overview",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "sidebar-collapsed",
                 vec2f(1600.0, 1000.0),
                 false,
                 SettingsCategory::General,
@@ -626,6 +644,13 @@ fn main() -> anyhow::Result<()> {
                         );
                     }
                 }
+                if name == "sidebar-collapsed" {
+                    s.sidebar_visible = false;
+                    s.right_sidebar_open = true;
+                    s.side_split_ratio = 0.42;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Terminal];
+                    s.active_side_tab = 0;
+                }
                 if name == "side-panel-max" {
                     s.right_sidebar_open = true;
                     s.side_panel_maximized = true;
@@ -636,6 +661,32 @@ fn main() -> anyhow::Result<()> {
                         goble_app::state::SideTabKind::Files,
                     ];
                     s.active_side_tab = 0;
+                }
+                if name == "side-add-tab" {
+                    s.right_sidebar_open = true;
+                    *s.side_tab_add_menu_open.borrow_mut() = true;
+                }
+                if name == "files-explorer" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Files];
+                    s.active_side_tab = 0;
+                    s.side_file = Some(repo_path.join("src/lib.rs").to_string_lossy().to_string());
+                    let space_index = s.active_space;
+                    let pane = s.active_pane_id;
+                    let mut next = s.next_pane_id;
+                    if let Some(space) = s.spaces.get_mut(space_index) {
+                        if let Some(id) = space.split_with_kind(
+                            pane,
+                            goble_app::ui::SplitDir::Horizontal,
+                            &mut next,
+                            goble_app::state::PaneKind::Explorer,
+                        ) {
+                            s.next_pane_id = next;
+                            s.focus_pane(id);
+                            s.pane_sessions.entry(id).or_default().path =
+                                repo_path.to_string_lossy().to_string();
+                        }
+                    }
                 }
                 if name == "side-task-output" {
                     s.right_sidebar_open = true;

@@ -531,13 +531,11 @@ pub fn build_chrome_row(
             )
             .finish(),
         );
-    // The review's own row owns the icon cluster while the panel is open; the
-    // general bar keeps only the chips and window controls.
-    if !panel_open {
-        main_section = main_section
-            .with_child(more.take().expect("the More menu"))
-            .with_child(overview_button);
-    }
+    // Panel 1's trailing controls are always its own two icons — the More menu
+    // and the Overview launcher — whether the side panel is open or closed.
+    main_section = main_section
+        .with_child(more.take().expect("the More menu"))
+        .with_child(overview_button);
     // Panel 1 keeps the control that OPENS the side panel: with the panel
     // closed nothing in the strip could bring it back (the close control lives
     // in panel 2's section, which is only built while the panel is open).

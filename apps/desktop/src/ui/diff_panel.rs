@@ -28,7 +28,7 @@ use goble_ui::elements::{
     Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, Icon, IconButton,
     KeyHandler, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, Point, PopupMenu,
     PopupMenuItem, PopupMenuPosition, ReviewTab, ReviewTabFile, Scrollable, SizeConstraint, Stack,
-    Text, TextArea, TextInput, Tooltip, TooltipPosition,
+    Text, TextArea, TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::platform::text_atlas::FontWeight;
@@ -331,9 +331,10 @@ pub(crate) fn build_review_tab(
 
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(build_review_topbar(app, actions, pane_id))
+        .with_child(Divider::horizontal().finish());
     if let (Some(Some(detail)), Some(controls)) = (detail, controls.as_ref()) {
-        column = column.with_child(Divider::horizontal().finish());
         if commit_open {
             column = column.with_child(commit_bar(
                 app,
@@ -409,6 +410,84 @@ struct CommitView {
     open: bool,
     menu_open: Rc<RefCell<bool>>,
     status: Option<(String, bool)>,
+}
+
+/// 223: the review's own 1 pt-separated icon row, directly under the general
+/// topbar. The general bar owns only the chips and window controls.
+fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> Box<dyn Element> {
+    let on_diff = actions.on_diff_panel.clone();
+    let toggle_files = {
+        let on_diff = on_diff.clone();
+        move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::ToggleSidebar)
+    };
+    let toggle_menu = {
+        let on_diff = on_diff.clone();
+        move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::ToggleCommit)
+    };
+    let on_search = actions.on_spotlight.clone();
+    let kebab = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("dots-vertical")
+                .with_size(15.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(7.0)
+        .with_on_click(toggle_files)
+        .finish(),
+        "Review files",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    let search = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("search")
+                .with_size(15.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(7.0)
+        .with_on_click(move || {
+            (on_search.borrow_mut())(crate::ui::spotlight::SpotlightAction::Open)
+        })
+        .finish(),
+        "Search",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    let menu = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("menu-01")
+                .with_size(15.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(14.0)
+        .with_on_click(toggle_menu)
+        .finish(),
+        "Review options",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(2.0)
+        .with_child(Expanded::new(Empty::new().finish()).finish())
+        .with_child(kebab)
+        .with_child(search)
+        .with_child(menu)
+        .finish();
+    ConstrainedBox::new(
+        Container::new(row)
+            .with_padding(EdgeInsets::new(8.0, 2.0, 8.0, 2.0))
+            .finish(),
+    )
+    .with_height(36.0)
+    .finish()
 }
 
 /// The topbar's leading content: the directory this review covers, its branch
@@ -1223,7 +1302,9 @@ fn file_block(
             confirming_revert,
             content_width,
             selected,
-        ));
+        ))
+        // 225: every filename row is followed by a 1 px rule at the card width.
+        .with_child(Divider::horizontal().finish());
     if open {
         column = column.with_child(file_body(
             app,
@@ -1241,15 +1322,22 @@ fn file_block(
             content_width,
         ));
     }
-    // 214: the file list is flat — no per-file card or outer border. One thin
-    // divider closes each row and the expanded diff sits inside that row.
-    column = column.with_child(Divider::horizontal().finish());
-    let row: Box<dyn Element> = if content_width > 0.0 {
-        ConstrainedBox::new(column.finish())
-            .with_width(content_width)
+    // 224: only the expanded file gets the card casing, one 1 px Border around
+    // its header and body; a collapsed row stays flat.
+    let block: Box<dyn Element> = if open {
+        Container::new(column.finish())
+            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+            .with_corner_radius(8.0)
             .finish()
     } else {
         column.finish()
+    };
+    let row: Box<dyn Element> = if content_width > 0.0 {
+        ConstrainedBox::new(block)
+            .with_width(content_width)
+            .finish()
+    } else {
+        block
     };
     // The whole row is still the file's context-menu target.
     let on_file_menu = actions.on_file_menu.clone();
@@ -1725,9 +1813,13 @@ fn note(app: &AppContext, text: &str) -> Box<dyn Element> {
 
 fn divider(app: &AppContext) -> Box<dyn Element> {
     ConstrainedBox::new(
-        Container::new(Empty::new().finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::Border)))
-            .finish(),
+        Container::new(
+            Flex::column()
+                .with_main_axis_size(MainAxisSize::Max)
+                .finish(),
+        )
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Border)))
+        .finish(),
     )
     .with_width(1.0)
     .finish()

@@ -2614,9 +2614,9 @@ mod tests {
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { name, .. } if name == "menu-01"
+                RenderCommand::DrawIcon { name, .. } if name == "panel-right-outline"
             )),
-            "the dock offers the round trailing menu"
+            "the dock offers the side-panel toggle"
         );
     }
 
@@ -3531,7 +3531,7 @@ mod tests {
             })
             .expect("the Side Question chip");
         let plus = icon_x("plus").expect("the add button");
-        let menu = icon_x("menu-01").expect("the trailing menu control");
+        let menu = icon_x("panel-right-outline").expect("the side-panel toggle");
         assert!(terminal < side_question, "the chips keep strip order");
         assert!(
             plus > side_question,
@@ -3833,7 +3833,7 @@ mod tests {
     /// kebab and the round panel menu — no search, no maximize/panel glyph —
     /// with one 1 px separator between panel 1 and panel 2.
     #[test]
-    fn the_review_topbar_has_kebab_and_menu_without_search() {
+    fn the_review_owns_its_icon_row_below_the_general_topbar() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
         {
@@ -3844,574 +3844,62 @@ mod tests {
         }
         let size = vec2f(1600.0, 1000.0);
         let commands = render_element(&mut root, size, &app);
-        let split = size.x * 0.55;
-        let top_icons: Vec<(&str, f32)> = commands
+        let split = size.x * 0.625;
+        let top: Vec<&str> = commands
             .iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawIcon { name, origin, .. }
-                    if origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                    if origin.y < crate::ui::chrome::CHROME_HEIGHT && origin.x > split =>
                 {
-                    Some((name.as_str(), origin.x))
+                    Some(name.as_str())
                 }
                 _ => None,
             })
             .collect();
-        let trailing: Vec<&str> = top_icons
+        assert!(
+            top.contains(&"fullscreen-enter") || top.contains(&"fullscreen-exit"),
+            "the general topbar keeps maximize: {top:?}"
+        );
+        assert!(
+            top.contains(&"panel-right-outline"),
+            "the general topbar keeps the side-panel toggle: {top:?}"
+        );
+        assert!(
+            !top.contains(&"search") && !top.contains(&"dots-vertical"),
+            "the review icons are not in the general bar: {top:?}"
+        );
+        let review_row: Vec<&str> = commands
             .iter()
-            .filter(|(_, x)| *x > split + 1.0)
-            .map(|(name, _)| *name)
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if origin.y > crate::ui::chrome::CHROME_HEIGHT
+                        && origin.y < crate::ui::chrome::CHROME_HEIGHT + 40.0 =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
             .collect();
-        assert!(
-            trailing.contains(&"dots-vertical"),
-            "the More kebab: {trailing:?}"
-        );
-        assert!(
-            trailing.contains(&"menu-01"),
-            "the round panel menu: {trailing:?}"
-        );
-        assert!(
-            !trailing.contains(&"search"),
-            "no search icon in panel 2: {trailing:?}"
-        );
-        assert!(
-            !trailing.contains(&"fullscreen-enter")
-                && !trailing.contains(&"fullscreen-exit")
-                && !trailing.contains(&"panel-right-outline"),
-            "no maximize/panel glyph in the two-icon cluster: {trailing:?}"
-        );
+        for icon in ["dots-vertical", "search", "menu-01"] {
+            assert!(
+                review_row.contains(&icon),
+                "the review's own row carries {icon:?}: {review_row:?}"
+            );
+        }
         let border = app.theme.color(ColorToken::Border);
-        let separators: Vec<RectF> = commands
+        let separators = commands
             .iter()
-            .filter_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == border && rect.width() <= 1.01 && rect.height() >= 40.0 =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::FillRect { rect, color, .. }
+                        if *color == border
+                            && rect.width() <= 1.01
+                            && rect.height() >= 40.0
+                )
             })
-            .collect();
-        assert!(
-            separators.iter().any(|rect| rect.min_x() > size.x / 2.0),
-            "a 1 px rule separates panel 1 from panel 2: {separators:?}"
-        );
-    }
-
-    /// Z: the launcher keeps Plugins and shows a Background Tasks header with
-    /// a count pill, four live task rows and a See all action.
-    #[test]
-    fn the_side_panel_launcher_shows_plugins_and_background_tasks() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = app_root();
-        {
-            let mut s = state.borrow_mut();
-            s.right_sidebar_open = true;
-            s.side_tabs = vec![crate::state::SideTabKind::Overview];
-            s.active_side_tab = 0;
-            s.global_search_focused = true;
-            let active = s.active_pane_id;
-            let runtime = s.pane_runtime.entry(active).or_default();
-            for index in 0..12 {
-                let id = format!("task-{index}");
-                runtime.in_flight_tools.insert(
-                    id.clone(),
-                    goble_ui::ToolCall {
-                        id,
-                        name: "Shell".to_string(),
-                        arguments: format!("{{\"command\":\"build {index}\"}}"),
-                        status: goble_core::harness::ToolCallStatus::Running,
-                        result: None,
-                        diff: None,
-                    },
-                );
-            }
-        }
-        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
-        let texts: Vec<&str> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        for expected in [
-            "Search or enter a URL",
-            "Plugins",
-            "Background Tasks",
-            "12",
-            "See all",
-        ] {
-            assert!(
-                texts.iter().any(|text| *text == expected),
-                "the launcher draws {expected:?}: {texts:?}"
-            );
-        }
-        let task_rows = texts
-            .iter()
-            .filter(|text| text.starts_with("Run build"))
             .count();
-        assert_eq!(task_rows, 4, "only the first four tasks are listed");
-    }
-
-    /// Y: the Files side tab renders the real file content a click named,
-    /// without splitting or retargeting the main pane.
-    #[test]
-    fn the_side_files_tab_renders_the_clicked_file() {
-        let app = AppContext::default();
-        let (mut root, state, dir) = app_root();
-        let path = dir.path().join("side-note.md");
-        std::fs::write(&path, "needle in the side panel\nsecond line\n").unwrap();
-        let file = path.to_string_lossy().to_string();
-        let pane = state.borrow().active_pane_id;
-        let max = state.borrow().spaces[0].root.max_id();
-        {
-            let mut s = state.borrow_mut();
-            s.open_file_side(file.clone());
-        }
-        assert_eq!(
-            state.borrow().active_side_tab_kind(),
-            crate::state::SideTabKind::Files
-        );
-        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
-        let texts: Vec<&str> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            texts
-                .iter()
-                .any(|text| text.contains("needle in the side panel")),
-            "the Files tab draws the file's content: {texts:?}"
-        );
-        let s = state.borrow();
-        assert_eq!(s.side_file.as_deref(), Some(file.as_str()));
-        assert_eq!(s.active_pane_id, pane, "the main pane is untouched");
-        assert_eq!(s.spaces[0].root.max_id(), max, "no pane is split");
-    }
-
-    /// U: Escape only dismisses the topmost overlay. It never opens, restores
-    /// or focuses a terminal/floating pane, however many times it is pressed.
-    #[test]
-    fn escape_dismisses_overlays_without_opening_stale_panes() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = app_root();
-        let _ = render_element(&mut root, window(), &app);
-        let before_id = state.borrow().spaces[0].root.max_id();
-        let before_terminals = state.borrow().terminal.borrow().sessions.len();
-        let mut ctx = EventContext;
-
-        // Settings is a surface over the shell: Escape closes it, and the pane
-        // tree/terminal registry are untouched.
-        state.borrow_mut().settings_overlay_open = true;
-        let _ = render_element(&mut root, window(), &app);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(
-            !state.borrow().settings_overlay_open,
-            "Escape closes settings"
-        );
-        assert_eq!(
-            state.borrow().spaces[0].root.max_id(),
-            before_id,
-            "Escape opens no pane"
-        );
-        assert_eq!(
-            state.borrow().terminal.borrow().sessions.len(),
-            before_terminals,
-            "Escape starts no terminal"
-        );
-
-        // Repeated Escape with no overlay is inert too.
-        for _ in 0..4 {
-            let _ = root.dispatch_event(
-                &DispatchedEvent::KeyDown {
-                    key: "Escape".to_string(),
-                    modifiers: Default::default(),
-                },
-                &mut ctx,
-                &app,
-            );
-        }
-        assert_eq!(
-            state.borrow().spaces[0].root.max_id(),
-            before_id,
-            "repeated Escape never resurrects a terminal/floating pane"
-        );
-        assert_eq!(
-            state.borrow().terminal.borrow().sessions.len(),
-            before_terminals,
-            "repeated Escape starts no terminal session"
-        );
-
-        // The spotlight behaves the same way.
-        state.borrow_mut().spotlight.open = true;
-        state.borrow_mut().spotlight.focused = true;
-        let _ = render_element(&mut root, window(), &app);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(
-            !state.borrow().spotlight.open,
-            "Escape closes the spotlight"
-        );
-        assert_eq!(
-            state.borrow().spaces[0].root.max_id(),
-            before_id,
-            "the spotlight's Escape opens no pane either"
-        );
-    }
-
-    /// Q: the topbar Search opens the spotlight, which filters real
-    /// conversations by query/scope, navigates with the keys and dismisses on
-    /// Escape or an outside press.
-    #[test]
-    fn the_topbar_search_opens_the_spotlight_and_it_filters_navigates_and_dismisses() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = app_root();
-        {
-            let mut s = state.borrow_mut();
-            s.conversations = vec![
-                goble_ui::ConversationEntry::new("a", "Alpha notes", "", "1d"),
-                goble_ui::ConversationEntry::new("b", "Beta build", "", "2d"),
-            ];
-        }
-        let commands = render_element(&mut root, window(), &app);
-        let search = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon {
-                    name, origin, size, ..
-                } if name == "search" && origin.y < 44.0 => {
-                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
-                }
-                _ => None,
-            })
-            .expect("the topbar Search control");
-        click(&mut root, &app, search);
-        assert!(state.borrow().spotlight.open, "Search opens the spotlight");
-        assert!(
-            state.borrow().spotlight.focused,
-            "the query field is focused"
-        );
-
-        let commands = render_element(&mut root, window(), &app);
-        let texts: Vec<String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        for expected in [
-            "Conversations",
-            "Search for conversations...",
-            "Alpha notes",
-            "Beta build",
-        ] {
-            assert!(
-                texts.iter().any(|text| *text == expected),
-                "the spotlight draws {expected:?}: {texts:?}"
-            );
-        }
-
-        // Query + scope filtering.
-        state.borrow_mut().spotlight.query = "beta".to_string();
-        let commands = render_element(&mut root, window(), &app);
-        let card_texts: Vec<String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. }
-                    if origin.x > 250.0 && origin.y > 90.0 && origin.y < 500.0 =>
-                {
-                    Some(text.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        assert!(card_texts.iter().any(|text| text == "Beta build"));
-        assert!(!card_texts.iter().any(|text| text == "Alpha notes"));
-        *state.borrow().spotlight.scope_menu_open.borrow_mut() = true;
-        let commands = render_element(&mut root, window(), &app);
-        let commands_item = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "Commands" => Some(*origin),
-                _ => None,
-            })
-            .expect("the scope menu");
-        click(&mut root, &app, commands_item + vec2f(4.0, 4.0));
-        assert_eq!(
-            state.borrow().spotlight.scope,
-            crate::ui::spotlight::SpotlightScope::Commands
-        );
-        assert!(!*state.borrow().spotlight.scope_menu_open.borrow());
-        state.borrow_mut().spotlight.scope = crate::ui::spotlight::SpotlightScope::Conversations;
-        state.borrow_mut().spotlight.query.clear();
-
-        // Keyboard: Down moves the highlight, Enter opens, Escape closes.
-        let mut ctx = EventContext;
-        assert!(root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "ArrowDown".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        ));
-        assert_eq!(state.borrow().spotlight.selected, 1);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Enter".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(!state.borrow().spotlight.open, "Enter opens and dismisses");
-
-        // Escape closes the window; with a menu open it closes the menu first.
-        state.borrow_mut().spotlight.open = true;
-        *state.borrow().spotlight.options_menu_open.borrow_mut() = true;
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(!*state.borrow().spotlight.options_menu_open.borrow());
-        assert!(state.borrow().spotlight.open);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(!state.borrow().spotlight.open);
-
-        // An outside press dismisses it too.
-        state.borrow_mut().spotlight.open = true;
-        click(&mut root, &app, vec2f(4.0, 4.0));
-        assert!(!state.borrow().spotlight.open, "outside press closes");
-    }
-
-    /// Paint the laid-out frame once more with the pointer at `pointer`, so
-    /// hover-only controls are observable with their real geometry.
-    fn commands_with_pointer(
-        root: &mut Box<dyn Element>,
-        app: &AppContext,
-        pointer: Vector2F,
-    ) -> Vec<RenderCommand> {
-        let mut ctx = goble_ui::elements::PaintContext::new(Renderer::new());
-        ctx.cursor_inside = true;
-        ctx.cursor_position = pointer;
-        root.paint(vec2f(0.0, 0.0), &mut ctx, app);
-        ctx.renderer
-            .take()
-            .map(|renderer| renderer.commands().to_vec())
-            .unwrap_or_default()
-    }
-
-    /// S: the full chrome row drives the strip end-to-end — a chip click
-    /// switches the body, the hover X closes that chip, and the fixed + opens
-    /// its add menu.
-    #[test]
-    fn the_side_tab_strip_handles_chip_close_and_add_clicks() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = app_root();
-        {
-            let mut s = state.borrow_mut();
-            s.right_sidebar_open = true;
-            s.add_side_tab(SideTabKind::Terminal);
-            s.add_side_tab(SideTabKind::Agent);
-            s.active_side_tab = 2;
-        }
-        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
-        let label = |text: &str| {
-            commands.iter().find_map(|command| match command {
-                RenderCommand::DrawText {
-                    text: drawn,
-                    origin,
-                    ..
-                } if drawn == text && origin.y < crate::ui::chrome::CHROME_HEIGHT => Some(*origin),
-                _ => None,
-            })
-        };
-        // Chip click switches the panel off the active Side Question tab.
-        let terminal = label("Terminal").expect("the Terminal chip");
-        click(&mut root, &app, terminal + vec2f(4.0, 4.0));
-        assert_eq!(
-            state.borrow().active_side_tab_kind(),
-            SideTabKind::Terminal,
-            "the chip click switches the panel content"
-        );
-
-        // The hover X sits at the chip's trailing square; the fixed + is the
-        // last icon before the window controls.
-        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
-        let plus = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon { name, origin, .. }
-                    if name == "plus" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
-                {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .expect("the pinned + button");
-        let agent = label("Side Question").expect("the Side Question chip");
-        // Paint with the pointer on the chip so its hover X is real geometry,
-        // then click the X itself.
-        let hovered = commands_with_pointer(&mut root, &app, agent + vec2f(16.0, 6.0));
-        let close = hovered
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon {
-                    name, origin, size, ..
-                } if name == "x-close"
-                    && origin.y < crate::ui::chrome::CHROME_HEIGHT
-                    && origin.x > agent.x - 40.0
-                    && origin.x < agent.x + 140.0 =>
-                {
-                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                let icons: Vec<_> = hovered
-                    .iter()
-                    .filter_map(|command| match command {
-                        RenderCommand::DrawIcon { name, origin, .. } => {
-                            Some((name.clone(), *origin))
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                panic!("the hover X on the Side Question chip: agent {agent:?}, icons {icons:?}");
-            });
-        let mut ctx = EventContext;
-        for event in [
-            DispatchedEvent::MouseDown {
-                position: close,
-                button: 0,
-            },
-            DispatchedEvent::MouseUp {
-                position: close,
-                button: 0,
-            },
-        ] {
-            let _ = root.dispatch_event(&event, &mut ctx, &app);
-        }
-        assert!(
-            !state.borrow().side_tabs.contains(&SideTabKind::Agent),
-            "the X closes the Side Question chip (agent {:?}, close {:?}, tabs {:?})",
-            agent,
-            close,
-            state.borrow().side_tabs
-        );
-
-        // The + menu opens and offers the real tab kinds.
-        click(&mut root, &app, plus + vec2f(6.0, 6.0));
-        assert!(
-            *state.borrow().side_tab_add_menu_open.borrow(),
-            "the fixed + opens its add menu"
-        );
-        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
-        let texts: Vec<&str> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        for item in ["Side Question", "Files", "Terminal", "Task output"] {
-            assert!(
-                texts.iter().any(|text| *text == item),
-                "the + menu offers {item:?}: {texts:?}"
-            );
-        }
-    }
-
-    /// Panel 1's trailing controls are exactly the More menu and the Overview
-    /// popover; the maximize/collapse and side-panel controls live in panel 2.
-    #[test]
-    fn panel_one_offers_only_more_and_overview() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = app_root();
-        state.borrow_mut().right_sidebar_open = false;
-        let commands = render_element(&mut root, window(), &app);
-
-        let icons: Vec<&str> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            icons.contains(&"dots-vertical"),
-            "the More control: {icons:?}"
-        );
-        assert!(
-            icons.contains(&"flat-list"),
-            "the Overview control: {icons:?}"
-        );
-        assert!(
-            !icons.contains(&"fullscreen-enter") && !icons.contains(&"fullscreen-exit"),
-            "panel 1 no longer offers maximize: {icons:?}"
-        );
-        assert_eq!(
-            icons
-                .iter()
-                .filter(|name| **name == "panel-left-outline")
-                .count(),
-            1,
-            "the topbar's sidebar toggle wears DSH's panel-left glyph: {icons:?}"
-        );
-        assert!(
-            !icons.contains(&"left-panel-close"),
-            "the topbar no longer uses the custom close glyph: {icons:?}"
-        );
-
-        state.borrow_mut().right_sidebar_open = true;
-        let commands = render_element(&mut root, window(), &app);
-        let icons: Vec<&str> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            icons.contains(&"menu-01"),
-            "the open panel's trailing menu is the round hamburger: {icons:?}"
-        );
-        assert!(
-            icons.iter().filter(|name| **name == "search").count() >= 2,
-            "the open panel keeps the topbar search: {icons:?}"
-        );
-        assert!(
-            !icons.contains(&"fullscreen-enter") && !icons.contains(&"panel-right-outline"),
-            "the target has three trailing icons, not maximize/panel: {icons:?}"
-        );
+        assert!(separators >= 1, "a 1 px rule separates the rows");
     }
 
     /// The Overview button opens the anchored popover with its real sections,

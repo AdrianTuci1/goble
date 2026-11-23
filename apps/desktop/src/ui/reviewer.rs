@@ -1483,21 +1483,10 @@ pub(crate) fn files_changed_rail(
     selected: Option<&str>,
     width: f32,
 ) -> Box<dyn Element> {
-    let mut column = Flex::column()
+    let mut list = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0)
-        .with_child(
-            Container::new(
-                Text::new("Files Changed")
-                    .with_font_size(12.0)
-                    .with_weight(FontWeight::Medium)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
-            .finish(),
-        );
+        .with_spacing(2.0);
     for file in &detail.files {
         let path = file.path.clone();
         let absolute = file.absolute_path.clone();
@@ -1537,7 +1526,6 @@ pub(crate) fn files_changed_rail(
                 .finish(),
             )
             .finish();
-        // 216: flat Files Changed rows, no per-row border.
         let row = HoverRow::new(
             Container::new(row)
                 .with_padding(EdgeInsets::new(7.0, 9.0, 7.0, 9.0))
@@ -1550,11 +1538,41 @@ pub(crate) fn files_changed_rail(
             (on_files.borrow_mut())(absolute.clone());
         })
         .finish();
-        column = column.with_child(row);
+        list = list.with_child(row);
     }
+    // 226: the rail is one full-height bordered column: a fixed header above a
+    // scroll region for the rows.
+    let rail = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(
+            Container::new(
+                Text::new("Files Changed")
+                    .with_font_size(12.0)
+                    .with_weight(FontWeight::Medium)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
+            .finish(),
+        )
+        .with_child(
+            Expanded::new(
+                Scrollable::new(
+                    Container::new(list.finish())
+                        .with_padding(EdgeInsets::new(4.0, 4.0, 4.0, 4.0))
+                        .finish(),
+                    Axis::Vertical,
+                )
+                .finish(),
+            )
+            .finish(),
+        )
+        .finish();
     ConstrainedBox::new(
-        Container::new(Scrollable::new(column.finish(), Axis::Vertical).finish())
-            .with_padding(EdgeInsets::new(4.0, 4.0, 4.0, 4.0))
+        Container::new(rail)
+            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+            .with_corner_radius(8.0)
             .finish(),
     )
     .with_width(width)

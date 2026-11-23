@@ -183,8 +183,9 @@ its file column sits on the left as a flat list (per-extension letter badge,
 bold filename, muted tail-truncated path, counts, fold chevron, thin row
 dividers and inline stacked diff; no per-row outer border) and the "Files
 Changed" flat rail on the right at about 40% of the panel width (no per-row
-border). The topbar's right edge ends in exactly the More kebab and the round
-panel menu, with a 1 px rule between panel 1 and panel 2. The
+border). The general topbar ends in the tab chips plus maximize and the side-panel
+toggle; the review's own 1 px-separated row below it carries the kebab, search
+and round menu. The
 chat's changed-files card is the simpler T3 model: one collapsible bordered
 card on the chat background, "N files changed" + counts + chevron and a
 Review button, expanding to full-path rows with counts flush right; on narrow

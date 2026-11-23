@@ -581,7 +581,6 @@ pub fn build_chrome_row(
         } else {
             Empty::new().finish()
         };
-        let _ = maximized;
         let on_close = actions.on_toggle_right_sidebar.clone();
         // The reference's three trailing icons: kebab (More), search, and the
         // round hamburger/menu that folds the panel away.
@@ -598,19 +597,45 @@ pub fn build_chrome_row(
         )
         .with_position(TooltipPosition::Below)
         .finish();
+        // Panel 2's window controls live at its trailing edge: search, then
+        // maximize/minimize and the side-panel toggle.
+        let on_max = actions.on_toggle_side_panel_maximized.clone();
+        let max_button = Tooltip::new(
+            TopbarButton::new(
+                Icon::new(if maximized {
+                    "fullscreen-exit"
+                } else {
+                    "fullscreen-enter"
+                })
+                .with_size(CONTROL_ICON_SIZE)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+            )
+            .with_size(CONTROL_BUTTON_SIZE)
+            .with_corner_radius(8.0)
+            .with_on_click(move || (on_max.borrow_mut())())
+            .finish(),
+            if maximized {
+                "Restore side panel"
+            } else {
+                "Maximize side panel"
+            },
+        )
+        .with_position(TooltipPosition::Below)
+        .finish();
         let close_button = Tooltip::new(
             TopbarButton::new(
-                Icon::new("menu-01")
+                Icon::new("panel-right-outline")
                     .with_size(CONTROL_ICON_SIZE)
                     .with_theme_color(ColorToken::Text, app)
                     .finish(),
             )
             .with_size(CONTROL_BUTTON_SIZE)
-            .with_corner_radius(CONTROL_BUTTON_SIZE / 2.0)
+            .with_corner_radius(8.0)
             .with_active(true)
             .with_on_click(move || (on_close.borrow_mut())())
             .finish(),
-            "Close side panel",
+            "Toggle side panel",
         )
         .with_position(TooltipPosition::Below)
         .finish();
@@ -620,6 +645,7 @@ pub fn build_chrome_row(
             .with_spacing(CONTROL_SPACING)
             .with_child(Expanded::new(tab_strip).finish())
             .with_child(search_button)
+            .with_child(max_button)
             .with_child(close_button)
             .finish();
         let side_section = Container::new(side_section)
@@ -855,6 +881,8 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
 /// is selected. These mirror `side_tabs.rs`'s chip geometry: the strip measures
 /// each chip at its natural label width, then clips and offsets the whole row.
 const TAB_STRIP_GAP: f32 = 4.0;
+/// The chip row's height: the strip centres it on the bar's middle line.
+const TAB_STRIP_CHIP_HEIGHT: f32 = 30.0;
 const TAB_STRIP_ICON: f32 = 13.0;
 const TAB_STRIP_PADDING_X: f32 = 8.0;
 const TAB_STRIP_LABEL_GAP: f32 = 6.0;
@@ -987,9 +1015,15 @@ impl Element for TabStripScroller {
             app,
         );
         let height = constraint.max.y.max(add_size.y);
+        // Chips centre on the bar's own middle line: the scroll viewport is the
+        // chip row's height, not the full strip.
+        let chips_height = TAB_STRIP_CHIP_HEIGHT.min(height);
         let viewport_width = (constraint.max.x - add_size.x - TAB_STRIP_ADD_GAP).max(0.0);
         self.scroll_size = self.scrollable.layout(
-            SizeConstraint::new(vec2f(viewport_width, height), vec2f(viewport_width, height)),
+            SizeConstraint::new(
+                vec2f(viewport_width, chips_height),
+                vec2f(viewport_width, chips_height),
+            ),
             ctx,
             app,
         );
@@ -1004,8 +1038,9 @@ impl Element for TabStripScroller {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        self.scrollable.paint(origin, ctx, app);
         let size = self.size.unwrap_or(Vector2F::zero());
+        let chips_y = origin.y + ((size.y - self.scroll_size.y) / 2.0).max(0.0);
+        self.scrollable.paint(vec2f(origin.x, chips_y), ctx, app);
         let add_size = self.add.size().unwrap_or(Vector2F::zero());
         // The + sits right beside the visible chips; only when they overflow
         // the viewport is it pushed to the viewport's fixed trailing edge.

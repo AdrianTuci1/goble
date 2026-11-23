@@ -44,11 +44,11 @@
 
 .teammate-visual {
   position: relative;
-  border-radius: 20px;
+  border-radius: 0;
   overflow: hidden;
   background: linear-gradient(140deg, #6f8592 0%, #93a8b4 42%, #c3d0d8 68%, #8ea3ae 100%);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-  border-radius: 20px;
+  border-radius: 0;
 }
 
 /* left visual: app window + testing timeline */
@@ -64,7 +64,7 @@
   flex: 1.35;
   min-width: 0;
   background: #101114;
-  border-radius: 12px;
+  border-radius: 0;
   overflow: hidden;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
 }
@@ -164,7 +164,7 @@
 .model-detail {
   background: #f6f6f7;
   color: #101114;
-  border-radius: 14px;
+  border-radius: 0;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
   font-size: 0.78rem;
 }
@@ -199,7 +199,7 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0.46rem 0.6rem;
-  border-radius: 8px;
+  border-radius: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -322,7 +322,7 @@
   background: #1c1d21;
   border: 1px solid #2a2b30;
   color: #d8d9dc;
-  border-radius: 6px;
+  border-radius: 0;
   padding: 0.2rem 0.55rem;
   font-size: 0.72rem;
   white-space: nowrap;

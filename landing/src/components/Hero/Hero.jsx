@@ -90,9 +90,7 @@ const Hero = () => {
           inside the same gradient frame it had there. The animated hero
           visual (motion design) is gone from the landing page. */}
       <div className="hero-showcase">
-        <div className="hero-showcase-frame">
-          <img src="/misc/second.png" alt="Octomus spotlight launcher" />
-        </div>
+        <img src="/misc/second.png" alt="Octomus spotlight launcher" />
       </div>
     </section>
   );

@@ -802,7 +802,9 @@ fn group_block(
         .with_hovered(is_hovered(state, &key))
         .with_hover_cell(state.sidebar_hover_row.clone(), key)
         .with_on_click(move || (on_toggle.borrow_mut())(toggle_key.clone()));
-    if let Some(icon) = fixed_glyph {
+    if label == "Conversations" {
+        header = header.without_leading_icon();
+    } else if let Some(icon) = fixed_glyph {
         header = header.with_leading_icon(icon);
     } else if workspace.is_some_and(WorkspaceSection::is_remote) {
         // The remote target is a badge, not a second line: the row's leading

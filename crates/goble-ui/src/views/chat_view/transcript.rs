@@ -342,6 +342,9 @@ const HOVER_CARD_WIDTH: f32 = 118.0;
 const HOVER_CARD_HEIGHT: f32 = 24.0;
 
 const LONG_SEGMENT_TARGET: f32 = 1.0;
+/// Below either of these the left scroll rail is not drawn at all.
+const RAIL_MIN_WIDTH: f32 = 620.0;
+const RAIL_MIN_HEIGHT: f32 = 340.0;
 const DOT_LABELS: [&str; 8] = [
     "Early turns",
     "Early turns",
@@ -453,6 +456,13 @@ impl Element for ScrollDotsRail {
         app: &AppContext,
     ) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        // The rail has breaking points on both axes: a narrow or short pane
+        // drops it entirely instead of squeezing it over the text.
+        if let Some(size) = self.size {
+            if size.x < RAIL_MIN_WIDTH || size.y < RAIL_MIN_HEIGHT {
+                return;
+            }
+        }
         let hovered = self.hovered_indicator(ctx);
         let Some(renderer) = ctx.renderer.as_mut() else {
             return;
@@ -534,6 +544,11 @@ impl Element for ScrollDotsRail {
         app: &AppContext,
     ) -> bool {
         let _ = (ctx, app);
+        if let Some(size) = self.size {
+            if size.x < RAIL_MIN_WIDTH || size.y < RAIL_MIN_HEIGHT {
+                return false;
+            }
+        }
         if let crate::event::DispatchedEvent::MouseDown { position, .. } = event {
             if let Some(origin) = self.origin {
                 if (position.x - origin.x()).abs() < RAIL_WIDTH + RAIL_HOVER_GAP {

@@ -241,7 +241,9 @@ pub fn tool_row(name: &str, arguments: &Value, result: Option<&str>) -> ToolRow 
         // row reads `Ask User <question>` the way a read reads `Read <path>`.
         ToolKind::Ask => ToolRow {
             kind,
-            verb: "Ask User ",
+            // The question itself is the row's title: no "Ask User" prefix and
+            // no repeated question in the body.
+            verb: "",
             subject,
             detail: String::new(),
         },
@@ -656,7 +658,7 @@ mod tests {
             r#"{"question":"Which environment?","quick_replies":["staging","production"]}"#,
         );
         assert_eq!(row.kind, ToolKind::Ask);
-        assert_eq!(row.verb, "Ask User ");
+        assert_eq!(row.verb, "");
         assert_eq!(row.subject, "Which environment?");
     }
 

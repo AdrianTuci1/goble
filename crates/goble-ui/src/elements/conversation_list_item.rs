@@ -2903,6 +2903,9 @@ pub struct SidebarGroupRow {
     /// A fixed leading glyph (the Starred group's pin). `None` draws the
     /// folder, swapped for the disclosure triangle while hovered.
     leading_icon: Option<&'static str>,
+    /// A plain heading with no leading glyph at all (the label starts where
+    /// the icon slot used to be).
+    hide_leading_icon: bool,
     expanded: bool,
     /// Whether the group holds the selected conversation: its folder takes the
     /// theme accent, the way DSH blues the folder of the active workspace.
@@ -2959,6 +2962,7 @@ impl SidebarGroupRow {
         Self {
             label: label.into(),
             leading_icon: None,
+            hide_leading_icon: false,
             expanded,
             active: false,
             hovered: false,
@@ -2983,6 +2987,13 @@ impl SidebarGroupRow {
     /// group's pin).
     pub fn with_leading_icon(mut self, icon: &'static str) -> Self {
         self.leading_icon = Some(icon);
+        self
+    }
+
+    /// Draw the heading with no leading glyph; the label takes the icon slot's
+    /// width, so it starts where the folder used to be.
+    pub fn without_leading_icon(mut self) -> Self {
+        self.hide_leading_icon = true;
         self
     }
 
@@ -3300,13 +3311,15 @@ impl SidebarGroupRow {
         let menu_open = self.menu_open();
         let highlight = self.ui.borrow().highlight;
         let (glyph, size, color) = self.glyph();
-        let leading = sidebar_leading_slot(
-            Icon::new(glyph)
-                .with_size(size)
-                .with_theme_color(color, app)
-                .finish(),
-            size,
-        );
+        let leading = (!self.hide_leading_icon).then(|| {
+            sidebar_leading_slot(
+                Icon::new(glyph)
+                    .with_size(size)
+                    .with_theme_color(color, app)
+                    .finish(),
+                size,
+            )
+        });
         let label = match label_width {
             Some(width) if width.is_finite() => {
                 truncate_with_ellipsis(&self.label, SIDEBAR_TITLE_SIZE, SIDEBAR_TITLE_LINE, width)
@@ -3316,8 +3329,11 @@ impl SidebarGroupRow {
         let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(SIDEBAR_LABEL_GAP)
-            .with_child(leading)
+            .with_spacing(SIDEBAR_LABEL_GAP);
+        if let Some(leading) = leading {
+            row = row.with_child(leading);
+        }
+        let mut row = row
             .with_child(
                 Expanded::new(
                     Padding::new(
@@ -3399,8 +3415,11 @@ impl Element for SidebarGroupRow {
                     - 2.0 * SIDEBAR_PAINT_INSET
                     - SIDEBAR_ROW_PADDING_START
                     - SIDEBAR_ROW_PADDING_END
-                    - SIDEBAR_LEADING_SLOT_W
-                    - SIDEBAR_LABEL_GAP
+                    - if self.hide_leading_icon {
+                        0.0
+                    } else {
+                        SIDEBAR_LEADING_SLOT_W + SIDEBAR_LABEL_GAP
+                    }
                     - trailing)
                     .max(0.0),
             )
@@ -5944,8 +5963,11 @@ mod sidebar_workspaces_tests {
                     - 2.0 * SIDEBAR_PAINT_INSET
                     - SIDEBAR_ROW_PADDING_START
                     - SIDEBAR_ROW_PADDING_END
-                    - SIDEBAR_LEADING_SLOT_W
-                    - SIDEBAR_LABEL_GAP
+                    - if self.hide_leading_icon {
+                        0.0
+                    } else {
+                        SIDEBAR_LEADING_SLOT_W + SIDEBAR_LABEL_GAP
+                    }
                     - 6.0
                     - strip)
                     .max(0.0);

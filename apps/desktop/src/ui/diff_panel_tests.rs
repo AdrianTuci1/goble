@@ -996,7 +996,8 @@ fn every_file_card_has_a_rounded_border_at_the_column_width() {
                 ..
             } if *color == border
                 && (*corner_radius - 8.0).abs() < 0.01
-                && rect.height() > 30.0 =>
+                && rect.height() > 30.0
+                && rect.width() > 200.0 =>
             {
                 Some(*rect)
             }

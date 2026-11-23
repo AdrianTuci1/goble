@@ -22,7 +22,7 @@ use std::rc::Rc;
 use goble_ui::color::ColorU;
 use goble_ui::elements::diff::{DiffLineKind, Hunk};
 use goble_ui::elements::{
-    file_icon_name, AppContext, Axis, Button, ButtonVariant, ConstrainedBox, Container,
+    file_icon_name, AppContext, Axis, Border, Button, ButtonVariant, ConstrainedBox, Container,
     CrossAxisAlignment, EdgeInsets, Element, Empty, Expanded, Flex, HoverRow, Icon, LayoutContext,
     MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ScrollState,
     Scrollable, SizeConstraint, Text, TextSpan, Tooltip, TooltipPosition,
@@ -1537,10 +1537,12 @@ pub(crate) fn files_changed_rail(
                 .finish(),
             )
             .finish();
+        // 210: the Files Changed rows wear the same 1 px rounded border as the
+        // left file cards; hover/selection only changes the fill inside.
         let row = HoverRow::new(
             Container::new(row)
-                .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
-                .with_corner_radius(6.0)
+                .with_padding(EdgeInsets::new(7.0, 9.0, 7.0, 9.0))
+                .with_corner_radius(7.0)
                 .finish(),
         )
         .with_selected(sel)
@@ -1549,6 +1551,10 @@ pub(crate) fn files_changed_rail(
             (on_files.borrow_mut())(absolute.clone());
         })
         .finish();
+        let row = Container::new(row)
+            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+            .with_corner_radius(8.0)
+            .finish();
         column = column.with_child(row);
     }
     ConstrainedBox::new(

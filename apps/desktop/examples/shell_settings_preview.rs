@@ -380,7 +380,7 @@ fn main() -> anyhow::Result<()> {
                     s.terminal.borrow_mut().sessions.insert(
                         pane,
                         goble_app::terminal::TerminalSession::preview_screen(
-                            "$ cargo test -p goble-app --lib\r\n   Compiling goble-app\r\n$ ",
+                            "user@goble ~ % cargo test -p goble-app --lib\r\n   Compiling goble-app\r\nuser@goble ~ % ",
                         ),
                     );
                 }
@@ -397,7 +397,7 @@ fn main() -> anyhow::Result<()> {
                     s.terminal.borrow_mut().sessions.insert(
                         pane,
                         goble_app::terminal::TerminalSession::preview_screen(
-                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                            "user@goble ~ % git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\nuser@goble ~ % ",
                         ),
                     );
                 }
@@ -418,7 +418,7 @@ fn main() -> anyhow::Result<()> {
                     s.terminal.borrow_mut().sessions.insert(
                         pane,
                         goble_app::terminal::TerminalSession::preview_screen(
-                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                            "user@goble ~ % git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\nuser@goble ~ % ",
                         ),
                     );
                 }
@@ -509,7 +509,7 @@ fn main() -> anyhow::Result<()> {
                     s.terminal.borrow_mut().sessions.insert(
                         pane,
                         goble_app::terminal::TerminalSession::preview_screen(
-                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                            "user@goble ~ % git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\nuser@goble ~ % ",
                         ),
                     );
                 }
@@ -577,7 +577,7 @@ fn main() -> anyhow::Result<()> {
                         s.terminal.borrow_mut().sessions.insert(
                             pane,
                             goble_app::terminal::TerminalSession::preview_screen(
-                                "$ echo tty-ok\r\ntty-ok\r\n$ ",
+                                "user@goble ~ % echo tty-ok\r\ntty-ok\r\nuser@goble ~ % ",
                             ),
                         );
                     }

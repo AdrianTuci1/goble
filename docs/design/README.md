@@ -170,7 +170,7 @@ and light), topbar with More open (plain, Split flyout, Copy flyout) and
 Overview open, the empty side panel (no chip, no `+`), the Terminal tab, the
 Side Question conversation, multiple tabs with `+` beside them, the tight-width
 overflow strip, the split mid-resize state with the 1 pt inter-panel hairline,
-the terminal shell, Settings (General, Appearance with its in-field swatch,
+the terminal shell (an interactive `user@host ~ %` prompt), Settings (General, Appearance with its in-field swatch,
 Appearance with the colour palette open, Shortcuts, narrow; no descriptions,
 floating close x), the diff reviewer, the floating file window and the
 changed-files card. Next to them: the DSH-style right-aligned user bubble and
@@ -179,10 +179,11 @@ unchanged composer (`slash-menu-*`), the Review tab beside the main chat
 (`split-review-*`), the file viewer with Review beside it
 (`split-file-viewer-*`) and the narrow split (`split-review-narrow-*`). The
 review surface has no inner header band: directly under the one general topbar
-its stacked/unified diff column sits on the left (type badge, bold filename,
-muted directory, counts, fold chevron and inline stacked diff) and the single
-"Files Changed" rail on the right. The topbar's right edge ends in exactly the
-add-tab, maximize and panel toggles. The
+its file column sits on the left as full-width bordered cards (real
+per-extension file icon, bold filename, muted tail-truncated path, counts, fold
+chevron and inline stacked diff) and the fixed 260 pt "Files Changed" rail on
+the right. The topbar's right edge ends in exactly the More kebab and the round
+panel menu, with a 1 px rule between panel 1 and panel 2. The
 chat's changed-files card is the simpler T3 model: one collapsible bordered
 card on the chat background, "N files changed" + counts + chevron and a
 Review button, expanding to full-path rows with counts flush right; on narrow

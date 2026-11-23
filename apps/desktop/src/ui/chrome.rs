@@ -52,11 +52,11 @@ const CONTROL_BUTTON_SIZE: f32 = 30.0;
 const CONTROL_SPACING: f32 = 2.0;
 /// The vertical padding that centers a 30 pt control row inside the 40 pt
 /// content band.
-const SECTION_VERTICAL_PADDING: f32 = (CHROME_CONTENT_HEIGHT - CONTROL_BUTTON_SIZE) / 2.0;
+const SECTION_VERTICAL_PADDING: f32 = (CHROME_HEIGHT - CONTROL_BUTTON_SIZE) / 2.0;
 /// A section's top inset: the quiet band above the content plus the padding that
 /// centers its controls in the rest of the band. The traffic lights are the one
 /// exception: they center on the full bar instead (see [`traffic_lights`]).
-const SECTION_TOP_PADDING: f32 = CHROME_TOP_PADDING + SECTION_VERTICAL_PADDING;
+const SECTION_TOP_PADDING: f32 = (CHROME_HEIGHT - CONTROL_BUTTON_SIZE) / 2.0;
 /// A section rule's width: one physical pixel, painted as a filled Empty.
 const SEPARATOR_WIDTH: f32 = 1.0;
 /// The main section's leading padding: the title starts where the pane area's
@@ -522,7 +522,15 @@ pub fn build_chrome_row(
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(CONTROL_SPACING)
-        .with_child(Expanded::new(title).finish())
+        .with_child(
+            Expanded::new(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(title)
+                    .finish(),
+            )
+            .finish(),
+        )
         .with_child(more.take().expect("the More menu"))
         .with_child(overview_button);
     // Panel 1 keeps the control that OPENS the side panel: with the panel
@@ -584,19 +592,6 @@ pub fn build_chrome_row(
         let on_close = actions.on_toggle_right_sidebar.clone();
         // The reference's three trailing icons: kebab (More), search, and the
         // round hamburger/menu that folds the panel away.
-        let on_search = actions.on_spotlight.clone();
-        let search_button = Tooltip::new(
-            TopbarButton::new(glyph(app, "search"))
-                .with_size(CONTROL_BUTTON_SIZE)
-                .with_corner_radius(8.0)
-                .with_on_click(move || {
-                    (on_search.borrow_mut())(crate::ui::spotlight::SpotlightAction::Open)
-                })
-                .finish(),
-            "Search",
-        )
-        .with_position(TooltipPosition::Below)
-        .finish();
         // Panel 2's window controls live at its trailing edge: search, then
         // maximize/minimize and the side-panel toggle.
         let on_max = actions.on_toggle_side_panel_maximized.clone();
@@ -644,7 +639,6 @@ pub fn build_chrome_row(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(CONTROL_SPACING)
             .with_child(Expanded::new(tab_strip).finish())
-            .with_child(search_button)
             .with_child(max_button)
             .with_child(close_button)
             .finish();
@@ -682,7 +676,9 @@ pub fn build_chrome_row(
         } else {
             Expanded::new(side_section).finish()
         };
-        strip = strip.with_child(side_section);
+        strip = strip
+            .with_child(vertical_separator(app))
+            .with_child(side_section);
     }
     // The strip is the full bar height; each section carries the 2 pt quiet band
     // as its own top inset, so its controls center in the 40 pt content band.

@@ -253,12 +253,17 @@ impl Element for SplitNode {
         self.second
             .paint(origin + self.axis_offset(boundary, 0.0), ctx, app);
 
-        // A split paints no divider, neither at rest nor while dragging: the
-        // panes keep their own separation (the app wears one outline around
-        // each tab and leaves the window's `Bg` between them), and a rule here
-        // would be a third line inside that gutter. The boundary reads through
-        // the resize cursor over its grab band, the same cursor-only affordance
-        // the agent content-lane handles use.
+        // A stacked (vertical) split paints the thin rule that closes the gap
+        // between the two panes; the side-by-side split keeps the cursor-only
+        // boundary because the app's own panel casing owns that line.
+        if self.axis == Axis::Vertical {
+            if let (Some(renderer), Some(size)) = (ctx.renderer.as_mut(), self.size) {
+                renderer.fill_rect(
+                    crate::geometry::rectf(origin.x, origin.y + boundary - 0.5, size.x, 1.0),
+                    app.theme.color(crate::theme::ColorToken::Border),
+                );
+            }
+        }
         self.request_cursor(ctx, app);
     }
 

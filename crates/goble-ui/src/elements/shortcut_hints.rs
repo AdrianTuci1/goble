@@ -11,8 +11,8 @@
 //! at the pane's edge, which is what warp-new's input footer does at resize.
 
 use crate::elements::{
-    AppContext, Border, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill, Flex, Icon,
-    Text, Wrap,
+    AppContext, Border, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill, Flex,
+    Icon, Text, Wrap,
 };
 use crate::theme::{ColorToken, SpacingToken};
 
@@ -172,7 +172,9 @@ mod tests {
         commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text: run, origin, .. } if run == text => Some(origin.y),
+                RenderCommand::DrawText {
+                    text: run, origin, ..
+                } if run == text => Some(origin.y),
                 _ => None,
             })
             .collect()
@@ -182,9 +184,9 @@ mod tests {
         commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text: run, origin, .. } if run == text => {
-                    Some((origin.x, origin.y))
-                }
+                RenderCommand::DrawText {
+                    text: run, origin, ..
+                } if run == text => Some((origin.x, origin.y)),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("{text:?} is drawn"))
@@ -194,9 +196,9 @@ mod tests {
         commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawIcon { name: run, origin, .. } if run == name => {
-                    Some((origin.x, origin.y))
-                }
+                RenderCommand::DrawIcon {
+                    name: run, origin, ..
+                } if run == name => Some((origin.x, origin.y)),
                 _ => None,
             })
             .collect()
@@ -247,7 +249,10 @@ mod tests {
             "a key the text font carries keeps its own glyph"
         );
         for label in ["send", "tasks"] {
-            assert!(!drawn(&commands, label).is_empty(), "the name {label:?} is drawn");
+            assert!(
+                !drawn(&commands, label).is_empty(),
+                "the name {label:?} is drawn"
+            );
         }
         // The name sits on the caps' own line, to their right.
         let label_x = at(&commands, "send").0;
@@ -270,7 +275,8 @@ mod tests {
         use crate::platform::text_atlas::{font_covers, FontWeight};
         use crate::theme::FontFamily;
 
-        for key in ["⌘", "⇧", "⌥", "⌃", "↵", "⏎", "⌫", "⇥", "↑", "↓", "←", "→"] {
+        for key in ["⌘", "⇧", "⌥", "⌃", "↵", "⏎", "⌫", "⇥", "↑", "↓", "←", "→"]
+        {
             assert!(key_has_icon(key), "{key:?} is drawn from the icon set");
         }
         for key in ["K", "W", "N", "Space", "Esc", "!"] {
@@ -356,7 +362,10 @@ mod tests {
         }
         for command in &narrow_commands {
             if let RenderCommand::DrawText { origin, .. } = command {
-                assert!(origin.x < width, "nothing is drawn past the edge: {command:?}");
+                assert!(
+                    origin.x < width,
+                    "nothing is drawn past the edge: {command:?}"
+                );
             }
         }
     }

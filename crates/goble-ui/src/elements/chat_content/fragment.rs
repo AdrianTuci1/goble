@@ -1,6 +1,6 @@
+use super::message::ChatAction;
 use crate::color::ColorU;
 use crate::elements::terminal_block::TerminalData;
-use super::message::ChatAction;
 
 /// A single list item: its checkbox state (only set for GFM task lists) and
 /// the content it holds. Item content is itself a fragment sequence so a
@@ -160,12 +160,21 @@ pub enum ChatFragmentKind {
     Italic(String),
     BoldItalic(String),
     Code(String),
-    CodeBlock { lang: Option<String>, code: String },
+    CodeBlock {
+        lang: Option<String>,
+        code: String,
+    },
     /// ANSI-coloured output drawn as prose: the escapes are interpreted for
     /// colour and the block gets no code panel. See [`super::ansi`].
     Ansi(String),
-    Heading { level: u8, text: String },
-    Link { label: String, url: String },
+    Heading {
+        level: u8,
+        text: String,
+    },
+    Link {
+        label: String,
+        url: String,
+    },
     /// A list and its items. `start` is `Some(n)` for an ordered list whose
     /// first item is numbered `n`, and `None` for a bulleted list.
     List {
@@ -183,9 +192,15 @@ pub enum ChatFragmentKind {
     /// A horizontal rule.
     Rule,
     /// An image, carried by its alt text and destination URL.
-    Image { alt: String, url: String },
+    Image {
+        alt: String,
+        url: String,
+    },
     LineBreak,
-    Action { label: String, payload: ChatAction },
+    Action {
+        label: String,
+        payload: ChatAction,
+    },
     Terminal(TerminalData),
     /// A model reasoning (thinking) step, rendered recessed and collapsed until
     /// the user expands it. `key` identifies the row's app-owned expand state.

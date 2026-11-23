@@ -330,6 +330,7 @@ impl UiState {
             side_review: None,
             side_file: None,
             active_side_tab: 0,
+            side_rail_open: true,
             side_tab_add_menu_open: Rc::new(RefCell::new(false)),
             side_swipe_accum: Rc::new(RefCell::new(0.0)),
             send_immediately: false,

@@ -180,6 +180,8 @@ pub enum SideTabAction {
     /// Move by this many tabs, wrapping at both ends. A horizontal swipe sends
     /// `-1` (next) or `1` (previous).
     Cycle(i32),
+    /// Show or hide the inner Terminals/Background Tasks rail.
+    ToggleRail,
 }
 
 #[derive(Clone)]
@@ -724,6 +726,9 @@ pub struct UiState {
     /// surfaces. The app machine keeps it non-empty (see
     /// [`UiState::ensure_side_tabs`]).
     pub side_tabs: Vec<SideTabKind>,
+    /// The inner Terminals/Background Tasks rail is open in Terminal and Task
+    /// Output. AF: the per-tab topbar toggles it.
+    pub side_rail_open: bool,
     /// The pane + working directory a Review side tab shows. The tab reads the
     /// pane's own diff controls and `pane_diffs[pane]`, so opening Review does
     /// not split a diff pane into the layout.

@@ -555,8 +555,8 @@ mod tests {
 
     #[test]
     fn conversation_entry_sets_workspace_routing() {
-        let remote = ConversationEntry::new("c1", "Ada", "Hello!", "10:00")
-            .with_workspace_routing("remote");
+        let remote =
+            ConversationEntry::new("c1", "Ada", "Hello!", "10:00").with_workspace_routing("remote");
         assert_eq!(remote.workspace_routing, "remote");
         assert_eq!(remote.id, "c1");
     }

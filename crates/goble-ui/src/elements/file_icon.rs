@@ -56,7 +56,13 @@ mod tests {
 
     #[test]
     fn an_unknown_or_absent_extension_is_a_plain_document() {
-        for name in ["Makefile", "LICENSE", "archive.tar.gz", "notes.txt", ".gitignore"] {
+        for name in [
+            "Makefile",
+            "LICENSE",
+            "archive.tar.gz",
+            "notes.txt",
+            ".gitignore",
+        ] {
             assert_eq!(file_icon_name(name), "file", "{name}");
         }
     }
@@ -66,8 +72,26 @@ mod tests {
     #[test]
     fn every_file_icon_the_tree_can_choose_is_registered() {
         for name in [
-            "a.rs", "a.json", "a.ts", "a.js", "a.py", "a.cpp", "a.c", "a.go", "a.md", "a.kt",
-            "a.php", "a.pl", "a.pyx", "a.swf", "a.wasm", "a.zig", "a.sql", "a.ng", "a.tf", "a.mmd",
+            "a.rs",
+            "a.json",
+            "a.ts",
+            "a.js",
+            "a.py",
+            "a.cpp",
+            "a.c",
+            "a.go",
+            "a.md",
+            "a.kt",
+            "a.php",
+            "a.pl",
+            "a.pyx",
+            "a.swf",
+            "a.wasm",
+            "a.zig",
+            "a.sql",
+            "a.ng",
+            "a.tf",
+            "a.mmd",
             "a.unknown",
         ] {
             let icon = file_icon_name(name);

@@ -21,7 +21,5 @@ pub use model::{
     Hunk, SplitDiffRow, SplitRow,
 };
 pub use paint::{Diff, DiffHighlightJob, DiffHighlightSide, DiffSide, PreparedDiff};
-pub use review_tab::{
-    ReviewHeader, ReviewTab, ReviewTabFile, ReviewTabHeader, ReviewTabState,
-};
+pub use review_tab::{ReviewHeader, ReviewTab, ReviewTabFile, ReviewTabHeader, ReviewTabState};
 pub use spec::DiffSpec;

@@ -530,6 +530,8 @@ pub struct UiSnapshot {
     /// is open. The panel draws one of these surfaces in its content area.
     pub side_tabs: Vec<SideTabKind>,
     pub active_side_tab: usize,
+    /// AF: inner Terminals/Background Tasks rail visibility.
+    pub side_rail_open: bool,
     /// Y: the file the side panel's Files tab shows, independent of the active
     /// pane's kind.
     pub side_file: Option<String>,

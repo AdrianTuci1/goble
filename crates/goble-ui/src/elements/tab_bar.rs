@@ -104,17 +104,11 @@ impl Element for Tab {
         };
         let before_hover = self.state.hover;
         let on_click = self.on_click.clone();
-        let consumed = handle_mouse_event(
-            &mut self.state,
-            event,
-            bounds,
-            ctx,
-            &mut || {
-                if let Some(cb) = &on_click {
-                    (cb.borrow_mut())();
-                }
-            },
-        );
+        let consumed = handle_mouse_event(&mut self.state, event, bounds, ctx, &mut || {
+            if let Some(cb) = &on_click {
+                (cb.borrow_mut())();
+            }
+        });
         if self.state.hover != before_hover {
             // Rebuild on hover change so the highlight follows the pointer.
             self.root = None;

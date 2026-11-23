@@ -291,7 +291,8 @@ impl MenuBand {
     fn publish(&self, ctx: &mut PaintContext, app: &AppContext, card: RectF) {
         ctx.leave_menu_surface();
         if let Some((id, close)) = self.menu.clone() {
-            app.open_menus.report(id, close, vec![card], MenuPointer::Events);
+            app.open_menus
+                .report(id, close, vec![card], MenuPointer::Events);
         }
     }
 
@@ -520,7 +521,11 @@ impl Element for MenuBand {
                 );
                 text_left += ICON_SIZE + ROW_GAP;
             }
-            let check_width = if row.current { CHECK_SIZE + ROW_GAP } else { 0.0 };
+            let check_width = if row.current {
+                CHECK_SIZE + ROW_GAP
+            } else {
+                0.0
+            };
             let available = (bounds.max_x() - ROW_PAD_X - text_left - check_width).max(0.0);
             let measured_name = measure_text_family(
                 &row.label,
@@ -1045,7 +1050,10 @@ mod tests {
         let mut menu = SlashMenu::new(items(), Rc::new(RefCell::new(0)));
         let commands = drawn(&mut menu, &app);
         let labels = texts(&commands);
-        assert!(labels.iter().any(|text| text == "Commands"), "got {labels:?}");
+        assert!(
+            labels.iter().any(|text| text == "Commands"),
+            "got {labels:?}"
+        );
         assert!(labels.iter().any(|text| text == "/new"), "got {labels:?}");
         assert!(
             labels
@@ -1054,7 +1062,9 @@ mod tests {
             "got {labels:?}"
         );
         assert!(
-            !labels.iter().any(|text| text.contains('⌘') || text.contains('↵')),
+            !labels
+                .iter()
+                .any(|text| text.contains('⌘') || text.contains('↵')),
             "no chord is drawn in the list: {labels:?}"
         );
         let icons: Vec<&str> = commands
@@ -1145,7 +1155,10 @@ mod tests {
         let labels = texts(&commands);
         assert!(labels.iter().any(|text| text == "Models"), "got {labels:?}");
         assert!(labels.iter().any(|text| text == "gpt-4o"), "got {labels:?}");
-        assert!(labels.iter().any(|text| text == "o3-mini"), "got {labels:?}");
+        assert!(
+            labels.iter().any(|text| text == "o3-mini"),
+            "got {labels:?}"
+        );
         let checks = commands
             .iter()
             .filter(|command| {

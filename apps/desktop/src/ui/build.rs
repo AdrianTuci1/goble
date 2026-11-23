@@ -3902,6 +3902,58 @@ mod tests {
         assert!(separators >= 1, "a 1 px rule separates the rows");
     }
 
+    /// AF: every side tab gets a content topbar; Terminal/TaskOutput add the
+    /// shared Terminals + Background Tasks rail.
+    #[test]
+    fn every_side_tab_renders_its_own_topbar() {
+        let app = AppContext::default();
+        for (kind, expected) in [
+            (crate::state::SideTabKind::Overview, "Overview"),
+            (crate::state::SideTabKind::Agent, "New side question"),
+            (crate::state::SideTabKind::Terminal, "zsh"),
+            (
+                crate::state::SideTabKind::TaskOutput,
+                "Background Task Output",
+            ),
+        ] {
+            let (mut root, state, _dir) = app_root();
+            {
+                let mut s = state.borrow_mut();
+                s.right_sidebar_open = true;
+                s.side_tabs = vec![kind];
+                s.active_side_tab = 0;
+                let active = s.active_pane_id;
+                s.terminal.borrow_mut().sessions.insert(
+                    active,
+                    crate::terminal::TerminalSession::preview_screen("hi"),
+                );
+            }
+            let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+            let texts: Vec<&str> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                texts.iter().any(|text| *text == expected),
+                "{kind:?} draws its topbar {expected:?}: {texts:?}"
+            );
+            if matches!(
+                kind,
+                crate::state::SideTabKind::Terminal | crate::state::SideTabKind::TaskOutput
+            ) {
+                for header in ["Terminals", "Background Tasks"] {
+                    assert!(
+                        texts.iter().any(|text| *text == header),
+                        "{kind:?} draws the inner rail {header:?}: {texts:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The Overview button opens the anchored popover with its real sections,
     /// and the popover paints after the body (the window's last paint layer).
     #[test]

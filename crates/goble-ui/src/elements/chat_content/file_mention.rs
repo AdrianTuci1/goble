@@ -89,8 +89,14 @@ mod tests {
             inline_code_file_path("crates/goble-ui/src/lib.rs"),
             Some("crates/goble-ui/src/lib.rs")
         );
-        assert_eq!(inline_code_file_path("app/src/ui/chat/mod.rs"), Some("app/src/ui/chat/mod.rs"));
-        assert_eq!(inline_code_file_path("./package.json"), Some("./package.json"));
+        assert_eq!(
+            inline_code_file_path("app/src/ui/chat/mod.rs"),
+            Some("app/src/ui/chat/mod.rs")
+        );
+        assert_eq!(
+            inline_code_file_path("./package.json"),
+            Some("./package.json")
+        );
     }
 
     #[test]

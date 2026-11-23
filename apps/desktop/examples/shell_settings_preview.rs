@@ -238,6 +238,18 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "side-question",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-task-output",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "side-agent",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -315,6 +327,18 @@ fn main() -> anyhow::Result<()> {
                 false,
                 SettingsCategory::General,
             ),
+            (
+                "floating-file",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "floating-file-small",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
         ] {
             let app = AppContext {
                 theme: theme.clone(),
@@ -357,6 +381,22 @@ fn main() -> anyhow::Result<()> {
                             goble_app::state::PaneKind::File { path: file.clone() },
                         );
                         s.attach_pane_file(pane, file);
+                    }
+                }
+                if name.starts_with("floating-file") {
+                    let file = repo_path.join("src/lib.rs");
+                    let file = file.to_string_lossy().to_string();
+                    if s.open_file_in_floating(file, None) {
+                        let id = s.active_pane_id;
+                        let rect = if name == "floating-file-small" {
+                            goble_app::ui::PaneRect::new(0.18, 0.22, 0.34, 0.38)
+                        } else {
+                            goble_app::ui::PaneRect::new(0.16, 0.18, 0.46, 0.50)
+                        };
+                        let space_index = s.active_space;
+                        if let Some(space) = s.spaces.get_mut(space_index) {
+                            space.set_floating_rect(id, rect);
+                        }
                     }
                 }
                 if name == "side-panel" {
@@ -470,7 +510,7 @@ fn main() -> anyhow::Result<()> {
                     s.right_sidebar_open = false;
                     s.sidebar_visible = true;
                 }
-                if name == "side-agent" {
+                if name == "side-agent" || name == "side-question" {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![
                         goble_app::state::SideTabKind::Overview,
@@ -570,6 +610,36 @@ fn main() -> anyhow::Result<()> {
                     ];
                     s.active_side_tab = 0;
                 }
+                if name == "side-task-output" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::TaskOutput];
+                    s.active_side_tab = 0;
+                }
+                if name == "side-terminal" || name == "side-task-output" {
+                    let active = s.active_pane_id;
+                    let runtime = s.pane_runtime.entry(active).or_default();
+                    for (index, command) in [
+                        "job finished build",
+                        "job failed tests",
+                        "job running deploy",
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let id = format!("rail-task-{index:02}");
+                        runtime.in_flight_tools.insert(
+                            id.clone(),
+                            goble_ui::ToolCall {
+                                id,
+                                name: "Shell".to_string(),
+                                arguments: format!("{{\"command\":\"{command}\"}}"),
+                                status: goble_core::harness::ToolCallStatus::Running,
+                                result: None,
+                                diff: None,
+                            },
+                        );
+                    }
+                }
                 if name == "terminal-dock" {
                     let pane = s.active_pane_id;
                     if s.toggle_terminal_dock(pane) {
@@ -636,6 +706,19 @@ fn main() -> anyhow::Result<()> {
                         &path,
                     );
                 }
+            }
+            if name.starts_with("floating-file") {
+                let _ = raster::render_element_to_png_at(
+                    &assets,
+                    &app,
+                    &mut root,
+                    size.x,
+                    size.y,
+                    1.0,
+                    vec2f(1082.0, 678.0),
+                    None,
+                    &path,
+                );
             }
             if name == "conversation-title-hover" {
                 let commands = raster::render_commands(&mut root, size, &app);

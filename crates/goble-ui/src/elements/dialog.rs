@@ -188,9 +188,7 @@ impl Element for Dialog {
         let cb = self.on_close.clone();
 
         match event {
-            DispatchedEvent::KeyDown { key, .. }
-                if self.close_on_escape && key == "Escape" =>
-            {
+            DispatchedEvent::KeyDown { key, .. } if self.close_on_escape && key == "Escape" => {
                 if let Some(cb) = cb.as_ref() {
                     (cb.borrow_mut())();
                 }

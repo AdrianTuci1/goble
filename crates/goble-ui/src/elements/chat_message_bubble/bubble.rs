@@ -125,7 +125,8 @@ impl Element for RightAlignedBubble {
         // The bubble keeps a small inset from the lane's trailing edge instead
         // of touching it: the chat column's right margin reads the same for the
         // user's message as for the assistant's prose.
-        let right_inset = chat_typography::USER_BUBBLE_RIGHT_INSET.min((row_width - child_width).max(0.0));
+        let right_inset =
+            chat_typography::USER_BUBBLE_RIGHT_INSET.min((row_width - child_width).max(0.0));
         self.child.paint(
             origin + vec2f((row_width - child_width - right_inset).max(0.0), 0.0),
             ctx,

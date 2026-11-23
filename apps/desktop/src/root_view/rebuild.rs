@@ -641,6 +641,7 @@ impl RootView {
                 side_panel_maximized: s.side_panel_maximized,
                 side_tabs: s.side_tabs.clone(),
                 active_side_tab: s.active_side_tab,
+                side_rail_open: s.side_rail_open,
                 side_file: s.side_file.clone(),
                 spotlight: s.spotlight.clone(),
                 side_tab_add_menu_open: s.side_tab_add_menu_open.clone(),

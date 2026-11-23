@@ -164,6 +164,15 @@ semantic id used by code (`ellipsis`, `flat-list`, `terminal`, `files`,
 
 ### Previews
 
+Every side-panel tab owns a content topbar under the general bar: Terminal
+(`zsh` + rail toggle), Task Output (`Background Task Output` + copy/rail
+toggle), Side Question (`New side question`), Files (path), Agent and Overview;
+Terminal and Task Output share the inner Terminals/Background Tasks rail with a
+full-height 1 px separator. The floating file panel is movable by its titlebar,
+resizes from the bottom-right grip, raises on click, and keeps its dock toggle.
+Previews: `side-terminal-*`, `side-task-output-*`, `side-question-*`,
+`floating-file-*`, `floating-file-small-*`.
+
 `docs/design/previews/` holds the headless-rendered screenshots used to check
 parity with the reference photos in `.refs/t3-new/`: shell (wide/narrow, dark
 and light), topbar with More open (plain, Split flyout, Copy flyout) and

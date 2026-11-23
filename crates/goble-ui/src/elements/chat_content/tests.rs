@@ -1,6 +1,6 @@
+use super::*;
 use crate::elements::terminal_block::TerminalData;
 use goble_core::harness::ToolCallStatus;
-use super::*;
 
 #[test]
 fn groups_inline_fragments_into_paragraph() {
@@ -10,7 +10,9 @@ fn groups_inline_fragments_into_paragraph() {
         ChatFragment::code("code"),
         ChatFragment::terminal(TerminalData::new(
             "cargo run",
-            vec![crate::elements::terminal_block::TerminalLine::command("cargo run")],
+            vec![crate::elements::terminal_block::TerminalLine::command(
+                "cargo run",
+            )],
         )),
         ChatFragment::text("Done"),
     ];
@@ -25,7 +27,9 @@ fn groups_inline_fragments_into_paragraph() {
             ]),
             ChatBlock::Terminal(TerminalData::new(
                 "cargo run",
-                vec![crate::elements::terminal_block::TerminalLine::command("cargo run")],
+                vec![crate::elements::terminal_block::TerminalLine::command(
+                    "cargo run"
+                )],
             )),
             ChatBlock::Paragraph(vec![InlineSpan::plain("Done")]),
         ]

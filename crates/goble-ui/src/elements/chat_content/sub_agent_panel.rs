@@ -500,7 +500,8 @@ mod tests {
             "the header states how many children it lists, got {rows:?}"
         );
         assert!(
-            rows.iter().any(|line| line.contains("deepseek") && line.contains("8.7s")),
+            rows.iter()
+                .any(|line| line.contains("deepseek") && line.contains("8.7s")),
             "a row carries the pane's model and the child's elapsed time, got {rows:?}"
         );
         assert!(

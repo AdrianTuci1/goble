@@ -1124,6 +1124,61 @@ impl Element for RegionLayer {
                 );
             }
             child.content.paint(child_origin, ctx, app);
+            if self.floating {
+                // AG: a visible corner grip appears under the pointer; the
+                // resize hit target exists all the time.
+                let grip = rectf(
+                    child_origin.x + px.width() - FLOAT_RESIZE_GRIP,
+                    child_origin.y + px.height() - FLOAT_RESIZE_GRIP,
+                    FLOAT_RESIZE_GRIP,
+                    FLOAT_RESIZE_GRIP,
+                );
+                let _ = &grip;
+                {
+                    if let Some(renderer) = ctx.renderer.as_mut() {
+                        let color = app.theme.color(ColorToken::Muted);
+                        for step in 0..3 {
+                            let offset = 4.0 + step as f32 * 3.0;
+                            renderer.fill_rect(
+                                rectf(
+                                    child_origin.x + px.width() - offset,
+                                    child_origin.y + px.height() - 3.0,
+                                    2.0,
+                                    2.0,
+                                ),
+                                color,
+                            );
+                            renderer.fill_rect(
+                                rectf(
+                                    child_origin.x + px.width() - 3.0,
+                                    child_origin.y + px.height() - offset,
+                                    2.0,
+                                    2.0,
+                                ),
+                                color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if self.floating && ctx.cursor_inside {
+            for child in &self.children {
+                let Some(bounds) = self.child_bounds(child) else {
+                    continue;
+                };
+                let grip = rectf(
+                    bounds.max_x() - FLOAT_RESIZE_GRIP,
+                    bounds.max_y() - FLOAT_RESIZE_GRIP,
+                    FLOAT_RESIZE_GRIP,
+                    FLOAT_RESIZE_GRIP,
+                );
+                if contains(grip, ctx.cursor_position) {
+                    app.window_control
+                        .set_cursor(goble_ui::platform::window::CursorKind::EwResize);
+                    break;
+                }
+            }
         }
     }
 
@@ -1178,6 +1233,9 @@ impl Element for RegionLayer {
                 if self.floating {
                     if let DispatchedEvent::MouseDown { .. } = event {
                         let pane = &self.children[index];
+                        // AG: a press focuses and raises the window before the
+                        // gesture starts.
+                        (self.on_activate.borrow_mut())(pane.pane_id);
                         let on_grip = position.x >= bounds.max_x() - FLOAT_RESIZE_GRIP
                             && position.y >= bounds.max_y() - FLOAT_RESIZE_GRIP;
                         // The controls own their presses: a press on close must

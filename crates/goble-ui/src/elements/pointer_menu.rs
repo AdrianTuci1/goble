@@ -1,4 +1,6 @@
-use crate::elements::{AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint};
+use crate::elements::{
+    AppContext, Element, EventContext, LayoutContext, PaintContext, Point, SizeConstraint,
+};
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, Vector2F};
 
@@ -151,8 +153,7 @@ mod tests {
     fn the_panel_opens_at_the_pointer_and_takes_no_room() {
         let app = AppContext::default();
         let at = vec2f(100.0, 50.0);
-        let mut element: Box<dyn Element> =
-            Box::new(PointerMenu::new(boxed_menu(&app), at));
+        let mut element: Box<dyn Element> = Box::new(PointerMenu::new(boxed_menu(&app), at));
         let commands = render_element(&mut element, window(), &app);
 
         let rect = panel(&commands);
@@ -175,12 +176,15 @@ mod tests {
         let app = AppContext::default();
         let (window_w, window_h) = (window().x, window().y);
         let at = vec2f(window_w - 4.0, window_h - 4.0);
-        let mut element: Box<dyn Element> =
-            Box::new(PointerMenu::new(boxed_menu(&app), at));
+        let mut element: Box<dyn Element> = Box::new(PointerMenu::new(boxed_menu(&app), at));
         let commands = render_element(&mut element, window(), &app);
 
         let rect = panel(&commands);
-        assert_eq!(rect.max_x(), window_w - EDGE_MARGIN, "the panel stays in the window");
+        assert_eq!(
+            rect.max_x(),
+            window_w - EDGE_MARGIN,
+            "the panel stays in the window"
+        );
         assert_eq!(rect.max_y(), window_h - EDGE_MARGIN, "on both axes");
         assert_eq!(rect.width(), menu().x, "and it is drawn whole, not clipped");
         assert_eq!(rect.height(), menu().y, "on either axis");
@@ -192,8 +196,7 @@ mod tests {
     fn an_unbounded_frame_leaves_the_anchor_where_the_pointer_was() {
         let app = AppContext::default();
         let at = vec2f(4000.0, 3000.0);
-        let mut element: Box<dyn Element> =
-            Box::new(PointerMenu::new(boxed_menu(&app), at));
+        let mut element: Box<dyn Element> = Box::new(PointerMenu::new(boxed_menu(&app), at));
         use crate::elements::{LayoutContext, PaintContext, SizeConstraint};
         use crate::render::Renderer;
         let _ = element.layout(

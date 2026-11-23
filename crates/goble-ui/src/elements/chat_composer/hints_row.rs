@@ -73,7 +73,11 @@ impl Element for ComposerHintsRow {
         let mut x = 0.0_f32;
         for hint in &self.hints {
             let mut caps = hint.caps(app);
-            let caps_size = caps.layout(SizeConstraint::loose(vec2f(f32::INFINITY, height)), ctx, app);
+            let caps_size = caps.layout(
+                SizeConstraint::loose(vec2f(f32::INFINITY, height)),
+                ctx,
+                app,
+            );
             // Leave room for a readable label after the caps; a row too narrow
             // for another entry truncates the list rather than wrapping it.
             let entry_min = caps_size.x + CAPS_LABEL_GAP + LABEL_MIN_WIDTH;
@@ -86,7 +90,8 @@ impl Element for ComposerHintsRow {
                 .with_max_lines(1)
                 .finish();
             let remaining = (available - x - caps_size.x - CAPS_LABEL_GAP).max(0.0);
-            let label_size = label.layout(SizeConstraint::loose(vec2f(remaining, height)), ctx, app);
+            let label_size =
+                label.layout(SizeConstraint::loose(vec2f(remaining, height)), ctx, app);
             self.children.push(Placed {
                 element: caps,
                 offset: vec2f(x, ((height - caps_size.y).max(0.0)) / 2.0),

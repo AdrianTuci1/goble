@@ -278,7 +278,8 @@ fn a_selected_line_repaints_its_glyphs_in_the_contrast_colour() {
 }
 
 /// The rendered commands of a block, so a test can read the drawn runs.
-fn paint_block(data: &TerminalData) -> Vec<crate::render::RenderCommand> {    let app = app();
+fn paint_block(data: &TerminalData) -> Vec<crate::render::RenderCommand> {
+    let app = app();
     let mut block = terminal_block(data, TerminalFilter::default(), None, None);
     crate::test_util::render_element(&mut block, vec2f(600.0, 300.0), &app)
 }
@@ -1219,11 +1220,17 @@ fn wide_and_emoji_characters_survive_to_the_drawn_output() {
     wide.attrs.wide = true;
     let mut spacer = cell(' ');
     spacer.attrs.wide_spacer = true;
-    let cells = line(vec![wide, spacer, cell('本'), {
-        let mut mark = cell(' ');
-        mark.attrs.wide_spacer = true;
-        mark
-    }, cell('😀')]);
+    let cells = line(vec![
+        wide,
+        spacer,
+        cell('本'),
+        {
+            let mut mark = cell(' ');
+            mark.attrs.wide_spacer = true;
+            mark
+        },
+        cell('😀'),
+    ]);
     let data = TerminalData::for_command_lines(
         "run",
         &[cells],

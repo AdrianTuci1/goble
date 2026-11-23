@@ -143,10 +143,7 @@ mod tests {
     #[test]
     fn hover_updates_shared_flag() {
         let hover = Rc::new(RefCell::new(false));
-        let mut button = HoverButton::new(
-            Text::new("New agent").finish(),
-            Rc::clone(&hover),
-        );
+        let mut button = HoverButton::new(Text::new("New agent").finish(), Rc::clone(&hover));
         let app = AppContext::default();
         button.layout(
             SizeConstraint::loose(vec2f(200.0, 40.0)),
@@ -168,11 +165,8 @@ mod tests {
         let clicked = Rc::new(RefCell::new(false));
         let clicked_clone = clicked.clone();
         let hover = Rc::new(RefCell::new(false));
-        let mut button = HoverButton::new(
-            Text::new("New agent").finish(),
-            Rc::clone(&hover),
-        )
-        .with_on_click(move || *clicked_clone.borrow_mut() = true);
+        let mut button = HoverButton::new(Text::new("New agent").finish(), Rc::clone(&hover))
+            .with_on_click(move || *clicked_clone.borrow_mut() = true);
         let app = AppContext::default();
         button.layout(
             SizeConstraint::loose(vec2f(200.0, 40.0)),

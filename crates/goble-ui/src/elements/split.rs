@@ -228,12 +228,8 @@ impl Element for SplitNode {
         // (the ratio floor alone can leave a pane only a few pixels wide in a
         // small split). Storing the clamped value keeps the divider painted
         // where the children actually begin.
-        self.ratio = Self::clamp_ratio_with(
-            self.ratio,
-            main,
-            self.min_first_px,
-            self.min_second_px,
-        );
+        self.ratio =
+            Self::clamp_ratio_with(self.ratio, main, self.min_first_px, self.min_second_px);
         let first_main = main * self.ratio;
         let second_main = main - first_main;
 

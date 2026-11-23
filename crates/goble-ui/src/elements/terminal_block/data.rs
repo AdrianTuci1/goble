@@ -1,10 +1,10 @@
+use super::block::TerminalBlock;
+use super::line::{TerminalLine, TerminalLineKind, TerminalRun};
 use crate::color::ColorU;
 use crate::elements::AppContext;
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::ColorToken;
 use goble_terminal::{Palette, ScreenCell, ScreenLine};
-use super::block::TerminalBlock;
-use super::line::{TerminalLine, TerminalLineKind, TerminalRun};
 
 /// Serializable data for embedding a terminal block inside a chat message.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,7 +126,10 @@ impl TerminalData {
         meta: TerminalMeta,
         status: TerminalStatus,
     ) -> Self {
-        Self::section_of(Self::for_command_lines(command, output, palette, status), meta)
+        Self::section_of(
+            Self::for_command_lines(command, output, palette, status),
+            meta,
+        )
     }
 
     /// The block a command produces: the command line, then its output, with the
@@ -368,10 +371,8 @@ fn paints(cell: &ScreenCell) -> bool {
 /// painted.
 fn cell_run(cell: &ScreenCell, palette: &Palette) -> TerminalRun {
     let (foreground, background) = palette.cell_colors(cell);
-    let default_text = cell.fg.is_default()
-        && !cell.attrs.inverse
-        && !cell.attrs.dim
-        && !cell.attrs.hidden;
+    let default_text =
+        cell.fg.is_default() && !cell.attrs.inverse && !cell.attrs.dim && !cell.attrs.hidden;
     let default_background = cell.bg.is_default() && !cell.attrs.inverse;
     TerminalRun {
         text: String::new(),

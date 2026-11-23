@@ -11,8 +11,8 @@ use std::rc::Rc;
 use goble_ui::color::ColorU;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
+    AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
+    Element, Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
     MainAxisSize, MenuId, MenuPointer, PaintContext, Point, PopupMenu, PopupMenuItem,
     PopupMenuPosition, ScrollState, Scrollable, SearchInput, SizeConstraint, Spacer, Stack, Text,
     TextInput, Tooltip, TooltipPosition, TopbarButton,
@@ -1936,7 +1936,13 @@ pub fn build_side_panel(
                 .map(|pane| pane.composer_path.clone())
                 .filter(|cwd| !cwd.trim().is_empty())
                 .unwrap_or_else(|| state.composer_path.clone());
-            crate::ui::terminal::build_terminal_dock(app, state, actions, active, cwd, true)
+            let grid =
+                crate::ui::terminal::build_terminal_dock(app, state, actions, active, cwd, true);
+            if state.side_rail_open {
+                side_body_with_rail(app, state, actions, grid)
+            } else {
+                grid
+            }
         }
         SideTabKind::Files => {
             // Y: the tab shows the file a click named (SIDE_FILE_PANE_ID), or
@@ -1962,12 +1968,29 @@ pub fn build_side_panel(
                 _ => side_tabs::no_file_message(app),
             }
         }
-        SideTabKind::TaskOutput => Scrollable::new(
-            side_tabs::build_task_output(app, state),
-            goble_ui::elements::Axis::Vertical,
-        )
-        .finish(),
+        SideTabKind::TaskOutput => {
+            let output = task_output_view(app, state);
+            if state.side_rail_open {
+                side_body_with_rail(app, state, actions, output)
+            } else {
+                output
+            }
+        }
         SideTabKind::Review => crate::ui::diff_panel::build_review_tab(app, state, actions, active),
+    };
+    // AF: every tab except Review (which already owns its row) gets its own
+    // 1 pt-separated topbar inside the panel content.
+    let content: Box<dyn Element> = if kind == SideTabKind::Review {
+        content
+    } else {
+        let topbar = side_tab_topbar(app, state, actions, kind);
+        let mut column = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(topbar)
+            .with_child(Divider::horizontal().finish());
+        column = column.with_child(Expanded::new(content).finish());
+        column.finish()
     };
     // A horizontal swipe on the content steps the strip; vertical travel goes
     // to the mounted surface unchanged.
@@ -2360,6 +2383,341 @@ fn build_overview_content(
     .with_max_width(980.0)
     .finish();
     Scrollable::new(body, goble_ui::elements::Axis::Vertical).finish()
+}
+
+/// AF: the per-tab content topbar. The Review tab owns a richer one inside
+/// `diff_panel`, so it is not wrapped here.
+fn side_tab_topbar(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    kind: SideTabKind,
+) -> Box<dyn Element> {
+    let on_side_tab = actions.on_side_tab.clone();
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(2.0);
+    let (label, trailing): (String, Option<Box<dyn Element>>) = match kind {
+        SideTabKind::Terminal => {
+            let toggle = {
+                let on_side_tab = on_side_tab.clone();
+                move || (on_side_tab.borrow_mut())(SideTabAction::ToggleRail)
+            };
+            (
+                "zsh".to_string(),
+                Some(
+                    Tooltip::new(
+                        TopbarButton::new(
+                            Icon::new("menu-01")
+                                .with_size(14.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .finish(),
+                        )
+                        .with_size(26.0)
+                        .with_corner_radius(13.0)
+                        .with_on_click(toggle)
+                        .finish(),
+                        "Toggle tasks",
+                    )
+                    .with_position(TooltipPosition::Below)
+                    .finish(),
+                ),
+            )
+        }
+        SideTabKind::TaskOutput => {
+            let text = task_output_text(state);
+            let on_copy = actions.on_copy_terminal.clone();
+            let copy = Tooltip::new(
+                TopbarButton::new(
+                    Icon::new("copy")
+                        .with_size(14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_size(26.0)
+                .with_corner_radius(6.0)
+                .with_on_click(move || (on_copy.borrow_mut())(text.clone()))
+                .finish(),
+                "Copy output",
+            )
+            .with_position(TooltipPosition::Below)
+            .finish();
+            let toggle = {
+                let on_side_tab = on_side_tab.clone();
+                move || (on_side_tab.borrow_mut())(SideTabAction::ToggleRail)
+            };
+            let chevron = Tooltip::new(
+                TopbarButton::new(
+                    Icon::new(if state.side_rail_open {
+                        "chevron-right"
+                    } else {
+                        "chevron-left"
+                    })
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+                )
+                .with_size(26.0)
+                .with_corner_radius(6.0)
+                .with_on_click(toggle)
+                .finish(),
+                "Toggle tasks",
+            )
+            .with_position(TooltipPosition::Below)
+            .finish();
+            (
+                "Background Task Output".to_string(),
+                Some(
+                    Flex::row()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(2.0)
+                        .with_child(copy)
+                        .with_child(chevron)
+                        .finish(),
+                ),
+            )
+        }
+        SideTabKind::Agent => ("New side question".to_string(), None),
+        SideTabKind::Files => {
+            let label = state
+                .side_file
+                .clone()
+                .or_else(|| {
+                    state
+                        .spaces
+                        .get(state.active_space)
+                        .and_then(|space| space.leaf_kind(state.active_pane_id))
+                        .and_then(|kind| match kind {
+                            PaneKind::File { path } => Some(path.clone()),
+                            _ => None,
+                        })
+                })
+                .unwrap_or_else(|| "Files".to_string());
+            (label, None)
+        }
+        SideTabKind::Overview => ("Overview".to_string(), None),
+        SideTabKind::Review => ("Review".to_string(), None),
+    };
+    row = row.with_child(
+        Expanded::new(
+            Text::new(label)
+                .with_font_size(12.5)
+                .with_weight(FontWeight::Medium)
+                .with_theme_color(ColorToken::Text, app)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .finish(),
+    );
+    if let Some(trailing) = trailing {
+        row = row.with_child(trailing);
+    }
+    ConstrainedBox::new(
+        Container::new(row.finish())
+            .with_padding(EdgeInsets::new(10.0, 2.0, 8.0, 2.0))
+            .finish(),
+    )
+    .with_height(36.0)
+    .finish()
+}
+
+fn task_output_text(state: &UiSnapshot) -> String {
+    state
+        .pane_live_work
+        .get(&state.active_pane_id)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item.description.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// AF: the Task Output body as a monospace, line-numbered code view.
+fn task_output_view(app: &AppContext, state: &UiSnapshot) -> Box<dyn Element> {
+    let items = state
+        .pane_live_work
+        .get(&state.active_pane_id)
+        .cloned()
+        .unwrap_or_default();
+    let mut column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(2.0);
+    if items.is_empty() {
+        column = column.with_child(
+            Text::new("No task output")
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        );
+    } else {
+        for (index, item) in items.iter().enumerate() {
+            column = column.with_child(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(10.0)
+                    .with_child(
+                        ConstrainedBox::new(
+                            Text::new(format!("{}", index + 1))
+                                .with_font_family(FontFamily::Mono)
+                                .with_font_size(11.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .finish(),
+                        )
+                        .with_width(28.0)
+                        .finish(),
+                    )
+                    .with_child(
+                        Expanded::new(
+                            Text::new(item.description.clone())
+                                .with_font_family(FontFamily::Mono)
+                                .with_font_size(11.5)
+                                .with_theme_color(ColorToken::Text, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .finish(),
+                    )
+                    .finish(),
+            );
+        }
+    }
+    Scrollable::new(
+        Container::new(column.finish())
+            .with_padding(EdgeInsets::uniform(10.0))
+            .finish(),
+        Axis::Vertical,
+    )
+    .finish()
+}
+
+/// AF: Terminal / Task Output body with the shared Terminals + Background Tasks
+/// rail on the right, separated by one full-height rule.
+fn side_body_with_rail(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    body: Box<dyn Element>,
+) -> Box<dyn Element> {
+    let rail = side_tasks_rail(app, state, actions);
+    let rule = ConstrainedBox::new(
+        Container::new(
+            Flex::column()
+                .with_main_axis_size(MainAxisSize::Max)
+                .finish(),
+        )
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Border)))
+        .finish(),
+    )
+    .with_width(1.0)
+    .finish();
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(body).finish())
+        .with_child(rule)
+        .with_child(rail)
+        .finish()
+}
+
+fn side_tasks_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    let _ = actions;
+    let terminal_count = state.terminal.borrow().sessions.len();
+    let mut column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(1.0)
+        .with_child(muted_line(app, "Terminals"));
+    for index in 0..terminal_count.max(1) {
+        let selected = index == 0;
+        column = column.with_child(
+            HoverRow::new(
+                Container::new(
+                    Text::new("zsh")
+                        .with_font_family(FontFamily::Mono)
+                        .with_font_size(12.0)
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
+                .finish(),
+            )
+            .with_selected(selected)
+            .finish(),
+        );
+    }
+    column = column.with_child(
+        Container::new(muted_line(app, "Background Tasks"))
+            .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
+            .finish(),
+    );
+    let tasks = state
+        .pane_live_work
+        .get(&state.active_pane_id)
+        .cloned()
+        .unwrap_or_default();
+    for task in &tasks {
+        let icon = if task.description.contains("failed") {
+            "x-circle"
+        } else if task.description.contains("finished") || task.description.contains("done") {
+            "check"
+        } else {
+            "terminal-input"
+        };
+        column = column.with_child(
+            HoverRow::new(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(7.0)
+                    .with_child(
+                        Icon::new(icon)
+                            .with_size(12.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        Expanded::new(
+                            Text::new(task.description.clone())
+                                .with_font_size(11.5)
+                                .with_theme_color(ColorToken::Text, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .finish(),
+                    )
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(5.0, 8.0, 5.0, 8.0))
+            .finish(),
+        );
+    }
+    if tasks.is_empty() {
+        column = column.with_child(
+            Container::new(muted_line(app, "No background tasks"))
+                .with_padding(EdgeInsets::new(4.0, 8.0, 4.0, 8.0))
+                .finish(),
+        );
+    }
+    let scroll = Scrollable::new(column.finish(), Axis::Vertical).finish();
+    let rail = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(scroll).finish())
+        .finish();
+    ConstrainedBox::new(
+        Container::new(rail)
+            .with_border(Border::left(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+            .finish(),
+    )
+    .with_width(188.0)
+    .finish()
 }
 
 fn panel_row(

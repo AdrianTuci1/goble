@@ -53,10 +53,10 @@ fn composer_keeps_value_and_attachments() {
 /// row is a fixed line under the card, aligned right, outside its surface.
 #[test]
 fn the_composer_card_is_one_rounded_input_segment() {
+    use crate::elements::ShortcutHint;
     use crate::elements::{
         COMPOSER_CARD_GUTTER, COMPOSER_CARD_INSET, COMPOSER_CARD_RADIUS, COMPOSER_INPUT_RADIUS,
     };
-    use crate::elements::ShortcutHint;
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
@@ -141,8 +141,14 @@ fn the_composer_card_is_one_rounded_input_segment() {
         })
         .collect();
     assert!(!icons.contains(&"folder"), "no folder control: {icons:?}");
-    assert!(!icons.contains(&"git-branch"), "no branch control: {icons:?}");
-    assert!(icons.contains(&"plus"), "the attach control stays: {icons:?}");
+    assert!(
+        !icons.contains(&"git-branch"),
+        "no branch control: {icons:?}"
+    );
+    assert!(
+        icons.contains(&"plus"),
+        "the attach control stays: {icons:?}"
+    );
 
     // The editor leads the segment and the footer controls under it share a
     // line, inside the same segment.
@@ -758,7 +764,6 @@ fn the_composer_trays_use_the_reference_casing_widths() {
         panel.min_x() >= card.min_x() - 0.5 && panel.max_x() <= card.max_x() + 0.5,
         "the tray opens inside the card from the footer control: panel {panel:?}, card {card:?}"
     );
-
 }
 
 /// A rich-input control is borderless: at rest it is only its glyph and label,
@@ -903,7 +908,9 @@ fn the_menu_backed_controls_draw_a_trailing_chevron() {
         "only the closed model chip points down now: {icons:?}"
     );
     assert!(
-        !icons.iter().any(|name| name == "folder" || name == "git-branch"),
+        !icons
+            .iter()
+            .any(|name| name == "folder" || name == "git-branch"),
         "the retired folder/branch controls draw no glyph: {icons:?}"
     );
     assert_eq!(
@@ -2505,9 +2512,10 @@ fn the_terminal_and_agent_cards_are_the_same_height() {
     let context = |composer: ChatComposer| composer.with_on_send(|_| {});
     // The terminal bar: the shell's command placeholder and the one
     // instruction the command line answers (⌘↵ new conversation).
-    let mut terminal = context(ChatComposer::new().with_placeholder(
-        crate::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER,
-    ))
+    let mut terminal = context(
+        ChatComposer::new()
+            .with_placeholder(crate::elements::chat_composer::TERMINAL_COMPOSER_PLACEHOLDER),
+    )
     .with_hints(vec![ShortcutHint::new(&["⌘", "↵"], "new conversation")]);
     // The agent input: the agent controls and its own three instructions, drawn
     // in the same fixed row under the card.
@@ -2524,8 +2532,7 @@ fn the_terminal_and_agent_cards_are_the_same_height() {
 
     let (terminal_size, terminal_commands) =
         paint_composer_in(&app, &mut terminal, vec2f(876.0, 500.0));
-    let (agent_size, agent_commands) =
-        paint_composer_in(&app, &mut agent, vec2f(876.0, 500.0));
+    let (agent_size, agent_commands) = paint_composer_in(&app, &mut agent, vec2f(876.0, 500.0));
     assert!(
         (terminal_size.y - agent_size.y).abs() < 0.01,
         "the terminal card must equal the agent card ({} against {})",
@@ -3157,7 +3164,11 @@ fn the_rich_input_controls_share_one_compact_size() {
             .filter_map(|command| match command {
                 RenderCommand::DrawText {
                     text, font_size, ..
-                } if matches!(text.as_str(), "gpt-4o" | "~/Projects/goble" | "terminal-first") => {
+                } if matches!(
+                    text.as_str(),
+                    "gpt-4o" | "~/Projects/goble" | "terminal-first"
+                ) =>
+                {
                     Some(*font_size)
                 }
                 _ => None,
@@ -3178,8 +3189,9 @@ fn the_rich_input_controls_share_one_compact_size() {
     let (agent_labels, agent_texts) = painted(&mut agent);
     assert_eq!(agent_labels, vec![crate::elements::CONTEXT_PILL_LABEL_SIZE]);
     assert!(
-        !agent_texts.iter().any(|text| text == "~/Projects/goble"
-            || text == "terminal-first"),
+        !agent_texts
+            .iter()
+            .any(|text| text == "~/Projects/goble" || text == "terminal-first"),
         "the retired context labels never draw: {agent_texts:?}"
     );
 
@@ -3189,10 +3201,14 @@ fn the_rich_input_controls_share_one_compact_size() {
         .with_path_label("~/Projects/goble")
         .with_branch_label("terminal-first");
     let (shell_labels, shell_texts) = painted(&mut shell);
-    assert!(shell_labels.is_empty(), "the shell bar draws no labels: {shell_labels:?}");
     assert!(
-        !shell_texts.iter().any(|text| text == "~/Projects/goble"
-            || text == "terminal-first"),
+        shell_labels.is_empty(),
+        "the shell bar draws no labels: {shell_labels:?}"
+    );
+    assert!(
+        !shell_texts
+            .iter()
+            .any(|text| text == "~/Projects/goble" || text == "terminal-first"),
         "the shell bar draws no context labels: {shell_texts:?}"
     );
     assert_eq!(
@@ -3683,7 +3699,9 @@ fn a_slash_draft_keeps_the_single_composer_intact() {
     let (dismissed_size, dismissed_frame) = frame(&mut dismissed);
     assert_eq!(dismissed_size, plain_size);
     assert!(
-        dismissed_frame.iter().any(|token| token == "new conversation"),
+        dismissed_frame
+            .iter()
+            .any(|token| token == "new conversation"),
         "the fixed instruction row survives the dismissal: {dismissed_frame:?}"
     );
 }
@@ -3763,9 +3781,13 @@ fn the_model_chip_opens_its_card_and_takes_the_keyboard() {
     let focus_log: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
     let log = focus_log.clone();
     let tray = ComposerModelTray::new(
-        vec![ModelTrayHarness::new("goble", "Goble").with_models(vec![
-            ModelTrayModel::new("m1", "Model One").with_thinking(vec!["on".to_string()]),
-        ])],
+        vec![
+            ModelTrayHarness::new("goble", "Goble").with_models(vec![ModelTrayModel::new(
+                "m1",
+                "Model One",
+            )
+            .with_thinking(vec!["on".to_string()])]),
+        ],
         Rc::new(RefCell::new(ModelTrayState::default())),
         open.clone(),
     )
@@ -3780,9 +3802,7 @@ fn the_model_chip_opens_its_card_and_takes_the_keyboard() {
     let chip = commands
         .iter()
         .find_map(|command| match command {
-            crate::render::RenderCommand::DrawText { origin, text, .. }
-                if text == "Model One" =>
-            {
+            crate::render::RenderCommand::DrawText { origin, text, .. } if text == "Model One" => {
                 Some(*origin)
             }
             _ => None,

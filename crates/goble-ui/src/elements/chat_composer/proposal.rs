@@ -152,8 +152,7 @@ impl ProposalHandles {
             return;
         }
         let current = *self.selected.borrow();
-        *self.selected.borrow_mut() =
-            (current as isize + step).rem_euclid(len as isize) as usize;
+        *self.selected.borrow_mut() = (current as isize + step).rem_euclid(len as isize) as usize;
     }
 
     /// Approve the selection verbatim. Returns false when the host wired no

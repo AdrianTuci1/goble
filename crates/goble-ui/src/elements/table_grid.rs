@@ -22,7 +22,9 @@ const RULE: f32 = 1.0;
 /// square root keeps one long cell (a path, a URL) from squeezing the other
 /// columns to a sliver.
 pub(crate) fn column_weights(header: &[String], rows: &[Vec<String>]) -> Vec<f32> {
-    let columns = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
+    let columns = header
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0));
     (0..columns)
         .map(|index| {
             let longest = std::iter::once(header.get(index))

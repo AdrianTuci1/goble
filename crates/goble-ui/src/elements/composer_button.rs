@@ -154,9 +154,9 @@ impl Element for ComposerButton {
             (constraint.max.x - h_pad * 2.0).max(0.0),
             (self.height - 4.0).max(0.0),
         );
-        let child_size = self
-            .child
-            .layout(SizeConstraint::new(vec2f(0.0, 0.0), inner_max), ctx, app);
+        let child_size =
+            self.child
+                .layout(SizeConstraint::new(vec2f(0.0, 0.0), inner_max), ctx, app);
         let size = vec2f(child_size.x + h_pad * 2.0, self.height);
         self.size = Some(size);
         size

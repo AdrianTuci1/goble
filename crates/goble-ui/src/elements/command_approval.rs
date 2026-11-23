@@ -336,9 +336,7 @@ pub fn command_approval_card(
     if let Some(variants) = variants {
         column = column.with_child(variants);
     }
-    column = column
-        .with_child(editor)
-        .with_child(footer);
+    column = column.with_child(editor).with_child(footer);
 
     // Escape rejects from anywhere in the card; ↑/↓ switch variants while the
     // command is one line, and stay the editor's own keys once it is not.
@@ -371,8 +369,8 @@ pub fn command_approval_card(
                         && !draft.borrow().contains('\n') =>
                 {
                     let step = if key == "ArrowUp" { -1 } else { 1 };
-                    let next = (*selection.borrow() as isize + step).rem_euclid(count as isize)
-                        as usize;
+                    let next =
+                        (*selection.borrow() as isize + step).rem_euclid(count as isize) as usize;
                     *selection.borrow_mut() = next;
                     let text = candidates[next].clone();
                     *caret.borrow_mut() = text.chars().count();
@@ -506,10 +504,7 @@ mod tests {
             .collect()
     }
 
-    fn decisions() -> (
-        Rc<RefCell<Vec<(String, CommandDecision)>>>,
-        DecisionHandler,
-    ) {
+    fn decisions() -> (Rc<RefCell<Vec<(String, CommandDecision)>>>, DecisionHandler) {
         let decisions: Rc<RefCell<Vec<(String, CommandDecision)>>> = Rc::default();
         let sink = decisions.clone();
         let handler: DecisionHandler = Rc::new(RefCell::new(move |id, decision| {
@@ -545,9 +540,11 @@ mod tests {
             commands
                 .iter()
                 .find_map(|command| match command {
-                    RenderCommand::DrawText { text: drawn, origin, .. } if drawn == text => {
-                        Some(origin.y)
-                    }
+                    RenderCommand::DrawText {
+                        text: drawn,
+                        origin,
+                        ..
+                    } if drawn == text => Some(origin.y),
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("{text:?} is drawn"))
@@ -569,8 +566,7 @@ mod tests {
         *state.draft.borrow_mut() = "git diff --stat".to_string();
         let (decisions, handler) = decisions();
         let app = AppContext::default();
-        let mut element =
-            command_approval_card(&proposal, &state, Some(handler), &app);
+        let mut element = command_approval_card(&proposal, &state, Some(handler), &app);
         let commands = render_element(&mut element, vec2f(640.0, 300.0), &app);
 
         click_text(&mut element, &commands, "Run", &app);
@@ -586,10 +582,7 @@ mod tests {
         click_text(&mut element, &commands, "Reject", &app);
         assert_eq!(
             decisions.borrow().last(),
-            Some(&(
-                "call-1".to_string(),
-                CommandDecision::Reject(String::new())
-            ))
+            Some(&("call-1".to_string(), CommandDecision::Reject(String::new())))
         );
     }
 
@@ -599,11 +592,14 @@ mod tests {
         let state = state_for(&proposal);
         let (decisions, handler) = decisions();
         let app = AppContext::default();
-        let mut element =
-            command_approval_card(&proposal, &state, Some(handler), &app);
+        let mut element = command_approval_card(&proposal, &state, Some(handler), &app);
         let commands = render_element(&mut element, vec2f(640.0, 300.0), &app);
         click_text(&mut element, &commands, "2.", &app);
-        assert_eq!(*state.selection.borrow(), 1, "the row click picks the variant");
+        assert_eq!(
+            *state.selection.borrow(),
+            1,
+            "the row click picks the variant"
+        );
         assert_eq!(
             state.draft.borrow().as_str(),
             "git diff --stat",
@@ -628,8 +624,7 @@ mod tests {
         let state = state_for(&proposal);
         let (decisions, handler) = decisions();
         let app = AppContext::default();
-        let mut element =
-            command_approval_card(&proposal, &state, Some(handler), &app);
+        let mut element = command_approval_card(&proposal, &state, Some(handler), &app);
         let commands = render_element(&mut element, vec2f(640.0, 300.0), &app);
         click_text(&mut element, &commands, "git status", &app);
 
@@ -701,10 +696,7 @@ mod tests {
         );
         assert_eq!(
             decisions.borrow().last(),
-            Some(&(
-                "call-1".to_string(),
-                CommandDecision::Reject(String::new())
-            ))
+            Some(&("call-1".to_string(), CommandDecision::Reject(String::new())))
         );
     }
 
@@ -761,9 +753,11 @@ mod tests {
         let origin = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text: drawn, origin, .. } if drawn == text => {
-                    Some(*origin)
-                }
+                RenderCommand::DrawText {
+                    text: drawn,
+                    origin,
+                    ..
+                } if drawn == text => Some(*origin),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("{text:?} is drawn"));

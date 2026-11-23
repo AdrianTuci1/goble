@@ -231,9 +231,9 @@ mod tests {
         commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text: run, origin, .. } if run == text => {
-                    Some((origin.x, origin.y))
-                }
+                RenderCommand::DrawText {
+                    text: run, origin, ..
+                } if run == text => Some((origin.x, origin.y)),
                 _ => None,
             })
             .collect()
@@ -253,11 +253,18 @@ mod tests {
             &mut LayoutContext::default(),
             &app,
         );
-        let commands = render_element(&mut (Box::new(wrap) as Box<dyn Element>), vec2f(600.0, 100.0), &app);
+        let commands = render_element(
+            &mut (Box::new(wrap) as Box<dyn Element>),
+            vec2f(600.0, 100.0),
+            &app,
+        );
         let alpha = lines(&commands, "alpha")[0];
         let beta = lines(&commands, "beta")[0];
         let gamma = lines(&commands, "gamma")[0];
-        assert!(alpha.0 < beta.0 && beta.0 < gamma.0, "left to right, in order");
+        assert!(
+            alpha.0 < beta.0 && beta.0 < gamma.0,
+            "left to right, in order"
+        );
         assert_eq!(alpha.1, beta.1, "one run, one line");
         assert_eq!(beta.1, gamma.1, "one run, one line");
         assert!(size.y < 30.0, "one run is one line tall: {size:?}");
@@ -330,7 +337,11 @@ mod tests {
             &mut LayoutContext::default(),
             &app,
         );
-        let commands = render_element(&mut (Box::new(wrap) as Box<dyn Element>), vec2f(40.0, 200.0), &app);
+        let commands = render_element(
+            &mut (Box::new(wrap) as Box<dyn Element>),
+            vec2f(40.0, 200.0),
+            &app,
+        );
         let wide = lines(&commands, "a very wide first item that does not fit at all")[0];
         let small = lines(&commands, "b")[0];
         assert_eq!(wide.0, 0.0, "the wide item keeps its place on the run");
@@ -358,7 +369,11 @@ mod tests {
             &mut LayoutContext::default(),
             &app,
         );
-        let commands = render_element(&mut (Box::new(wrap) as Box<dyn Element>), vec2f(400.0, 200.0), &app);
+        let commands = render_element(
+            &mut (Box::new(wrap) as Box<dyn Element>),
+            vec2f(400.0, 200.0),
+            &app,
+        );
         let tall_line = lines(&commands, "tall")[0];
         let short_line = lines(&commands, "short")[0];
         assert!(

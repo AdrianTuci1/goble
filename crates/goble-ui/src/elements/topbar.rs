@@ -44,148 +44,147 @@ fn left_padding(fullscreen: bool) -> f32 {
     }
 }
 
-    /// A premium application topbar matching the Tauri/Warp layout.
-    ///
-    /// Left side: menu toggle, (optionally) a threads button, projects button.
-    /// Right side: inbox/agents button, settings button. The window's native
-    /// titlebar (with working traffic lights) is provided by the OS, so this
-    /// bar only hosts the toolbar actions and spans the full window width.
-    ///
-    /// Pass `show_threads = false` to drop the threads entry point (the app
-    /// surface no longer has threads); other consumers keep it by passing true.
-    pub struct Topbar {
-        root: Box<dyn Element>,
-        size: Option<Vector2F>,
-        origin: Option<Point>,
-    }
+/// A premium application topbar matching the Tauri/Warp layout.
+///
+/// Left side: menu toggle, (optionally) a threads button, projects button.
+/// Right side: inbox/agents button, settings button. The window's native
+/// titlebar (with working traffic lights) is provided by the OS, so this
+/// bar only hosts the toolbar actions and spans the full window width.
+///
+/// Pass `show_threads = false` to drop the threads entry point (the app
+/// surface no longer has threads); other consumers keep it by passing true.
+pub struct Topbar {
+    root: Box<dyn Element>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
 
-    impl Topbar {
-        #[allow(clippy::too_many_arguments)]
-        pub fn new(
-            threads_active: bool,
-            inbox_active: bool,
-            settings_active: bool,
-            projects_active: bool,
-            show_threads: bool,
-            on_menu: impl FnMut() + 'static,
-            on_threads: impl FnMut() + 'static,
-            on_inbox: impl FnMut() + 'static,
-            on_settings: impl FnMut() + 'static,
-            on_projects: impl FnMut() + 'static,
-            settings_disabled: bool,
-            app: &AppContext,
-        ) -> Self {
-            // `spacing` is only used for the vertical toolbar padding, which is
-            // dropped on macOS (the toolbar doubles as the OS titlebar).
-            #[cfg_attr(target_os = "macos", allow(unused_variables))]
-            let spacing = app.theme.spacing_px(SpacingToken::Md);
-            let sm = app.theme.spacing_px(SpacingToken::Sm);
+impl Topbar {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        threads_active: bool,
+        inbox_active: bool,
+        settings_active: bool,
+        projects_active: bool,
+        show_threads: bool,
+        on_menu: impl FnMut() + 'static,
+        on_threads: impl FnMut() + 'static,
+        on_inbox: impl FnMut() + 'static,
+        on_settings: impl FnMut() + 'static,
+        on_projects: impl FnMut() + 'static,
+        settings_disabled: bool,
+        app: &AppContext,
+    ) -> Self {
+        // `spacing` is only used for the vertical toolbar padding, which is
+        // dropped on macOS (the toolbar doubles as the OS titlebar).
+        #[cfg_attr(target_os = "macos", allow(unused_variables))]
+        let spacing = app.theme.spacing_px(SpacingToken::Md);
+        let sm = app.theme.spacing_px(SpacingToken::Sm);
 
-            let menu_icon = if threads_active || inbox_active || settings_active || projects_active
-            {
-                "arrow-left"
-            } else {
-                "menu-01"
-            };
-            let menu_button = TopbarButton::new(
-                Icon::new(menu_icon)
-                    .with_size(16.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_on_click(on_menu)
+        let menu_icon = if threads_active || inbox_active || settings_active || projects_active {
+            "arrow-left"
+        } else {
+            "menu-01"
+        };
+        let menu_button = TopbarButton::new(
+            Icon::new(menu_icon)
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_on_click(on_menu)
+        .finish();
+
+        let threads_button = TopbarButton::new(
+            Icon::new("message-chat-square")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_active(threads_active)
+        .with_on_click(on_threads)
+        .finish();
+
+        let projects_button = TopbarButton::new(
+            Icon::new("layers-three-01")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_active(projects_active)
+        .with_on_click(on_projects)
+        .finish();
+
+        let mut left = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm)
+            .with_child(menu_button);
+        if show_threads {
+            left = left.with_child(threads_button);
+        }
+        let left = left.with_child(projects_button).finish();
+
+        let inbox_button = TopbarButton::new(
+            Icon::new("inbox-01")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_active(inbox_active)
+        .with_on_click(on_inbox)
+        .finish();
+
+        let settings_button = TopbarButton::new(
+            Icon::new("settings")
+                .with_size(16.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_active(settings_active)
+        .with_disabled(settings_disabled)
+        .with_on_click(on_settings)
+        .finish();
+
+        let right = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(sm)
+            .with_child(inbox_button)
+            .with_child(settings_button)
             .finish();
 
-            let threads_button = TopbarButton::new(
-                Icon::new("message-chat-square")
-                    .with_size(16.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_active(threads_active)
-            .with_on_click(on_threads)
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(left)
+            .with_child(right)
             .finish();
 
-            let projects_button = TopbarButton::new(
-                Icon::new("layers-three-01")
-                    .with_size(16.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_active(projects_active)
-            .with_on_click(on_projects)
+        // On macOS the toolbar doubles as the titlebar: drop the vertical
+        // padding so the actions sit vertically centered next to the
+        // traffic lights. Elsewhere keep the padded toolbar look.
+        #[cfg(target_os = "macos")]
+        let vertical_padding = 0.0;
+        #[cfg(not(target_os = "macos"))]
+        let vertical_padding = spacing;
+
+        let root = Container::new(ConstrainedBox::new(row).with_height(TOPBAR_HEIGHT).finish())
+            .with_padding(EdgeInsets::new(
+                left_padding(app.window_control.is_fullscreen()),
+                vertical_padding,
+                0.0,
+                vertical_padding,
+            ))
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
             .finish();
 
-            let mut left = Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(sm)
-                .with_child(menu_button);
-            if show_threads {
-                left = left.with_child(threads_button);
-            }
-            let left = left.with_child(projects_button).finish();
-
-            let inbox_button = TopbarButton::new(
-                Icon::new("inbox-01")
-                    .with_size(16.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_active(inbox_active)
-            .with_on_click(on_inbox)
-            .finish();
-
-            let settings_button = TopbarButton::new(
-                Icon::new("settings")
-                    .with_size(16.0)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_active(settings_active)
-            .with_disabled(settings_disabled)
-            .with_on_click(on_settings)
-            .finish();
-
-            let right = Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(sm)
-                .with_child(inbox_button)
-                .with_child(settings_button)
-                .finish();
-
-            let row = Flex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(left)
-                .with_child(right)
-                .finish();
-
-            // On macOS the toolbar doubles as the titlebar: drop the vertical
-            // padding so the actions sit vertically centered next to the
-            // traffic lights. Elsewhere keep the padded toolbar look.
-            #[cfg(target_os = "macos")]
-            let vertical_padding = 0.0;
-            #[cfg(not(target_os = "macos"))]
-            let vertical_padding = spacing;
-
-            let root = Container::new(ConstrainedBox::new(row).with_height(TOPBAR_HEIGHT).finish())
-                .with_padding(EdgeInsets::new(
-                    left_padding(app.window_control.is_fullscreen()),
-                    vertical_padding,
-                    0.0,
-                    vertical_padding,
-                ))
-                .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
-                .finish();
-
-            Self {
-                root,
-                size: None,
-                origin: None,
-            }
+        Self {
+            root,
+            size: None,
+            origin: None,
         }
     }
+}
 
 impl Element for Topbar {
     fn layout(
@@ -297,7 +296,8 @@ impl TopbarButton {
             renderer.fill_rounded_rect(
                 rect,
                 bg,
-                self.corner_radius.unwrap_or_else(|| app.theme.radius_px() / 2.0),
+                self.corner_radius
+                    .unwrap_or_else(|| app.theme.radius_px() / 2.0),
             );
         }
     }
@@ -402,8 +402,20 @@ mod tests {
     #[test]
     fn topbar_layouts_non_zero() {
         let app = AppContext::default();
-        let mut topbar =
-            Topbar::new(false, false, false, false, true, || {}, || {}, || {}, || {}, || {}, false, &app);
+        let mut topbar = Topbar::new(
+            false,
+            false,
+            false,
+            false,
+            true,
+            || {},
+            || {},
+            || {},
+            || {},
+            || {},
+            false,
+            &app,
+        );
         let size = topbar.layout(
             SizeConstraint::loose(vec2f(1024.0, 768.0)),
             &mut LayoutContext::default(),
@@ -472,13 +484,9 @@ mod tests {
         button.paint(vec2f(0.0, 0.0), &mut paint_ctx, &app);
         let hover_color = app.theme.color(ColorToken::Hover);
         assert!(
-            !paint_ctx
-                .renderer
-                .take()
-                .unwrap()
-                .commands()
-                .iter()
-                .any(|c| matches!(c, RenderCommand::FillRect { color, .. } if *color == hover_color)),
+            !paint_ctx.renderer.take().unwrap().commands().iter().any(
+                |c| matches!(c, RenderCommand::FillRect { color, .. } if *color == hover_color)
+            ),
             "a disabled button must not paint a hover background"
         );
 
@@ -493,6 +501,9 @@ mod tests {
         };
         assert!(!button.dispatch_event(&down, &mut event_ctx, &app));
         assert!(!button.dispatch_event(&up, &mut event_ctx, &app));
-        assert!(!*clicked.borrow(), "a disabled button must not fire its callback");
+        assert!(
+            !*clicked.borrow(),
+            "a disabled button must not fire its callback"
+        );
     }
 }

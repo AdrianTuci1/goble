@@ -715,13 +715,12 @@ fn merge_adjacent_text(fragments: &mut Vec<ChatFragment>) {
                 if let (ChatFragmentKind::Text(a), ChatFragmentKind::Text(b)) =
                     (&last.kind, &fragment.kind)
                 {
-                    let separator = if a.ends_with(char::is_whitespace)
-                        || b.starts_with(char::is_whitespace)
-                    {
-                        ""
-                    } else {
-                        " "
-                    };
+                    let separator =
+                        if a.ends_with(char::is_whitespace) || b.starts_with(char::is_whitespace) {
+                            ""
+                        } else {
+                            " "
+                        };
                     let combined = format!("{}{}{}", a, separator, b);
                     last.kind = ChatFragmentKind::Text(combined);
                     continue;
@@ -791,10 +790,7 @@ mod tests {
         );
         assert_eq!(
             parse_markdown("**a**  b"),
-            vec![
-                ChatFragment::bold("a"),
-                ChatFragment::text("  b"),
-            ]
+            vec![ChatFragment::bold("a"), ChatFragment::text("  b"),]
         );
         assert_eq!(
             parse_markdown("one `code` two"),
@@ -829,7 +825,10 @@ mod tests {
     /// indent the first line or trail off the last one.
     #[test]
     fn drops_the_whitespace_around_a_paragraph() {
-        assert_eq!(parse_markdown("  hello  "), vec![ChatFragment::text("hello")]);
+        assert_eq!(
+            parse_markdown("  hello  "),
+            vec![ChatFragment::text("hello")]
+        );
         assert_eq!(
             parse_markdown("one\n\ntwo"),
             vec![
@@ -887,11 +886,8 @@ mod tests {
         ] {
             let fragments = parse_markdown(input);
             let opens_with_whitespace = fragments.iter().enumerate().any(|(index, fragment)| {
-                let opens_a_block = index == 0
-                    || matches!(
-                        fragments[index - 1].kind,
-                        ChatFragmentKind::LineBreak
-                    );
+                let opens_a_block =
+                    index == 0 || matches!(fragments[index - 1].kind, ChatFragmentKind::LineBreak);
                 opens_a_block
                     && match &fragment.kind {
                         ChatFragmentKind::Text(text) => text.starts_with(char::is_whitespace),
@@ -1062,7 +1058,10 @@ mod tests {
         let fragments = parse_markdown("run `cargo build`");
         assert_eq!(
             fragments,
-            vec![ChatFragment::text("run "), ChatFragment::code("cargo build"),]
+            vec![
+                ChatFragment::text("run "),
+                ChatFragment::code("cargo build"),
+            ]
         );
     }
 
@@ -1118,7 +1117,10 @@ mod tests {
         let fragments = parse_markdown("```text\nplain words\n```");
         assert_eq!(
             fragments,
-            vec![ChatFragment::code_block(Some("text".to_string()), "plain words")]
+            vec![ChatFragment::code_block(
+                Some("text".to_string()),
+                "plain words"
+            )]
         );
     }
 
@@ -1325,6 +1327,3 @@ mod tests {
         );
     }
 }
-
-
-

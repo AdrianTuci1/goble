@@ -2965,6 +2965,9 @@ pub fn make_actions(
                 SideTabAction::Close(index) => state.close_side_tab(index),
                 SideTabAction::Add(kind) => state.add_side_tab(kind),
                 SideTabAction::Cycle(step) => state.cycle_side_tab(step),
+                SideTabAction::ToggleRail => {
+                    state.side_rail_open = !state.side_rail_open;
+                }
             }
             // The Terminal tab mounts the live grid: make sure the active
             // pane's PTY exists before that surface reads it (the dock starts
@@ -3946,7 +3949,12 @@ pub fn make_actions(
             // the space's own state and is persisted with the rect.
             let space_idx = state.active_space;
             if let Some(space) = state.spaces.get_mut(space_idx) {
-                if space.layout == LayoutKind::Floating {
+                if space.layout == LayoutKind::Floating
+                    || space
+                        .floating
+                        .iter()
+                        .any(|pane| pane.pane_id == id && pane.overlay)
+                {
                     space.raise_pane(id);
                 }
             }

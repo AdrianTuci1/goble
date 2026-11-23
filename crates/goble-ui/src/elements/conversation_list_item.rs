@@ -6696,8 +6696,14 @@ mod sidebar_workspaces_tests {
         let at = dots + vec2f(8.0, 8.0);
         let mut ctx = EventContext::default();
         for event in [
-            DispatchedEvent::MouseDown { position: at, button: 0 },
-            DispatchedEvent::MouseUp { position: at, button: 0 },
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
         ] {
             row.dispatch_event(&event, &mut ctx, &app);
         }
@@ -6774,8 +6780,14 @@ mod sidebar_workspaces_tests {
         let at = dots + vec2f(8.0, 8.0);
         let mut ctx = EventContext::default();
         for event in [
-            DispatchedEvent::MouseDown { position: at, button: 0 },
-            DispatchedEvent::MouseUp { position: at, button: 0 },
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
         ] {
             row.dispatch_event(&event, &mut ctx, &app);
         }

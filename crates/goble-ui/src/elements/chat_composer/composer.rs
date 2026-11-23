@@ -3,10 +3,10 @@ use std::rc::Rc;
 
 use super::band::BandCard;
 use super::hints_row::ComposerHintsRow;
-use crate::elements::model_tray::MODEL_MENU_VIEWPORT_INSET;
 use super::proposal::CommandProposalUi;
 use crate::color::ColorU;
 use crate::elements::conversation_list_item::truncate_with_ellipsis;
+use crate::elements::model_tray::MODEL_MENU_VIEWPORT_INSET;
 use crate::elements::text::measure_text;
 use crate::elements::{
     harness_bar_mark, AppContext, ApprovalMode, Border, ComposerButton, ComposerModelTray,
@@ -115,9 +115,8 @@ pub const COMPOSER_CARD_RESERVED_HEIGHT: f32 =
 /// band form lays out the same height (the folded gutter becomes
 /// [`COMPOSER_BAND_BOTTOM_INSET`], which pays for the same row), so a terminal
 /// bar and an agent input are identical in height.
-pub const COMPOSER_BAR_RESERVED_HEIGHT: f32 = COMPOSER_CARD_RESERVED_HEIGHT
-    + COMPOSER_HINTS_GAP
-    + COMPOSER_HINTS_ROW_HEIGHT;
+pub const COMPOSER_BAR_RESERVED_HEIGHT: f32 =
+    COMPOSER_CARD_RESERVED_HEIGHT + COMPOSER_HINTS_GAP + COMPOSER_HINTS_ROW_HEIGHT;
 /// The environment menu is wider than the other dropdowns: its rows carry a
 /// description line under the label ("Clones this repo in a cloud
 /// environment…"), and the reference shows it cut with an ellipsis on one line
@@ -491,10 +490,7 @@ impl ChatComposer {
     /// Retired with [`Self::with_path_label`]: the single composer names no
     /// bound SSH session over its editor. The argument is accepted and ignored.
     #[doc(hidden)]
-    pub fn with_ssh_session(
-        self,
-        _session: Option<goble_core::ssh_command::SshSession>,
-    ) -> Self {
+    pub fn with_ssh_session(self, _session: Option<goble_core::ssh_command::SshSession>) -> Self {
         self
     }
 
@@ -1019,10 +1015,7 @@ impl ChatComposer {
     /// Share the attach menu's keyboard highlight with the app, so Up/Down and
     /// Enter keep working across the per-frame rebuild the way the model card's
     /// highlight does.
-    pub fn with_attach_menu_highlight(
-        mut self,
-        highlight: Rc<RefCell<Option<usize>>>,
-    ) -> Self {
+    pub fn with_attach_menu_highlight(mut self, highlight: Rc<RefCell<Option<usize>>>) -> Self {
         self.attach_menu_highlight = highlight;
         self
     }
@@ -1039,10 +1032,7 @@ impl ChatComposer {
     /// default menu (built from `on_attach`/`on_image`/`on_link`/`on_code`/
     /// `on_voice`) does not need it: each row already routes to its own host
     /// callback.
-    pub fn with_on_select_attach_item<F: FnMut(usize) + 'static>(
-        mut self,
-        callback: F,
-    ) -> Self {
+    pub fn with_on_select_attach_item<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
         self.on_select_attach_item = Some(Rc::new(RefCell::new(callback)));
         self
     }
@@ -1682,7 +1672,11 @@ impl ChatComposer {
         match key.as_str() {
             "ArrowDown" | "ArrowUp" => {
                 let len = items.len();
-                let current = self.attach_menu_highlight.borrow().unwrap_or(0).min(len - 1);
+                let current = self
+                    .attach_menu_highlight
+                    .borrow()
+                    .unwrap_or(0)
+                    .min(len - 1);
                 let next = if key == "ArrowDown" {
                     (current + 1) % len
                 } else {
@@ -1692,7 +1686,11 @@ impl ChatComposer {
                 true
             }
             "Enter" | "Tab" if !modifiers.shift => {
-                let index = self.attach_menu_highlight.borrow().unwrap_or(0).min(items.len() - 1);
+                let index = self
+                    .attach_menu_highlight
+                    .borrow()
+                    .unwrap_or(0)
+                    .min(items.len() - 1);
                 *self.attach_menu_open.borrow_mut() = false;
                 self.fire_attach_row(&actions, custom, index);
                 true
@@ -2186,9 +2184,8 @@ impl Element for ChatComposer {
         self.rebuild(app);
         // DSH sizes its card against `min(..., 100vw - 24px)`: publish the
         // composer card's width less the two 12pt viewport insets.
-        self.model_tray_bounds.set_width(
-            (card_width - 2.0 * MODEL_MENU_VIEWPORT_INSET).max(0.0),
-        );
+        self.model_tray_bounds
+            .set_width((card_width - 2.0 * MODEL_MENU_VIEWPORT_INSET).max(0.0));
         let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size

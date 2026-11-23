@@ -514,11 +514,13 @@ fn build_pane(
                     .with_child(close)
                     .finish();
                 let bar = Container::new(bar)
-                    .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
+                    // The gutter band reads as shell chrome: grey surface, a
+                    // touch taller than the topbar itself.
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
                     .with_padding(EdgeInsets::new(8.0, 0.0, 8.0, 0.0))
                     .finish();
                 let bar = ConstrainedBox::new(bar)
-                    .with_height(crate::ui::chrome::CHROME_HEIGHT)
+                    .with_height(crate::ui::chrome::CHROME_HEIGHT + 6.0)
                     .finish();
                 Flex::column()
                     .with_main_axis_size(MainAxisSize::Max)

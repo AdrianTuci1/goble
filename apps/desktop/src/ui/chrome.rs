@@ -530,9 +530,12 @@ pub fn build_chrome_row(
                     .finish(),
             )
             .finish(),
-        )
-        .with_child(more.take().expect("the More menu"))
-        .with_child(overview_button);
+        );
+    if !panel_open {
+        main_section = main_section
+            .with_child(more.take().expect("the More menu"))
+            .with_child(overview_button);
+    }
     // Panel 1 keeps the control that OPENS the side panel: with the panel
     // closed nothing in the strip could bring it back (the close control lives
     // in panel 2's section, which is only built while the panel is open).
@@ -590,47 +593,21 @@ pub fn build_chrome_row(
             Empty::new().finish()
         };
         let on_close = actions.on_toggle_right_sidebar.clone();
-        // The reference's three trailing icons: kebab (More), search, and the
-        // round hamburger/menu that folds the panel away.
-        // Panel 2's window controls live at its trailing edge: search, then
-        // maximize/minimize and the side-panel toggle.
-        let on_max = actions.on_toggle_side_panel_maximized.clone();
-        let max_button = Tooltip::new(
-            TopbarButton::new(
-                Icon::new(if maximized {
-                    "fullscreen-exit"
-                } else {
-                    "fullscreen-enter"
-                })
-                .with_size(CONTROL_ICON_SIZE)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-            )
-            .with_size(CONTROL_BUTTON_SIZE)
-            .with_corner_radius(8.0)
-            .with_on_click(move || (on_max.borrow_mut())())
-            .finish(),
-            if maximized {
-                "Restore side panel"
-            } else {
-                "Maximize side panel"
-            },
-        )
-        .with_position(TooltipPosition::Below)
-        .finish();
+        // 203: the review bar's two trailing icons are the More kebab and the
+        // round menu; there is no search in panel 2.
         let close_button = Tooltip::new(
             TopbarButton::new(
-                Icon::new("panel-right-outline")
+                Icon::new("menu-01")
                     .with_size(CONTROL_ICON_SIZE)
                     .with_theme_color(ColorToken::Text, app)
                     .finish(),
             )
             .with_size(CONTROL_BUTTON_SIZE)
-            .with_corner_radius(8.0)
+            .with_corner_radius(CONTROL_BUTTON_SIZE / 2.0)
             .with_active(true)
             .with_on_click(move || (on_close.borrow_mut())())
             .finish(),
-            "Toggle side panel",
+            "Panel menu",
         )
         .with_position(TooltipPosition::Below)
         .finish();
@@ -639,7 +616,7 @@ pub fn build_chrome_row(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(CONTROL_SPACING)
             .with_child(Expanded::new(tab_strip).finish())
-            .with_child(max_button)
+            .with_child(more.take().expect("the More menu"))
             .with_child(close_button)
             .finish();
         let side_section = Container::new(side_section)
@@ -681,6 +658,7 @@ pub fn build_chrome_row(
         } else {
             Expanded::new(side_section).finish()
         };
+        // 206: one 1 px rule separates panel 1 from panel 2.
         strip = strip
             .with_child(vertical_separator(app))
             .with_child(side_section);

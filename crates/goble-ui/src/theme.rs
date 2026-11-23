@@ -755,7 +755,12 @@ mod tests {
     fn theme_default_is_dark() {
         let theme = Theme::default();
         assert_eq!(theme.name, "dark");
-        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x161616));
+        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x0e0e0e));
+        assert_eq!(theme.color(ColorToken::Surface), ColorU::hex(0x161616));
+        assert!(
+            theme.color(ColorToken::ContentBg).r < theme.color(ColorToken::Surface).r,
+            "content is darker than the shell surface"
+        );
     }
 
     #[test]

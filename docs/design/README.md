@@ -194,10 +194,13 @@ puts the supplied reference and the Goble render side by side at the same full
 window scale. Files open in the right panel's Files tab (`side-files-*`), not a
 main pane; the left sidebar carries Projects/Conversations only and no file
 tree (`sidebar-no-files-*`). The review surface follows `review_target.webp`:
-a flat file list with type badge, bold name, left-truncated path, counts and a
-trailing chevron; the expanded file shows its inline diff with line numbers,
-full-width add/del bands and syntax colours; a fixed-width Files Changed rail
-sits on the right. `review-compare-*` is the same-scale side-by-side. The side
+full-width file cards with a 1 px rounded Border, the real per-extension file
+icon, bold name, left-truncated path, counts and a trailing chevron; the
+expanded file shows its inline diff inside the card with line numbers,
+full-width add/del bands and syntax colours; a fixed 260 pt Files Changed rail
+sits on the right. The review topbar ends in the More kebab and the round panel
+menu, and a 1 px rule separates panel 1 from panel 2; tabs and title centre on
+the 44 pt bar. `review-compare-*` is the same-scale side-by-side. The side
 panel launcher follows `side_panel_launcher_target.webp`: capsule search with
 a blue focus ring, hover-card rows (Review/Open File/Terminal/Browser/Side
 Question/Plugins), a Background Tasks count pill with four rows and See all;

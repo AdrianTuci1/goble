@@ -243,7 +243,7 @@ pub(crate) fn build_diff_pane(
                     controls.diff_list_scroll.clone(),
                     controls.diff_revert_confirm.clone(),
                     controls.diff_commit_focus.clone(),
-                    (state.window_size.x * 0.5 - sm * 2.0 - 8.0).max(200.0),
+                    (state.window_size.x.max(1200.0) * 0.55).max(300.0),
                     0.0,
                 ))
                 .with_padding(EdgeInsets::new(sm, sm, sm, sm))
@@ -334,11 +334,7 @@ pub(crate) fn build_review_tab(
         }
         let selected = controls.diff_selected.borrow().clone();
         let expanded = controls.diff_expanded.borrow().clone();
-        let rail_width = if show_rail {
-            (panel_width * 0.40).clamp(180.0, 360.0)
-        } else {
-            0.0
-        };
+        let rail_width = if show_rail { 260.0 } else { 0.0 };
         let editing = controls.diff_editing.borrow().clone();
         let editors = state.pane_diff_editors.get(&pane_id);
         column = column.with_child(
@@ -1104,6 +1100,7 @@ fn diff_list(
             revert.borrow().as_deref() == Some(file.path.as_str()),
             view,
             content_width,
+            selected.as_deref() == Some(file.path.as_str()),
         ));
         top = bottom;
     }
@@ -1113,7 +1110,7 @@ fn diff_list(
     *visible.borrow_mut() = shown;
     Scrollable::new(
         Container::new(column.finish())
-            .with_padding(EdgeInsets::new(0.0, LIST_PAD_TOP, 0.0, 10.0))
+            .with_padding(EdgeInsets::new(0.0, LIST_PAD_TOP, 0.0, 0.0))
             .finish(),
         Axis::Vertical,
     )
@@ -1195,6 +1192,7 @@ fn file_block(
     confirming_revert: bool,
     view: &crate::state::DiffReviewState,
     content_width: f32,
+    selected: bool,
 ) -> Box<dyn Element> {
     let mut column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -1208,6 +1206,7 @@ fn file_block(
             editor,
             confirming_revert,
             content_width,
+            selected,
         ));
     if open {
         column = column.with_child(file_body(
@@ -1226,15 +1225,23 @@ fn file_block(
             content_width,
         ));
     }
-    // Y: the file list is one flat column: a thin divider under every row,
-    // no card casing around a file and no gap between files.
-    column = column.with_child(Divider::horizontal().finish());
-    // The whole row is still the file's context-menu target.
+    // 202: every file is a full-width card with a 1 px rounded Border; the
+    // inline diff lives inside it and hover/selection paint over the border.
+    let card = Container::new(column.finish())
+        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+        .with_corner_radius(8.0)
+        .finish();
+    let card: Box<dyn Element> = if content_width > 0.0 {
+        ConstrainedBox::new(card).with_width(content_width).finish()
+    } else {
+        card
+    };
+    // The whole card is still the file's context-menu target.
     let on_file_menu = actions.on_file_menu.clone();
     let menu_path = file.absolute_path.clone();
     let menu_copy_path = file.path.clone();
     file_menu::context_click(
-        column.finish(),
+        card,
         Rc::new(RefCell::new(move |at| {
             (on_file_menu.borrow_mut())(menu_path.clone(), menu_copy_path.clone(), at);
         })),
@@ -1255,6 +1262,7 @@ fn file_header(
     editor: Option<&Rc<DiffEditor>>,
     confirming_revert: bool,
     content_width: f32,
+    selected: bool,
 ) -> Box<dyn Element> {
     let on_diff = actions.on_diff_panel.clone();
     let path = file.path.clone();
@@ -1270,11 +1278,8 @@ fn file_header(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(10.0)
         .with_child(
-            Text::new(reviewer::type_badge(&file.path))
-                .with_font_family(FontFamily::Mono)
-                .with_font_size(11.0)
-                .with_weight(FontWeight::Bold)
-                .with_theme_color(reviewer::badge_color(&file.path), app)
+            Icon::new(reviewer::file_type_icon(&file.path))
+                .with_size(14.0)
                 .finish(),
         )
         .with_child(
@@ -1312,25 +1317,32 @@ fn file_header(
         )
         .finish();
 
-    ConstrainedBox::new(
-        HoverRow::new(
-            ConstrainedBox::new(
-                Container::new(row)
-                    .with_padding(EdgeInsets::new(12.0, 8.0, 12.0, 8.0))
-                    .finish(),
-            )
-            .with_width(content_width)
-            .finish(),
+    let header = HoverRow::new(
+        ConstrainedBox::new(
+            Container::new(row)
+                .with_padding(EdgeInsets::new(12.0, 8.0, 12.0, 8.0))
+                .finish(),
         )
-        .with_on_click(move || {
-            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(select_path.clone())));
-            (on_diff.borrow_mut())(pane_id, DiffPanelAction::SetFileOpen(path.clone(), !open))
-        })
+        .with_width(content_width)
         .finish(),
     )
-    .with_width(content_width)
-    .with_height(FILE_HEADER_HEIGHT)
-    .finish()
+    .with_selected(selected)
+    .with_on_click(move || {
+        (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(select_path.clone())));
+        (on_diff.borrow_mut())(pane_id, DiffPanelAction::SetFileOpen(path.clone(), !open))
+    })
+    .finish();
+    let header: Box<dyn Element> = if content_width > 0.0 {
+        ConstrainedBox::new(header)
+            .with_width(content_width)
+            .with_height(FILE_HEADER_HEIGHT)
+            .finish()
+    } else {
+        ConstrainedBox::new(header)
+            .with_height(FILE_HEADER_HEIGHT)
+            .finish()
+    };
+    header
 }
 
 /// Keep the tail of a directory path, with a leading ellipsis, the way the

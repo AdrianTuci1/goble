@@ -975,7 +975,7 @@ fn a_large_inline_editor_draws_only_the_rows_in_view() {
 /// Y: changed files are flat full-width rows with one thin divider under each,
 /// not rounded cards or bordered boxes.
 #[test]
-fn every_file_row_is_flat_with_a_thin_divider() {
+fn every_file_card_has_a_rounded_border_at_the_column_width() {
     if !git_available() {
         return;
     }
@@ -986,33 +986,33 @@ fn every_file_row_is_flat_with_a_thin_divider() {
     let (mut root, _desktop, _state, _dir, app) = review_root(&cwd);
     let commands = frame(&mut root, &app);
     let border = app.theme.color(goble_ui::theme::ColorToken::Border);
-    let dividers = commands
+    let cards: Vec<goble_ui::geometry::RectF> = commands
         .iter()
-        .filter(|command| {
-            matches!(
-                command,
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == border
-                        && rect.height() <= 1.01
-                        && rect.width() > 200.0
-            )
+        .filter_map(|command| match command {
+            RenderCommand::StrokeRect {
+                rect,
+                color,
+                corner_radius,
+                ..
+            } if *color == border
+                && (*corner_radius - 8.0).abs() < 0.01
+                && rect.height() > 30.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
         })
-        .count();
-    assert!(dividers >= 2, "each row ends in a thin divider: {dividers}");
-    let file_boxes = commands
-        .iter()
-        .filter(|command| {
-            matches!(
-                command,
-                RenderCommand::StrokeRect { rect, corner_radius, .. }
-                    if (*corner_radius - 8.0).abs() < 0.01
-                        && rect.height() > 30.0
-                        && rect.height() < 300.0
-                        && rect.width() < window().x
-            )
-        })
-        .count();
-    assert_eq!(file_boxes, 0, "no per-file rounded card survives");
+        .collect();
+    assert!(cards.len() >= 2, "both files wear a card border: {cards:?}");
+    let width = cards[0].width();
+    assert!(
+        cards.iter().all(|card| (card.width() - width).abs() < 0.6),
+        "every card spans the same full list column: {cards:?}"
+    );
+    assert!(
+        width > window().x * 0.35,
+        "the file column is not a narrow fixed rail: {width}"
+    );
 }
 
 #[test]

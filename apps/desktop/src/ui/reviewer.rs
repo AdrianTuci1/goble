@@ -1374,6 +1374,22 @@ mod ui_tests {
         );
     }
 
+    /// 204: each extension gets its real file-type asset; unknown text files
+    /// fall back to the generic document.
+    #[test]
+    fn file_rows_use_the_per_extension_assets() {
+        assert_eq!(super::file_type_icon("src/lib.rs"), "file-rust");
+        assert_eq!(super::file_type_icon("include/wheel.h"), "file-c");
+        assert_eq!(super::file_type_icon("wheel.c"), "file-c");
+        assert_eq!(super::file_type_icon("queue.cpp"), "file-cpp");
+        assert_eq!(super::file_type_icon("README.md"), "file-markdown");
+        assert_eq!(super::file_type_icon("package.json"), "file-json");
+        assert_eq!(super::file_type_icon("config.yaml"), "file-json");
+        assert_eq!(super::file_type_icon("run.sh"), "terminal");
+        assert_eq!(super::file_type_icon("Makefile"), "file");
+        assert_eq!(super::file_type_icon("LICENSE"), "file");
+    }
+
     /// The toolbar toggles are real: the state flips and the bar's own label
     /// changes to the action it now offers.
     #[test]
@@ -1496,11 +1512,8 @@ pub(crate) fn files_changed_rail(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(7.0)
             .with_child(
-                Text::new(type_badge(&file.path))
-                    .with_font_family(FontFamily::Mono)
-                    .with_font_size(10.0)
-                    .with_weight(FontWeight::SemiBold)
-                    .with_theme_color(badge_color(&file.path), app)
+                Icon::new(file_type_icon(&file.path))
+                    .with_size(14.0)
                     .finish(),
             )
             .with_child(
@@ -1559,6 +1572,41 @@ fn short_dir(path: &str) -> String {
         String::new()
     } else {
         format!("…/{tail}")
+    }
+}
+
+/// 204: the per-extension asset the file rows draw instead of a generic
+/// document/letter badge. Unknown text files fall back to the generic file.
+pub(crate) fn file_type_icon(path: &str) -> &'static str {
+    let name = short_name(path);
+    let lower = name.to_ascii_lowercase();
+    if lower == "makefile" {
+        return "file";
+    }
+    if lower == "readme.md" {
+        return "file-markdown";
+    }
+    let ext = lower.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    match ext {
+        "rs" => "file-rust",
+        "c" | "h" => "file-c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "mm" => "file-cpp",
+        "py" | "pyi" => "file-python",
+        "js" | "jsx" | "mjs" | "cjs" => "file-javascript",
+        "ts" | "tsx" => "file-typescript",
+        "json" | "jsonc" | "yaml" | "yml" | "toml" => "file-json",
+        "md" | "mdx" => "file-markdown",
+        "go" => "file-go",
+        "sql" => "file-sql",
+        "zig" => "file-zig",
+        "wasm" => "file-wasm",
+        "kt" | "kts" => "file-kotlin",
+        "php" => "file-php",
+        "pl" | "pm" => "file-perl",
+        "tf" | "tfvars" => "file-terraform",
+        "mmd" => "file-mermaid",
+        "sh" | "bash" | "zsh" | "fish" => "terminal",
+        _ => "file",
     }
 }
 

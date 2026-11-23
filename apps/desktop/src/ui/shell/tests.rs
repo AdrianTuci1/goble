@@ -322,8 +322,23 @@ fn the_selected_tab_merges_into_the_content_with_inverted_corners() {
         .collect();
     assert_eq!(
         surface_fills.len(),
-        5,
-        "the body, foot band, two corner discs and the merge stem: {surface_fills:?}"
+        3,
+        "the body, foot band and merge stem are Surface: {surface_fills:?}"
+    );
+    let background_discs = commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                RenderCommand::FillRect { color, corner_radius, .. }
+                    if *color == background
+                        && (*corner_radius - radius).abs() < 0.01
+            )
+        })
+        .count();
+    assert_eq!(
+        background_discs, 2,
+        "the two concave fillets are the shell Bg"
     );
     let (body, body_radius) = surface_fills[0];
     assert_eq!(
@@ -382,7 +397,7 @@ fn the_selected_tab_merges_into_the_content_with_inverted_corners() {
         over.is_empty(),
         "nothing wider than the tab continues below the fillet line: {over:?}"
     );
-    let (stem, stem_radius) = surface_fills[4];
+    let (stem, stem_radius) = surface_fills[2];
     assert_eq!(
         (stem.min_y(), stem.height()),
         (fillet_bottom, merge - fillet_bottom),

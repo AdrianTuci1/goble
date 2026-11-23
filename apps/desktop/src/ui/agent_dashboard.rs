@@ -2065,8 +2065,7 @@ mod ui_tests {
         }
         let commands = render_element(&mut root, window(), &app);
         let raised = app.theme.color(ColorToken::SurfaceRaised);
-        let surface = app.theme.color(ColorToken::Surface);
-        let black = app.theme.color(ColorToken::Surface);
+        let black = app.theme.color(ColorToken::ContentBg);
         let graphite_band = |color| {
             commands.iter().any(|command| {
                 matches!(
@@ -2084,8 +2083,8 @@ mod ui_tests {
             "the panel draws no raised graphite band: {commands:?}"
         );
         assert!(
-            graphite_band(black) && graphite_band(surface),
-            "the panel paints the one flat surface: {commands:?}"
+            graphite_band(black),
+            "the panel paints the black content material: {commands:?}"
         );
     }
 

@@ -3193,9 +3193,9 @@ mod tests {
             commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::Surface) && contains(*rect, margin_at)
+                    if *color == app.theme.color(ColorToken::Bg) && contains(*rect, margin_at)
             )),
-            "the 6 pt margin is the shell's Surface material"
+            "the 6 pt margin is the shell's black Bg material"
         );
 
         // The side panel body paints the content material across the boundary,
@@ -3826,6 +3826,74 @@ mod tests {
         assert_eq!(
             s.conversations[0].name, "Beta title",
             "Escape keeps the name"
+        );
+    }
+
+    /// 203/206: the open review panel's trailing cluster is exactly the More
+    /// kebab and the round panel menu — no search, no maximize/panel glyph —
+    /// with one 1 px separator between panel 1 and panel 2.
+    #[test]
+    fn the_review_topbar_has_kebab_and_menu_without_search() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![crate::state::SideTabKind::Review];
+            s.active_side_tab = 0;
+        }
+        let size = vec2f(1600.0, 1000.0);
+        let commands = render_element(&mut root, size, &app);
+        let split = size.x * 0.55;
+        let top_icons: Vec<(&str, f32)> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some((name.as_str(), origin.x))
+                }
+                _ => None,
+            })
+            .collect();
+        let trailing: Vec<&str> = top_icons
+            .iter()
+            .filter(|(_, x)| *x > split + 1.0)
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            trailing.contains(&"ellipsis"),
+            "the More kebab: {trailing:?}"
+        );
+        assert!(
+            trailing.contains(&"menu-01"),
+            "the round panel menu: {trailing:?}"
+        );
+        assert!(
+            !trailing.contains(&"search"),
+            "no search icon in panel 2: {trailing:?}"
+        );
+        assert!(
+            !trailing.contains(&"fullscreen-enter")
+                && !trailing.contains(&"fullscreen-exit")
+                && !trailing.contains(&"panel-right-outline"),
+            "no maximize/panel glyph in the two-icon cluster: {trailing:?}"
+        );
+        let border = app.theme.color(ColorToken::Border);
+        let separators: Vec<RectF> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == border && rect.width() <= 1.01 && rect.height() >= 40.0 =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            separators.iter().any(|rect| rect.min_x() > size.x / 2.0),
+            "a 1 px rule separates panel 1 from panel 2: {separators:?}"
         );
     }
 

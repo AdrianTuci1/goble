@@ -407,6 +407,9 @@ pub fn build_agent_chat(
             )
         }
     };
+    // No tasks/sub-agents strip in the chat panel header: the pane renders the
+    // transcript only. Work items live in the side panel's rail/Overview.
+    let work_dock: Option<Box<dyn Element>> = None;
     let on_select_harness = actions.on_select_harness.clone();
     let on_select_dir = actions.on_select_dir.clone();
     let on_select_branch = actions.on_select_branch.clone();

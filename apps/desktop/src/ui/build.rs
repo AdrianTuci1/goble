@@ -4042,7 +4042,23 @@ mod tests {
                 )
             })
             .count();
-        assert!(dots >= 7, "the left rail draws seven dots, got {dots}");
+        assert_eq!(
+            dots, 3,
+            "the left rail keeps only a few compact dots, got {dots}"
+        );
+        let long_segment = commands.iter().any(|command| {
+            matches!(
+                command,
+                RenderCommand::FillRect { rect, .. }
+                    if (rect.width() - 3.0).abs() < 0.01
+                        && rect.height() >= 12.0
+                        && rect.min_x() < 420.0
+            )
+        });
+        assert!(
+            long_segment,
+            "the rail's last indicator is the longer latest-turns segment"
+        );
         // The composer card is still full-width while the transcript lane is
         // not: the first transcript words start well inside the pane.
         let first_text = commands

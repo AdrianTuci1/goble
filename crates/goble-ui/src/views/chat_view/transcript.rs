@@ -15,7 +15,7 @@ use crate::elements::{
     QuickActionButton, ScrollState, Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip,
     TooltipPosition, TurnStatus, TurnStatusFooter,
 };
-use crate::geometry::{rectf, Vector2F};
+use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
@@ -320,15 +320,30 @@ mod failure_tests {
     }
 }
 
-/// 310: the transcript's left scroll rail: seven dots, the active one
-/// highlighted, clicking a dot scrolls the transcript to that fraction.
+/// The transcript's left scroll rail: a short column of a few indicators near
+/// the middle of the viewport — three compact dots plus a longer trailing
+/// segment for the latest turns. Hovering an indicator draws a small card with
+/// its label; clicking scrolls the transcript there.
 struct ScrollDotsRail {
     scroll: Rc<RefCell<ScrollState>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
-const SCROLL_DOTS: usize = 7;
+const SCROLL_DOTS: usize = 3;
+const DOT_SIZE: f32 = 3.0;
+/// The dots sit close together instead of spanning the whole column.
+const DOT_GAP: f32 = 12.0;
+/// The trailing indicator is a longer bar: it covers the most recent turns.
+const LONG_SEGMENT: f32 = 18.0;
+const RAIL_WIDTH: f32 = 3.0;
+const RAIL_HOVER_GAP: f32 = 14.0;
+const HOVER_CARD_WIDTH: f32 = 118.0;
+const HOVER_CARD_HEIGHT: f32 = 24.0;
+const DOT_TARGETS: [f32; 3] = [0.0, 0.25, 0.5];
+const LONG_SEGMENT_TARGET: f32 = 1.0;
+const DOT_LABELS: [&str; 3] = ["Start of the chat", "Earlier turns", "Middle of the chat"];
+const LONG_SEGMENT_LABEL: &str = "Latest turns";
 
 impl ScrollDotsRail {
     fn new(scroll: Rc<RefCell<ScrollState>>) -> Self {
@@ -339,10 +354,67 @@ impl ScrollDotsRail {
         }
     }
 
-    fn dot_y(&self, index: usize) -> f32 {
+    fn rail_height() -> f32 {
+        DOT_GAP * (SCROLL_DOTS as f32 - 1.0) + DOT_GAP + LONG_SEGMENT
+    }
+
+    fn rail_top(&self) -> f32 {
         let height = self.size.map(|size| size.y).unwrap_or(0.0);
-        let inset = 24.0;
-        12.0 + (height - inset * 2.0) * index as f32 / (SCROLL_DOTS - 1) as f32
+        ((height - Self::rail_height()) / 2.0).max(0.0)
+    }
+
+    fn dot_y(&self, index: usize) -> f32 {
+        self.rail_top() + index as f32 * DOT_GAP
+    }
+
+    fn long_segment_y(&self) -> f32 {
+        self.rail_top() + (SCROLL_DOTS as f32 - 1.0) * DOT_GAP + DOT_GAP
+    }
+
+    /// The indicator the pointer is on, as (index, is_long_segment).
+    fn hovered_indicator(&self, ctx: &crate::elements::PaintContext) -> Option<(usize, bool)> {
+        if !ctx.cursor_inside {
+            return None;
+        }
+        let origin = self.origin?;
+        let x = origin.x();
+        if ctx.cursor_position.x < x - 4.0
+            || ctx.cursor_position.x > x + RAIL_WIDTH + RAIL_HOVER_GAP
+        {
+            return None;
+        }
+        for index in 0..SCROLL_DOTS {
+            let y = origin.y() + self.dot_y(index);
+            if (ctx.cursor_position.y - (y + DOT_SIZE / 2.0)).abs() <= DOT_GAP / 2.0 {
+                return Some((index, false));
+            }
+        }
+        let long_y = origin.y() + self.long_segment_y();
+        if ctx.cursor_position.y >= long_y - 4.0
+            && ctx.cursor_position.y <= long_y + LONG_SEGMENT + 4.0
+        {
+            return Some((0, true));
+        }
+        None
+    }
+
+    fn active_indicator(&self) -> (usize, bool) {
+        let scroll = self.scroll.borrow();
+        let max = scroll.max_offset().max(1.0);
+        let fraction = (scroll.offset() / max).clamp(0.0, 1.0);
+        if fraction > 0.5 {
+            return (0, true);
+        }
+        let index = ((fraction / 0.25).floor() as usize).min(SCROLL_DOTS - 1);
+        (index, false)
+    }
+
+    fn target_fraction(index: usize, long: bool) -> f32 {
+        if long {
+            LONG_SEGMENT_TARGET
+        } else {
+            DOT_TARGETS[index.min(SCROLL_DOTS - 1)]
+        }
     }
 
     fn finish(self) -> Box<dyn Element> {
@@ -369,19 +441,65 @@ impl Element for ScrollDotsRail {
         app: &AppContext,
     ) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        let scroll = self.scroll.borrow();
-        let max = scroll.max_offset().max(1.0);
-        let active = ((scroll.offset() / max) * (SCROLL_DOTS - 1) as f32).round() as usize;
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            for index in 0..SCROLL_DOTS {
-                let y = origin.y + self.dot_y(index);
-                let color = if index == active.min(SCROLL_DOTS - 1) {
-                    ColorToken::Text
-                } else {
-                    ColorToken::Muted
-                };
-                renderer.fill_rect(rectf(origin.x + 5.0, y, 3.0, 3.0), app.theme.color(color));
-            }
+        let hovered = self.hovered_indicator(ctx);
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        let (active_index, active_long) = self.active_indicator();
+        let muted = app.theme.color(ColorToken::Muted);
+        let ink = app.theme.color(ColorToken::Text);
+        let x = origin.x + 5.0;
+        for index in 0..SCROLL_DOTS {
+            let y = origin.y + self.dot_y(index);
+            let is_active = !active_long && index == active_index;
+            let is_hovered = hovered.is_some_and(|(i, long)| !long && i == index);
+            let color = if is_active || is_hovered { ink } else { muted };
+            renderer.fill_rect(rectf(x, y, DOT_SIZE, DOT_SIZE), color);
+        }
+        // The trailing segment is deliberately longer: it stands for all the
+        // recent turns, not one point in the scroll.
+        let long_y = origin.y + self.long_segment_y();
+        let long_color = if active_long || hovered.is_some_and(|(_, long)| long) {
+            ink
+        } else {
+            muted
+        };
+        renderer.fill_rounded_rect(
+            rectf(x, long_y, RAIL_WIDTH, LONG_SEGMENT),
+            long_color,
+            RAIL_WIDTH / 2.0,
+        );
+        // Hover card: a small rounded label to the right of the indicator.
+        if let Some((index, long)) = hovered {
+            let label = if long {
+                LONG_SEGMENT_LABEL
+            } else {
+                DOT_LABELS[index.min(SCROLL_DOTS - 1)]
+            };
+            let anchor_y = if long {
+                origin.y + self.long_segment_y() + LONG_SEGMENT / 2.0
+            } else {
+                origin.y + self.dot_y(index) + DOT_SIZE / 2.0
+            };
+            let card = rectf(
+                x + RAIL_WIDTH + 8.0,
+                anchor_y - HOVER_CARD_HEIGHT / 2.0,
+                HOVER_CARD_WIDTH,
+                HOVER_CARD_HEIGHT,
+            );
+            renderer.fill_rounded_rect(card, app.theme.color(ColorToken::SurfaceRaised), 6.0);
+            renderer.stroke_rect(card, app.theme.color(ColorToken::Border), 1.0, 6.0);
+            renderer.draw_text_with_font(
+                vec2f(card.min_x() + 8.0, card.min_y() + 5.0),
+                label,
+                11.0,
+                app.theme.color(ColorToken::Text),
+                card.width() - 16.0,
+                14.0,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            );
         }
     }
 
@@ -402,21 +520,34 @@ impl Element for ScrollDotsRail {
         let _ = (ctx, app);
         if let crate::event::DispatchedEvent::MouseDown { position, .. } = event {
             if let Some(origin) = self.origin {
-                if (position.x - origin.x()).abs() < 12.0 {
+                if (position.x - origin.x()).abs() < RAIL_WIDTH + RAIL_HOVER_GAP {
                     for index in 0..SCROLL_DOTS {
-                        let y = origin.y() + self.dot_y(index);
-                        if (position.y - y).abs() < 6.0 {
-                            let current = self.scroll.borrow().offset();
-                            let max = self.scroll.borrow().max_offset();
-                            let target = max * index as f32 / (SCROLL_DOTS - 1) as f32;
-                            self.scroll.borrow_mut().scroll_by(target - current);
+                        let y = origin.y() + self.dot_y(index) + DOT_SIZE / 2.0;
+                        if (position.y - y).abs() <= DOT_GAP / 2.0 {
+                            self.scroll_to(Self::target_fraction(index, false));
                             return true;
                         }
+                    }
+                    let long_y = origin.y() + self.long_segment_y();
+                    if position.y >= long_y - 4.0
+                        && position.y <= long_y + LONG_SEGMENT + 4.0
+                    {
+                        self.scroll_to(Self::target_fraction(0, true));
+                        return true;
                     }
                 }
             }
         }
         false
+    }
+}
+
+impl ScrollDotsRail {
+    fn scroll_to(&self, fraction: f32) {
+        let current = self.scroll.borrow().offset();
+        let max = self.scroll.borrow().max_offset();
+        let target = max * fraction.clamp(0.0, 1.0);
+        self.scroll.borrow_mut().scroll_by(target - current);
     }
 }
 

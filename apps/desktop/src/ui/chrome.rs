@@ -515,19 +515,16 @@ pub fn build_chrome_row(
     .finish();
     let overview_button = AnchorProbe::new(overview_button, overview_anchor.clone()).finish();
 
+    // Panel 1 always keeps its trailing controls — the 3-dot More menu and the
+    // Overview launcher — whether the side panel is open or not: the agent's
+    // own topbar must never lose them.
     let mut main_section = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(CONTROL_SPACING)
-        .with_child(Expanded::new(title).finish());
-    // The side panel owns the general topbar's trailing cluster when it is
-    // open (kebab, search, panel menu); the launcher controls stay on the main
-    // section only when the panel is closed.
-    if !panel_open {
-        main_section = main_section
-            .with_child(more.take().expect("the More menu"))
-            .with_child(overview_button);
-    }
+        .with_child(Expanded::new(title).finish())
+        .with_child(more.take().expect("the More menu"))
+        .with_child(overview_button);
     // Panel 1 keeps the control that OPENS the side panel: with the panel
     // closed nothing in the strip could bring it back (the close control lives
     // in panel 2's section, which is only built while the panel is open).
@@ -622,7 +619,6 @@ pub fn build_chrome_row(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(CONTROL_SPACING)
             .with_child(Expanded::new(tab_strip).finish())
-            .with_child(more.take().expect("the More menu"))
             .with_child(search_button)
             .with_child(close_button)
             .finish();

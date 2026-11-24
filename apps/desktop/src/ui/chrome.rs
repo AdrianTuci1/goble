@@ -890,64 +890,6 @@ fn side_tab_add_menu(
     button
 }
 
-/// The in-panel launcher shown by the strip's "+".
-fn build_add_tab_surface(app: &AppContext, actions: &UiActions) -> Box<dyn Element> {
-    let on_add = actions.on_side_tab.clone();
-    let mut rows = Flex::column()
-        .with_main_axis_size(MainAxisSize::Min)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(4.0)
-        .with_child(
-            Text::new("Overview")
-                .with_font_size(14.0)
-                .with_weight(FontWeight::Medium)
-                .with_theme_color(ColorToken::Text, app)
-                .finish(),
-        );
-    for kind in [
-        SideTabKind::Overview,
-        SideTabKind::Review,
-        SideTabKind::Files,
-        SideTabKind::Terminal,
-        SideTabKind::Agent,
-        SideTabKind::TaskOutput,
-    ] {
-        let on_add = on_add.clone();
-        rows = rows.with_child(
-            HoverRow::new(
-                Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(8.0)
-                    .with_child(
-                        Icon::new(kind.icon())
-                            .with_size(15.0)
-                            .with_theme_color(ColorToken::Muted, app)
-                            .finish(),
-                    )
-                    .with_child(
-                        Text::new(kind.title())
-                            .with_font_size(13.0)
-                            .with_theme_color(ColorToken::Text, app)
-                            .finish(),
-                    )
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
-            .with_corner_radius(7.0)
-            .with_on_click(move || (on_add.borrow_mut())(SideTabAction::Add(kind)))
-            .finish(),
-        );
-    }
-    ConstrainedBox::new(
-        Container::new(rows.finish())
-            .with_padding(EdgeInsets::uniform(16.0))
-            .finish(),
-    )
-    .with_max_width(520.0)
-    .finish()
-}
-
 /// Fit a label into a one-line chip without inventing different text: take a
 /// prefix and an ellipsis when the run would be too long.
 fn truncate_label(text: &str, max_chars: usize) -> String {
@@ -2058,9 +2000,11 @@ pub fn build_side_panel(
     // Terminal and Files mount the real pane views rather than a static
     // overview.
     let add_open = *state.side_tab_add_menu_open.borrow();
+    // The panel's starting surface is Overview itself — the launcher with its
+    // search input — never a separate static "Start" list.
     let start_surface = add_open || state.side_tabs.is_empty();
     let content: Box<dyn Element> = if start_surface {
-        build_add_tab_surface(app, actions)
+        build_overview_content(app, state, actions)
     } else {
         match kind {
             SideTabKind::Overview => build_overview_content(app, state, actions),

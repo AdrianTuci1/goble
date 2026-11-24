@@ -468,9 +468,20 @@ pub fn build_agent_chat(
         .with_tool_fold(state.tool_fold.clone())
         .with_tool_hover(state.tool_hover.clone())
         .with_changed_files_open(session.changed_files_open.clone())
+        // The changed-files card's Review opens the SIDE PANEL's Review tab,
+        // not a pane beside the conversation; a hidden panel is expanded first.
         .with_on_review_changes({
-            let open = actions.on_diff_panel.clone();
-            move || (open.borrow_mut())(pane_id, crate::ui::DiffPanelAction::Open(None))
+            let side = actions.on_side_tab.clone();
+            let toggle = actions.on_toggle_right_sidebar.clone();
+            let panel_open = state.right_sidebar_open;
+            move || {
+                (side.borrow_mut())(crate::state::SideTabAction::Add(
+                    crate::state::SideTabKind::Review,
+                ));
+                if !panel_open {
+                    (toggle.borrow_mut())();
+                }
+            }
         })
         // This pane's own filter bar state (seeded per pane before the
         // snapshot), so opening it in one pane leaves the siblings alone.

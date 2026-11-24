@@ -21,6 +21,76 @@ use super::{
     panes, session_menu, settings, shell, shortcuts_help, sidebar, vault, CONNECTORS_WIDTH,
 };
 
+/// Keeps the shell behind an open modal from reacting to the pointer's hover,
+/// while the modal's own sheet still paints its hover. The shell is painted
+/// before the modal, so clearing `cursor_inside` for that subtree is what stops
+/// a sidebar/topbar row lighting up under the scrim.
+struct ModalHoverGate {
+    child: Box<dyn Element>,
+    suppress: bool,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl ModalHoverGate {
+    fn new(child: Box<dyn Element>, suppress: bool) -> Self {
+        Self {
+            child,
+            suppress,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for ModalHoverGate {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let saved = ctx.cursor_inside;
+        if self.suppress {
+            ctx.cursor_inside = false;
+        }
+        self.child.paint(origin, ctx, app);
+        ctx.cursor_inside = saved;
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.child.wants_animation()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, ctx, app)
+    }
+}
+
 /// The thickness of the rule that wraps the whole window, warp-new's window
 /// border (`app/src/root_view.rs:117-131`).
 pub const WINDOW_BORDER_WIDTH: f32 = 1.0;
@@ -547,7 +617,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     let close_prompt_dialog = super::file_view::build_close_prompt(app, state, actions);
 
     let mut stack = Stack::new().with_children(vec![
-        shell_col.finish(),
+        ModalHoverGate::new(shell_col.finish(), state.settings_overlay_open).finish(),
         // The toolbar paints after the body so the popups/trays anchored in it
         // (the "+ ▾" environment menu) sit above the sidebar and the pane
         // surface, and it is dispatched first within the shell for the same
@@ -2649,7 +2719,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     origin, name, size, ..
-                } if name == "dots-vertical" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "ellipsis-vertical" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the panel header draws its More control");
@@ -2743,7 +2813,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     origin, name, size, ..
-                } if name == "dots-vertical" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "ellipsis-vertical" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the More control");
@@ -3226,7 +3296,7 @@ mod tests {
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { name, .. } if name == "dots-vertical"
+                RenderCommand::DrawIcon { name, .. } if name == "ellipsis-vertical"
             )),
             "the side panel's search row carries the kebab"
         );
@@ -4042,10 +4112,7 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(
-            dots, 8,
-            "the left rail keeps eight round dots, got {dots}"
-        );
+        assert_eq!(dots, 8, "the left rail keeps eight round dots, got {dots}");
         let long_segment = commands.iter().any(|command| {
             matches!(
                 command,
@@ -4330,6 +4397,40 @@ mod tests {
         );
     }
 
+    /// 333: the wheel reaches the settings page's Scrollable through the modal
+    /// dialog; the modal must not consume it before the page sees it.
+    #[test]
+    fn the_settings_wheel_reaches_the_page_scroll() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.settings_overlay_open = true;
+            s.settings.page = crate::ui::SettingsCategory::Advanced;
+        }
+        let _ = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        let mut ctx = EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(700.0, 420.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, -120.0),
+                precise: false,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(
+            state.borrow().settings.scroll.borrow().offset().abs() > 0.5,
+            "the settings page scrolls under the wheel"
+        );
+    }
+
     /// 285: the Files tab's explorer control opens the real explorer in the
     /// workspace.
     #[test]
@@ -4554,7 +4655,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     name, origin, size, ..
-                } if name == "flat-list" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "square-text" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the Overview trigger");

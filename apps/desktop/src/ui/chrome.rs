@@ -579,6 +579,10 @@ pub fn build_chrome_row(
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(leading);
+    if sidebar_shown {
+        // 289: the sidebar column ends on the body's own sidebar edge.
+        strip = strip.with_child(vertical_separator(app));
+    }
     if panel_open {
         let maximized = panel_maximized;
         // The chip strip and its `+` are one measured row: the `+` sits

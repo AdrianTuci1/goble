@@ -3333,22 +3333,21 @@ impl SidebarGroupRow {
         if let Some(leading) = leading {
             row = row.with_child(leading);
         }
-        let mut row = row
-            .with_child(
-                Expanded::new(
-                    Padding::new(
-                        Text::new(label)
-                            .with_font_size(SIDEBAR_TITLE_SIZE)
-                            .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
-                            .with_max_lines(1)
-                            .with_theme_color(ColorToken::Text, app)
-                            .finish(),
-                        EdgeInsets::new(0.0, 0.0, 0.0, 0.0),
-                    )
-                    .finish(),
+        let mut row = row.with_child(
+            Expanded::new(
+                Padding::new(
+                    Text::new(label)
+                        .with_font_size(SIDEBAR_TITLE_SIZE)
+                        .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
+                        .with_max_lines(1)
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                    EdgeInsets::new(0.0, 0.0, 0.0, 0.0),
                 )
                 .finish(),
-            );
+            )
+            .finish(),
+        );
         // The strip's layout footprint: the label keeps clear of it while the
         // controls are shown, exactly as DSH's flex row does.
         let strip = self.strip_width();
@@ -3415,7 +3414,7 @@ impl Element for SidebarGroupRow {
                     - 2.0 * SIDEBAR_PAINT_INSET
                     - SIDEBAR_ROW_PADDING_START
                     - SIDEBAR_ROW_PADDING_END
-                    - if self.hide_leading_icon {
+                    - if false {
                         0.0
                     } else {
                         SIDEBAR_LEADING_SLOT_W + SIDEBAR_LABEL_GAP
@@ -5963,7 +5962,7 @@ mod sidebar_workspaces_tests {
                     - 2.0 * SIDEBAR_PAINT_INSET
                     - SIDEBAR_ROW_PADDING_START
                     - SIDEBAR_ROW_PADDING_END
-                    - if self.hide_leading_icon {
+                    - if false {
                         0.0
                     } else {
                         SIDEBAR_LEADING_SLOT_W + SIDEBAR_LABEL_GAP

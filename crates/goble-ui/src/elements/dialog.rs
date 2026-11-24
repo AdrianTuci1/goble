@@ -192,12 +192,23 @@ impl Element for Dialog {
         let cb = self.on_close.clone();
         if let DispatchedEvent::MouseMove { position } = event {
             self.cursor = Some(*position);
-            // A modal owns the pointer: the app behind it must not see hover.
-            return full_bounds.contains(PointF::new(position.x, position.y));
+            let point = PointF::new(position.x, position.y);
+            // A modal owns the pointer: the app behind it must not see hover,
+            // but the sheet's own rows and its Scrollable still do.
+            if panel_bounds.contains(point) {
+                let _ = self.child.dispatch_event(event, ctx, app);
+            }
+            return full_bounds.contains(point);
         }
         if let DispatchedEvent::Scroll { .. } = event {
             if let Some(cursor) = self.cursor {
-                return full_bounds.contains(PointF::new(cursor.x, cursor.y));
+                if full_bounds.contains(PointF::new(cursor.x, cursor.y)) {
+                    // 333: the wheel belongs to the sheet's own Scrollable, not
+                    // to the modal wrapper; still consume it so the shell behind
+                    // does not scroll.
+                    let _ = self.child.dispatch_event(event, ctx, app);
+                    return true;
+                }
             }
         }
 

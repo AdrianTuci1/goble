@@ -1924,8 +1924,8 @@ fn an_asked_question_draws_as_an_ask_user_row() {
     );
     let texts = drawn_texts(&commands);
     assert!(
-        texts.iter().any(|text| text.contains("Ask User")),
-        "the row leads with the tool's name read as words: {texts:?}"
+        texts.iter().any(|text| text.contains("Which environment?")),
+        "the question itself is the row's title: {texts:?}"
     );
     assert!(
         texts.iter().any(|text| text.contains("Which environment?")),

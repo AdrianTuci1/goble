@@ -358,6 +358,12 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::Shortcuts,
             ),
             (
+                "settings-long",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::Advanced,
+            ),
+            (
                 "settings-narrow",
                 vec2f(700.0, 900.0),
                 true,
@@ -814,6 +820,19 @@ fn main() -> anyhow::Result<()> {
             let _ = raster::render_element_to_png(
                 &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
             );
+            if name == "settings-wide" || name == "settings-long" {
+                let _ = raster::render_element_to_png_at(
+                    &assets,
+                    &app,
+                    &mut root,
+                    size.x,
+                    size.y,
+                    1.0,
+                    vec2f(60.0, 300.0),
+                    None,
+                    &path,
+                );
+            }
             if name == "side-tabs-hover" {
                 // Paint once with the pointer on the Side Question chip, so the
                 // hover close X is in the shot.

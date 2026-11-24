@@ -125,6 +125,8 @@ pub enum ControlModel {
     KeyChips {
         keys: Vec<String>,
         action: Option<ActionModel>,
+        /// The hover "add shortcut" action, after the trailing trash action.
+        add_action: Option<ActionModel>,
     },
     /// The row's actions, in draw order. `Enter` runs the first one.
     Buttons(Vec<ActionModel>),
@@ -287,7 +289,25 @@ impl RowModel {
     /// can do — the Shortcuts page's trash reports that remapping is absent
     /// rather than deleting the binding.
     pub fn key_chips(mut self, keys: Vec<String>, action: Option<ActionModel>) -> Self {
-        self.control = ControlModel::KeyChips { keys, action };
+        self.control = ControlModel::KeyChips {
+            keys,
+            action,
+            add_action: None,
+        };
+        self
+    }
+
+    pub fn key_chips_with_add(
+        mut self,
+        keys: Vec<String>,
+        action: Option<ActionModel>,
+        add_action: Option<ActionModel>,
+    ) -> Self {
+        self.control = ControlModel::KeyChips {
+            keys,
+            action,
+            add_action,
+        };
         self
     }
 

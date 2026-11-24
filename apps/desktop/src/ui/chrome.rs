@@ -863,14 +863,14 @@ fn active_conversation_name(state: &UiSnapshot) -> String {
 fn side_tab_add_menu(
     app: &AppContext,
     state: &UiSnapshot,
-    _actions: &UiActions,
+    actions: &UiActions,
 ) -> Box<dyn Element> {
-    let open = state.side_tab_add_menu_open.clone();
+    let on_add = actions.on_side_tab.clone();
     let toggle = move || {
-        let mut flag = open.borrow_mut();
-        *flag = !*flag;
+        (on_add.borrow_mut())(SideTabAction::Add(SideTabKind::NewTab));
     };
-    let active = *state.side_tab_add_menu_open.borrow();
+    // 376: the "+" is active while the New tab chip is the current tab.
+    let active = state.side_tabs.get(state.active_side_tab) == Some(&SideTabKind::NewTab);
     let button = Tooltip::new(
         TopbarButton::new(
             Icon::new("plus")
@@ -2007,7 +2007,9 @@ pub fn build_side_panel(
         build_overview_content(app, state, actions)
     } else {
         match kind {
-            SideTabKind::Overview => build_overview_content(app, state, actions),
+            SideTabKind::Overview | SideTabKind::NewTab => {
+                build_overview_content(app, state, actions)
+            }
             SideTabKind::Agent => {
                 // The side composer routes to the side conversation's own session.
                 // The pane target is the reserved id, so the active pane's draft and
@@ -2641,6 +2643,7 @@ fn side_tab_topbar(
             )
         }
         SideTabKind::Overview => ("Overview".to_string(), None),
+        SideTabKind::NewTab => ("New tab".to_string(), None),
         SideTabKind::Review => ("Review".to_string(), None),
     };
     row = row.with_child(

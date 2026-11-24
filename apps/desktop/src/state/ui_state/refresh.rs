@@ -75,6 +75,18 @@ impl UiState {
     /// kind, so the "+" menu never stacks duplicates of the same pane view.
     pub fn add_side_tab(&mut self, kind: SideTabKind) {
         *self.side_tab_add_menu_open.borrow_mut() = false;
+        if kind != SideTabKind::NewTab {
+            if let Some(index) = self
+                .side_tabs
+                .iter()
+                .position(|tab| *tab == SideTabKind::NewTab)
+            {
+                if index == self.active_side_tab {
+                    self.side_tabs[index] = kind;
+                    return;
+                }
+            }
+        }
         match self.side_tabs.iter().position(|tab| *tab == kind) {
             Some(index) => self.active_side_tab = index,
             None => {

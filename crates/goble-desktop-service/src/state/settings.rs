@@ -188,6 +188,16 @@ impl DesktopState {
     /// the next launch even when no conversation has run in it yet (the folder
     /// groups the sidebar derives from `chats.working_dir` only cover
     /// directories that already hold sessions).
+    /// The custom shortcut chords, as a JSON object keyed by binding label.
+    pub fn get_ui_shortcuts(&self) -> Option<String> {
+        self.store.lock().get_setting("ui.shortcuts").ok().flatten()
+    }
+
+    pub fn set_ui_shortcuts(&self, json: &str) -> anyhow::Result<()> {
+        self.store.lock().set_setting("ui.shortcuts", json)?;
+        Ok(())
+    }
+
     /// Whether the sidebar was open on the last run. `None` on a fresh
     /// install (the first launch starts closed).
     pub fn get_ui_sidebar_visible(&self) -> Option<bool> {

@@ -655,10 +655,17 @@ fn render_control(
                 .with_child(slider)
                 .finish()
         }
-        ControlModel::KeyChips { keys, action } => {
+        ControlModel::KeyChips {
+            keys,
+            action,
+            add_action,
+        } => {
             let chip = SettingsKeyChip::new(keys.clone()).finish();
             let mut parts: Vec<Box<dyn Element>> = vec![chip];
             if let Some(action) = action {
+                parts.push(icon_action_button(app, action, actions));
+            }
+            if let Some(action) = add_action {
                 parts.push(icon_action_button(app, action, actions));
             }
             Flex::row()

@@ -159,6 +159,15 @@ impl UiState {
                 .collect();
         }
         self.settings.update_view = self.update_view.clone();
+        if self.settings.shortcuts.is_empty() {
+            if let Some(json) = desktop.get_ui_shortcuts() {
+                if let Ok(map) =
+                    serde_json::from_str::<std::collections::BTreeMap<String, Vec<String>>>(&json)
+                {
+                    self.settings.shortcuts = map;
+                }
+            }
+        }
         // The pages that read ~/.ssh (Hosts) share the one read; the page asks
         // for it when it is first shown, not while it draws.
         if self.settings.ssh_hosts.is_none() {

@@ -138,6 +138,9 @@ pub enum SideTabKind {
     /// The active pane's working-tree review: the changed-file rail and the
     /// diff, inside the panel like Terminal and Side Question (Q).
     Review,
+    /// A freshly opened, not-yet-chosen tab. It shows Overview's launcher and
+    /// is replaced by the first kind chosen from it.
+    NewTab,
 }
 
 impl SideTabKind {
@@ -150,6 +153,7 @@ impl SideTabKind {
             Self::Terminal => "Terminal",
             Self::TaskOutput => "Task output",
             Self::Review => "Review",
+            Self::NewTab => "New tab",
         }
     }
 
@@ -162,6 +166,7 @@ impl SideTabKind {
             Self::Terminal => "terminal",
             Self::TaskOutput => "terminal-input",
             Self::Review => "file",
+            Self::NewTab => "plus",
         }
     }
 }

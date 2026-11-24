@@ -229,6 +229,12 @@ pub struct SettingsUiState {
     pub shortcuts_search: String,
     /// Whether the Shortcuts page's search field has the caret.
     pub shortcuts_search_focused: bool,
+    /// Custom chords added on the Shortcuts page, keyed by the binding label.
+    pub shortcuts: BTreeMap<String, Vec<String>>,
+    /// The binding label whose inline recorder is open.
+    pub shortcuts_recording: Option<String>,
+    /// The chord chips recorded so far.
+    pub shortcuts_recorded: Vec<String>,
     /// The notice above the page.
     pub notice: Option<SettingsNotice>,
     /// The last outcome line under the page header.
@@ -338,6 +344,9 @@ impl Default for SettingsUiState {
             search_focused: false,
             shortcuts_search: String::new(),
             shortcuts_search_focused: false,
+            shortcuts: BTreeMap::new(),
+            shortcuts_recording: None,
+            shortcuts_recorded: Vec::new(),
             notice: None,
             status: None,
             busy: false,
@@ -656,6 +665,17 @@ pub enum SettingsAction {
     /// the handler reports that instead of deleting anything; the binding id
     /// names the row the user pressed.
     ShortcutRemap(String),
+    /// Open the inline recorder under one shortcut row.
+    ShortcutAdd(String),
+    /// Close the recorder without changing the binding.
+    ShortcutCancel,
+    /// One captured key event while the recorder is open.
+    ShortcutCapture {
+        key: String,
+        modifiers: Vec<String>,
+    },
+    /// Remove a custom chord, restoring the built-in binding.
+    ShortcutDelete(String),
 
     // ---- scalar rows (paths are `[section, key]`; see `fields.rs`) ------
     SetToggle {

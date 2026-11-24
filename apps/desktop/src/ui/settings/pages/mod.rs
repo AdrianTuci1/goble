@@ -287,7 +287,7 @@ pub fn control_text(row: &RowModel) -> String {
             options, selected, ..
         } => options.get(*selected).cloned().unwrap_or_default(),
         ControlModel::ReadOnly { text } => text.clone(),
-        ControlModel::KeyChips { keys, action } => {
+        ControlModel::KeyChips { keys, action, .. } => {
             let mut text = keys.join(" + ");
             if let Some(action) = action {
                 text.push_str(" · ");

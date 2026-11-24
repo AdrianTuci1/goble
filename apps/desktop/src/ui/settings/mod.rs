@@ -174,6 +174,35 @@ pub fn settings_key_with_close(
     key: &str,
     modifiers: ModifiersState,
 ) -> bool {
+    // 368: while the inline recorder is up it owns every key, including the
+    // app's own chords, and reports the chord instead of running it.
+    if state.shortcuts_recording.is_some() {
+        if key == "Escape" {
+            dispatch_action(dispatch, SettingsAction::ShortcutCancel);
+            return true;
+        }
+        let mut chord_modifiers = Vec::new();
+        if modifiers.command {
+            chord_modifiers.push("⌘".to_string());
+        }
+        if modifiers.ctrl {
+            chord_modifiers.push("⌃".to_string());
+        }
+        if modifiers.alt {
+            chord_modifiers.push("⌥".to_string());
+        }
+        if modifiers.shift {
+            chord_modifiers.push("⇧".to_string());
+        }
+        dispatch_action(
+            dispatch,
+            SettingsAction::ShortcutCapture {
+                key: key.to_string(),
+                modifiers: chord_modifiers,
+            },
+        );
+        return true;
+    }
     if modifiers.command || modifiers.ctrl || modifiers.alt {
         return false;
     }

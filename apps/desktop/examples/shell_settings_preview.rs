@@ -412,6 +412,18 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::Advanced,
             ),
             (
+                "settings-shortcuts-record",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::Shortcuts,
+            ),
+            (
+                "side-tab-new",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "settings-narrow",
                 vec2f(700.0, 900.0),
                 true,
@@ -704,6 +716,18 @@ fn main() -> anyhow::Result<()> {
                 if name == "composer-permissions-open" {
                     let pane = s.active_pane_id;
                     *s.pane_controls_mut(pane).approval_menu_open.borrow_mut() = true;
+                }
+                if name == "settings-shortcuts-record" {
+                    s.settings.shortcuts_recording = Some("Command palette".to_string());
+                    s.settings.shortcuts_recorded = vec!["⌘".to_string(), "K".to_string()];
+                }
+                if name == "side-tab-new" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Overview,
+                        goble_app::state::SideTabKind::NewTab,
+                    ];
+                    s.active_side_tab = 1;
                 }
                 if name == "settings-select-open" {
                     let (open, _) = s.settings.select_menu("app.approval_mode");

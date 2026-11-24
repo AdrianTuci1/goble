@@ -600,8 +600,9 @@ pub fn build_chrome_row(
         let tab_strip: Box<dyn Element> = if has_tabs {
             TabStripScroller::new(app, state, actions).finish()
         } else {
-            // 294: an empty panel still shows the "+" beside Start.
-            side_tab_add_menu(app, state, actions)
+            // With no open tab the panel shows the Overview menu in its body;
+            // the "+" is not part of the bar in that state.
+            Empty::new().finish()
         };
         let on_close = actions.on_toggle_right_sidebar.clone();
         // The general topbar keeps only the chips plus maximize and the
@@ -869,15 +870,17 @@ fn side_tab_add_menu(
         let mut flag = open.borrow_mut();
         *flag = !*flag;
     };
+    let active = *state.side_tab_add_menu_open.borrow();
     let button = Tooltip::new(
         TopbarButton::new(
             Icon::new("plus")
                 .with_size(14.0)
-                .with_theme_color(ColorToken::Muted, app)
+                .with_theme_color(ColorToken::Text, app)
                 .finish(),
         )
         .with_size(28.0)
         .with_corner_radius(7.0)
+        .with_active(active)
         .with_on_click(toggle)
         .finish(),
         "Add tab",
@@ -895,7 +898,7 @@ fn build_add_tab_surface(app: &AppContext, actions: &UiActions) -> Box<dyn Eleme
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(4.0)
         .with_child(
-            Text::new("Start")
+            Text::new("Overview")
                 .with_font_size(14.0)
                 .with_weight(FontWeight::Medium)
                 .with_theme_color(ColorToken::Text, app)

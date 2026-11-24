@@ -55,7 +55,7 @@ pub fn build_crons_drawer(
                 .finish(),
         );
     }
-    for cron in &state.crons {
+    for (index, cron) in state.crons.iter().enumerate() {
         list = list.with_child(build_cron_row(app, cron, actions));
     }
 
@@ -204,7 +204,7 @@ pub fn build_automations_popover(
                 .finish(),
         );
     }
-    for cron in &state.crons {
+    for (index, cron) in state.crons.iter().enumerate() {
         let toggle_id = cron.id.clone();
         let on_toggle = actions.on_cron_toggle.clone();
         let toggle = Switch::new()
@@ -236,11 +236,13 @@ pub fn build_automations_popover(
                     .finish(),
             )
             .finish();
-        list = list.with_child(
-            Container::new(row)
-                .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
-                .finish(),
-        );
+        let mut row = Container::new(row).with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0));
+        if state.automations_highlight == index {
+            row = row
+                .with_background(Fill::Solid(app.theme.color(ColorToken::Selected)))
+                .with_corner_radius(6.0);
+        }
+        list = list.with_child(row.finish());
     }
     let on_create = actions.on_cron_create.clone();
     let new_row = HoverRow::new(
@@ -266,6 +268,14 @@ pub fn build_automations_popover(
     .with_corner_radius(7.0)
     .with_on_click(move || (on_create.borrow_mut())())
     .finish();
+    let new_row = if state.automations_highlight == state.crons.len() {
+        Container::new(new_row)
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Selected)))
+            .with_corner_radius(6.0)
+            .finish()
+    } else {
+        new_row
+    };
     let column = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)

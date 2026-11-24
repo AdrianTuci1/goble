@@ -717,6 +717,8 @@ pub struct UiState {
     pub conversations_add_menu_open: Rc<RefCell<bool>>,
     /// The sidebar Automations popover.
     pub automations_open: bool,
+    /// Keyboard row in the Automations popover (`crons.len()` = New automation).
+    pub automations_highlight: usize,
     /// Whether the composer's project pill menu is up.
     pub project_menu_open: Rc<RefCell<bool>>,
     /// The chat transcript's changed-files card fold, shared across rebuilds.

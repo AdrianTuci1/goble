@@ -322,6 +322,7 @@ impl UiState {
             sidebar_add_menu_open: Rc::new(RefCell::new(false)),
             conversations_add_menu_open: Rc::new(RefCell::new(false)),
             automations_open: false,
+            automations_highlight: 0,
             project_menu_open: Rc::new(RefCell::new(false)),
             changed_files_open: Rc::new(RefCell::new(false)),
             settings_overlay_open: false,

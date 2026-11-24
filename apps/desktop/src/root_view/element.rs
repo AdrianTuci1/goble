@@ -256,6 +256,51 @@ impl Element for RootView {
                 }
             }
         }
+        // 349: the Automations popover owns Up/Down/Enter while it is open.
+        if let DispatchedEvent::KeyDown { key, .. } = event {
+            if self.state.borrow().automations_open {
+                if let Some(actions) = &self.actions {
+                    match key.as_str() {
+                        "ArrowDown" | "ArrowUp" => {
+                            let mut state = self.state.borrow_mut();
+                            let len = state.crons.len() + 1;
+                            let delta = if key == "ArrowDown" { 1 } else { -1 };
+                            let current = if state.automations_highlight < len {
+                                state.automations_highlight as i32
+                            } else if delta > 0 {
+                                -1
+                            } else {
+                                len as i32
+                            };
+                            state.automations_highlight =
+                                (current + delta).rem_euclid(len as i32) as usize;
+                            self.redraw_requested = true;
+                            return true;
+                        }
+                        "Enter" => {
+                            let (index, enabled, id) = {
+                                let state = self.state.borrow();
+                                let index = state.automations_highlight;
+                                let cron = state.crons.get(index);
+                                (
+                                    index,
+                                    cron.map(|cron| cron.enabled),
+                                    cron.map(|cron| cron.id.clone()),
+                                )
+                            };
+                            if let (Some(enabled), Some(id)) = (enabled, id) {
+                                (actions.on_cron_toggle.borrow_mut())(id, !enabled);
+                            } else if index >= self.state.borrow().crons.len() {
+                                (actions.on_cron_create.borrow_mut())();
+                            }
+                            self.redraw_requested = true;
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         // Global shortcuts (warp-new style pane splitting + pane focus
         // navigation + the command palette). These are handled before the tree
         // so a focused composer cannot swallow the keys.

@@ -3289,6 +3289,7 @@ pub fn make_actions(
         on_toggle_automations: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_automations.borrow_mut();
             state.automations_open = !state.automations_open;
+            state.automations_highlight = usize::MAX;
         })),
         on_cron_toggle: Rc::new(RefCell::new(move |id: String, enabled: bool| {
             let mut state = on_cron_toggle.borrow_mut();

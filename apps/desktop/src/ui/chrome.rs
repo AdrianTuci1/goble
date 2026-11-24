@@ -1195,11 +1195,20 @@ impl Element for TabStripScroller {
                 DispatchedEvent::MouseMove { position } => {
                     if let Some(origin) = self.origin {
                         let x = position.x - origin.x();
-                        let mut target = self.tabs.saturating_sub(1);
-                        for index in 0..self.tabs {
-                            if x < self.chip_left(index) + self.widths[index] / 2.0 {
-                                target = index;
-                                break;
+                        // A real click carries a little pointer jitter. Keep it
+                        // a click until the pointer is clearly dragging, or a
+                        // chip would reorder instead of switching content.
+                        let mut target = if (x - start).abs() > 4.0 {
+                            self.tabs.saturating_sub(1)
+                        } else {
+                            from
+                        };
+                        if (x - start).abs() > 4.0 {
+                            for index in 0..self.tabs {
+                                if x < self.chip_left(index) + self.widths[index] / 2.0 {
+                                    target = index;
+                                    break;
+                                }
                             }
                         }
                         self.drag = Some((start, from, target));

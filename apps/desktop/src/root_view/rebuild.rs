@@ -330,10 +330,21 @@ impl RootView {
             // cache lives beside the state, so a frame that changes nothing
             // reads no directory.
             let explorer_root = s.active_working_directory();
+            // 322: an Explorer pane in the workspace reads the same tree as the
+            // old sidebar explorer, so the cache is live when either surface is
+            // on screen.
+            let explorer_visible = s.sidebar_view == SidebarView::Explorer
+                || s.spaces.iter().any(|space| {
+                    let mut leaves = Vec::new();
+                    space.root.leaves(&mut leaves);
+                    leaves
+                        .iter()
+                        .any(|(_, kind)| matches!(kind, crate::state::PaneKind::Explorer))
+                });
             let explorer_rows = self.explorer.borrow_mut().rows(
                 &explorer_root,
                 &s.explorer_expanded,
-                s.sidebar_view == SidebarView::Explorer,
+                explorer_visible,
             );
             // Every file view on screen reads its file here, once — when the
             // file changed — instead of per frame in the element tree, and the

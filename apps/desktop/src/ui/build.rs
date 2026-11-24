@@ -4078,6 +4078,64 @@ mod tests {
         );
     }
 
+    /// 323: a click with a little pointer jitter still switches the tab; it
+    /// must not be mistaken for a reorder drag.
+    #[test]
+    fn a_side_tab_click_with_jitter_still_switches() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![
+                crate::state::SideTabKind::Agent,
+                crate::state::SideTabKind::Files,
+            ];
+            s.active_side_tab = 1;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let chip = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Side Question" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Side Question chip");
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: chip + vec2f(4.0, 4.0),
+                button: 0,
+            },
+            DispatchedEvent::MouseMove {
+                position: chip + vec2f(6.0, 4.0),
+            },
+            DispatchedEvent::MouseUp {
+                position: chip + vec2f(6.0, 4.0),
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert_eq!(
+            state.borrow().active_side_tab_kind(),
+            crate::state::SideTabKind::Agent,
+            "the click switches to the pressed chip"
+        );
+        assert_eq!(
+            state.borrow().side_tabs,
+            vec![
+                crate::state::SideTabKind::Agent,
+                crate::state::SideTabKind::Files
+            ],
+            "jitter does not reorder the strip"
+        );
+    }
+
     /// 297: dragging a chip reorders the strip and keeps the selected tab.
     #[test]
     fn dragging_a_side_tab_chip_reorders_the_strip() {
@@ -4232,6 +4290,44 @@ mod tests {
             crate::state::SideTabKind::Files
         );
         assert!(!*state.borrow().side_tab_add_menu_open.borrow());
+    }
+
+    /// 322: the workspace Explorer reads its tree and a file row opens that
+    /// file in the side panel.
+    #[test]
+    fn the_workspace_explorer_lists_real_rows_and_opens_a_file_sideways() {
+        let app = AppContext::default();
+        let (mut root, state, dir) = app_root();
+        let file = dir.path().join("alpha.txt");
+        std::fs::write(&file, "hello").expect("seed explorer file");
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.spaces[0].set_leaf_kind(1, crate::state::PaneKind::Explorer);
+            s.pane_sessions.entry(1).or_default().path = dir.path().to_string_lossy().to_string();
+        }
+        let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        let origin = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "alpha.txt" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the explorer lists the real file");
+        click(&mut root, &app, origin + vec2f(10.0, 5.0));
+        assert_eq!(
+            state.borrow().side_file.as_deref(),
+            Some(file.to_string_lossy().as_ref()),
+            "the file row opens the file in the side panel"
+        );
+        assert!(
+            state.borrow().right_sidebar_open,
+            "opening a file reveals the side panel"
+        );
     }
 
     /// 285: the Files tab's explorer control opens the real explorer in the

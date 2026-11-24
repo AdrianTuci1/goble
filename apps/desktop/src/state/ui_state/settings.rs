@@ -170,8 +170,13 @@ impl UiState {
         self.auto_save_on_close = desktop.get_auto_save_on_close();
         self.refresh_llm_models(desktop);
         self.refresh_remote_agents(Some(desktop));
-        self.settings.page = self.settings_page();
-        self.settings.nav_index = SettingsState::nav_index_of(self.settings.page);
+        // 320: the settings sheet can be an overlay, with no settings leaf to
+        // carry the page. A write/reload must not reset the user's page in that
+        // case; only a real pane-owned settings tab adopts the leaf's page.
+        if self.settings_pane().is_some() {
+            self.settings.page = self.settings_page();
+            self.settings.nav_index = SettingsState::nav_index_of(self.settings.page);
+        }
         // A reload can shorten a page; keep the focused row inside it.
         let count = crate::ui::settings::pages::page_model(self.settings.page, &self.settings)
             .control_count();
@@ -435,3 +440,30 @@ pub fn update_actions(state: &mut UiState, action: &SettingsAction) -> bool {
 /// this enum's `key()` owns.
 #[allow(dead_code)]
 fn _preset(_: ThemePreset) {}
+
+#[cfg(test)]
+mod overlay_page_tests {
+    use super::*;
+
+    /// 320: the settings sheet is an overlay with no settings leaf; a settings
+    /// write/reload must keep the page and row it was showing instead of
+    /// falling back to General.
+    #[test]
+    fn refreshing_settings_keeps_an_overlay_page_and_row() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = std::sync::Arc::new(DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let mut state = UiState::mock();
+        state.settings.page = crate::ui::SettingsCategory::Appearance;
+        state.settings.row_index = 2;
+        state.refresh_settings(&desktop);
+        assert_eq!(
+            state.settings.page,
+            crate::ui::SettingsCategory::Appearance,
+            "the overlay keeps its page"
+        );
+        assert_eq!(state.settings.row_index, 2, "the overlay keeps its row");
+    }
+}

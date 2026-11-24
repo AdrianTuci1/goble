@@ -270,11 +270,6 @@ fn agents_view(
 
     // The spec's 8pt inset is the gap ABOVE the header; the first group row sits
     // flush under it (DSH's toolbar has no bottom margin).
-    let header = Padding::new(
-        workspaces_header(app, state, actions),
-        EdgeInsets::new(0.0, SIDEBAR_SECTION_TOP_INSET, 0.0, 0.0),
-    )
-    .finish();
 
     // The list takes the rest and scrolls inside it (its offset lives in app
     // state so it survives the per-frame rebuild).
@@ -313,7 +308,6 @@ fn agents_view(
     column = column.with_child(new_conversation);
     column = column.with_child(automations);
     column = column.with_child(customizations);
-    column = column.with_child(header);
     column = column.with_child(Expanded::new(list).finish());
     column = column.with_child(settings);
     column.finish()
@@ -342,6 +336,25 @@ fn new_conversation_row(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Elem
 
 /// The section header: "Workspaces" and its two controls (settings and new
 /// conversation). 36pt tall, 12pt inset, no magnifier.
+/// A section heading without controls: "Conversations" sits at the same level
+/// as the Projects header, in the same muted type.
+fn plain_section_header(app: &AppContext, label: &str) -> Box<dyn Element> {
+    let vertical = (SIDEBAR_HEADER_HEIGHT - SIDEBAR_HEADER_BUTTON) / 2.0;
+    let title = Text::new(label.to_string())
+        .with_font_size(SIDEBAR_TITLE_SIZE)
+        .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
+        .with_theme_color(ColorToken::Muted, app)
+        .finish();
+    Container::new(title)
+        .with_padding(EdgeInsets::new(
+            SIDEBAR_HEADER_PADDING_START,
+            vertical,
+            0.0,
+            vertical,
+        ))
+        .finish()
+}
+
 fn workspaces_header(
     app: &AppContext,
     state: &UiSnapshot,
@@ -1080,7 +1093,23 @@ fn workspaces_list(
             target: workspace.target.clone(),
         });
     }
-    sections.sort_by(|left, right| left.folder.cmp(&right.folder));
+    // A conversation that has not run in a project is its own list, under the
+    // "Conversations" heading; it is not a workspace block.
+    sections.retain(|workspace| workspace.folder != "Conversations");
+    // "The rest reorders by most recent": project groups follow the newest
+    // conversation they contain, read off the same recency order the flat list
+    // uses, not the alphabet. A stored workspace with no sessions goes last.
+    let latest_stamp = |folder: &str| -> String {
+        visible
+            .iter()
+            .filter(|entry| entry.folder == folder)
+            .map(|entry| entry.timestamp.clone())
+            .max()
+            .unwrap_or_default()
+    };
+    sections.sort_by(|left, right| {
+        latest_stamp(&right.folder).cmp(&latest_stamp(&left.folder))
+    });
     if flat_list {
         // One flat run of sessions instead of the project blocks; the manual
         // order keys off the flat section, and recency otherwise.
@@ -1110,6 +1139,48 @@ fn workspaces_list(
         }
         blocks.push(flat_block.finish());
     }
+    // The loose conversations: one "Conversations" heading at the same level as
+    // "Projects", then the newest-first rows.
+    if !flat_list {
+        let mut loose: Vec<&ConversationEntry> = visible
+            .iter()
+            .filter(|entry| entry.folder == "Conversations")
+            .copied()
+            .collect();
+        loose.sort_by(|a, b| {
+            let a_key = a.updated_at.as_deref().unwrap_or(&a.timestamp);
+            let b_key = b.updated_at.as_deref().unwrap_or(&b.timestamp);
+            b_key.cmp(a_key)
+        });
+        let mut block = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(GOBLE_ROW_GAP)
+            .with_child(plain_section_header(app, "Conversations"));
+        let group_ids: Vec<String> = loose.iter().map(|entry| entry.id.clone()).collect();
+        for entry in &loose {
+            if !shown_ids.contains(entry.id.as_str()) {
+                continue;
+            }
+            block = block.with_child(session_row(
+                app,
+                state,
+                actions,
+                entry,
+                "conversations",
+                &group_ids,
+            ));
+        }
+        blocks.push(block.finish());
+        // The Projects section follows, with its view-options and add controls.
+        blocks.push(
+            Padding::new(
+                workspaces_header(app, state, actions),
+                EdgeInsets::new(0.0, SIDEBAR_SECTION_TOP_INSET, 0.0, 0.0),
+            )
+            .finish(),
+        );
+    }
+
     for workspace in sections.iter().filter(|_| !flat_list) {
         let entries: Vec<&ConversationEntry> = visible
             .iter()

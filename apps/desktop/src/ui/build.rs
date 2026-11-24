@@ -3539,16 +3539,16 @@ mod tests {
             })
             .collect();
         for label in [
-            "Start",
-            "Overview",
+            "Search or enter a URL",
             "Review",
-            "Files",
+            "Open File",
             "Terminal",
             "Side Question",
+            "Plugins",
         ] {
             assert!(
                 texts.contains(&label),
-                "the Start surface lists {label:?}: {texts:?}"
+                "the Overview home lists {label:?}: {texts:?}"
             );
         }
         assert!(
@@ -4349,20 +4349,24 @@ mod tests {
             })
             .collect();
         assert!(
-            texts.iter().any(|text| *text == "Start"),
-            "the in-panel launcher is shown: {texts:?}"
+            texts.iter().any(|text| *text == "Search or enter a URL"),
+            "the in-panel Overview launcher is shown: {texts:?}"
         );
-        let files = commands
+        let terminal = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "Files" => Some(*origin),
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Terminal" && origin.y > crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(*origin)
+                }
                 _ => None,
             })
-            .expect("the Files row");
-        click(&mut root, &app, files + vec2f(8.0, 6.0));
+            .expect("the Overview Terminal row");
+        click(&mut root, &app, terminal + vec2f(8.0, 6.0));
         assert_eq!(
             state.borrow().active_side_tab_kind(),
-            crate::state::SideTabKind::Files
+            crate::state::SideTabKind::Terminal
         );
         assert!(!*state.borrow().side_tab_add_menu_open.borrow());
     }

@@ -368,7 +368,7 @@ fn conversations_header(
         .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
         .with_theme_color(ColorToken::Muted, app)
         .finish();
-    let add = SidebarIconButton::new(SIDEBAR_ICON_PROJECT_ADD)
+    let add = SidebarIconButton::new(SIDEBAR_ICON_NEW_CHAT)
         .with_button_size(SIDEBAR_HEADER_BUTTON)
         .with_icon_size(SIDEBAR_HEADER_ICON)
         .with_radius(12.0)

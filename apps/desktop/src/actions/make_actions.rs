@@ -257,6 +257,7 @@ pub fn make_actions(
     let on_create_focus_change = Rc::clone(&state);
     let on_create_submit = Rc::clone(&state);
     let on_toggle_sidebar = Rc::clone(&state);
+    let desktop_toggle_sidebar = desktop.clone();
     let on_diff_panel = Rc::clone(&state);
     let desktop_diff_panel = desktop.clone();
     let on_file_menu = Rc::clone(&state);
@@ -558,6 +559,8 @@ pub fn make_actions(
     let on_remove_authorized_key = Rc::clone(&state);
     let on_config_llm_key = Rc::clone(&state);
     let on_open_config_file = Rc::clone(&state);
+    let on_open_models_settings = Rc::clone(&state);
+    let desktop_open_models_settings = desktop.clone();
     let on_choose_workspace = Rc::clone(&state);
     let on_open_remote_settings = Rc::clone(&state);
     let on_close_llm_dialog = Rc::clone(&state);
@@ -2554,6 +2557,11 @@ pub fn make_actions(
             // visibility preference for the wide layout (DSH's
             // `narrowExpanded`); above it, it is the ordinary toggle.
             state.toggle_sidebar_responsive();
+            if let Some(desktop) = desktop_toggle_sidebar.as_deref() {
+                if let Err(error) = desktop.set_ui_sidebar_visible(state.sidebar_visible) {
+                    log::warn!("set_ui_sidebar_visible failed: {error}");
+                }
+            }
         })),
         on_toggle_conversations_expanded: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_conversations_expanded.borrow_mut();
@@ -3005,6 +3013,14 @@ pub fn make_actions(
             let mut state = on_settings.borrow_mut();
             state.settings_overlay_open = true;
             if let Some(desktop) = desktop_settings.as_deref() {
+                state.refresh_settings(desktop);
+            }
+        })),
+        on_open_models_settings: Rc::new(RefCell::new(move || {
+            let mut state = on_open_models_settings.borrow_mut();
+            state.settings.page = crate::ui::SettingsCategory::Providers;
+            state.settings_overlay_open = true;
+            if let Some(desktop) = desktop_open_models_settings.as_deref() {
                 state.refresh_settings(desktop);
             }
         })),

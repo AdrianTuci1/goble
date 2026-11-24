@@ -239,6 +239,7 @@ fn a_restored_tab_starts_on_its_own_environment() {
         s.show_workspace_choice = false;
         s.show_llm_key_banner = false;
         s.show_onboarding_tip = false;
+        s.sidebar_visible = true;
         let id = s.next_pane_id;
         s.next_pane_id += 1;
         s.spaces.push(

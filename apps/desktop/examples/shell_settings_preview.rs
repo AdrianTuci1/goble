@@ -346,6 +346,18 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "chat-scroll-rail-hover",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "chat-no-model",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "automations-popover",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -763,6 +775,11 @@ fn main() -> anyhow::Result<()> {
                         .messages
                         .push(message);
                 }
+                if name == "chat-no-model" {
+                    s.show_llm_key_banner = true;
+                    s.settings_llm_api_key = "preview-key".to_string();
+                    s.settings_llm_provider.clear();
+                }
                 if name == "automations-popover" {
                     s.automations_open = true;
                     s.crons = vec![
@@ -900,6 +917,19 @@ fn main() -> anyhow::Result<()> {
             let _ = raster::render_element_to_png(
                 &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
             );
+            if name == "chat-scroll-rail-hover" {
+                let _ = raster::render_element_to_png_at(
+                    &assets,
+                    &app,
+                    &mut root,
+                    size.x,
+                    size.y,
+                    1.0,
+                    vec2f(270.0, 500.0),
+                    None,
+                    &path,
+                );
+            }
             if name == "settings-wide" || name == "settings-long" {
                 let _ = raster::render_element_to_png_at(
                     &assets,

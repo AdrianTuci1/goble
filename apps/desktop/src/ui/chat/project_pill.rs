@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use goble_ui::elements::{
     AppContext, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element, Flex, HoverRow,
-    Icon, MainAxisSize, PopupMenu, PopupMenuPosition, Text,
+    Icon, MainAxisSize, PopupMenu, PopupMenuPosition, Spacer, Text,
 };
 use goble_ui::elements::{EventContext, LayoutContext, PaintContext, Point, SizeConstraint};
 use goble_ui::event::DispatchedEvent;
@@ -75,7 +75,14 @@ pub(crate) fn build_project_pill(
         project_menu::on_select(&menu_actions, ProjectMenuContext::Composer, index)
     })
     .finish();
-    DeferredProjectMenu::new(menu, state.project_menu_open.clone()).finish()
+    let menu = DeferredProjectMenu::new(menu, state.project_menu_open.clone()).finish();
+    // 355: the pill sits at the composer's trailing edge, above the footer.
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(Spacer::new().finish())
+        .with_child(menu)
+        .finish()
 }
 
 /// The pill paints inline; its open menu is also queued on the frame's last

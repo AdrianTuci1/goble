@@ -2771,41 +2771,134 @@ fn side_body_with_rail(
 }
 
 fn side_tasks_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
-    let _ = actions;
-    let terminal_count = state.terminal.borrow().sessions.len();
+    let terminal_ids: Vec<u64> = {
+        let sessions = state.terminal.borrow();
+        let mut ids: Vec<u64> = sessions.sessions.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    };
+    let active_index = terminal_ids
+        .iter()
+        .position(|id| *id == state.active_pane_id)
+        .unwrap_or(0);
+    let previous = terminal_ids
+        .get(
+            active_index
+                .wrapping_sub(1)
+                .min(terminal_ids.len().saturating_sub(1)),
+        )
+        .copied();
+    let next = terminal_ids
+        .get((active_index + 1) % terminal_ids.len().max(1))
+        .copied();
+    let activate = actions.on_pane_activate.clone();
+    let prev_button = TopbarButton::new(
+        Icon::new("chevron-up")
+            .with_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(20.0)
+    .with_on_click(move || {
+        if let Some(id) = previous {
+            (activate.borrow_mut())(id);
+        }
+    })
+    .finish();
+    let activate_next = actions.on_pane_activate.clone();
+    let next_button = TopbarButton::new(
+        Icon::new("chevron-down")
+            .with_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(20.0)
+    .with_on_click(move || {
+        if let Some(id) = next {
+            (activate_next.borrow_mut())(id);
+        }
+    })
+    .finish();
+    let mut header = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(muted_line(app, "Terminals"))
+        .with_child(Spacer::new().finish())
+        .with_child(prev_button)
+        .with_child(next_button)
+        .finish();
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(1.0)
-        .with_child(muted_line(app, "Terminals"));
-    for index in 0..terminal_count.max(1) {
-        let selected = index == 0;
-        column = column.with_child(
-            HoverRow::new(
-                Container::new(
-                    Text::new("zsh")
+        .with_child(header);
+    for (index, id) in terminal_ids.iter().enumerate() {
+        let title = state
+            .pane_titles
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| "Terminal".to_string());
+        let on_activate = actions.on_pane_activate.clone();
+        let activate_id = *id;
+        let on_close = actions.on_close_pane.clone();
+        let on_close_activate = actions.on_pane_activate.clone();
+        let close = Tooltip::new(
+            TopbarButton::new(
+                Icon::new("x")
+                    .with_size(10.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(18.0)
+            .with_on_click(move || {
+                (on_close_activate.borrow_mut())(activate_id);
+                (on_close.borrow_mut())();
+            })
+            .finish(),
+            "Close terminal",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish();
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Expanded::new(
+                    Text::new(title)
                         .with_font_family(FontFamily::Mono)
                         .with_font_size(12.0)
                         .with_theme_color(ColorToken::Text, app)
+                        .with_max_lines(1)
                         .finish(),
                 )
-                .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
                 .finish(),
             )
-            .with_selected(selected)
+            .with_child(close)
+            .finish();
+        column = column.with_child(
+            HoverRow::new(
+                Container::new(row)
+                    .with_padding(EdgeInsets::new(4.0, 8.0, 4.0, 4.0))
+                    .finish(),
+            )
+            .with_selected(index == active_index && *id == state.active_pane_id)
+            .with_on_click(move || (on_activate.borrow_mut())(activate_id))
             .finish(),
         );
     }
-    column = column.with_child(
-        Container::new(muted_line(app, "Background Tasks"))
-            .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
-            .finish(),
-    );
     let tasks = state
         .pane_live_work
         .get(&state.active_pane_id)
         .cloned()
         .unwrap_or_default();
+    // 359: no tasks means no Background Tasks heading at all.
+    if !tasks.is_empty() {
+        column = column.with_child(
+            Container::new(muted_line(app, "Background Tasks"))
+                .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
+                .finish(),
+        );
+    }
     for task in &tasks {
         let icon = if task.description.contains("failed") {
             "x-circle"

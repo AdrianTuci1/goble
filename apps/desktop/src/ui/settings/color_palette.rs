@@ -1644,18 +1644,22 @@ fn palette_panel(
         .with_child(reset)
         .finish();
 
-    let grid = ColorGrid::new(
-        entries.to_vec(),
-        selected,
-        highlight,
-        actions.dispatch.clone(),
-        path.clone(),
-        Rc::clone(&state.color_palette_menu),
-        channel,
-    )
-    .finish();
+    // 362: the DSH control is the saturation/value square and the full-width
+    // hue strip, not a preset grid. The hex field still writes exact values.
+    let picker_dispatch = actions.dispatch.clone();
+    let picker_path = path.clone();
+    let picker =
+        crate::ui::color_picker::HsvBarPicker::new(channel_color(&state, channel_key(channel)))
+            .with_drag(Rc::clone(&state.color_picker_drag))
+            .with_on_change(move |color| {
+                (picker_dispatch.borrow_mut())(SettingsAction::SetText {
+                    path: picker_path.clone(),
+                    value: color.to_hex_string(),
+                });
+            })
+            .finish();
 
-    let hint = Text::new("Preset colours from the active palette · type #rrggbb to override.")
+    let hint = Text::new("Drag the square for saturation/value, the strip for hue · type #rrggbb for an exact value.")
         .with_font_size(11.0)
         .with_line_height(1.35)
         .with_color(app.theme.color(ColorToken::Muted))
@@ -1666,7 +1670,7 @@ fn palette_panel(
         .with_spacing(8.0)
         .with_child(header)
         .with_child(hex_row)
-        .with_child(grid)
+        .with_child(picker)
         .with_child(hint)
         .finish();
     ConstrainedBox::new(

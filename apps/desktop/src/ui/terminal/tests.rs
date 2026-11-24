@@ -446,6 +446,7 @@ fn shell_root() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
         let mut s = state.borrow_mut();
         s.show_workspace_choice = false;
         s.show_llm_key_banner = false;
+        s.sidebar_visible = true;
         s.right_sidebar_open = false;
         s.crons_open = false;
         s.spaces = vec![Space::new(
@@ -492,6 +493,7 @@ fn chat_root() -> (Box<dyn Element>, tempfile::TempDir) {
         let mut s = state.borrow_mut();
         s.show_workspace_choice = false;
         s.show_llm_key_banner = false;
+        s.sidebar_visible = true;
         s.right_sidebar_open = false;
         s.crons_open = false;
         s.terminal

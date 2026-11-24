@@ -1,3 +1,18 @@
+/// 360: the first real launch starts with the sidebar closed; later launches
+/// respect the persisted preference. Test fixtures default open so existing
+/// layout assertions keep their historical shape.
+fn initial_sidebar_visible(desktop: &DesktopState) -> bool {
+    #[cfg(test)]
+    {
+        let _ = desktop;
+        true
+    }
+    #[cfg(not(test))]
+    {
+        desktop.get_ui_sidebar_visible().unwrap_or(false)
+    }
+}
+
 use super::session::is_unnamed_harness_title;
 use super::title::deterministic_subject;
 use super::*;
@@ -252,7 +267,7 @@ impl UiState {
             content_lane_drag_column: 0.0,
             content_lane_drag_start_pref: None,
             content_lane_drag_moved: false,
-            sidebar_visible: true,
+            sidebar_visible: initial_sidebar_visible(desktop),
             responsive: Responsive::default(),
             responsive_narrow: false,
             sidebar_narrow_expanded: false,

@@ -437,11 +437,11 @@ impl Element for RootView {
         // 349: an outside press dismisses the Automations popover.
         if self.state.borrow().automations_open {
             if let DispatchedEvent::MouseDown { position, .. } = event {
-                let left = crate::ui::SIDEBAR_WIDTH + 8.0;
+                let left = crate::ui::SIDEBAR_WIDTH + 24.0;
                 let inside = position.x >= left
-                    && position.x <= left + 300.0
-                    && position.y >= 62.0
-                    && position.y <= 482.0;
+                    && position.x <= left + 480.0
+                    && position.y >= 56.0
+                    && position.y <= 696.0;
                 if !inside {
                     self.state.borrow_mut().automations_open = false;
                     self.redraw_requested = true;

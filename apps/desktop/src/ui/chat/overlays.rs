@@ -92,8 +92,20 @@ pub(crate) fn build_agent_error(
     actions: &UiActions,
     heading: &str,
 ) -> Box<dyn Element> {
-    let on_config = actions.on_open_config_file.clone();
     let md = app.theme.spacing_px(SpacingToken::Md);
+    // 357: a missing model is one announcement that takes the user to
+    // Settings -> Models; the old body line is gone.
+    let no_model = heading == "No model configured";
+    let on_action = if no_model {
+        actions.on_open_models_settings.clone()
+    } else {
+        actions.on_open_config_file.clone()
+    };
+    let action_label = if no_model {
+        "Open Models"
+    } else {
+        "Edit API keys"
+    };
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -106,12 +118,12 @@ pub(crate) fn build_agent_error(
         )
         .with_child(Spacer::new().finish())
         .with_child(
-            Button::new(Text::new("Edit API keys").finish())
+            Button::new(Text::new(action_label).finish())
                 .with_variant(ButtonVariant::Primary)
                 // The band is a square strip, so its own button is square too
                 // rather than wearing the theme's radius in the middle of it.
                 .with_corner_radius(0.0)
-                .with_on_click(move || (on_config.borrow_mut())())
+                .with_on_click(move || (on_action.borrow_mut())())
                 .finish(),
         )
         .finish();

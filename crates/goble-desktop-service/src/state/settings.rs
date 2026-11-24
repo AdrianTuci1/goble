@@ -188,8 +188,30 @@ impl DesktopState {
     /// the next launch even when no conversation has run in it yet (the folder
     /// groups the sidebar derives from `chats.working_dir` only cover
     /// directories that already hold sessions).
+    /// Whether the sidebar was open on the last run. `None` on a fresh
+    /// install (the first launch starts closed).
+    pub fn get_ui_sidebar_visible(&self) -> Option<bool> {
+        self.store
+            .lock()
+            .get_setting("ui.sidebar_visible")
+            .ok()
+            .flatten()
+            .map(|value| value == "true")
+    }
+
+    pub fn set_ui_sidebar_visible(&self, visible: bool) -> anyhow::Result<()> {
+        self.store
+            .lock()
+            .set_setting("ui.sidebar_visible", if visible { "true" } else { "false" })?;
+        Ok(())
+    }
+
     pub fn get_ui_workspaces(&self) -> Option<String> {
-        self.store.lock().get_setting("ui.workspaces").ok().flatten()
+        self.store
+            .lock()
+            .get_setting("ui.workspaces")
+            .ok()
+            .flatten()
     }
 
     /// Persist the sidebar's Workspaces list as a JSON blob, replacing any

@@ -321,6 +321,8 @@ pub struct UiActions {
     /// it, and every row, field and action inside sends its own variant.
     pub on_agent_dashboard: Rc<RefCell<dyn FnMut(AgentDashboardAction)>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
+    /// Open Settings on the Providers/Models page.
+    pub on_open_models_settings: Rc<RefCell<dyn FnMut()>>,
     pub on_close_settings_overlay: Rc<RefCell<dyn FnMut()>>,
     /// Maximize the right overview panel over the main pane, or restore it.
     pub on_toggle_side_panel_maximized: Rc<RefCell<dyn FnMut()>>,

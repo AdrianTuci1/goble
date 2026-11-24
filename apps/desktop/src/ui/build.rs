@@ -662,7 +662,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     if state.automations_open {
         stack = stack.with_overlay(
             crons::build_automations_popover(app, state, actions),
-            vec2f(crate::ui::SIDEBAR_WIDTH + 8.0, 62.0),
+            vec2f(crate::ui::SIDEBAR_WIDTH + 24.0, 56.0),
         );
     }
     // A finished turn is announced here, at the window's top layer, so the
@@ -4405,6 +4405,37 @@ mod tests {
         );
     }
 
+    /// 357: a missing model is one announcement that opens Settings → Models.
+    #[test]
+    fn the_no_model_announcement_opens_models_settings() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = true;
+            s.settings_llm_api_key = "test-key".to_string();
+            s.settings_llm_provider.clear();
+            s.settings.page = crate::ui::SettingsCategory::General;
+        }
+        let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        let button = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Open Models" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the no-model announcement links to Models");
+        click(&mut root, &app, button + vec2f(8.0, 6.0));
+        assert!(state.borrow().settings_overlay_open);
+        assert_eq!(
+            state.borrow().settings.page,
+            crate::ui::SettingsCategory::Providers
+        );
+    }
+
     /// 347/348/349/350: conversation rows carry no harness mark, and the
     /// Automations row's clock opens the real task popover with a switch.
     #[test]
@@ -4521,7 +4552,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     name, origin, size, ..
-                } if name == "project-add"
+                } if name == "new-chat"
                     && origin.x < crate::ui::SIDEBAR_WIDTH
                     && (origin.y - heading.y).abs() < 22.0 =>
                 {
@@ -4804,12 +4835,14 @@ mod tests {
                 kind,
                 crate::state::SideTabKind::Terminal | crate::state::SideTabKind::TaskOutput
             ) {
-                for header in ["Terminals", "Background Tasks"] {
-                    assert!(
-                        texts.iter().any(|text| *text == header),
-                        "{kind:?} draws the inner rail {header:?}: {texts:?}"
-                    );
-                }
+                assert!(
+                    texts.iter().any(|text| *text == "Terminals"),
+                    "{kind:?} draws the inner rail's Terminals heading: {texts:?}"
+                );
+                assert!(
+                    !texts.iter().any(|text| *text == "Background Tasks"),
+                    "{kind:?} hides the empty Background Tasks heading: {texts:?}"
+                );
             }
         }
     }

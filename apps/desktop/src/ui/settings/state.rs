@@ -251,6 +251,8 @@ pub struct SettingsUiState {
     /// build; the plain `theme_select_open` above remains the state action's
     /// record (the older page and its tests read it).
     pub theme_select_menu: Rc<RefCell<bool>>,
+    /// The HSV control's drag, app-owned so it survives the per-frame rebuild.
+    pub color_picker_drag: Rc<RefCell<Option<crate::ui::color_picker::ColorPickerDrag>>>,
     /// The theme colour channel whose palette popover is open (`None` while no
     /// channel's popover is up).
     pub color_palette_menu: Rc<RefCell<Option<usize>>>,
@@ -344,6 +346,7 @@ impl Default for SettingsUiState {
             harnesses: Vec::new(),
             theme_select_open: false,
             theme_select_menu: Rc::new(RefCell::new(false)),
+            color_picker_drag: Rc::new(RefCell::new(None)),
             color_palette_menu: Rc::new(RefCell::new(None)),
             select_open: Rc::new(RefCell::new(BTreeMap::new())),
             appearance_anchors: Rc::new(RefCell::new(AppearanceMenuAnchors::default())),

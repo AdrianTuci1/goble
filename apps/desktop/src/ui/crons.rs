@@ -296,7 +296,7 @@ pub fn build_automations_popover(
             .with_padding(EdgeInsets::uniform(10.0))
             .finish(),
     )
-    .with_width(300.0)
-    .with_max_height(420.0)
+    .with_width(480.0)
+    .with_max_height(640.0)
     .finish()
 }

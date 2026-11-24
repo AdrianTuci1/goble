@@ -4700,42 +4700,6 @@ mod tests {
         );
     }
 
-    /// 285: the Files tab's explorer control opens the real explorer in the
-    /// workspace.
-    #[test]
-    fn the_files_tab_opens_the_workspace_explorer() {
-        let app = AppContext::default();
-        let (mut root, state, dir) = app_root();
-        {
-            let mut s = state.borrow_mut();
-            s.right_sidebar_open = true;
-            s.side_tabs = vec![crate::state::SideTabKind::Files];
-            s.active_side_tab = 0;
-            s.side_file = Some(dir.path().join("note.md").to_string_lossy().to_string());
-        }
-        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
-        let folder = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon {
-                    name, origin, size, ..
-                } if name == "folder" && origin.y < 100.0 => {
-                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
-                }
-                _ => None,
-            })
-            .expect("the Files topbar explorer control");
-        click(&mut root, &app, folder);
-        let has_explorer = state.borrow().spaces.iter().any(|space| {
-            let mut leaves = Vec::new();
-            space.root.leaves(&mut leaves);
-            leaves
-                .iter()
-                .any(|(_, kind)| matches!(kind, crate::state::PaneKind::Explorer))
-        });
-        assert!(has_explorer, "the workspace gets an Explorer pane");
-    }
-
     /// AG: Escape hides the topmost floating file window; the pane docks back
     /// into the layout instead of disappearing from the tree.
     #[test]

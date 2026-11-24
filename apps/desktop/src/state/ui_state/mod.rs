@@ -755,6 +755,10 @@ pub struct UiState {
     /// pane's kind. A click anywhere that names a file sets this and activates
     /// the Files tab.
     pub side_file: Option<String>,
+    /// The most recently opened file anywhere (a chat link, the explorer, the
+    /// review list). The Files tab opens onto this file instead of its empty
+    /// state — no extra "open a file" press needed.
+    pub last_opened_file: Option<String>,
     /// The index in [`Self::side_tabs`] the panel is showing. Kept in range by
     /// the side-tab methods; a stale value falls back to Overview.
     pub active_side_tab: usize,

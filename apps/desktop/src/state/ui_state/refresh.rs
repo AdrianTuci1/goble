@@ -40,6 +40,7 @@ impl UiState {
     /// Y: open `path` in the side panel's Files tab. No pane is split or
     /// retargeted: the tab reads the file under `SIDE_FILE_PANE_ID`.
     pub fn open_file_side(&mut self, path: String) {
+        self.last_opened_file = Some(path.clone());
         self.side_file = Some(path);
         self.add_side_tab(super::SideTabKind::Files);
         self.right_sidebar_open = true;
@@ -48,8 +49,30 @@ impl UiState {
     /// Open the Files tab without naming a file (the "Open File" action keeps
     /// whatever the tab was showing, or its honest empty state).
     pub fn open_files_tab(&mut self) {
+        self.hydrate_side_file();
         self.add_side_tab(super::SideTabKind::Files);
         self.right_sidebar_open = true;
+    }
+
+    /// The Files tab always opens onto the file the user last touched or the
+    /// file the active pane shows, so it is never an empty placeholder when a
+    /// file exists to show.
+    fn hydrate_side_file(&mut self) {
+        if self.side_file.is_some() {
+            return;
+        }
+        if let Some(path) = self.last_opened_file.clone() {
+            self.side_file = Some(path);
+            return;
+        }
+        let active = self.active_pane_id;
+        if let Some(crate::state::PaneKind::File { path }) = self
+            .spaces
+            .get(self.active_space)
+            .and_then(|space| space.leaf_kind(active))
+        {
+            self.side_file = Some(path.clone());
+        }
     }
 
     /// The side panel was opened: keep the tabs and land on the one that was
@@ -67,6 +90,9 @@ impl UiState {
     /// is ignored rather than selecting a tab that is not there.
     pub fn select_side_tab(&mut self, index: usize) {
         if index < self.side_tabs.len() {
+            if self.side_tabs[index] == super::SideTabKind::Files {
+                self.hydrate_side_file();
+            }
             self.active_side_tab = index;
         }
     }
@@ -74,6 +100,9 @@ impl UiState {
     /// Add a tab kind, or show it when it is already in the strip: one tab per
     /// kind, so the "+" menu never stacks duplicates of the same pane view.
     pub fn add_side_tab(&mut self, kind: SideTabKind) {
+        if kind == SideTabKind::Files {
+            self.hydrate_side_file();
+        }
         *self.side_tab_add_menu_open.borrow_mut() = false;
         if kind != SideTabKind::NewTab {
             if let Some(index) = self
@@ -378,6 +407,7 @@ impl UiState {
             side_tabs: Vec::new(),
             side_review: None,
             side_file: None,
+            last_opened_file: None,
             active_side_tab: 0,
             side_rail_open: true,
             side_tab_add_menu_open: Rc::new(RefCell::new(false)),

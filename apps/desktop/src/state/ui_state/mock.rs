@@ -334,6 +334,7 @@ impl UiState {
             side_tabs: Vec::new(),
             side_review: None,
             side_file: None,
+            last_opened_file: None,
             active_side_tab: 0,
             side_rail_open: true,
             side_tab_add_menu_open: Rc::new(RefCell::new(false)),

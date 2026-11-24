@@ -160,6 +160,7 @@ pub(super) fn open_file_pane(
     file_path: String,
     desktop: Option<&Arc<DesktopState>>,
 ) {
+    state.last_opened_file = Some(file_path.clone());
     if state.active_pane_shows_file() {
         let active = state.active_pane_id;
         state.show_file_in_pane(active, file_path);

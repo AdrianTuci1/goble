@@ -51,7 +51,20 @@ impl UiState {
     /// whatever the tab was showing, or its honest empty state).
     pub fn open_files_tab(&mut self) {
         // The Files control opens the panel's own tree, not a pane beside the
-        // conversation.
+        // conversation: any main-pane Explorer left from the old flow is
+        // closed first, so the tree lives in exactly one place.
+        let mut leaves = Vec::new();
+        if let Some(space) = self.spaces.get(self.active_space) {
+            space.root.leaves(&mut leaves);
+        }
+        let explorers: Vec<u64> = leaves
+            .into_iter()
+            .filter(|(_, kind)| matches!(kind, crate::state::PaneKind::Explorer))
+            .map(|(id, _)| id)
+            .collect();
+        for id in explorers {
+            self.close_pane(id, None);
+        }
         self.side_files_show_explorer = true;
         self.add_side_tab(super::SideTabKind::Files);
         self.right_sidebar_open = true;

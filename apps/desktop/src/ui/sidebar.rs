@@ -297,7 +297,8 @@ fn agents_view(
     );
     let on_settings = actions.on_settings.clone();
     let settings = SidebarActionRow::new("settings", "Settings")
-        .with_label_color(ColorToken::Muted)
+        .with_label_color(ColorToken::Text)
+        .with_hovered(is_hovered(state, "sidebar.settings"))
         .with_hover_cell(state.sidebar_hover_row.clone(), "sidebar.settings")
         .with_on_click(move || (on_settings.borrow_mut())())
         .finish();
@@ -1006,15 +1007,9 @@ fn workspaces_list(
             .cmp(&left.updated_at)
             .then_with(|| left.name.cmp(&right.name))
     });
-    let shown: Vec<&ConversationEntry> = if state.conversations_expanded {
-        visible.clone()
-    } else {
-        by_recency
-            .iter()
-            .take(COLLAPSED_CONVERSATIONS)
-            .copied()
-            .collect()
-    };
+    // Every conversation is listed: the sidebar no longer collapses the list
+    // behind a "View all / Show less" row.
+    let shown: Vec<&ConversationEntry> = visible.clone();
     let shown_ids: std::collections::HashSet<&str> =
         shown.iter().map(|entry| entry.id.as_str()).collect();
 
@@ -1266,7 +1261,6 @@ fn workspaces_list(
             .finish(),
         );
     } else if shown.len() < visible.len() || state.conversations_expanded {
-        column = column.with_child(overflow_row(app, state, actions, visible.len()));
     }
 
     Padding::new(
@@ -1274,45 +1268,6 @@ fn workspaces_list(
         EdgeInsets::new(0.0, 0.0, 0.0, SIDEBAR_LIST_BOTTOM_PAD),
     )
     .finish()
-}
-
-/// The digest's "View all (n)" / "Show less" control, in the spec's 28pt
-/// overflow row: left-aligned at the group labels, no border.
-fn overflow_row(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-    total: usize,
-) -> Box<dyn Element> {
-    let on_toggle = actions.on_toggle_conversations_expanded.clone();
-    let label = if state.conversations_expanded {
-        "Show less".to_string()
-    } else {
-        format!("View all ({total})")
-    };
-    let vertical =
-        (goble_ui::elements::conversation_list_item::SIDEBAR_OVERFLOW_HEIGHT - 16.0) / 2.0;
-    let row = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_child(
-            Text::new(label)
-                .with_font_size(12.0)
-                .with_line_height(16.0 / 12.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .finish();
-    HoverRow::new(row)
-        .with_quiet_hover()
-        .with_padding(EdgeInsets::new(
-            goble_ui::elements::conversation_list_item::SIDEBAR_OVERFLOW_INDENT,
-            vertical,
-            0.0,
-            vertical,
-        ))
-        .with_on_click(move || (on_toggle.borrow_mut())())
-        .finish()
 }
 
 #[cfg(test)]

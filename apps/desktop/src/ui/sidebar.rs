@@ -356,6 +356,72 @@ fn plain_section_header(app: &AppContext, label: &str) -> Box<dyn Element> {
         .finish()
 }
 
+/// 339: the Conversations heading carries the same trailing "+" box as the
+/// Projects header. Its menu is the shared project picker, with No Project
+/// checked because a loose conversation starts outside a project.
+fn conversations_header(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let title = Text::new("Conversations")
+        .with_font_size(SIDEBAR_TITLE_SIZE)
+        .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
+        .with_theme_color(ColorToken::Muted, app)
+        .finish();
+    let add = SidebarIconButton::new(SIDEBAR_ICON_PROJECT_ADD)
+        .with_button_size(SIDEBAR_HEADER_BUTTON)
+        .with_icon_size(SIDEBAR_HEADER_ICON)
+        .with_radius(12.0)
+        .with_hovered(is_hovered(state, "header.new.conversations"))
+        .with_hover_cell(state.sidebar_hover_row.clone(), "header.new.conversations")
+        .finish();
+    let menu_actions = actions.clone();
+    let menu = PopupMenu::new(
+        Tooltip::new(add, "New conversation")
+            .with_position(TooltipPosition::Below)
+            .finish(),
+        super::project_menu::items(
+            actions,
+            super::project_menu::ProjectMenuContext::Conversations,
+            true,
+        ),
+    )
+    .with_open(state.conversations_add_menu_open.clone())
+    .with_corner_radius(12.0)
+    .with_max_width(220.0)
+    .with_row_height(34.0)
+    .with_icon_size(14.0)
+    .with_position(PopupMenuPosition::BelowEnd)
+    .with_menu_id("sidebar.add-conversation")
+    .with_on_select(move |index| {
+        super::project_menu::on_select(
+            &menu_actions,
+            super::project_menu::ProjectMenuContext::Conversations,
+            index,
+        )
+    })
+    .finish();
+    let menu = DeferredOverlay::new(menu, state.conversations_add_menu_open.clone()).finish();
+    let vertical = (SIDEBAR_HEADER_HEIGHT - SIDEBAR_HEADER_BUTTON) / 2.0;
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(app.theme.spacing_px(SpacingToken::Xs))
+        .with_child(title)
+        .with_child(Spacer::new().finish())
+        .with_child(menu)
+        .finish();
+    Container::new(row)
+        .with_padding(EdgeInsets::new(
+            SIDEBAR_HEADER_PADDING_START,
+            vertical,
+            0.0,
+            vertical,
+        ))
+        .finish()
+}
+
 fn workspaces_header(
     app: &AppContext,
     state: &UiSnapshot,
@@ -468,8 +534,6 @@ fn workspaces_header(
     // `workspace.add`): the click opens the platform's directory picker, and the
     // picked folder becomes a row under this header. The separate "New
     // conversation" row above the header is what starts a conversation.
-    let on_add_workspace = actions.on_add_workspace.clone();
-    let on_open_ssh_target = actions.on_open_ssh_target.clone();
     let add = SidebarIconButton::new(SIDEBAR_ICON_PROJECT_ADD)
         .with_button_size(SIDEBAR_HEADER_BUTTON)
         .with_icon_size(SIDEBAR_HEADER_ICON)
@@ -480,14 +544,16 @@ fn workspaces_header(
     // DSH/T3's add-workspace menu: a small anchored casing with the local
     // directory flow and the SSH host flow. The popup owns the press on the
     // trigger, so the button itself takes no click.
+    let menu_actions = actions.clone();
     let add_menu = PopupMenu::new(
         Tooltip::new(add, "Add workspace")
             .with_position(TooltipPosition::Below)
             .finish(),
-        vec![
-            PopupMenuItem::new("New Project").with_icon("folder"),
-            PopupMenuItem::new("SSH Host…").with_icon("terminal-input"),
-        ],
+        super::project_menu::items(
+            actions,
+            super::project_menu::ProjectMenuContext::Projects,
+            false,
+        ),
     )
     .with_open(state.sidebar_add_menu_open.clone())
     .with_corner_radius(12.0)
@@ -496,10 +562,12 @@ fn workspaces_header(
     .with_icon_size(14.0)
     .with_position(PopupMenuPosition::BelowEnd)
     .with_menu_id("sidebar.add-workspace")
-    .with_on_select(move |index| match index {
-        0 => (on_add_workspace.borrow_mut())(),
-        1 => (on_open_ssh_target.borrow_mut())(),
-        _ => {}
+    .with_on_select(move |index| {
+        super::project_menu::on_select(
+            &menu_actions,
+            super::project_menu::ProjectMenuContext::Projects,
+            index,
+        )
     })
     .finish();
     let add_menu = DeferredOverlay::new(add_menu, state.sidebar_add_menu_open.clone()).finish();
@@ -1102,9 +1170,7 @@ fn workspaces_list(
             .max()
             .unwrap_or_default()
     };
-    sections.sort_by(|left, right| {
-        latest_stamp(&right.folder).cmp(&latest_stamp(&left.folder))
-    });
+    sections.sort_by(|left, right| latest_stamp(&right.folder).cmp(&latest_stamp(&left.folder)));
     if flat_list {
         // One flat run of sessions instead of the project blocks; the manual
         // order keys off the flat section, and recency otherwise.
@@ -1198,21 +1264,24 @@ fn workspaces_list(
             .filter(|entry| entry.folder == "Conversations")
             .copied()
             .collect();
-        if !loose.is_empty() {
-            loose.sort_by(|a, b| {
-                let a_key = a.updated_at.as_deref().unwrap_or(&a.timestamp);
-                let b_key = b.updated_at.as_deref().unwrap_or(&b.timestamp);
-                b_key.cmp(a_key)
-            });
+        loose.sort_by(|a, b| {
+            let a_key = a.updated_at.as_deref().unwrap_or(&a.timestamp);
+            let b_key = b.updated_at.as_deref().unwrap_or(&b.timestamp);
+            b_key.cmp(a_key)
+        });
+        // 339: no loose row means no Conversations heading at all.
+        let shown: Vec<&ConversationEntry> = loose
+            .iter()
+            .copied()
+            .filter(|entry| shown_ids.contains(entry.id.as_str()))
+            .collect();
+        if !shown.is_empty() {
             let mut block = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(GOBLE_ROW_GAP)
-                .with_child(plain_section_header(app, "Conversations"));
-            let group_ids: Vec<String> = loose.iter().map(|entry| entry.id.clone()).collect();
-            for entry in &loose {
-                if !shown_ids.contains(entry.id.as_str()) {
-                    continue;
-                }
+                .with_child(conversations_header(app, state, actions));
+            let group_ids: Vec<String> = shown.iter().map(|entry| entry.id.clone()).collect();
+            for entry in shown {
                 block = block.with_child(session_row(
                     app,
                     state,
@@ -2500,25 +2569,21 @@ mod workspace_row_tests {
             .add_ssh_workspace("controlpanel", "controlpanel", Some(&desktop));
         *state.borrow().sidebar_add_menu_open.borrow_mut() = true;
         let commands = render(&mut root, &app);
+        let remote = sidebar_text(&commands, "Remote");
+        let ssh = sidebar_text(&commands, "SSH Host");
         let project = sidebar_text(&commands, "New Project");
-        let ssh = sidebar_text(&commands, "SSH Host…");
         assert!(
-            project.y < ssh.y,
-            "New Project is the first row, SSH Host… the second: {project:?} / {ssh:?}"
+            remote.y < ssh.y && ssh.y < project.y,
+            "the shared picker groups Remote, SSH Host, then New Project: {remote:?} / {ssh:?} / {project:?}"
         );
         let _badge = sidebar_icon(&commands, "environment-cloud");
 
-        // The SSH row opens the overlay on its config and focused field.
-        click(&mut root, &app, ssh + vec2f(8.0, 8.0));
-        let open = state.borrow();
-        assert!(open.ssh_target_open, "the SSH Host… row opens the overlay");
-        assert!(open.ssh_target_focused, "the target field starts focused");
-        assert!(
-            open.ssh_config_path.ends_with("/.ssh/config"),
-            "the overlay starts on the default config: {:?}",
-            open.ssh_config_path
-        );
+        // The SSH row is a submenu parent; its flyout's child owns the
+        // existing SSH target flow. The shared picker rows are what this test
+        // covers; the flow itself is exercised by the SSH overlay tests.
     }
+
+    /// The Workspaces header's "+" adds a workspace    }
 
     /// The Workspaces header's "+" adds a workspace: the picked directory is
     /// persisted (`ui.workspaces`), lists as a row, survives a restart, and is
@@ -2543,7 +2608,7 @@ mod workspace_row_tests {
         );
         let menu = render(&mut root, &app);
         sidebar_text(&menu, "New Project");
-        sidebar_text(&menu, "SSH Host…");
+        sidebar_text(&menu, "SSH Host");
         assert_eq!(
             state.borrow().spaces.len(),
             before_spaces,

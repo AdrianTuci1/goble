@@ -420,7 +420,9 @@ impl ScrollDotsRail {
         if fraction < step {
             return (0, true);
         }
-        let index = ((fraction / step).floor() as usize).saturating_sub(1).min(SCROLL_DOTS - 1);
+        let index = ((fraction / step).floor() as usize)
+            .saturating_sub(1)
+            .min(SCROLL_DOTS - 1);
         (index, false)
     }
 
@@ -489,11 +491,7 @@ impl Element for ScrollDotsRail {
             let is_active = !active_long && index == active_index;
             let is_hovered = hovered.is_some_and(|(i, long)| !long && i == index);
             let color = if is_active || is_hovered { ink } else { muted };
-            renderer.fill_rounded_rect(
-                rectf(x, y, DOT_SIZE, DOT_SIZE),
-                color,
-                DOT_SIZE / 2.0,
-            );
+            renderer.fill_rounded_rect(rectf(x, y, DOT_SIZE, DOT_SIZE), color, DOT_SIZE / 2.0);
         }
         // Hover card: a small rounded label to the right of the indicator.
         if let Some((index, long)) = hovered {
@@ -553,9 +551,7 @@ impl Element for ScrollDotsRail {
             if let Some(origin) = self.origin {
                 if (position.x - origin.x()).abs() < RAIL_WIDTH + RAIL_HOVER_GAP {
                     let long_y = origin.y() + self.long_segment_y();
-                    if position.y >= long_y - 4.0
-                        && position.y <= long_y + LONG_SEGMENT + 4.0
-                    {
+                    if position.y >= long_y - 4.0 && position.y <= long_y + LONG_SEGMENT + 4.0 {
                         self.scroll_to(Self::target_fraction(0, true));
                         return true;
                     }
@@ -1800,6 +1796,9 @@ impl ChatView {
             // the answer settles it. The turn-status row stays as the mark
             // that the turn is suspended.
             if !waiting {
+                if let Some(pill) = self.project_pill.take() {
+                    column = column.with_child(pill);
+                }
                 let composer: Box<dyn Element> = match slash_panel {
                     Some(panel) => ComposerOverlay::new(composer, Some(panel))
                         // Keep the exact anchor the in-flow band had: the

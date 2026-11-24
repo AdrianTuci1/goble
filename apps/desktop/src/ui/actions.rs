@@ -385,6 +385,13 @@ pub struct UiActions {
     /// the picked directory as a Workspace (DSH's add-workspace flow). It never
     /// creates a conversation — the separate "New conversation" row does that.
     pub on_add_workspace: Rc<RefCell<dyn FnMut()>>,
+    /// Bind the active conversation to a directory chosen from the platform
+    /// picker (the composer project pill's New Project row).
+    pub on_bind_project: Rc<RefCell<dyn FnMut()>>,
+    /// Start a new conversation in a directory chosen from the platform picker.
+    pub on_new_project_conversation: Rc<RefCell<dyn FnMut()>>,
+    /// Clear the active conversation's project (the pill's No Project row).
+    pub on_clear_project: Rc<RefCell<dyn FnMut()>>,
     /// A workspace row's New-session control: start a conversation inside that
     /// workspace's directory (DSH's `ProjectRow` create action).
     pub on_sidebar_workspace_new_session: Rc<RefCell<dyn FnMut(String, String)>>,

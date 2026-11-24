@@ -257,10 +257,7 @@ pub fn build_spotlight(
     let close = dispatch.clone();
     // The scrim only catches presses: it paints nothing at any hover state, so
     // the workspace behind the spotlight stays fully visible.
-    let scrim = Scrim::new(window, move || {
-        (close.borrow_mut())(SpotlightAction::Close)
-    })
-    .finish();
+    let scrim = Scrim::new(window, move || (close.borrow_mut())(SpotlightAction::Close)).finish();
 
     let width = (window.x * CARD_WIDTH_RATIO).clamp(520.0, 1000.0);
     let x = (window.x - width) * 0.5;
@@ -649,7 +646,9 @@ fn build_results(
     let height = if count == 0 {
         ROW_HEIGHT
     } else {
-        (count as f32 * ROW_HEIGHT).min(340.0).min((content_max_height - 52.0).max(36.0))
+        (count as f32 * ROW_HEIGHT)
+            .min(340.0)
+            .min((content_max_height - 52.0).max(36.0))
     };
     ConstrainedBox::new(
         Scrollable::new(rows.finish(), goble_ui::elements::Axis::Vertical)

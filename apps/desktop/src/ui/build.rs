@@ -4397,6 +4397,159 @@ mod tests {
         );
     }
 
+    /// 339/343: the Conversations heading only appears when loose rows exist,
+    /// carries the same "+" box, and its menu is the shared project picker with
+    /// No Project checked.
+    #[test]
+    fn conversations_heading_appears_only_with_rows_and_opens_the_shared_picker() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.conversations.clear();
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.contains(&"Conversations"),
+            "no loose rows means no Conversations heading: {texts:?}"
+        );
+
+        state.borrow_mut().conversations = vec![goble_ui::elements::ConversationEntry::new(
+            "loose-1",
+            "Loose note",
+            "Let's ship",
+            "10:42",
+        )
+        .with_folder("Conversations")];
+        let commands = render_element(&mut root, window(), &app);
+        let heading = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Conversations" && origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the loose row brings the Conversations heading back");
+        let plus = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "project-add"
+                    && origin.x < crate::ui::SIDEBAR_WIDTH
+                    && (origin.y - heading.y).abs() < 22.0 =>
+                {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the Conversations heading draws its plus");
+        click(&mut root, &app, plus);
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for label in ["Remote", "SSH Host", "New Project", "No Project"] {
+            assert!(
+                texts.contains(&label),
+                "the shared picker lists {label:?}: {texts:?}"
+            );
+        }
+    }
+
+    /// 341/343: the composer pill starts at No Project and opens the same
+    /// picker above the input.
+    #[test]
+    fn the_composer_project_pill_opens_the_shared_picker() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.set_active_pane_path(String::new());
+        }
+        let size = vec2f(1600.0, 1000.0);
+        let commands = render_element(&mut root, size, &app);
+        let pill = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "No Project" && origin.y > size.y * 0.7 =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the composer project pill");
+        click(&mut root, &app, pill + vec2f(8.0, 6.0));
+        assert!(*state.borrow().project_menu_open.borrow());
+        let commands = render_element(&mut root, size, &app);
+        let project_row = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "New Project" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the picker lists New Project");
+        assert!(
+            project_row.y < pill.y,
+            "the picker opens above the composer pill, not over the input"
+        );
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for label in ["Remote", "SSH Host", "New Project", "No Project"] {
+            assert!(
+                texts.contains(&label),
+                "the pill opens the shared picker with {label:?}: {texts:?}"
+            );
+        }
+        // Taking No Project applies in place and closes the picker.
+        let no_project = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "No Project" && origin.y < pill.y =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the checked No Project row");
+        click(&mut root, &app, no_project + vec2f(8.0, 6.0));
+        assert!(
+            !*state.borrow().project_menu_open.borrow(),
+            "choosing a project closes the picker"
+        );
+    }
+
     /// 333: the wheel reaches the settings page's Scrollable through the modal
     /// dialog; the modal must not consume it before the page sees it.
     #[test]

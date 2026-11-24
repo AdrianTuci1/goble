@@ -713,6 +713,10 @@ pub struct UiState {
     pub ssh_target_error: Option<String>,
     /// Whether the Workspaces header's add menu is up.
     pub sidebar_add_menu_open: Rc<RefCell<bool>>,
+    /// Whether the Conversations header's add menu is up.
+    pub conversations_add_menu_open: Rc<RefCell<bool>>,
+    /// Whether the composer's project pill menu is up.
+    pub project_menu_open: Rc<RefCell<bool>>,
     /// The chat transcript's changed-files card fold, shared across rebuilds.
     pub changed_files_open: Rc<RefCell<bool>>,
     /// The settings overlay (not a pane): open flag and the hamburger's state

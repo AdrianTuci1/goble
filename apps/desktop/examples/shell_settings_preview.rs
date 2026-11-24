@@ -322,6 +322,30 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "sidebar-no-conversations",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "sidebar-conversations",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "sidebar-conversations-menu",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "composer-project-menu",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "settings-select-open",
                 vec2f(1600.0, 1000.0),
                 true,
@@ -726,6 +750,28 @@ fn main() -> anyhow::Result<()> {
                         .or_default()
                         .messages
                         .push(message);
+                }
+                if name == "sidebar-no-conversations" {
+                    s.conversations.clear();
+                }
+                if name == "sidebar-conversations"
+                    || name == "sidebar-conversations-menu"
+                    || name == "composer-project-menu"
+                {
+                    s.conversations = vec![ConversationEntry::new(
+                        "loose-preview",
+                        "Loose conversation",
+                        "A conversation outside any project",
+                        "10:42",
+                    )
+                    .with_folder("Conversations")];
+                }
+                if name == "sidebar-conversations-menu" {
+                    *s.conversations_add_menu_open.borrow_mut() = true;
+                }
+                if name == "composer-project-menu" {
+                    s.set_active_pane_path(String::new());
+                    *s.project_menu_open.borrow_mut() = true;
                 }
                 if name == "sidebar-collapsed" {
                     s.sidebar_visible = false;

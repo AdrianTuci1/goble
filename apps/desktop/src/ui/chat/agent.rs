@@ -778,6 +778,12 @@ pub fn build_agent_chat(
     if let Some(on_escape) = on_escape {
         chat = chat.with_on_escape(move || (on_escape.borrow_mut())());
     }
+    // 341: the conversation's project pill sits above the composer. The side
+    // panel's reserved conversation has no project of its own.
+    if pane_id != crate::state::SIDE_AGENT_PANE_ID {
+        let pill = crate::ui::chat::project_pill::build_project_pill(app, state, actions, pane_id);
+        chat = chat.with_project_pill(pill);
+    }
     // The right "agent panel" (routines + scheduled tasks) is now a floating
     // overlay layered over the whole app in `build_ui`, not a docked sidebar
     // that shrinks the pane. It is toggled from the chat header's "Toggle

@@ -148,6 +148,9 @@ pub struct ChatView {
     /// The instruction strip the pane draws above its input: the gestures this
     /// pane's input answers, as key caps and names. Empty draws nothing.
     composer_hints: Vec<ShortcutHint>,
+    /// A host-built project pill shown above the composer (the app's project
+    /// picker); `None` for surfaces without one.
+    project_pill: Option<Box<dyn Element>>,
     /// The live turn-status footer: what the pane is doing, or what is still
     /// running once its turn stops. [`TurnStatus::Idle`] gives the row zero
     /// height, so it costs nothing when nothing is in flight.
@@ -351,6 +354,7 @@ impl ChatView {
             composer_attachments: Vec::new(),
             composer_stop_visible: false,
             composer_hints: Vec::new(),
+            project_pill: None,
             turn_status: TurnStatus::Idle,
             on_composer_change: None,
             on_composer_focus_change: None,

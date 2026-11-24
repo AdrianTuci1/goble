@@ -287,6 +287,12 @@ pub fn make_actions(
     let on_archive_cancel = Rc::clone(&state);
     let on_archived_filter_change = Rc::clone(&state);
     let on_add_workspace = Rc::clone(&state);
+    let on_bind_project = Rc::clone(&state);
+    let desktop_bind_project = desktop.clone();
+    let on_new_project_conversation = Rc::clone(&state);
+    let desktop_new_project_conversation = desktop.clone();
+    let on_clear_project = Rc::clone(&state);
+    let desktop_clear_project = desktop.clone();
     let desktop_add_workspace = desktop.clone();
     let on_sidebar_workspace_new_session = Rc::clone(&state);
     let media_sidebar_workspace_new_session = Rc::clone(&media);
@@ -350,6 +356,7 @@ pub fn make_actions(
     let on_select_dir = Rc::clone(&state);
     let on_select_medium = Rc::clone(&media);
     let on_create_medium = Rc::clone(&media);
+    let create_medium_new_project = Rc::clone(&on_create_medium);
     let on_select_branch = Rc::clone(&state);
     let on_stop = Rc::clone(&state);
     let on_open_sub_agent = Rc::clone(&state);
@@ -2670,6 +2677,53 @@ pub fn make_actions(
             };
             let mut state = on_add_workspace.borrow_mut();
             state.add_workspace(&path, desktop_add_workspace.as_deref());
+        })),
+        on_bind_project: Rc::new(RefCell::new(move || {
+            let Some(path) = goble_ui::platform::current::pick_directory() else {
+                return;
+            };
+            let mut state = on_bind_project.borrow_mut();
+            state.set_active_pane_path(path.clone());
+            if let Some(chat) = state.pane_conversation_id(state.active_pane_id) {
+                if let Some(desktop) = desktop_bind_project.as_ref() {
+                    if let Err(e) = desktop.set_chat_working_dir(&chat, &path) {
+                        log::warn!("set_chat_working_dir failed: {e}");
+                    }
+                }
+            }
+        })),
+        on_new_project_conversation: Rc::new(RefCell::new(move || {
+            let Some(path) = goble_ui::platform::current::pick_directory() else {
+                return;
+            };
+            let mut state = on_new_project_conversation.borrow_mut();
+            create_conversation_space(
+                &mut state,
+                &create_medium_new_project,
+                desktop_new_project_conversation.as_ref(),
+                NEW_CONVERSATION_TITLE,
+                None,
+            );
+            let pane = state.active_pane_id;
+            state.set_active_pane_path(path.clone());
+            if let Some(chat) = state.pane_conversation_id(pane) {
+                if let Some(desktop) = desktop_new_project_conversation.as_ref() {
+                    if let Err(e) = desktop.set_chat_working_dir(&chat, &path) {
+                        log::warn!("set_chat_working_dir failed: {e}");
+                    }
+                }
+            }
+        })),
+        on_clear_project: Rc::new(RefCell::new(move || {
+            let mut state = on_clear_project.borrow_mut();
+            state.set_active_pane_path(String::new());
+            if let Some(chat) = state.pane_conversation_id(state.active_pane_id) {
+                if let Some(desktop) = desktop_clear_project.as_ref() {
+                    if let Err(e) = desktop.set_chat_working_dir(&chat, "") {
+                        log::warn!("set_chat_working_dir failed: {e}");
+                    }
+                }
+            }
         })),
         // A workspace row's New-session control: a conversation in that
         // workspace's directory, so its card lands under the workspace's folder

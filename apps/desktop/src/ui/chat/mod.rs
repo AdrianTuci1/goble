@@ -19,6 +19,7 @@ mod composer;
 mod dock;
 mod header;
 mod overlays;
+pub(crate) mod project_pill;
 mod sub_agent;
 mod workflow;
 

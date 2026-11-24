@@ -320,6 +320,8 @@ impl UiState {
             ssh_config_hosts: Vec::new(),
             ssh_target_error: None,
             sidebar_add_menu_open: Rc::new(RefCell::new(false)),
+            conversations_add_menu_open: Rc::new(RefCell::new(false)),
+            project_menu_open: Rc::new(RefCell::new(false)),
             changed_files_open: Rc::new(RefCell::new(false)),
             settings_overlay_open: false,
             settings_overlay_hamburger: Rc::new(RefCell::new(false)),

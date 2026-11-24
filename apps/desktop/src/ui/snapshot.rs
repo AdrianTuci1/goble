@@ -518,6 +518,8 @@ pub struct UiSnapshot {
     pub sidebar_menu_open: Rc<RefCell<bool>>,
     /// The Workspaces header's add menu (New Project / SSH Host…).
     pub sidebar_add_menu_open: Rc<RefCell<bool>>,
+    pub conversations_add_menu_open: Rc<RefCell<bool>>,
+    pub project_menu_open: Rc<RefCell<bool>>,
     /// The chat changed-files card's fold.
     pub changed_files_open: Rc<RefCell<bool>>,
     /// The settings overlay's open flag and narrow-window hamburger.

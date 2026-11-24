@@ -31,6 +31,7 @@ pub mod onboarding;
 pub mod palette;
 pub mod panes;
 pub mod pickers;
+mod project_menu;
 pub mod projects;
 pub mod reviewer;
 pub mod session_menu;

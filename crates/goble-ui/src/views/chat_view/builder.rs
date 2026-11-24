@@ -424,6 +424,12 @@ impl ChatView {
         self
     }
 
+    /// A host-built project picker above the composer.
+    pub fn with_project_pill(mut self, pill: Box<dyn Element>) -> Self {
+        self.project_pill = Some(pill);
+        self
+    }
+
     /// Set the live turn-status footer's state (the app reads it from C1's live
     /// accessor). [`TurnStatus::Idle`] draws nothing and takes zero height.
     pub fn with_turn_status(mut self, status: TurnStatus) -> Self {

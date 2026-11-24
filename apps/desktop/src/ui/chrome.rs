@@ -160,9 +160,11 @@ const TRAFFIC_LIGHT_GAP: f32 = 8.0;
 const TRAFFIC_LIGHTS_WIDTH: f32 = TRAFFIC_LIGHT_SIZE * 3.0 + TRAFFIC_LIGHT_GAP * 2.0;
 
 fn glyph(app: &AppContext, name: &'static str) -> Box<dyn Element> {
+    // The topbar's own controls read in primary ink: the More dots, Overview
+    // and the other bar glyphs are white, not muted.
     Icon::new(name)
         .with_size(CONTROL_ICON_SIZE)
-        .with_theme_color(ColorToken::Muted, app)
+        .with_theme_color(ColorToken::Text, app)
         .finish()
 }
 

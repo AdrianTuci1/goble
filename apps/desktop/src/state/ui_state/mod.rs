@@ -759,6 +759,9 @@ pub struct UiState {
     /// review list). The Files tab opens onto this file instead of its empty
     /// state — no extra "open a file" press needed.
     pub last_opened_file: Option<String>,
+    /// The Files tab's explorer view: true shows the workspace tree inside the
+    /// side panel, false shows the file the tab opened.
+    pub side_files_show_explorer: bool,
     /// The index in [`Self::side_tabs`] the panel is showing. Kept in range by
     /// the side-tab methods; a stale value falls back to Overview.
     pub active_side_tab: usize,

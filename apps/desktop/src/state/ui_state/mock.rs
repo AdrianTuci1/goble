@@ -335,6 +335,7 @@ impl UiState {
             side_review: None,
             side_file: None,
             last_opened_file: None,
+            side_files_show_explorer: false,
             active_side_tab: 0,
             side_rail_open: true,
             side_tab_add_menu_open: Rc::new(RefCell::new(false)),

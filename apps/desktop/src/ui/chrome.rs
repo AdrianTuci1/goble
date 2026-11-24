@@ -2085,11 +2085,17 @@ pub fn build_side_panel(
                         });
                     (active, path)
                 };
-                match (state.pane_files.contains_key(&pane_id), path) {
-                    (true, Some(path)) => {
-                        crate::ui::file_view::build_file_view(app, state, actions, pane_id, &path)
+                if state.side_files_show_explorer {
+                    // The workspace tree is drawn INSIDE the side panel; its
+                    // file rows open the file in this same tab.
+                    crate::ui::explorer::build_explorer(app, state, actions)
+                } else {
+                    match (state.pane_files.contains_key(&pane_id), path) {
+                        (true, Some(path)) => {
+                            crate::ui::file_view::build_file_view(app, state, actions, pane_id, &path)
+                        }
+                        _ => side_tabs::no_file_message(app),
                     }
-                    _ => side_tabs::no_file_message(app),
                 }
             }
             SideTabKind::TaskOutput => {
@@ -2620,7 +2626,7 @@ fn side_tab_topbar(
                         })
                 })
                 .unwrap_or_else(|| "Files".to_string());
-            let on_open = actions.on_open_explorer.clone();
+            let on_open = actions.on_open_files_tab.clone();
             (
                 label,
                 Some(
@@ -2635,7 +2641,7 @@ fn side_tab_topbar(
                         .with_corner_radius(6.0)
                         .with_on_click(move || (on_open.borrow_mut())())
                         .finish(),
-                        "Open file explorer",
+                        "Browse files",
                     )
                     .with_position(TooltipPosition::Below)
                     .finish(),

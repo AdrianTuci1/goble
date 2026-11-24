@@ -541,6 +541,7 @@ pub struct UiSnapshot {
     /// Y: the file the side panel's Files tab shows, independent of the active
     /// pane's kind.
     pub side_file: Option<String>,
+    pub side_files_show_explorer: bool,
     /// Q: the topbar spotlight window.
     pub spotlight: crate::ui::spotlight::SpotlightState,
     pub side_tab_add_menu_open: Rc<RefCell<bool>>,

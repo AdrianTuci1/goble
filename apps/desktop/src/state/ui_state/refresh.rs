@@ -41,6 +41,7 @@ impl UiState {
     /// retargeted: the tab reads the file under `SIDE_FILE_PANE_ID`.
     pub fn open_file_side(&mut self, path: String) {
         self.last_opened_file = Some(path.clone());
+        self.side_files_show_explorer = false;
         self.side_file = Some(path);
         self.add_side_tab(super::SideTabKind::Files);
         self.right_sidebar_open = true;
@@ -49,7 +50,9 @@ impl UiState {
     /// Open the Files tab without naming a file (the "Open File" action keeps
     /// whatever the tab was showing, or its honest empty state).
     pub fn open_files_tab(&mut self) {
-        self.hydrate_side_file();
+        // The Files control opens the panel's own tree, not a pane beside the
+        // conversation.
+        self.side_files_show_explorer = true;
         self.add_side_tab(super::SideTabKind::Files);
         self.right_sidebar_open = true;
     }
@@ -408,6 +411,7 @@ impl UiState {
             side_review: None,
             side_file: None,
             last_opened_file: None,
+            side_files_show_explorer: false,
             active_side_tab: 0,
             side_rail_open: true,
             side_tab_add_menu_open: Rc::new(RefCell::new(false)),

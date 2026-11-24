@@ -10,7 +10,7 @@ use goble_ui::elements::conversation_list_item::sidebar_relative_time;
 use goble_ui::elements::{
     caret_beam, AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
     Element, Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
-    MainAxisSize, PaintContext, Point, Scrollable, SizeConstraint, Text,
+    MainAxisSize, PaintContext, Point, ScrollState, Scrollable, SizeConstraint, Text,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{vec2f, Vector2F};
@@ -79,6 +79,10 @@ pub struct SpotlightState {
     pub selected: usize,
     pub scope_menu_open: Rc<RefCell<bool>>,
     pub options_menu_open: Rc<RefCell<bool>>,
+    /// The result list's scroll offset, owned by the app so the per-frame tree
+    /// rebuild does not reset it: without a state the viewport neither clips its
+    /// rows nor scrolls them.
+    pub results_scroll: Rc<RefCell<ScrollState>>,
 }
 
 impl Default for SpotlightState {
@@ -95,6 +99,7 @@ impl Default for SpotlightState {
             selected: 0,
             scope_menu_open: Rc::new(RefCell::new(false)),
             options_menu_open: Rc::new(RefCell::new(false)),
+            results_scroll: Rc::new(RefCell::new(ScrollState::default())),
         }
     }
 }
@@ -123,6 +128,7 @@ pub fn filtered_conversations<'a>(
     let query = spotlight.query.trim().to_lowercase();
     let mut rows: Vec<&ConversationEntry> = conversations
         .iter()
+        .filter(|entry| entry.has_agent_reply)
         .filter(|entry| {
             if spotlight.only_archived {
                 entry.archived
@@ -645,9 +651,13 @@ fn build_results(
     } else {
         (count as f32 * ROW_HEIGHT).min(340.0).min((content_max_height - 52.0).max(36.0))
     };
-    ConstrainedBox::new(Scrollable::new(rows.finish(), goble_ui::elements::Axis::Vertical).finish())
-        .with_height(height)
-        .finish()
+    ConstrainedBox::new(
+        Scrollable::new(rows.finish(), goble_ui::elements::Axis::Vertical)
+            .with_state(spotlight.results_scroll.clone())
+            .finish(),
+    )
+    .with_height(height)
+    .finish()
 }
 
 fn result_row(

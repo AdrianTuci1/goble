@@ -616,8 +616,18 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // Closing a file pane with unsaved edits asks here, above the workspace.
     let close_prompt_dialog = super::file_view::build_close_prompt(app, state, actions);
 
-    let mut stack = Stack::new().with_children(vec![
-        ModalHoverGate::new(shell_col.finish(), state.settings_overlay_open).finish(),
+    // 382: floating windows are application-window level: above the sidebar
+    // and side panel, below the settings/spotlight layers.
+    let floating_overlay = state
+        .spaces
+        .get(state.active_space)
+        .and_then(|space| panes::build_floating_overlay(app, state, actions, space));
+    let mut children =
+        vec![ModalHoverGate::new(shell_col.finish(), state.settings_overlay_open).finish()];
+    if let Some(floating) = floating_overlay {
+        children.push(floating);
+    }
+    children.extend(vec![
         // The toolbar paints after the body so the popups/trays anchored in it
         // (the "+ ▾" environment menu) sit above the sidebar and the pane
         // surface, and it is dispatched first within the shell for the same
@@ -656,6 +666,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         ))
         .finish(),
     ]);
+    let mut stack = Stack::new().with_children(children);
 
     // 349: the Automations popover is anchored beside the sidebar row and
     // floats above the workspace, below the settings/spotlight top layers.

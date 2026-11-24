@@ -188,7 +188,7 @@ scroll rail hover, the terminal rail with prev/next and per-window close, the
 square+hue colour control, the composer's model and permission trays, Settings
 (with an open select above later rows, integrations, General, Appearance with its in-field swatch,
 Appearance with the colour palette open, Shortcuts, narrow; no descriptions,
-floating close x), the diff reviewer, the floating file window and the
+floating close x), the diff reviewer, the floating file window (also over the sidebar and side panel, with no tiled duplicate) and the
 changed-files card. Next to them: the DSH-style right-aligned user bubble and
 inline image message (`chat-parity-*`), the slash menu floating above an
 unchanged composer (`slash-menu-*`), the Review tab beside the main chat

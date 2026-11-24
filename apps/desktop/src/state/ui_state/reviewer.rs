@@ -200,31 +200,15 @@ impl UiState {
             return true;
         }
 
-        let anchor = if space.root.contains_leaf(self.active_pane_id) {
-            self.active_pane_id
-        } else {
-            space.root.first_leaf_id()
-        };
+        // 381: a floating window is not a split. It gets its own pane id and
+        // kind, lives only in the space's float list, and never adds a tiled
+        // copy beside the chat.
         let kind = PaneKind::File {
             path: file_path.clone(),
         };
-        // One window above the layout, cascaded after any window already
-        // floating there. The entry is not a change of the space's layout.
         let float_index = space.floating.iter().filter(|pane| pane.overlay).count();
-        let new_id = {
-            let Some(space) = self.spaces.get_mut(index) else {
-                return false;
-            };
-            let Some(new_id) = space.split_with_kind(
-                anchor,
-                crate::ui::SplitDir::Horizontal,
-                &mut self.next_pane_id,
-                kind,
-            ) else {
-                return false;
-            };
-            new_id
-        };
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
         self.pane_open_files.insert(new_id, vec![file_path]);
         self.focus_pane(new_id);
         self.pane_hover
@@ -232,7 +216,7 @@ impl UiState {
             .or_insert_with(|| Rc::new(RefCell::new(false)));
         let rect = default_floating_rect(float_index);
         if let Some(space) = self.spaces.get_mut(index) {
-            space.add_floating_overlay(new_id, rect);
+            space.add_floating_window(new_id, rect, kind);
         }
         self.sync_active_view();
         if let Some(desktop) = desktop {
@@ -254,8 +238,26 @@ impl UiState {
         if space.layout == LayoutKind::Floating {
             return false;
         }
+        let detached_path = space
+            .floating
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .filter(|_| !space.root.contains_leaf(pane_id))
+            .and_then(|pane| match pane.kind.as_ref() {
+                Some(PaneKind::File { path }) => Some(path.clone()),
+                _ => None,
+            });
         if !space.remove_floating(pane_id) {
             return false;
+        }
+        // 385: a detached window docks as a file in the side panel instead of
+        // vanishing; the tiled case keeps its old tree dock.
+        if let Some(path) = detached_path {
+            self.open_file_side(path);
+            if let Some(desktop) = desktop {
+                self.save_panes(desktop);
+            }
+            return true;
         }
         self.focus_pane(pane_id);
         self.sync_active_view();
@@ -346,9 +348,14 @@ mod tests {
         state.active_pane_id = 7;
         state.next_pane_id = 8;
 
+        let side_tabs_before = state.side_tabs.clone();
         assert!(
             state.open_file_in_floating(path.clone(), None),
             "the file pane opens"
+        );
+        assert_eq!(
+            state.side_tabs, side_tabs_before,
+            "384: floating from the Files/Review action adds no side-panel tab"
         );
         assert_eq!(
             state.spaces[0].layout,
@@ -363,8 +370,8 @@ mod tests {
         let overlay = state.spaces[0].floating[0].clone();
         assert!(overlay.overlay, "the entry is a single-window overlay");
         assert!(
-            state.spaces[0].root.contains_leaf(overlay.pane_id),
-            "the file pane also belongs to the tree, so docking leaves it docked"
+            !state.spaces[0].root.contains_leaf(overlay.pane_id),
+            "381: the floating file has no tiled copy in the tree"
         );
         let active = state.active_pane_id;
         assert_eq!(
@@ -398,16 +405,19 @@ mod tests {
             "the layout below the float is still there"
         );
 
-        // Docking removes the float and leaves the same pane in the BSP tree.
+        // 385: docking a detached window removes the float and leaves the file
+        // available in the side panel, not as a duplicate tile.
         assert!(
             state.dock_floating_pane(active, None),
             "the docked toggle removes the window"
         );
         assert!(state.spaces[0].floating.is_empty());
         assert_eq!(state.spaces[0].layout, LayoutKind::Bsp);
-        assert!(
-            state.spaces[0].root.contains_leaf(active),
-            "the file returns to the pane/layout"
+        assert_eq!(state.side_file.as_deref(), Some(path.as_str()));
+        assert_eq!(
+            state.spaces[0].root.leaf_count(),
+            1,
+            "the docked file does not duplicate the tiled pane"
         );
     }
 

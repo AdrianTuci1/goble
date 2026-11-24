@@ -354,6 +354,15 @@ impl RootView {
                 let mut leaves = Vec::new();
                 if let Some(space) = s.spaces.get(s.active_space) {
                     space.root.file_leaves(&mut leaves);
+                    // 381: detached floating file windows are not tree leaves;
+                    // read them in the same pass so their content is real.
+                    for pane in &space.floating {
+                        if let Some(crate::state::PaneKind::File { path }) = pane.kind.as_ref() {
+                            if !space.root.contains_leaf(pane.pane_id) {
+                                leaves.push((pane.pane_id, path.clone()));
+                            }
+                        }
+                    }
                 }
                 let mut open = Vec::new();
                 let mut active = HashMap::new();

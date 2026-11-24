@@ -137,6 +137,10 @@ pub struct FloatingPane {
     /// floating layout's own window.
     #[serde(default)]
     pub overlay: bool,
+    /// The pane's kind when the window is detached from the tiled tree (a
+    /// floating-only file). `None` for a window that still has a tree leaf.
+    #[serde(default)]
+    pub kind: Option<PaneKind>,
 }
 
 impl FloatingPane {
@@ -146,7 +150,13 @@ impl FloatingPane {
             rect,
             minimized: false,
             overlay: false,
+            kind: None,
         }
+    }
+
+    pub fn with_kind(mut self, kind: PaneKind) -> Self {
+        self.kind = Some(kind);
+        self
     }
 
     /// A single window floated over whatever layout the space already draws.
@@ -156,6 +166,7 @@ impl FloatingPane {
             rect,
             minimized: false,
             overlay: true,
+            kind: None,
         }
     }
 }
@@ -939,6 +950,13 @@ impl Space {
             .push(FloatingPane::overlay(pane_id, rect.clamped()));
     }
 
+    /// 381: add a floating-only window with no leaf in the tiled tree.
+    pub fn add_floating_window(&mut self, pane_id: u64, rect: PaneRect, kind: PaneKind) {
+        self.floating.retain(|pane| pane.pane_id != pane_id);
+        self.floating
+            .push(FloatingPane::overlay(pane_id, rect.clamped()).with_kind(kind));
+    }
+
     /// Remove `pane_id`'s window from the float, leaving the pane where the
     /// space's own layout puts it (the docked toggle). Returns whether there
     /// was a float to remove.
@@ -1067,7 +1085,10 @@ impl Space {
                 return self
                     .floating
                     .iter()
-                    .filter(|pane| !pane.minimized && self.root.contains_leaf(pane.pane_id))
+                    .filter(|pane| {
+                        !pane.minimized
+                            && (self.root.contains_leaf(pane.pane_id) || pane.kind.is_some())
+                    })
                     .map(|pane| (pane.pane_id, pane.rect.to_rect()))
                     .collect();
             }
@@ -1083,7 +1104,10 @@ impl Space {
         regions.extend(
             self.floating
                 .iter()
-                .filter(|pane| !pane.minimized && self.root.contains_leaf(pane.pane_id))
+                .filter(|pane| {
+                    !pane.minimized
+                        && (self.root.contains_leaf(pane.pane_id) || pane.kind.is_some())
+                })
                 .map(|pane| (pane.pane_id, pane.rect.to_rect())),
         );
         regions
@@ -1091,7 +1115,12 @@ impl Space {
 
     /// The kind of the leaf `target` (see [`Pane::leaf_kind`]).
     pub fn leaf_kind(&self, target: u64) -> Option<&PaneKind> {
-        self.root.leaf_kind(target)
+        self.root.leaf_kind(target).or_else(|| {
+            self.floating
+                .iter()
+                .find(|pane| pane.pane_id == target)
+                .and_then(|pane| pane.kind.as_ref())
+        })
     }
 
     /// The first settings leaf in this space's tree (see [`Pane::settings_leaf`]).
@@ -1117,6 +1146,15 @@ impl Space {
 
     /// Close the leaf `target`, returning the id of the pane to focus next.
     pub fn close(&mut self, target: u64) -> Option<u64> {
+        // A detached floating-only window has no tree leaf to remove.
+        if self
+            .floating
+            .iter()
+            .any(|pane| pane.pane_id == target && pane.kind.is_some())
+        {
+            self.floating.retain(|pane| pane.pane_id != target);
+            return Some(self.root.first_leaf_id());
+        }
         let next = self.root.remove_leaf(target);
         if next.is_some() {
             self.floating.retain(|pane| pane.pane_id != target);

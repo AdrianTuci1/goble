@@ -460,6 +460,18 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "floating-file-left",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "floating-file-right",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "floating-file-small",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -530,6 +542,11 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
+                if name == "floating-file-right" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
+                    s.active_side_tab = 0;
+                }
                 if name.starts_with("floating-file") {
                     let file = repo_path.join("src/lib.rs");
                     let file = file.to_string_lossy().to_string();
@@ -537,6 +554,10 @@ fn main() -> anyhow::Result<()> {
                         let id = s.active_pane_id;
                         let rect = if name == "floating-file-small" {
                             goble_app::ui::PaneRect::new(0.18, 0.22, 0.34, 0.38)
+                        } else if name == "floating-file-left" {
+                            goble_app::ui::PaneRect::new(0.01, 0.14, 0.34, 0.58)
+                        } else if name == "floating-file-right" {
+                            goble_app::ui::PaneRect::new(0.63, 0.14, 0.34, 0.58)
                         } else {
                             goble_app::ui::PaneRect::new(0.16, 0.18, 0.46, 0.50)
                         };

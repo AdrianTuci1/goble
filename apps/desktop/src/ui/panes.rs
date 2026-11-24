@@ -110,18 +110,6 @@ pub fn build_active_space(
             PaneCard::new(column.finish(), app).finish()
         }
     };
-    // A window floated over the layout is a second layer above it, not a
-    // change to the layout: the tree below keeps its regions and sessions.
-    let content: Box<dyn Element> = match active_space {
-        Some(space) => match build_floating_overlay(app, state, actions, space) {
-            Some(overlay) => Stack::new()
-                .with_children(vec![content])
-                .with_overlay(overlay, Vector2F::zero())
-                .finish(),
-            None => content,
-        },
-        None => content,
-    };
     // The drop ghost is drawn with the pane area but after its panes, so it
     // covers the pane the pointer is over and stays under the bar's floating
     // drag card (the bar paints above the body).
@@ -231,7 +219,11 @@ fn build_space(
             let mut children = Vec::new();
             let mut placed = Vec::new();
             for pane in &space.floating {
-                let Some(kind) = leaf_kind_of(&space.root, pane.pane_id) else {
+                let Some(kind) = pane
+                    .kind
+                    .clone()
+                    .or_else(|| leaf_kind_of(&space.root, pane.pane_id))
+                else {
                     continue;
                 };
                 // A minimized window is accounted for even though it is not
@@ -324,7 +316,7 @@ fn build_space(
 /// the same one the floating layout uses for its own windows: moving,
 /// resizing, raising and focusing all go through it, and a press that misses
 /// the window falls through to the layout below.
-fn build_floating_overlay(
+pub(crate) fn build_floating_overlay(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
@@ -335,7 +327,11 @@ fn build_floating_overlay(
     }
     let mut children = Vec::new();
     for pane in &space.floating {
-        let Some(kind) = leaf_kind_of(&space.root, pane.pane_id) else {
+        let Some(kind) = pane
+            .kind
+            .clone()
+            .or_else(|| leaf_kind_of(&space.root, pane.pane_id))
+        else {
             continue;
         };
         if pane.minimized {

@@ -1134,39 +1134,8 @@ fn workspaces_list(
         }
         blocks.push(flat_block.finish());
     }
-    // The loose conversations: one "Conversations" heading at the same level as
-    // "Projects", then the newest-first rows.
+    // The Projects section comes first, with its view-options and add controls.
     if !flat_list {
-        let mut loose: Vec<&ConversationEntry> = visible
-            .iter()
-            .filter(|entry| entry.folder == "Conversations")
-            .copied()
-            .collect();
-        loose.sort_by(|a, b| {
-            let a_key = a.updated_at.as_deref().unwrap_or(&a.timestamp);
-            let b_key = b.updated_at.as_deref().unwrap_or(&b.timestamp);
-            b_key.cmp(a_key)
-        });
-        let mut block = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(GOBLE_ROW_GAP)
-            .with_child(plain_section_header(app, "Conversations"));
-        let group_ids: Vec<String> = loose.iter().map(|entry| entry.id.clone()).collect();
-        for entry in &loose {
-            if !shown_ids.contains(entry.id.as_str()) {
-                continue;
-            }
-            block = block.with_child(session_row(
-                app,
-                state,
-                actions,
-                entry,
-                "conversations",
-                &group_ids,
-            ));
-        }
-        blocks.push(block.finish());
-        // The Projects section follows, with its view-options and add controls.
         blocks.push(
             Padding::new(
                 workspaces_header(app, state, actions),
@@ -1219,6 +1188,42 @@ fn workspaces_list(
             // leading icon used to be.
             (workspace.folder != "Conversations").then_some(workspace),
         ));
+    }
+
+    // "Conversations" always sits UNDER the Projects groups; it disappears
+    // entirely when there is nothing loose to list.
+    if !flat_list {
+        let mut loose: Vec<&ConversationEntry> = visible
+            .iter()
+            .filter(|entry| entry.folder == "Conversations")
+            .copied()
+            .collect();
+        if !loose.is_empty() {
+            loose.sort_by(|a, b| {
+                let a_key = a.updated_at.as_deref().unwrap_or(&a.timestamp);
+                let b_key = b.updated_at.as_deref().unwrap_or(&b.timestamp);
+                b_key.cmp(a_key)
+            });
+            let mut block = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(GOBLE_ROW_GAP)
+                .with_child(plain_section_header(app, "Conversations"));
+            let group_ids: Vec<String> = loose.iter().map(|entry| entry.id.clone()).collect();
+            for entry in &loose {
+                if !shown_ids.contains(entry.id.as_str()) {
+                    continue;
+                }
+                block = block.with_child(session_row(
+                    app,
+                    state,
+                    actions,
+                    entry,
+                    "conversations",
+                    &group_ids,
+                ));
+            }
+            blocks.push(block.finish());
+        }
     }
 
     // The list is empty for one of two reasons, and they read differently:

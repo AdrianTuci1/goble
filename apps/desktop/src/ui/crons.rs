@@ -1,8 +1,9 @@
 //! Agent crons drawer: scheduled tasks list + create.
 
 use goble_ui::elements::{
-    AppContext, Axis, Button, ButtonVariant, Container, CrossAxisAlignment, Divider, EdgeInsets,
-    Element, Fill, Flex, Icon, MainAxisSize, Rect, Scrollable, Spacer, Text, TopbarButton,
+    AppContext, Axis, Button, ButtonVariant, ConstrainedBox, Container, CrossAxisAlignment,
+    Divider, EdgeInsets, Element, Fill, Flex, HoverRow, Icon, MainAxisSize, Rect, Scrollable,
+    Spacer, Switch, Text, TopbarButton,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -158,5 +159,134 @@ fn build_cron_row(app: &AppContext, cron: &CronEntry, actions: &UiActions) -> Bo
     .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
     .with_corner_radius(radius)
     .with_padding(EdgeInsets::uniform(spacing))
+    .finish()
+}
+
+/// 349/350: the sidebar Automations popover — DSH's automation task list,
+/// anchored over the shell, with a real switch per stored workflow and the
+/// existing New cron action.
+pub fn build_automations_popover(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let spacing = app.theme.spacing_px(SpacingToken::Sm);
+    let on_close = actions.on_toggle_automations.clone();
+    let close = TopbarButton::new(
+        Icon::new("x")
+            .with_size(13.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(24.0)
+    .with_on_click(move || (on_close.borrow_mut())())
+    .finish();
+    let header = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(
+            Text::new("Automation tasks")
+                .with_font_size(13.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_child(Spacer::new().finish())
+        .with_child(close)
+        .finish();
+    let mut list = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(spacing);
+    if state.crons.is_empty() {
+        list = list.with_child(
+            Text::new("No automation tasks yet.")
+                .with_font_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        );
+    }
+    for cron in &state.crons {
+        let toggle_id = cron.id.clone();
+        let on_toggle = actions.on_cron_toggle.clone();
+        let toggle = Switch::new()
+            .with_checked(cron.enabled)
+            .with_size(vec2f(34.0, 18.0))
+            .with_on_change(move |enabled| (on_toggle.borrow_mut())(toggle_id.clone(), enabled))
+            .finish();
+        let row = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(2.0)
+            .with_child(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Text::new(cron.name.clone())
+                            .with_font_size(13.0)
+                            .with_theme_color(ColorToken::Text, app)
+                            .finish(),
+                    )
+                    .with_child(Spacer::new().finish())
+                    .with_child(toggle)
+                    .finish(),
+            )
+            .with_child(
+                Text::new(format!("{} · last run {}", cron.schedule, cron.last_run))
+                    .with_font_size(11.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .finish();
+        list = list.with_child(
+            Container::new(row)
+                .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
+                .finish(),
+        );
+    }
+    let on_create = actions.on_cron_create.clone();
+    let new_row = HoverRow::new(
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(8.0)
+            .with_child(
+                Icon::new("plus")
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_child(
+                Text::new("New automation")
+                    .with_font_size(13.0)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(8.0, 6.0, 8.0, 6.0))
+    .with_corner_radius(7.0)
+    .with_on_click(move || (on_create.borrow_mut())())
+    .finish();
+    let column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(spacing)
+        .with_child(header)
+        .with_child(Divider::horizontal().finish())
+        .with_child(Scrollable::new(list.finish(), Axis::Vertical).finish())
+        .with_child(new_row)
+        .finish();
+    ConstrainedBox::new(
+        Container::new(column)
+            .with_background(Fill::Solid(app.theme.color(ColorToken::Surface)))
+            .with_border(
+                goble_ui::elements::Border::all(1.0)
+                    .with_border_color(app.theme.color(ColorToken::Border)),
+            )
+            .with_corner_radius(12.0)
+            .with_padding(EdgeInsets::uniform(10.0))
+            .finish(),
+    )
+    .with_width(300.0)
+    .with_max_height(420.0)
     .finish()
 }

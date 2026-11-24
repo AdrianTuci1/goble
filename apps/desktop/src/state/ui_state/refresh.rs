@@ -338,6 +338,7 @@ impl UiState {
             ssh_target_error: None,
             sidebar_add_menu_open: Rc::new(RefCell::new(false)),
             conversations_add_menu_open: Rc::new(RefCell::new(false)),
+            automations_open: false,
             project_menu_open: Rc::new(RefCell::new(false)),
             changed_files_open: Rc::new(RefCell::new(false)),
             settings_overlay_open: false,

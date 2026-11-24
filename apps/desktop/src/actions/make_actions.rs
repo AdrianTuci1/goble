@@ -463,6 +463,9 @@ pub fn make_actions(
     let on_cron_create = Rc::clone(&state);
     let on_cron_delete = Rc::clone(&state);
     let on_cron_trigger = Rc::clone(&state);
+    let on_cron_toggle = Rc::clone(&state);
+    let on_toggle_automations = Rc::clone(&state);
+    let desktop_cron_toggle = desktop.clone();
     let on_sidebar_drag_start = Rc::clone(&state);
     let on_sidebar_drag_move = Rc::clone(&state);
     let on_sidebar_drag_end = Rc::clone(&state);
@@ -3280,6 +3283,20 @@ pub fn make_actions(
                         rt.busy = true;
                     }
                     state.agent_busy = true;
+                }
+            }
+        })),
+        on_toggle_automations: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_automations.borrow_mut();
+            state.automations_open = !state.automations_open;
+        })),
+        on_cron_toggle: Rc::new(RefCell::new(move |id: String, enabled: bool| {
+            let mut state = on_cron_toggle.borrow_mut();
+            if let Some(desktop) = desktop_cron_toggle.as_ref() {
+                if let Err(error) = desktop.set_workflow_enabled(&id, enabled) {
+                    log::warn!("set_workflow_enabled failed: {error}");
+                } else {
+                    state.refresh_crons(desktop);
                 }
             }
         })),

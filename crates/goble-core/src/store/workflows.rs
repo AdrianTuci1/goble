@@ -45,6 +45,15 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// 350: persist the enabled switch for one automation.
+    pub fn set_workflow_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE workflows SET enabled = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![enabled as i32, id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_workflow(&self, id: &str) -> Result<()> {
         self.conn
             .lock()
@@ -80,16 +89,7 @@ impl Store {
     /// started_at, finished_at)`.
     pub fn list_workflow_runs(
         &self,
-    ) -> Result<
-        Vec<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-        )>,
-    > {
+    ) -> Result<Vec<(String, String, String, String, String, Option<String>)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, workflow_id, status, run_json, started_at, finished_at FROM workflow_runs ORDER BY started_at DESC",

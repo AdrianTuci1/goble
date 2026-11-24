@@ -4412,8 +4412,7 @@ impl SidebarSessionRow {
         } else {
             let mut cluster = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(SIDEBAR_TRAILING_GAP)
-                .with_child(harness_bar_mark(&self.harness, SIDEBAR_HARNESS_MARK, app));
+                .with_spacing(SIDEBAR_TRAILING_GAP);
             if self.remote {
                 cluster = cluster.with_child(
                     Icon::new(SIDEBAR_ICON_CLOUD)

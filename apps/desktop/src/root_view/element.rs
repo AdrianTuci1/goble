@@ -233,6 +233,11 @@ impl Element for RootView {
                     self.redraw_requested = true;
                     return true;
                 }
+                if state.automations_open {
+                    state.automations_open = false;
+                    self.redraw_requested = true;
+                    return true;
+                }
                 // AG: Escape hides the topmost floating file window (it docks
                 // back into the layout its close control docks into).
                 let floating = state.spaces.get(state.active_space).and_then(|space| {
@@ -381,6 +386,21 @@ impl Element for RootView {
                         (actions.on_pane_navigate.borrow_mut())(dir);
                         return true;
                     }
+                }
+            }
+        }
+        // 349: an outside press dismisses the Automations popover.
+        if self.state.borrow().automations_open {
+            if let DispatchedEvent::MouseDown { position, .. } = event {
+                let left = crate::ui::SIDEBAR_WIDTH + 8.0;
+                let inside = position.x >= left
+                    && position.x <= left + 300.0
+                    && position.y >= 62.0
+                    && position.y <= 482.0;
+                if !inside {
+                    self.state.borrow_mut().automations_open = false;
+                    self.redraw_requested = true;
+                    return true;
                 }
             }
         }

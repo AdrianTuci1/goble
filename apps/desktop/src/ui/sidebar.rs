@@ -279,14 +279,13 @@ fn agents_view(
         .with_state(state.sidebar_scroll.clone())
         .finish();
 
-    let automations = sidebar_action(
-        app,
-        state,
-        actions,
-        "sparkle",
-        "Automations",
-        "sidebar.automations",
-    );
+    let on_automations = actions.on_toggle_automations.clone();
+    let automations = SidebarActionRow::new("clock", "Automations")
+        .with_label_color(ColorToken::Text)
+        .with_hovered(is_hovered(state, "sidebar.automations"))
+        .with_hover_cell(state.sidebar_hover_row.clone(), "sidebar.automations")
+        .with_on_click(move || (on_automations.borrow_mut())())
+        .finish();
     let customizations = sidebar_action(
         app,
         state,

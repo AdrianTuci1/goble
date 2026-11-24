@@ -149,12 +149,10 @@ impl DesktopState {
         trigger: Trigger,
     ) -> anyhow::Result<WorkflowInfo> {
         let id = WorkflowId::generate();
-        let parsed = goble_workflow::Workflow::new(
-            goble_workflow::WorkflowId::new(id.to_string()),
-            name,
-        )
-        .with_script(script)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let parsed =
+            goble_workflow::Workflow::new(goble_workflow::WorkflowId::new(id.to_string()), name)
+                .with_script(script)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
         let mut wf = Workflow::new(name, description).with_trigger(trigger);
         wf.id = id;
         wf.name = parsed.name;
@@ -199,6 +197,13 @@ impl DesktopState {
         Ok(info)
     }
 
+    /// 350: enable/disable an automation and notify the drawer.
+    pub fn set_workflow_enabled(&self, id: &str, enabled: bool) -> anyhow::Result<()> {
+        self.store.lock().set_workflow_enabled(id, enabled)?;
+        self.emit("workflows:updated", ());
+        Ok(())
+    }
+
     pub fn delete_workflow(&self, id: &WorkflowId) -> anyhow::Result<()> {
         self.store.lock().delete_workflow(&id.to_string())?;
         self.workflows.lock().remove(id);
@@ -239,8 +244,7 @@ impl DesktopState {
             }
             *self.workflows.lock() = fresh;
         }
-        let mut workflows: Vec<WorkflowInfo> =
-            self.workflows.lock().values().cloned().collect();
+        let mut workflows: Vec<WorkflowInfo> = self.workflows.lock().values().cloned().collect();
         workflows.sort_by(|a, b| a.name.cmp(&b.name));
         workflows
     }

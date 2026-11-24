@@ -182,7 +182,8 @@ reordered strip, the tight-width overflow strip, the split mid-resize state
 with the 1 pt inter-panel hairline, a stacked split's gutter band and close X,
 the file explorer opened from Files, the terminal shell (an interactive
 `user@host ~ %` prompt), the composer's project picker above the input, the Conversations heading with its
-"+" and the shared project menu, the composer's model and permission trays, Settings
+"+" and the shared project menu, the Automations task popover (tasks and empty,
+switch on/off), the composer's model and permission trays, Settings
 (with an open select above later rows, integrations, General, Appearance with its in-field swatch,
 Appearance with the colour palette open, Shortcuts, narrow; no descriptions,
 floating close x), the diff reviewer, the floating file window and the

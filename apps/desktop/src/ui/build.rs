@@ -657,6 +657,14 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         .finish(),
     ]);
 
+    // 349: the Automations popover is anchored beside the sidebar row and
+    // floats above the workspace, below the settings/spotlight top layers.
+    if state.automations_open {
+        stack = stack.with_overlay(
+            crons::build_automations_popover(app, state, actions),
+            vec2f(crate::ui::SIDEBAR_WIDTH + 8.0, 62.0),
+        );
+    }
     // A finished turn is announced here, at the window's top layer, so the
     // banner reads the same over the workspace, over settings and over every
     // other page, and shifts nothing it is drawn above.
@@ -4394,6 +4402,68 @@ mod tests {
         assert!(
             state.borrow().right_sidebar_open,
             "opening a file reveals the side panel"
+        );
+    }
+
+    /// 347/348/349/350: conversation rows carry no harness mark, and the
+    /// Automations row's clock opens the real task popover with a switch.
+    #[test]
+    fn automations_opens_a_real_task_popover_and_rows_lose_the_harness_mark() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.crons = vec![crate::ui::CronEntry::new(
+                "auto-1",
+                "Nightly audit",
+                "Every day at 02:00",
+                "2h ago",
+            )];
+        }
+        let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "harness-goble"
+            )),
+            "conversation rows do not lead with a harness mark"
+        );
+        let automations = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Automations" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Automations row");
+        click(&mut root, &app, automations + vec2f(8.0, 6.0));
+        assert!(
+            state.borrow().automations_open,
+            "the clock opens the popover"
+        );
+        let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for label in ["Automation tasks", "Nightly audit", "New automation"] {
+            assert!(
+                texts.contains(&label),
+                "the real automation popover lists {label:?}: {texts:?}"
+            );
+        }
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "clock"
+            )),
+            "the sidebar Automations row uses the clock icon"
         );
     }
 

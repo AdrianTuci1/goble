@@ -715,6 +715,8 @@ pub struct UiState {
     pub sidebar_add_menu_open: Rc<RefCell<bool>>,
     /// Whether the Conversations header's add menu is up.
     pub conversations_add_menu_open: Rc<RefCell<bool>>,
+    /// The sidebar Automations popover.
+    pub automations_open: bool,
     /// Whether the composer's project pill menu is up.
     pub project_menu_open: Rc<RefCell<bool>>,
     /// The chat transcript's changed-files card fold, shared across rebuilds.

@@ -563,6 +563,10 @@ pub struct UiActions {
     pub on_cron_create: Rc<RefCell<dyn FnMut()>>,
     pub on_cron_delete: Rc<RefCell<dyn FnMut(String)>>,
     pub on_cron_trigger: Rc<RefCell<dyn FnMut(String)>>,
+    /// Enable/disable one automation task.
+    pub on_cron_toggle: Rc<RefCell<dyn FnMut(String, bool)>>,
+    /// Toggle the sidebar's Automations popover.
+    pub on_toggle_automations: Rc<RefCell<dyn FnMut()>>,
     /// Begin dragging the sidebar divider at the given pointer x.
     pub on_sidebar_drag_start: Rc<RefCell<dyn FnMut(f32)>>,
     /// Move the divider while dragging, given the pointer x.

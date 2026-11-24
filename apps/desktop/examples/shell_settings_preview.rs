@@ -346,6 +346,18 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "automations-popover",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "automations-empty",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "settings-select-open",
                 vec2f(1600.0, 1000.0),
                 true,
@@ -750,6 +762,28 @@ fn main() -> anyhow::Result<()> {
                         .or_default()
                         .messages
                         .push(message);
+                }
+                if name == "automations-popover" {
+                    s.automations_open = true;
+                    s.crons = vec![
+                        goble_app::ui::CronEntry::new(
+                            "preview-nightly",
+                            "Nightly dependency audit",
+                            "Every day at 02:00",
+                            "2h ago",
+                        )
+                        .with_enabled(true),
+                        goble_app::ui::CronEntry::new(
+                            "preview-release",
+                            "Release checklist",
+                            "Every Friday at 16:00",
+                            "3d ago",
+                        ),
+                    ];
+                }
+                if name == "automations-empty" {
+                    s.automations_open = true;
+                    s.crons.clear();
                 }
                 if name == "sidebar-no-conversations" {
                     s.conversations.clear();

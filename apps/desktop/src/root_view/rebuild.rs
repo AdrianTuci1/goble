@@ -644,6 +644,7 @@ impl RootView {
                 sidebar_menu_open: s.sidebar_menu_open.clone(),
                 sidebar_add_menu_open: s.sidebar_add_menu_open.clone(),
                 conversations_add_menu_open: s.conversations_add_menu_open.clone(),
+                automations_open: s.automations_open,
                 project_menu_open: s.project_menu_open.clone(),
                 changed_files_open: s.changed_files_open.clone(),
                 settings_overlay_open: s.settings_overlay_open,

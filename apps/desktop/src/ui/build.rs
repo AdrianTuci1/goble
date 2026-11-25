@@ -3968,10 +3968,17 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for icon in ["dots-vertical", "search", "menu-01"] {
+        // 472: the Review row is only Search and the sidebar toggle.
+        for icon in ["search", "panel-left-outline"] {
             assert!(
                 review_row.contains(&icon),
                 "the review's own row carries {icon:?}: {review_row:?}"
+            );
+        }
+        for icon in ["dots-vertical", "menu-01"] {
+            assert!(
+                !review_row.contains(&icon),
+                "the review's own row drops {icon:?}: {review_row:?}"
             );
         }
         let border = app.theme.color(ColorToken::Border);

@@ -1488,8 +1488,8 @@ pub(crate) fn files_changed_rail(
     let mut list = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0);
-    for file in &detail.files {
+        .with_spacing(0.0);
+    for (index, file) in detail.files.iter().enumerate() {
         let path = file.path.clone();
         let absolute = file.absolute_path.clone();
         let sel = selected == Some(file.path.as_str());
@@ -1532,10 +1532,14 @@ pub(crate) fn files_changed_rail(
                 .finish(),
             )
             .finish();
+        // 471: flat full-bleed rows; no background at rest, only the hover/
+        // selected surface. The 1px rule is the row's only separator.
+        if index > 0 {
+            list = list.with_child(Divider::horizontal().finish());
+        }
         let row = HoverRow::new(
             Container::new(row)
-                .with_padding(EdgeInsets::new(7.0, 9.0, 7.0, 9.0))
-                .with_corner_radius(7.0)
+                .with_padding(EdgeInsets::new(8.0, 9.0, 8.0, 9.0))
                 .finish(),
         )
         .with_selected(sel)

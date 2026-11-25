@@ -377,7 +377,6 @@ pub(crate) fn build_review_tab(
                         .max(200.0),
                     rail_width,
                 ))
-                .with_padding(EdgeInsets::new(sm, sm, sm, sm))
                 .finish(),
             )
             .finish(),
@@ -419,26 +418,7 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
         let on_diff = on_diff.clone();
         move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::ToggleSidebar)
     };
-    let toggle_menu = {
-        let on_diff = on_diff.clone();
-        move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::ToggleCommit)
-    };
     let on_search = actions.on_spotlight.clone();
-    let kebab = Tooltip::new(
-        TopbarButton::new(
-            Icon::new("dots-vertical")
-                .with_size(14.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .with_size(26.0)
-        .with_corner_radius(7.0)
-        .with_on_click(toggle_files)
-        .finish(),
-        "Review files",
-    )
-    .with_position(TooltipPosition::Below)
-    .finish();
     let search = Tooltip::new(
         TopbarButton::new(
             Icon::new("search")
@@ -456,18 +436,19 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
     )
     .with_position(TooltipPosition::Below)
     .finish();
-    let menu = Tooltip::new(
+    // 472: the Review row shows only Search and the sidebar toggle.
+    let sidebar = Tooltip::new(
         TopbarButton::new(
-            Icon::new("menu-01")
+            Icon::new("panel-left-outline")
                 .with_size(14.0)
                 .with_theme_color(ColorToken::Muted, app)
                 .finish(),
         )
         .with_size(26.0)
-        .with_corner_radius(14.0)
-        .with_on_click(toggle_menu)
+        .with_corner_radius(7.0)
+        .with_on_click(toggle_files)
         .finish(),
-        "Review options",
+        "Show/hide files",
     )
     .with_position(TooltipPosition::Below)
     .finish();
@@ -476,9 +457,8 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(2.0)
         .with_child(Expanded::new(Empty::new().finish()).finish())
-        .with_child(kebab)
         .with_child(search)
-        .with_child(menu)
+        .with_child(sidebar)
         .finish();
     ConstrainedBox::new(row).with_height(32.0).finish()
 }

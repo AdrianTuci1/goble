@@ -1278,7 +1278,6 @@ impl ChatComposer {
     /// keyboard paths below and in the editor), never with a press on the bar.
     fn footer_row(&mut self, app: &AppContext) -> Option<Box<dyn Element>> {
         let left = self.action_children(app);
-        let environment = self.environment_control(app);
         let right = self.stop_control(app);
         // A submit surface keeps the footer row even when every control in it is
         // absent: the row is what reserves [`COMPOSER_FOOTER_HEIGHT`] inside the
@@ -1287,7 +1286,6 @@ impl ChatComposer {
         // must not shrink the card.
         let submits = self.on_send.is_some() || self.on_cmd_enter.is_some();
         if left.is_empty()
-            && environment.is_none()
             && right.is_none()
             && self.footer_action.is_none()
             && !submits
@@ -1307,24 +1305,19 @@ impl ChatComposer {
                 .with_size(vec2f(0.0, COMPOSER_FOOTER_HEIGHT))
                 .finish(),
         );
-        let wrap = Wrap::row()
+        // 439: one line, never a wrapped second row. The model truncates and
+        // the approval control drops to its icon before anything wraps.
+        let left_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
-            .with_run_spacing(sm)
             .with_children(left)
             .finish();
         let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
-            .with_child(Expanded::new(wrap).finish());
-        // The owner allowed the environment icon to move out of the retired
-        // top band and into the footer. It sits at the trailing end, beside
-        // the stop circle, so its tray and tooltip open inside the pane
-        // rather than spilling over the content lane's leading edge.
-        if let Some(environment) = environment {
-            row = row.with_child(environment);
-        }
+            .with_child(Expanded::new(left_row).finish());
         if let Some(right) = right {
             row = row.with_child(right);
         }
@@ -1609,15 +1602,19 @@ impl ChatComposer {
     /// never has to open the menu to say what policy is in force.
     fn approval_control(&self, app: &AppContext, mode: ApprovalMode) -> Box<dyn Element> {
         // 394: one neutral control, the mode's icon and label in primary ink.
-        let mut pill = ContextPill::new(mode.icon(), mode.display_label())
-            .with_label_color(ColorToken::Text)
-            .with_hover_fill(ColorToken::ContentBg)
-            .with_tooltip(format!(
-                "Approval mode · {} · shift+tab to cycle",
-                mode.display_description()
-            ))
-            .with_tray_side(PillTraySide::Above)
-            .with_menu_max_width(360.0);
+        // 439: on a narrow footer the label drops and only the icon + tooltip
+        // stay, so the row never wraps.
+        let compact = self.layout_width.is_some_and(|width| width < 460.0);
+        let mut pill =
+            ContextPill::new(mode.icon(), if compact { "" } else { mode.display_label() })
+                .with_label_color(ColorToken::Text)
+                .with_hover_fill(ColorToken::ContentBg)
+                .with_tooltip(format!(
+                    "Approval mode · {} · shift+tab to cycle",
+                    mode.display_description()
+                ))
+                .with_tray_side(PillTraySide::Above)
+                .with_menu_max_width(360.0);
         if let Some(cb) = self.on_select_approval_mode.clone() {
             let items = ApprovalMode::DISPLAY_ORDER
                 .iter()

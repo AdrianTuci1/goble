@@ -989,9 +989,13 @@ impl TextArea {
                 Some(true)
             }
             "Enter" => {
-                if let Some(cb) = self.on_submit.as_ref() {
-                    (cb.borrow_mut())(*modifiers);
-                    return Some(false);
+                // 436: Shift+Enter is always a newline, even when the host
+                // wired a submit callback.
+                if !modifiers.shift {
+                    if let Some(cb) = self.on_submit.as_ref() {
+                        (cb.borrow_mut())(*modifiers);
+                        return Some(false);
+                    }
                 }
                 self.replace_selection();
                 let caret = self.caret_index();
@@ -1819,9 +1823,11 @@ impl Element for TextArea {
                         }
                     }
                     "Enter" => {
-                        if let Some(cb) = self.on_submit.as_ref() {
-                            (cb.borrow_mut())(*modifiers);
-                            return true;
+                        if !modifiers.shift {
+                            if let Some(cb) = self.on_submit.as_ref() {
+                                (cb.borrow_mut())(*modifiers);
+                                return true;
+                            }
                         }
                         insert_char(Rc::make_mut(&mut self.value), caret, '\n');
                         self.set_caret_index(caret + 1);

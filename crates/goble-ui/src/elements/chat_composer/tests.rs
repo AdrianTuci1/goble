@@ -445,52 +445,6 @@ fn the_band_keeps_the_floating_cards_height_and_leaves_the_agent_card_alone() {
     );
 }
 
-/// The environment pill's glyph is the host's to name, so the pill can say
-/// where the work runs: T3 Code's cloud (`environment-cloud`) for a worker and
-/// its computer (`environment-computer`) for a local environment.
-#[test]
-fn composer_draws_the_environment_glyph_its_host_names() {
-    use crate::render::RenderCommand;
-
-    let app = AppContext::default();
-    let icons = |commands: &[RenderCommand]| -> Vec<String> {
-        commands
-            .iter()
-            .filter_map(|c| match c {
-                RenderCommand::DrawIcon { name, .. } => Some(name.clone()),
-                _ => None,
-            })
-            .collect()
-    };
-
-    let mut remote = ChatComposer::new()
-        .with_harness_label("Remote (worker)")
-        .with_harness_icon("environment-cloud");
-    let drawn = icons(&paint_composer(&app, &mut remote));
-    assert!(
-        drawn.iter().any(|name| name == "environment-cloud"),
-        "the host's cloud is the pill's glyph: {drawn:?}"
-    );
-
-    let mut local = ChatComposer::new()
-        .with_harness_label("Local")
-        .with_harness_icon("environment-computer");
-    let drawn = icons(&paint_composer(&app, &mut local));
-    assert!(
-        drawn.iter().any(|name| name == "environment-computer"),
-        "the host's computer is the pill's glyph: {drawn:?}"
-    );
-
-    // A host that names no glyph gets the local environment's computer: the
-    // composer's default is the mark that reads as "this machine".
-    let mut default = ChatComposer::new().with_harness_label("Local");
-    let drawn = icons(&paint_composer(&app, &mut default));
-    assert!(
-        drawn.iter().any(|name| name == "environment-computer"),
-        "the default environment glyph is the computer: {drawn:?}"
-    );
-}
-
 /// The old host flags — context above the editor, an edge-to-edge bar — no
 /// longer produce a different card: there is no context band left to place, and
 /// every surface draws the same single input card, so switching a pane between
@@ -517,253 +471,6 @@ fn the_old_host_flags_do_not_change_the_card() {
             "and draws the same content"
         );
     }
-}
-
-/// The environment control is the host's to give, and it is icon-only in the
-/// composer's footer now that the top band is gone: the reference's
-/// monitor/cloud glyph, with the environment's name in its tooltip. A host that
-/// wires no label draws no environment control at all — that is what keeps a
-/// local conversation free of the control, since the app gives the label to the
-/// conversation that runs on a worker and to no other (see
-/// `ui::chat::agent`).
-#[test]
-fn the_environment_control_is_icon_only_in_the_footer() {
-    use crate::render::RenderCommand;
-
-    let app = AppContext::default();
-    let mut composer = ChatComposer::new()
-        .with_harness_label("Remote (worker)")
-        .with_harness_menu(
-            vec![
-                PopupMenuItem::new("Local"),
-                PopupMenuItem::new("Remote (worker)").selected(),
-            ],
-            Rc::new(RefCell::new(false)),
-            |_| {},
-        )
-        // All three retired context controls: the composer must ignore them.
-        .with_path_label("/work/project")
-        .with_dir_menu(
-            vec![PopupMenuItem::new("/work/project")],
-            Rc::new(RefCell::new(false)),
-            |_| {},
-        )
-        .with_branch_label("main")
-        .with_branch_menu(
-            vec![PopupMenuItem::new("main")],
-            Rc::new(RefCell::new(false)),
-            |_| {},
-        );
-
-    let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 400.0));
-    let env =
-        icon_origin(&commands, "environment-computer").expect("the environment control draws");
-    assert!(
-        icon_origin(&commands, "folder").is_none(),
-        "the retired directory control draws nothing: {commands:?}"
-    );
-    assert!(
-        icon_origin(&commands, "branch").is_none(),
-        "the retired branch control draws nothing: {commands:?}"
-    );
-    // The footer sits at the bottom of the card, so the environment glyph is
-    // below the editor rather than over it.
-    let editor = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::DrawText { origin, text, .. } if text == "Ask anything..." => {
-                Some(origin.y)
-            }
-            _ => None,
-        })
-        .expect("the editor placeholder is drawn");
-    assert!(
-        env.y > editor,
-        "the environment glyph is in the footer, under the editor ({env:?} against {editor})"
-    );
-    // Icon-only: the host's label is the tooltip, not a text run beside the
-    // glyph.
-    assert!(
-        !drawn_texts(&commands)
-            .iter()
-            .any(|t| t == "Remote (worker)"),
-        "the environment control draws no label at rest: {:?}",
-        drawn_texts(&commands)
-    );
-    // The card, its segment and the footer controls are borderless.
-    let outlines: Vec<f32> = commands
-        .iter()
-        .filter_map(|c| match c {
-            RenderCommand::StrokeRect { corner_radius, .. } => Some(*corner_radius),
-            _ => None,
-        })
-        .collect();
-    assert!(
-        outlines.is_empty(),
-        "the borderless card and controls draw no outline: {outlines:?}"
-    );
-
-    // The open environment menu is the host's panel: it draws the mediums the
-    // host listed and stamps the one in force with the trailing check.
-    let mut wired = ChatComposer::new()
-        .with_harness_label("Remote (worker)")
-        .with_harness_menu(
-            vec![
-                PopupMenuItem::new("Local"),
-                PopupMenuItem::new("Remote (worker)").selected(),
-            ],
-            Rc::new(RefCell::new(true)),
-            |_| {},
-        );
-    let commands = paint_composer(&app, &mut wired);
-    assert!(
-        drawn_texts(&commands).iter().any(|t| t == "Local"),
-        "the open environment menu draws the environments the host listed: {:?}",
-        drawn_texts(&commands)
-    );
-    assert!(
-        icon_origin(&commands, "check").is_some(),
-        "the environment in force is stamped with the check: {commands:?}"
-    );
-
-    // The environment menu is the reference's wider casing: the worker's row
-    // carries a description that must stay on one line, cut with an ellipsis.
-    let described = vec![
-        PopupMenuItem::new("This Computer").selected(),
-        PopupMenuItem::new("Remote")
-            .with_icon("environment-cloud")
-            .with_description(
-                "Clones this repo in a cloud environment, then hands it to the agent",
-            ),
-    ];
-    let mut env_menu = ChatComposer::new()
-        .with_harness_label("This Computer")
-        .with_harness_menu(described, Rc::new(RefCell::new(true)), |_| {});
-    let (_, commands) = paint_composer_in(&app, &mut env_menu, vec2f(900.0, 600.0));
-    let description = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::DrawText { text, .. }
-                if text.starts_with("Clones this repo in a cloud environment") =>
-            {
-                Some(text.clone())
-            }
-            _ => None,
-        })
-        .expect("the environment menu draws its description");
-    assert!(
-        description.ends_with('…') && description.lines().count() == 1,
-        "the description is one ellipsized line: {description:?}"
-    );
-    let panel = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::FillRect {
-                rect,
-                color,
-                corner_radius,
-            } if *color == app.theme.color(ColorToken::SurfaceRaised)
-                && (*corner_radius - 12.0).abs() < 0.01
-                && rect.min_y() < 0.0 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        })
-        .expect("the environment menu paints its panel above the composer");
-    assert!(
-        panel.width() >= 300.0 && panel.width() <= 308.5,
-        "the environment menu is the wider casing (300-308): {panel:?}"
-    );
-
-    // A host that wires no environment draws none.
-    let mut plain = ChatComposer::new()
-        .with_path_label("/work/project")
-        .with_branch_label("main");
-    let (_, commands) = paint_composer_in(&app, &mut plain, vec2f(600.0, 400.0));
-    assert!(
-        icon_origin(&commands, "environment-computer").is_none()
-            && icon_origin(&commands, "environment-cloud").is_none(),
-        "a host that wires no environment draws no environment control"
-    );
-
-    // The env icon is the host's own medium glyph: a worker's control draws the
-    // cloud, a local one the computer, never both.
-    let mut worker = ChatComposer::new()
-        .with_harness_label("Remote (worker)")
-        .with_harness_icon("environment-cloud");
-    let (_, commands) = paint_composer_in(&app, &mut worker, vec2f(600.0, 400.0));
-    assert!(
-        icon_origin(&commands, "environment-cloud").is_some(),
-        "a worker's environment control draws the cloud: {commands:?}"
-    );
-}
-
-/// The composer's environment tray uses the reference casing width, and its
-/// trailing edge sits a few points inside the card rather than a full band
-/// inset in: 308 for the environment (its description needs the room), right
-/// edge ≈ card right − 6.
-#[test]
-fn the_composer_trays_use_the_reference_casing_widths() {
-    use crate::elements::COMPOSER_CARD_RADIUS;
-    use crate::render::RenderCommand;
-
-    let app = AppContext::default();
-
-    // The environment tray: 308 wide, anchored under the icon-only control so
-    // its trailing edge ends 6pt inside the card.
-    let mut env = ChatComposer::new()
-        .with_harness_label("Remote (worker)")
-        .with_harness_icon("environment-cloud")
-        .with_harness_menu(
-            vec![
-                PopupMenuItem::new("Local"),
-                PopupMenuItem::new("Remote (worker)").selected(),
-            ],
-            Rc::new(RefCell::new(true)),
-            |_| {},
-        );
-    let (_, commands) = paint_composer_in(&app, &mut env, vec2f(900.0, 600.0));
-    // The card is borderless now: its rounded fill is what marks its rect.
-    let card = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::FillRect {
-                rect,
-                color,
-                corner_radius,
-            } if *color == app.theme.color(ColorToken::Surface)
-                && (*corner_radius - COMPOSER_CARD_RADIUS).abs() < 0.01 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        })
-        .expect("the card fills its rounded rect");
-    let panel = commands
-        .iter()
-        .find_map(|c| match c {
-            RenderCommand::FillRect {
-                rect,
-                color,
-                corner_radius,
-            } if *color == app.theme.color(ColorToken::SurfaceRaised)
-                && (*corner_radius - 12.0).abs() < 0.01
-                && rect.min_y() < 0.0 =>
-            {
-                Some(*rect)
-            }
-            _ => None,
-        })
-        .expect("the environment tray paints above the band");
-    assert!(
-        panel.width() >= 300.0 && panel.width() <= 308.5,
-        "the environment tray is the reference's 308pt casing (300 with the panel's own padding): {panel:?}"
-    );
-    assert!(
-        panel.min_x() >= card.min_x() - 0.5 && panel.max_x() <= card.max_x() + 0.5,
-        "the tray opens inside the card from the footer control: panel {panel:?}, card {card:?}"
-    );
 }
 
 /// A rich-input control is borderless: at rest it is only its glyph and label,
@@ -2320,17 +2027,18 @@ fn a_press_anywhere_in_the_rich_input_focuses_the_editor() {
     );
 }
 
-/// Narrowed, the footer's controls move onto a second line instead of being
-/// drawn past the input's own edge — the warp-new behaviour at resize, where
-/// the input column grows downwards rather than sideways.
+/// 439: narrowed, the footer keeps one line; the model truncates and the
+/// approval control drops its label to the icon instead of wrapping.
 #[test]
-fn the_footer_wraps_instead_of_overflowing_the_input() {
+fn the_footer_stays_on_one_line_and_the_approval_control_drops_its_label() {
     use crate::render::RenderCommand;
 
     let app = AppContext::default();
     let composer = || {
         ChatComposer::new()
             .with_model_label("gpt-4o")
+            .with_approval_mode(crate::elements::ApprovalMode::Manual)
+            .with_on_select_approval_mode(|_| {})
             .with_stop_visible(true)
             .with_on_stop(|| {})
             .with_on_select_model(|| {})
@@ -2357,6 +2065,19 @@ fn the_footer_wraps_instead_of_overflowing_the_input() {
     assert!(
         model_y(&narrow_commands) > 0.0,
         "the model chip is still drawn in a narrow footer"
+    );
+    assert!(
+        !drawn_texts(&narrow_commands)
+            .iter()
+            .any(|text| text == "Default"),
+        "the approval label is hidden on a narrow footer: {narrow_commands:?}"
+    );
+    assert!(
+        narrow_commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawIcon { name, .. } if name == "lock"
+        )),
+        "the approval icon stays on the narrow footer"
     );
     assert!(
         narrow.x <= 260.0 + 0.5,
@@ -2876,6 +2597,50 @@ fn the_card_draws_no_focus_ring_when_focused() {
     assert!(
         !has_focus_stroke(&commands),
         "a focused editor with a menu up still draws no focus ring: {commands:?}"
+    );
+}
+
+/// 436: a real Enter keydown on the focused composer calls on_send with the
+/// draft and clears it; Shift+Enter is left to the editor as a newline.
+#[test]
+fn plain_enter_on_the_focused_composer_sends_the_draft() {
+    let app = AppContext::default();
+    let sent: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = sent.clone();
+    let mut composer = ChatComposer::new()
+        .with_value("ship it")
+        .with_focused(true)
+        .with_on_send(move |text| sink.borrow_mut().push(text));
+    let _ = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
+    assert!(
+        composer.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Enter".to_string(),
+                modifiers: ModifiersState::none(),
+            },
+            &mut crate::elements::EventContext::default(),
+            &app,
+        ),
+        "the composer consumes Enter"
+    );
+    assert_eq!(*sent.borrow(), vec!["ship it".to_string()]);
+    assert_eq!(composer.value(), "");
+
+    let mut multiline = ChatComposer::new()
+        .with_value("line one")
+        .with_focused(true)
+        .with_on_send(|_| panic!("Shift+Enter is a newline, not a send"));
+    let _ = paint_composer_in(&app, &mut multiline, vec2f(600.0, 500.0));
+    let _ = multiline.dispatch_event(
+        &DispatchedEvent::KeyDown {
+            key: "Enter".to_string(),
+            modifiers: ModifiersState {
+                shift: true,
+                ..ModifiersState::none()
+            },
+        },
+        &mut crate::elements::EventContext::default(),
+        &app,
     );
 }
 
@@ -3689,10 +3454,6 @@ fn a_slash_draft_keeps_the_single_composer_intact() {
                 "folder" | "branch" | "git-branch" | "This Computer"
             )),
             "the retired folder/branch band never draws: {tokens:?}"
-        );
-        assert!(
-            tokens.iter().any(|token| token == "environment-computer"),
-            "the environment icon lives in the footer on every draft: {tokens:?}"
         );
     }
 

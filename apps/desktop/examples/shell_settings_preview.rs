@@ -310,6 +310,12 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "composer-narrow",
+                vec2f(820.0, 900.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "composer-model-open",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -736,9 +742,53 @@ fn main() -> anyhow::Result<()> {
                         ),
                     );
                 }
+                if name == "composer-narrow" {
+                    s.right_sidebar_open = true;
+                    s.side_split_ratio = 0.48;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
+                    s.active_side_tab = 0;
+                }
                 if name == "composer-model-open" {
+                    use goble_desktop_service::ModelGroup;
+                    use goble_harness_types::HarnessModel;
+                    s.model_groups = vec![
+                        ModelGroup {
+                            harness: "anthropic".to_string(),
+                            label: "Anthropic".to_string(),
+                            models: vec![
+                                HarnessModel::new("claude-opus-4", "Claude Opus 4").with_thinking(
+                                    vec!["low".into(), "medium".into(), "high".into()],
+                                ),
+                                HarnessModel::new("claude-sonnet-4", "Claude Sonnet 4")
+                                    .with_thinking(vec![
+                                        "low".into(),
+                                        "medium".into(),
+                                        "high".into(),
+                                    ]),
+                            ],
+                        },
+                        ModelGroup {
+                            harness: "openai".to_string(),
+                            label: "OpenAI".to_string(),
+                            models: vec![HarnessModel::new("gpt-5", "GPT-5").with_thinking(vec![
+                                "minimal".into(),
+                                "low".into(),
+                                "high".into(),
+                            ])],
+                        },
+                        ModelGroup {
+                            harness: "google".to_string(),
+                            label: "Google".to_string(),
+                            models: vec![HarnessModel::new("gemini-2.5-pro", "Gemini 2.5 Pro")],
+                        },
+                    ];
                     let pane = s.active_pane_id;
-                    *s.pane_controls_mut(pane).model_menu_open.borrow_mut() = true;
+                    s.selected_model = "claude-sonnet-4".to_string();
+                    let controls = s.pane_controls_mut(pane);
+                    controls.model = "claude-sonnet-4".to_string();
+                    controls.thinking = "high".to_string();
+                    *controls.model_menu_open.borrow_mut() = true;
+                    *controls.model_tray_open.borrow_mut() = true;
                 }
                 if name == "composer-permissions-open" {
                     let pane = s.active_pane_id;

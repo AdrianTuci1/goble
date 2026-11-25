@@ -1805,7 +1805,7 @@ fn build_overview_popover_content(
     }));
     let (row, action) = overview_action_row(
         app,
-        "file",
+        "review-file",
         "Review",
         flat.len() == highlight,
         review,
@@ -1819,7 +1819,7 @@ fn build_overview_popover_content(
     let files = Rc::new(RefCell::new(move || (on_files_tab.borrow_mut())()));
     let (row, action) = overview_action_row(
         app,
-        "folder",
+        "file",
         "Files",
         flat.len() == highlight,
         files,
@@ -1833,7 +1833,7 @@ fn build_overview_popover_content(
     let terminal = Rc::new(RefCell::new(move || (on_terminal.borrow_mut())(active)));
     let (row, action) = overview_action_row(
         app,
-        "terminal",
+        "terminal-square",
         "Terminal",
         flat.len() == highlight,
         terminal,

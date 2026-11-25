@@ -5039,4 +5039,24 @@ mod tests {
             "the horizontal wheel shifts the strip left ({before:?} -> {after:?})"
         );
     }
+
+    /// 479: opening the Settings sheet is a draw, not a detection pass. The
+    /// first frame must be effectively instant and must not populate the
+    /// integration cache from PATH.
+    #[test]
+    fn opening_settings_does_not_probe_integrations_on_the_draw_path() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        // Warm fonts/layout once; the assertion is about the open frame, not
+        // the process's first-ever render.
+        let _ = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        state.borrow_mut().settings_overlay_open = true;
+        let started = std::time::Instant::now();
+        let _ = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(250),
+            "the first Settings frame took {:?}",
+            started.elapsed()
+        );
+    }
 }

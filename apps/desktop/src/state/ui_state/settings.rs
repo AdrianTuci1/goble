@@ -173,8 +173,12 @@ impl UiState {
         if self.settings.harnesses.is_empty() {
             self.settings.harnesses = desktop.list_harnesses();
         }
-        self.settings.integrations =
-            goble_core::integration::IntegrationRegistry::with_defaults().snapshot_all();
+        // 479: never probe PATH/integrations on the settings draw/open path.
+        // Use the cached snapshot loaded once by the model refresh; an explicit
+        // Refresh action is the only thing that re-runs detection.
+        if self.settings.integrations.is_empty() && !self.integrations.is_empty() {
+            self.settings.integrations = self.integrations.clone();
+        }
         self.settings_workers = desktop
             .list_workers()
             .into_iter()

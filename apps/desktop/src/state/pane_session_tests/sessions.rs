@@ -140,6 +140,30 @@ fn a_turn_runs_only_with_a_key_a_provider_and_a_model() {
     state.settings_llm_api_key = "sk-test".to_string();
     assert!(state.can_run_agent_turn(1));
 
+    // 480: with that configured model/key, Enter is a real send gesture.
+    let sent: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+    let sink = sent.clone();
+    use goble_ui::elements::Element;
+    let mut composer = goble_ui::ChatComposer::new()
+        .with_value("ship it")
+        .with_focused(true)
+        .with_on_send(move |text| sink.borrow_mut().push(text));
+    let app = goble_ui::AppContext::default();
+    let _ = composer.layout(
+        goble_ui::elements::SizeConstraint::loose(goble_ui::geometry::vec2f(600.0, 500.0)),
+        &mut goble_ui::elements::LayoutContext::default(),
+        &app,
+    );
+    assert!(composer.dispatch_event(
+        &goble_ui::event::DispatchedEvent::KeyDown {
+            key: "Enter".to_string(),
+            modifiers: goble_ui::event::ModifiersState::none(),
+        },
+        &mut goble_ui::EventContext::default(),
+        &app,
+    ));
+    assert_eq!(sent.borrow().as_slice(), ["ship it"]);
+
     state.settings_llm_provider.clear();
     assert!(
         !state.can_run_agent_turn(1),

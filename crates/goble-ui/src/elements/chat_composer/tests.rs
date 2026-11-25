@@ -3225,25 +3225,19 @@ fn the_model_card_reports_the_model_and_level_the_host_wires() {
     assert!(composer.dispatch_event(&key("Escape"), &mut ctx, &app));
     assert!(!*open.borrow(), "Escape from the root pane closes the card");
 
-    // The effort pane reports the level by the id its harness names: re-open on
-    // the root, walk to the Effort cell, drill and take the level in force.
+    // The detail/effort column reports the level by the id its harness names.
     *open.borrow_mut() = true;
-    *tray_state.borrow_mut() = ModelTrayState::default();
+    {
+        let mut state = tray_state.borrow_mut();
+        state.pane = ModelTrayPane::Effort;
+        state.level = 0;
+        state.seeded = true;
+    }
     let _ = composer.layout(
         SizeConstraint::loose(vec2f(600.0, 500.0)),
         &mut LayoutContext::default(),
         &app,
     );
-    assert!(composer.dispatch_event(&key("ArrowDown"), &mut ctx, &app));
-    assert_eq!(
-        tray_state.borrow().cell,
-        0,
-        "the first arrow lands on Model"
-    );
-    assert!(composer.dispatch_event(&key("ArrowDown"), &mut ctx, &app));
-    assert_eq!(tray_state.borrow().cell, 1, "the next arrow is on Effort");
-    assert!(composer.dispatch_event(&key("Enter"), &mut ctx, &app));
-    assert_eq!(tray_state.borrow().pane(), ModelTrayPane::Effort);
     assert!(composer.dispatch_event(&key("Enter"), &mut ctx, &app));
     assert_eq!(
         levels.borrow().as_slice(),

@@ -366,10 +366,12 @@ fn the_composer_model_card_registers_and_closes_from_outside() {
         Some("composer.model"),
         "the composer model card registered as the open menu"
     );
-    // The card draws the two DSH root cells.
+    // 477: the card draws its three columns.
     assert!(
-        text_origin(&commands, "Model").is_some() || text_origin(&commands, "No efforts").is_some(),
-        "the model card is drawn"
+        text_origin(&commands, "Integrations").is_some()
+            && text_origin(&commands, "Models").is_some()
+            && text_origin(&commands, "Effort").is_some(),
+        "the three-column model card is drawn"
     );
 
     // Hover over the card belongs to the card: the transcript behind it keeps

@@ -2243,21 +2243,16 @@ mod tests {
         );
         let mut element: Box<dyn Element> = Box::new(selected);
         let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
-        let band = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::Selected) =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .expect("the selected card paints its band");
-        assert_eq!(
-            (band.min_x(), band.max_x()),
-            (0.0, width),
-            "the selected band spans the card too: {band:?}"
+        // 471/remote: a selected row is flat at rest; the surface appears only
+        // on hover, matching the Review rows.
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. }
+                    if *color == app.theme.color(ColorToken::Hover)
+                        || *color == app.theme.color(ColorToken::Selected)
+            )),
+            "the selected card paints no rest band: {commands:?}"
         );
     }
 

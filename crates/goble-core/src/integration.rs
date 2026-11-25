@@ -255,9 +255,12 @@ impl IntegrationRegistry {
             adapters: Vec::new(),
         };
         registry.register(Box::new(AntigravityAdapter));
-        registry.register(Box::new(CliAdapter::new("claude", "Claude Code", "claude")));
-        registry.register(Box::new(CliAdapter::new("codex", "Codex", "codex")));
-        registry.register(Box::new(CliAdapter::new("gemini", "Gemini", "gemini")));
+        for spec in crate::harness::HARNESSES {
+            if spec.id == "goble" || spec.id == "antigravity" || spec.commands.is_empty() {
+                continue;
+            }
+            registry.register(Box::new(CliAdapter::from_spec(spec)));
+        }
         registry
     }
 
@@ -286,6 +289,14 @@ impl CliAdapter {
     pub fn new(id: &'static str, name: &'static str, command: &'static str) -> Self {
         Self { id, name, command }
     }
+
+    pub fn from_spec(spec: &'static crate::harness::HarnessSpec) -> Self {
+        Self {
+            id: spec.id,
+            name: spec.name,
+            command: spec.commands.first().copied().unwrap_or(spec.id),
+        }
+    }
 }
 
 impl IntegrationAdapter for CliAdapter {
@@ -300,6 +311,13 @@ impl IntegrationAdapter for CliAdapter {
             .and_then(|binary| probe.run(binary, &["--version"]))
             .map(|output| output.lines().next().unwrap_or("").trim().to_string())
             .filter(|line| !line.is_empty());
+        // 463: read the CLI's runtime model list when it exposes one; otherwise
+        // report no models instead of inventing any.
+        let models = path
+            .as_ref()
+            .and_then(|binary| probe.run(binary, &["models"]))
+            .map(|output| parse_model_lines(&output))
+            .unwrap_or_default();
         IntegrationSnapshot {
             id: self.id.to_string(),
             name: self.name.to_string(),
@@ -307,19 +325,19 @@ impl IntegrationAdapter for CliAdapter {
             installed: path.is_some(),
             version,
             path: path.clone().map(|path| path.to_string_lossy().to_string()),
-            health: if self.id == "antigravity" {
-                IntegrationHealth::Installed
-            } else if path.is_some() {
+            health: if path.is_none() {
+                IntegrationHealth::NotFound
+            } else if models.is_empty() {
                 IntegrationHealth::Installed
             } else {
-                IntegrationHealth::NotFound
+                IntegrationHealth::Connected
             },
             auth: if path.is_some() {
                 "CLI manages its own sign-in".to_string()
             } else {
                 "not installed".to_string()
             },
-            models: Vec::new(),
+            models,
             config_path: None,
             detail: if path.is_some() {
                 format!("`{}` is on PATH.", self.command)
@@ -432,6 +450,22 @@ mod tests {
             .iter()
             .map(|adapter| adapter.id())
             .collect();
-        assert_eq!(ids, vec!["antigravity", "claude", "codex", "gemini"]);
+        assert!(ids.contains(&"antigravity"));
+        for expected in [
+            "claude",
+            "codex",
+            "gemini",
+            "copilot",
+            "kiro",
+            "opencode",
+            "omp",
+            "pi",
+            "hermes",
+            "minimax",
+            "minimax-code",
+        ] {
+            assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
+        }
+        assert!(ids.len() >= 20, "the registry carries the full T3 CLI set");
     }
 }

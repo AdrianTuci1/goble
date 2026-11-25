@@ -509,6 +509,24 @@ impl ScrollDotsRail {
         (count > 0).then_some(count - 1)
     }
 
+    /// 446/448: with many turns the tail becomes one longer segment for the
+    /// most recent turns instead of squeezing every one into a dot.
+    fn tail_group(&self) -> Option<(usize, usize)> {
+        let count = self.count();
+        (count > 8).then(|| (count - 3, count))
+    }
+
+    fn group_label(&self, range: (usize, usize)) -> String {
+        let (start, end) = range;
+        let first = self.labels.get(start).map(String::as_str).unwrap_or("Turn");
+        let last = self
+            .labels
+            .get(end.saturating_sub(1))
+            .map(String::as_str)
+            .unwrap_or("Turn");
+        format!("{} turns · {} – {}", end - start, first, last)
+    }
+
     fn hovered_indicator(&self, ctx: &crate::elements::PaintContext) -> Option<usize> {
         if !ctx.cursor_inside {
             return None;
@@ -521,6 +539,28 @@ impl ScrollDotsRail {
             return None;
         }
         let fractions = self.fractions();
+        if let Some((start, end)) = self.tail_group() {
+            if start < fractions.len() && end <= fractions.len() {
+                let top = origin.y() + self.marker_y(fractions[start]);
+                let bottom = origin.y() + self.marker_y(fractions[end - 1]);
+                if ctx.cursor_position.y >= top - DOT_GAP
+                    && ctx.cursor_position.y <= bottom + DOT_GAP
+                {
+                    return Some(start);
+                }
+                let mut best = None;
+                let mut distance = DOT_GAP;
+                for (index, fraction) in fractions.iter().take(start).enumerate() {
+                    let center = origin.y() + self.marker_y(*fraction);
+                    let candidate = (ctx.cursor_position.y - center).abs();
+                    if candidate <= distance {
+                        distance = candidate;
+                        best = Some(index);
+                    }
+                }
+                return best;
+            }
+        }
         let mut best = None;
         let mut distance = DOT_GAP;
         for (index, fraction) in fractions.iter().enumerate() {
@@ -592,13 +632,17 @@ impl Element for ScrollDotsRail {
         let muted = app.theme.color(ColorToken::Muted);
         let ink = app.theme.color(ColorToken::Text);
         let x = origin.x + RAIL_INSET;
+        let group = self.tail_group();
         let long = self.long_index();
         for index in 0..self.count() {
+            if group.is_some_and(|(start, _)| index >= start) {
+                continue;
+            }
             let y = origin.y + self.marker_y(fractions[index]);
             let is_active = active == Some(index);
             let is_hovered = hovered == Some(index);
             let color = if is_active || is_hovered { ink } else { muted };
-            if Some(index) == long {
+            if group.is_none() && Some(index) == long {
                 renderer.fill_rounded_rect(
                     rectf(x, y - LONG_SEGMENT / 2.0, RAIL_WIDTH, LONG_SEGMENT),
                     color,
@@ -612,8 +656,30 @@ impl Element for ScrollDotsRail {
                 );
             }
         }
+        if let Some((start, end)) = group {
+            if end <= fractions.len() {
+                let top = origin.y + self.marker_y(fractions[start]);
+                let bottom = origin.y + self.marker_y(fractions[end - 1]);
+                let active = active.is_some_and(|index| index >= start && index < end);
+                let is_hovered = hovered == Some(start);
+                let color = if active || is_hovered { ink } else { muted };
+                renderer.fill_rounded_rect(
+                    rectf(x, top - DOT_SIZE / 2.0, RAIL_WIDTH, (bottom - top) + LONG_SEGMENT),
+                    color,
+                    RAIL_WIDTH / 2.0,
+                );
+            }
+        }
         if let Some(index) = hovered {
-            let label = self.labels.get(index).map(String::as_str).unwrap_or("Turn");
+            let label = if let Some(group) = self.tail_group() {
+                if index == group.0 {
+                    self.group_label(group)
+                } else {
+                    self.labels.get(index).map(String::as_str).unwrap_or("Turn").to_string()
+                }
+            } else {
+                self.labels.get(index).map(String::as_str).unwrap_or("Turn").to_string()
+            };
             let anchor_y = origin.y + self.marker_y(fractions[index]);
             let card = rectf(
                 x + RAIL_WIDTH + 8.0,
@@ -625,7 +691,7 @@ impl Element for ScrollDotsRail {
             renderer.stroke_rect(card, app.theme.color(ColorToken::Border), 1.0, 6.0);
             renderer.draw_text_with_font(
                 vec2f(card.min_x() + 8.0, card.min_y() + 5.0),
-                label,
+                &label,
                 11.0,
                 app.theme.color(ColorToken::Text),
                 card.width() - 16.0,
@@ -659,9 +725,27 @@ impl Element for ScrollDotsRail {
             if let Some(origin) = self.origin {
                 if (position.x - (origin.x() + RAIL_INSET)).abs() < RAIL_WIDTH + RAIL_HOVER_GAP {
                     let fractions = self.fractions();
+                    if let Some((start, end)) = self.tail_group() {
+                        if end <= fractions.len() {
+                            let top = origin.y() + self.marker_y(fractions[start]);
+                            let bottom = origin.y() + self.marker_y(fractions[end - 1]);
+                            if position.y >= top - DOT_GAP && position.y <= bottom + DOT_GAP {
+                                self.scroll_to(fractions[start]);
+                                return true;
+                            }
+                        }
+                    }
                     for (index, fraction) in fractions.iter().enumerate() {
+                        if self
+                            .tail_group()
+                            .is_some_and(|(start, _)| index >= start)
+                        {
+                            continue;
+                        }
                         let y = origin.y() + self.marker_y(*fraction);
-                        let hit = if Some(index) == self.long_index() {
+                        let hit = if self.tail_group().is_none()
+                            && Some(index) == self.long_index()
+                        {
                             LONG_SEGMENT / 2.0
                         } else {
                             DOT_GAP / 2.0
@@ -2174,5 +2258,31 @@ mod rail_tests {
         assert_eq!(rail.long_index(), Some(2));
         assert_eq!(rail.active_indicator(&fractions), Some(0));
         assert!(rail.marker_y(1.0) > rail.marker_y(0.0));
+    }
+
+    /// 446/448: a long transcript groups its tail turns under one segment.
+    #[test]
+    fn many_turns_group_the_tail_under_one_long_segment() {
+        let turns: Vec<ChatMessage> = (0..10)
+            .map(|index| user(&format!("turn {index}")))
+            .collect();
+        let slots: Vec<TurnSlot> = (0..10)
+            .map(|index| {
+                Rc::new(RefCell::new(Some(TurnGeometry {
+                    top: 100.0 + index as f32 * 80.0,
+                    height: 60.0,
+                })))
+            })
+            .collect();
+        let mut rail = ScrollDotsRail::new(
+            Rc::new(RefCell::new(ScrollState::default())),
+            turn_markers(&turns),
+            slots,
+        );
+        rail.size = Some(vec2f(800.0, 600.0));
+        assert_eq!(rail.tail_group(), Some((7, 10)));
+        let label = rail.group_label((7, 10));
+        assert!(label.starts_with("3 turns · turn 7"), "{label}");
+        assert!(label.ends_with("turn 9"), "{label}");
     }
 }

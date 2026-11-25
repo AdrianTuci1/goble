@@ -257,6 +257,18 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("file-typescript", "file_type/typescript.svg"),
     icon_bytes!("file-wasm", "file_type/wasm.svg"),
     icon_bytes!("file-zig", "file_type/zig.svg"),
+    icon_bytes!("lock", "lock.svg"),
+    icon_bytes!("shield-lock", "shield-lock.svg"),
+    icon_bytes!("shield-alert", "shield-alert.svg"),
+    icon_bytes!("eye", "eye.svg"),
+    icon_bytes!("pencil", "pencil.svg"),
+    icon_bytes!("pin", "pin.svg"),
+    icon_bytes!("archive-arrow-down", "archive-arrow-down.svg"),
+    icon_bytes!("square-split-horizontal", "square-split-horizontal.svg"),
+    icon_bytes!("files", "files.svg"),
+    icon_bytes!("terminal-square", "terminal-square.svg"),
+    icon_bytes!("review-file", "review-file.svg"),
+    icon_bytes!("overview", "overview.svg"),
 ];
 
 /// Whether `name` is a canonical icon file registered in the atlas.

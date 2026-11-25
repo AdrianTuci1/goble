@@ -467,15 +467,19 @@ pub fn build_chrome_row(
     }
     let copy_children = vec![name_item, id_item, project_item];
     let more_items = vec![
-        PopupMenuItem::new("Rename").with_shortcut("⌘ R"),
-        PopupMenuItem::new(pin_label),
-        PopupMenuItem::new("Archive").with_shortcut("⌘ ⇧ A"),
+        PopupMenuItem::new("Rename")
+            .with_icon("pencil")
+            .with_shortcut("⌘ R"),
+        PopupMenuItem::new(pin_label).with_icon("pin"),
+        PopupMenuItem::new("Archive")
+            .with_icon("archive-arrow-down")
+            .with_shortcut("⌘ ⇧ A"),
         PopupMenuItem::new("Split")
-            .with_icon("split-horizontal")
+            .with_icon("square-split-horizontal")
             .with_children(split_children)
             .with_separator_before(),
         PopupMenuItem::new("Copy")
-            .with_icon("copy")
+            .with_icon("files")
             .with_children(copy_children),
         PopupMenuItem::new("Close pane").with_separator_before(),
     ];
@@ -507,7 +511,7 @@ pub fn build_chrome_row(
     let overview_active = *overview_open.borrow();
     let toggle_overview = overview_open.clone();
     let overview_button = Tooltip::new(
-        TopbarButton::new(glyph(app, "square-text"))
+        TopbarButton::new(glyph(app, "overview"))
             .with_size(CONTROL_BUTTON_SIZE)
             .with_corner_radius(8.0)
             .with_active(overview_active)
@@ -2091,9 +2095,9 @@ pub fn build_side_panel(
                     crate::ui::explorer::build_explorer(app, state, actions)
                 } else {
                     match (state.pane_files.contains_key(&pane_id), path) {
-                        (true, Some(path)) => {
-                            crate::ui::file_view::build_file_view(app, state, actions, pane_id, &path)
-                        }
+                        (true, Some(path)) => crate::ui::file_view::build_file_view(
+                            app, state, actions, pane_id, &path,
+                        ),
                         _ => side_tabs::no_file_message(app),
                     }
                 }
@@ -2366,9 +2370,9 @@ fn build_overview_content(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(4.0);
     for (icon, label, action, trailing) in [
-        ("file", "Review", 0u8, None),
-        ("folder", "Open File", 1, None),
-        ("terminal", "Terminal", 2, None),
+        ("review-file", "Review", 0u8, None),
+        ("file", "Open File", 1, None),
+        ("terminal-square", "Terminal", 2, None),
         ("environment-cloud", "Browser", 3, None),
         ("message-plus-square", "Side Question", 4, None),
         ("plug", "Plugins", 5, Some("chevron-right")),

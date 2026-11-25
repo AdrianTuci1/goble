@@ -4890,7 +4890,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     name, origin, size, ..
-                } if name == "square-text" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "overview" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the Overview trigger");

@@ -1573,23 +1573,14 @@ impl PopupMenuItemView {
             }
         }
         if let Some(shortcut) = self.shortcut.clone() {
+            // 424: plain muted text, flush with the row's trailing padding.
             line = line.with_child(
-                Container::new(
-                    Text::new(shortcut)
-                        .with_font_family(FontFamily::Mono)
-                        .with_font_size(11.0)
-                        .with_line_height(16.0 / 11.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
-                .with_padding(EdgeInsets::new(2.0, 5.0, 2.0, 5.0))
-                .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-                .with_border(
-                    crate::elements::Border::all(1.0)
-                        .with_border_color(app.theme.color(ColorToken::Border)),
-                )
-                .with_corner_radius(6.0)
-                .finish(),
+                Text::new(shortcut)
+                    .with_font_family(FontFamily::Mono)
+                    .with_font_size(11.0)
+                    .with_line_height(16.0 / 11.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
             );
         }
         // A submenu row says it opens a flyout with the disclosure chevron at

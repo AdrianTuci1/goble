@@ -346,6 +346,12 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "composer-project-typed",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "chat-scroll-rail-hover",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -865,9 +871,20 @@ fn main() -> anyhow::Result<()> {
                 if name == "sidebar-conversations-menu" {
                     *s.conversations_add_menu_open.borrow_mut() = true;
                 }
-                if name == "composer-project-menu" {
+                if name == "composer-project-menu" || name == "composer-project-typed" {
                     s.set_active_pane_path(String::new());
-                    *s.project_menu_open.borrow_mut() = true;
+                    let active = s.active_pane_id;
+                    let runtime = s.pane_runtime.entry(active).or_default();
+                    runtime.messages.clear();
+                    runtime.pending_ask = None;
+                    runtime.pending_command = None;
+                    if name == "composer-project-menu" {
+                        s.composer_draft.clear();
+                        *s.project_menu_open.borrow_mut() = true;
+                    } else {
+                        s.composer_draft = "Hello".to_string();
+                        s.pane_sessions.entry(active).or_default().draft = "Hello".to_string();
+                    }
                 }
                 if name == "sidebar-collapsed" {
                     s.sidebar_visible = false;

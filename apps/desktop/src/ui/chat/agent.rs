@@ -792,7 +792,15 @@ pub fn build_agent_chat(
     // 341: the conversation's project pill sits above the composer. The side
     // panel's reserved conversation has no project of its own.
     if pane_id != crate::state::SIDE_AGENT_PANE_ID {
-        let pill = crate::ui::chat::project_pill::build_project_pill(app, state, actions, pane_id);
+        // BF: the selector is for the conversation's first turn only. Once a
+        // turn exists (or the user has typed), the band stays but the selector
+        // is gone, so the composer never jumps.
+        let show_project = session.messages.is_empty() && session.composer_draft.trim().is_empty();
+        let pill = if show_project {
+            crate::ui::chat::project_pill::build_project_pill(app, state, actions, pane_id)
+        } else {
+            crate::ui::chat::project_pill::project_pill_placeholder()
+        };
         chat = chat.with_project_pill(pill);
     }
     // The right "agent panel" (routines + scheduled tasks) is now a floating

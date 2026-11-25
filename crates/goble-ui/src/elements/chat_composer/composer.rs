@@ -377,6 +377,70 @@ pub struct ChatComposer {
     origin: Option<Point>,
 }
 
+/// 401: the approval card (and its trigger) is queued on the frame's last
+/// paint layer while open, so it sits above every other composer menu.
+struct DeferredApprovalCard {
+    inner: Rc<RefCell<Box<dyn Element>>>,
+    open: Rc<RefCell<bool>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl DeferredApprovalCard {
+    fn new(inner: Box<dyn Element>, open: Rc<RefCell<bool>>) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(inner)),
+            open,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for DeferredApprovalCard {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.borrow_mut().layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.inner.borrow_mut().paint(origin, ctx, app);
+        if *self.open.borrow() {
+            app.hover_chips
+                .borrow_mut()
+                .push_shared(origin, Rc::clone(&self.inner));
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut crate::elements::EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.inner.borrow_mut().dispatch_event(event, ctx, app)
+    }
+}
+
 impl ChatComposer {
     pub fn new() -> Self {
         Self {
@@ -1544,28 +1608,23 @@ impl ChatComposer {
     /// them without opening it. The label is the mode's own word, so the pane
     /// never has to open the menu to say what policy is in force.
     fn approval_control(&self, app: &AppContext, mode: ApprovalMode) -> Box<dyn Element> {
-        // No glyph: the mode's word is the control, and its colour says which
-        // policy is in force.
-        let display = |mode: ApprovalMode| match mode {
-            ApprovalMode::AlwaysApprove => "Full access",
-            ApprovalMode::Manual => "Default",
-            ApprovalMode::Plan => "Plan",
-            ApprovalMode::AutoReview => "Auto-review",
-        };
-        let mut pill = ContextPill::new("sliders", display(mode))
-            .without_icon()
-            .with_label_color(mode.color())
+        // 394: one neutral control, the mode's icon and label in primary ink.
+        let mut pill = ContextPill::new(mode.icon(), mode.display_label())
+            .with_label_color(ColorToken::Text)
             .with_hover_fill(ColorToken::ContentBg)
             .with_tooltip(format!(
                 "Approval mode · {} · shift+tab to cycle",
-                mode.description()
+                mode.display_description()
             ))
-            .with_tray_side(PillTraySide::Above);
+            .with_tray_side(PillTraySide::Above)
+            .with_menu_max_width(360.0);
         if let Some(cb) = self.on_select_approval_mode.clone() {
-            let items = ApprovalMode::ALL
+            let items = ApprovalMode::DISPLAY_ORDER
                 .iter()
                 .map(|option| {
-                    let mut item = PopupMenuItem::new(display(*option));
+                    let mut item = PopupMenuItem::new(option.display_label())
+                        .with_icon(option.icon())
+                        .with_description(option.display_description());
                     if *option == mode {
                         item = item.selected();
                     }
@@ -1574,11 +1633,15 @@ impl ChatComposer {
                 .collect();
             pill = pill
                 .with_menu(items, self.approval_menu_open.clone(), move |index| {
-                    (cb.borrow_mut())(ApprovalMode::from_index(index))
+                    let chosen = ApprovalMode::DISPLAY_ORDER
+                        .get(index)
+                        .copied()
+                        .unwrap_or(ApprovalMode::Manual);
+                    (cb.borrow_mut())(chosen)
                 })
                 .with_highlight_index(self.approval_menu_highlight.clone());
         }
-        pill.finish(app)
+        DeferredApprovalCard::new(pill.finish(app), self.approval_menu_open.clone()).finish()
     }
 
     /// Shift+Tab cycles the pane's approval mode. Taken before the editor sees

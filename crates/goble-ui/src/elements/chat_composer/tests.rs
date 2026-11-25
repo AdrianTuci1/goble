@@ -1258,7 +1258,7 @@ fn a_custom_harness_footer_draws_its_mark_in_place_of_model_and_approval() {
         "a custom harness draws no model control: {commands:?}"
     );
     assert!(
-        !texts.iter().any(|text| text == "Auto-review"),
+        !texts.iter().any(|text| text == "Requires review"),
         "a custom harness draws no approval control: {commands:?}"
     );
 
@@ -1274,8 +1274,15 @@ fn a_custom_harness_footer_draws_its_mark_in_place_of_model_and_approval() {
         "the native footer keeps its model control: {commands:?}"
     );
     assert!(
-        texts.iter().any(|text| text == "Auto-review"),
+        texts.iter().any(|text| text == "Requires review"),
         "the native footer keeps its approval control: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            RenderCommand::DrawIcon { name, .. } if name == "eye"
+        )),
+        "the native footer uses the mode icon: {commands:?}"
     );
     assert!(
         !commands.iter().any(
@@ -2132,7 +2139,7 @@ fn a_disabled_input_waits_without_taking_keys_or_presses() {
 /// The approval mode is a word, not a glyph: the control draws no icon, and the
 /// label's colour is what distinguishes the four policies.
 #[test]
-fn the_approval_mode_is_a_word_whose_colour_names_the_policy() {
+fn the_approval_mode_is_neutral_icon_and_text() {
     use crate::elements::ApprovalMode;
     use crate::render::RenderCommand;
 
@@ -2145,15 +2152,7 @@ fn the_approval_mode_is_a_word_whose_colour_names_the_policy() {
         let drawn = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text, color, .. }
-                    if text
-                        == match mode {
-                            ApprovalMode::AlwaysApprove => "Full access",
-                            ApprovalMode::Manual => "Default",
-                            ApprovalMode::Plan => "Plan",
-                            ApprovalMode::AutoReview => "Auto-review",
-                        } =>
-                {
+                RenderCommand::DrawText { text, color, .. } if text == mode.display_label() => {
                     Some(*color)
                 }
                 _ => None,
@@ -2161,25 +2160,25 @@ fn the_approval_mode_is_a_word_whose_colour_names_the_policy() {
             .unwrap_or_else(|| panic!("{:?}'s label is drawn", mode));
         assert_eq!(
             drawn,
-            app.theme.color(mode.color()),
-            "{:?} paints its label in the mode's colour",
+            app.theme.color(ColorToken::Text),
+            "{:?} paints its label in neutral ink",
             mode
         );
         assert!(
-            !commands.iter().any(|command| matches!(
+            commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { name, .. } if name == "sliders"
+                RenderCommand::DrawIcon { name, .. } if name == mode.icon()
             )),
-            "{:?} draws no glyph in front of the label",
+            "{:?} draws its mode icon",
             mode
         );
     }
 }
 
-/// The menu the approval control opens lists the four modes as words, with no
-/// glyph in front of any of them.
+/// The approval card lists the four modes in display order with icons,
+/// descriptions and the check at the end.
 #[test]
-fn the_approval_mode_menu_lists_words_without_icons() {
+fn the_approval_mode_menu_lists_modes_with_icons_and_descriptions() {
     use crate::elements::ApprovalMode;
     use crate::render::RenderCommand;
 
@@ -2191,32 +2190,24 @@ fn the_approval_mode_menu_lists_words_without_icons() {
         .with_on_select_approval_mode(|_| {});
     let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(600.0, 500.0));
 
-    for mode in ApprovalMode::ALL {
+    for mode in ApprovalMode::DISPLAY_ORDER {
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawText { text, .. }
-                    if text == match mode {
-                        ApprovalMode::AlwaysApprove => "Full access",
-                        ApprovalMode::Manual => "Default",
-                        ApprovalMode::Plan => "Plan",
-                        ApprovalMode::AutoReview => "Auto-review",
-                    }
+                RenderCommand::DrawText { text, .. } if text == mode.display_label()
             )),
             "{:?} is listed in the open menu",
             mode
         );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == mode.icon()
+            )),
+            "{:?} has its icon",
+            mode
+        );
     }
-    // The rows carry no glyph of their own; the only icon in the panel is the
-    // trailing check that stamps the mode in force.
-    let mode_icons = ["user", "prompt", "sparkle"];
-    assert!(
-        !commands.iter().any(|command| matches!(
-            command,
-            RenderCommand::DrawIcon { name, .. } if mode_icons.contains(&name.as_str())
-        )),
-        "the mode rows draw no icons: {commands:?}"
-    );
     assert!(
         commands.iter().any(
             |command| matches!(command, RenderCommand::DrawIcon { name, .. } if name == "check")

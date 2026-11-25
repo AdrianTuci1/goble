@@ -2559,20 +2559,22 @@ fn the_hint_row_sits_under_the_card_on_the_right() {
         stated_card.height(),
         empty_card.height()
     );
+    // 424: hints are plain icons/text, so their bounds come from the key
+    // glyphs rather than a cap stroke.
     let caps: Vec<crate::geometry::RectF> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::StrokeRect {
-                rect,
-                corner_radius,
-                ..
-            } if *corner_radius == 0.0 && rect.height() < 20.0 => Some(*rect),
+            RenderCommand::DrawIcon {
+                origin, name, size, ..
+            } if name.starts_with("key-") => {
+                Some(crate::geometry::rectf(origin.x, origin.y, *size, *size))
+            }
             _ => None,
         })
         .collect();
     assert!(
         !caps.is_empty(),
-        "the strip draws its key caps: {commands:?}"
+        "the strip draws its key glyphs: {commands:?}"
     );
     let caps_top = caps
         .iter()

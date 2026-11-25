@@ -46,13 +46,9 @@ impl SettingsKeyChip {
             .with_line_height(1.35)
             .with_color(app.theme.color(ColorToken::Muted))
             .finish();
-        let root = Container::new(text)
-            .with_padding(EdgeInsets::new(9.0, 3.5, 9.0, 3.5))
-            .with_background(Fill::Solid(control_fill(app)))
-            .with_border(Border::all(1.0).with_border_color(control_border(app)))
-            .with_corner_radius(SETTINGS_KEY_CHIP_HEIGHT / 2.0)
-            .finish();
-        self.root = Some(root);
+        // 424: a displayed chord is plain muted text, never a chip.
+        let _ = app;
+        self.root = Some(text);
     }
 
     fn root_mut(&mut self, app: &AppContext) -> &mut Box<dyn Element> {
@@ -71,8 +67,8 @@ impl Element for SettingsKeyChip {
         app: &AppContext,
     ) -> Vector2F {
         let size = self.root_mut(app).layout(constraint, ctx, app);
-        self.size = Some(vec2f(size.x, size.y.max(SETTINGS_KEY_CHIP_HEIGHT)));
-        self.size.unwrap()
+        self.size = Some(size);
+        size
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
@@ -115,11 +111,11 @@ mod tests {
         });
         assert_eq!(text.as_deref(), Some("⌘ + ⇧ + K"));
         assert!(
-            commands.iter().any(|command| matches!(
+            commands.iter().all(|command| !matches!(
                 command,
-                RenderCommand::FillRect { corner_radius, .. } if *corner_radius >= 12.0
+                RenderCommand::FillRect { .. } | RenderCommand::StrokeRect { .. }
             )),
-            "the chord sits inside one rounded pill: {commands:?}"
+            "the chord is plain text, not a chip: {commands:?}"
         );
     }
 }

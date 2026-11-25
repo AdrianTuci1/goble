@@ -76,12 +76,13 @@ pub(crate) fn build_project_pill(
     })
     .finish();
     let menu = DeferredProjectMenu::new(menu, state.project_menu_open.clone()).finish();
-    // 355: the pill sits at the composer's trailing edge, above the footer.
+    // BF: before the first turn the selector sits above the composer's leading
+    // edge; the reserved band keeps the composer from jumping when it hides.
     Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_child(Spacer::new().finish())
         .with_child(menu)
+        .with_child(Spacer::new().finish())
         .finish()
 }
 
@@ -147,4 +148,11 @@ impl Element for DeferredProjectMenu {
     ) -> bool {
         self.inner.borrow_mut().dispatch_event(event, ctx, app)
     }
+}
+
+/// The blank band kept above the composer after the selector hides.
+pub(crate) fn project_pill_placeholder() -> Box<dyn Element> {
+    ConstrainedBox::new(goble_ui::elements::Empty::new().finish())
+        .with_height(26.0)
+        .finish()
 }

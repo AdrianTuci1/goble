@@ -3253,6 +3253,48 @@ fn the_model_card_reports_the_model_and_level_the_host_wires() {
     assert!(!*open.borrow(), "and the pick closes the card");
 }
 
+/// 454/457: an integration with no key is an honest Configure status row, not
+/// an invented model.
+#[test]
+fn an_unconfigured_integration_draws_its_honest_status_row() {
+    use crate::elements::{
+        ComposerModelTray, ModelTrayHarness, ModelTrayModel, ModelTrayPane, ModelTrayState,
+    };
+
+    let app = AppContext::default();
+    let state = Rc::new(RefCell::new(ModelTrayState::default()));
+    {
+        let mut state = state.borrow_mut();
+        state.seeded = true;
+        state.pane = ModelTrayPane::Model;
+    }
+    let tray = ComposerModelTray::new(
+        vec![
+            ModelTrayHarness::new("anthropic", "Anthropic").with_models(vec![ModelTrayModel::new(
+                "__configure__:anthropic",
+                "Not configured · Configure",
+            )]),
+            ModelTrayHarness::new("openai", "OpenAI")
+                .with_models(vec![ModelTrayModel::new("gpt-5", "GPT-5")]),
+        ],
+        state,
+        Rc::new(RefCell::new(true)),
+    )
+    .with_current("gpt-5", "")
+    .with_on_select_model(|_| {});
+    let mut composer = ChatComposer::new()
+        .with_model_label("GPT-5")
+        .with_model_tray(tray);
+    let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(900.0, 600.0));
+    let texts = drawn_texts(&commands);
+    for text in ["Anthropic", "Not configured · Configure", "OpenAI", "GPT-5"] {
+        assert!(
+            texts.iter().any(|drawn| drawn == text),
+            "{text:?}: {texts:?}"
+        );
+    }
+}
+
 /// The chip is DSH's model seat (`ModelSelect.module.css` `.trigger`): the
 /// catalogue's display name rather than the host's id, the effort beside it in
 /// the dimmer caption tone, no colour change when the card opens, and a chevron
@@ -3290,6 +3332,13 @@ fn the_model_chip_names_the_catalogue_model_and_captions_the_effort() {
         name,
         app.theme.color(ColorToken::Muted),
         "the model name is the label tone"
+    );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::DrawText { text, .. } if text.contains("DeepSeek ·")
+        )),
+        "453: the chip shows only the model name, no provider prefix"
     );
     let effort = color_of("High").expect("the seat captions the effort");
     assert!(

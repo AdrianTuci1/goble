@@ -373,30 +373,42 @@ pub fn build_agent_chat(
     let on_cmd_enter = actions.on_cmd_enter.clone();
     let on_send_to_cloud = actions.on_send_to_cloud.clone();
 
-    // Model dropdown: one item per available model; the current one is marked
-    // selected. Selecting an item maps the index back to a model name.
-    let model_items = state
-        .models
-        .iter()
-        .map(|name| {
-            let mut item = PopupMenuItem::new(name.clone()).with_icon("cpu");
-            if name == &controls.model {
-                item = item.selected();
-            }
-            item
-        })
-        .collect::<Vec<_>>();
-    let on_model_select = actions.on_model_select.clone();
-    let models_for_select = state.models.clone();
-    let model_menu_open = controls.model_menu_open.clone();
-    let model_index = controls.model_index.clone();
-
     // The tray the same control opens: the models a pane can run, grouped under
     // the harness that owns each one. The groups are recognition — a mark and a
     // name over the rows that harness runs — and a pick is always a model. The
     // rows are the desktop's catalog, so the tray lists what a turn can run.
-    let tray_harnesses: Vec<ModelTrayHarness> = state
-        .model_groups
+    // 454: every T3 integration is a group. A configured integration lists its
+    // real catalog models; an unconfigured one carries one honest Configure
+    // status row instead of invented models.
+    let mut groups = state.model_groups.clone();
+    for (harness, label) in [
+        ("anthropic", "Anthropic"),
+        ("openai", "OpenAI"),
+        ("google", "Google"),
+        ("deepseek", "DeepSeek"),
+    ] {
+        if !groups.iter().any(|group| group.harness == harness) {
+            groups.push(goble_desktop_service::ModelGroup {
+                harness: harness.to_string(),
+                label: label.to_string(),
+                models: vec![goble_harness_types::HarnessModel::new(
+                    format!("__configure__:{harness}"),
+                    "Not configured · Configure",
+                )],
+            });
+        }
+    }
+    // T3's integration order first; custom providers/harnesses keep their own
+    // order after the four built-ins.
+    let order = |harness: &str| match harness {
+        "anthropic" => 0,
+        "openai" => 1,
+        "google" => 2,
+        "deepseek" => 3,
+        _ => 4,
+    };
+    groups.sort_by_key(|group| order(&group.harness));
+    let tray_harnesses: Vec<ModelTrayHarness> = groups
         .iter()
         .map(|group| {
             ModelTrayHarness::new(group.harness.clone(), group.label.clone()).with_models(
@@ -413,8 +425,7 @@ pub fn build_agent_chat(
         .collect();
     // What a pick resolves to: the model ids in the order the tray draws them,
     // since the tray reports the row it took rather than the id behind it.
-    let tray_model_ids: Vec<String> = state
-        .model_groups
+    let tray_model_ids: Vec<String> = groups
         .iter()
         .flat_map(|group| group.models.iter().map(|model| model.id.clone()))
         .collect();
@@ -563,11 +574,6 @@ pub fn build_agent_chat(
         .with_on_dismiss_queued(in_pane(&on_pane_activate, pane_id, move || {
             (on_dismiss_queued.borrow_mut())()
         }))
-        .with_composer_model_menu(model_items, model_menu_open, model_index, move |index| {
-            if let Some(name) = models_for_select.get(index) {
-                (on_model_select.borrow_mut())(pane_id, name.clone());
-            }
-        })
         // The submit paths all resolve the pane through the active-pane
         // contract, so the pane whose composer was pressed becomes the active
         // one first: a click on a background pane's send sends *its* draft to
@@ -647,6 +653,7 @@ pub fn build_agent_chat(
         {
             let on_model_select = actions.on_model_select.clone();
             let on_thinking_select = actions.on_thinking_select.clone();
+            let on_configure = actions.on_open_models_settings.clone();
             let tray = ComposerModelTray::new(
                 tray_harnesses.clone(),
                 controls.model_tray_state.clone(),
@@ -655,7 +662,11 @@ pub fn build_agent_chat(
             .with_current(controls.model.clone(), controls.thinking.clone())
             .with_on_select_model(move |row| {
                 if let Some(id) = tray_model_ids.get(row) {
-                    (on_model_select.borrow_mut())(pane_id, id.clone());
+                    if id.starts_with("__configure__:") {
+                        (on_configure.borrow_mut())();
+                    } else {
+                        (on_model_select.borrow_mut())(pane_id, id.clone());
+                    }
                 }
             })
             .with_on_select_level(move |level| {

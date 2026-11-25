@@ -799,12 +799,32 @@ fn main() -> anyhow::Result<()> {
                             label: "Google".to_string(),
                             models: vec![HarnessModel::new("gemini-2.5-pro", "Gemini 2.5 Pro")],
                         },
+                        ModelGroup {
+                            harness: "deepseek".to_string(),
+                            label: "DeepSeek".to_string(),
+                            models: vec![HarnessModel::new(
+                                "deepseek-v4-flash",
+                                "DeepSeek-V4-Flash",
+                            )
+                            .with_thinking(vec!["low".into(), "high".into()])],
+                        },
+                        ModelGroup {
+                            harness: "acme".to_string(),
+                            label: "Acme (custom)".to_string(),
+                            models: vec![HarnessModel::new("acme-1", "Acme-1")],
+                        },
                     ];
                     let pane = s.active_pane_id;
                     s.selected_model = "claude-sonnet-4".to_string();
                     let controls = s.pane_controls_mut(pane);
                     controls.model = "claude-sonnet-4".to_string();
                     controls.thinking = "high".to_string();
+                    {
+                        let mut tray = controls.model_tray_state.borrow_mut();
+                        tray.seeded = true;
+                        tray.pane = goble_ui::elements::ModelTrayPane::Model;
+                        tray.row = 1;
+                    }
                     *controls.model_menu_open.borrow_mut() = true;
                     *controls.model_tray_open.borrow_mut() = true;
                 }

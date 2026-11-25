@@ -1424,18 +1424,9 @@ impl ChatComposer {
                 .map(|model| model.name.clone())
                 .filter(|name| !name.trim().is_empty())
         });
-        let provider = self.model_tray.as_ref().and_then(|tray| {
-            tray.harnesses
-                .iter()
-                .find(|group| group.models.iter().any(|model| model.id == tray.model))
-                .map(|group| group.label.clone())
-                .filter(|name| !name.trim().is_empty())
-        });
+        // 453: just the model's display name — no provider/company prefix.
         let text = match catalogue_label {
-            Some(name) => match provider {
-                Some(provider) if !name.starts_with(&provider) => format!("{provider} · {name}"),
-                _ => name,
-            },
+            Some(name) => name,
             None if label.trim().is_empty() => MODEL_NOT_CONFIGURED.to_string(),
             None => label,
         };

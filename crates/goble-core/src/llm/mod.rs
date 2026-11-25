@@ -22,9 +22,7 @@ pub use anthropic::AnthropicProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
-pub use probe::{
-    models_url, probe_model, ProbeBackend, ProbeError, ProbeReport, PROBE_TIMEOUT,
-};
+pub use probe::{models_url, probe_model, ProbeBackend, ProbeError, ProbeReport, PROBE_TIMEOUT};
 pub use providers::{create_provider, default_model_for, provider_models};
 pub use types::{
     CompletionRequest, CompletionResponse, CompletionStreamEvent, LlmProvider, LlmToolCall,

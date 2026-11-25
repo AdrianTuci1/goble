@@ -79,7 +79,12 @@ impl HostEntry {
 
     /// The target the picker shows: `user@host:port`.
     pub fn target(&self) -> String {
-        format!("{}@{}:{}", self.user_or_local(), self.host, self.port_or_default())
+        format!(
+            "{}@{}:{}",
+            self.user_or_local(),
+            self.host,
+            self.port_or_default()
+        )
     }
 
     /// The command line a pane runs for this host, `ssh -t` with the entry's
@@ -114,11 +119,19 @@ impl HostEntry {
             argv.push("-p".to_string());
             argv.push(self.port_or_default().to_string());
         }
-        if let Some(identity) = self.identity.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(identity) = self
+            .identity
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             argv.push("-i".to_string());
             argv.push(expand_tilde(identity, home));
         }
-        if let Some(user) = self.user.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(user) = self
+            .user
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             argv.push("-l".to_string());
             argv.push(user.to_string());
         }
@@ -165,7 +178,11 @@ impl HostsFile {
 
     /// The entries a picker may offer: complete rows only, in file order.
     pub fn valid_hosts(&self) -> Vec<HostEntry> {
-        self.hosts.iter().filter(|host| host.is_valid()).cloned().collect()
+        self.hosts
+            .iter()
+            .filter(|host| host.is_valid())
+            .cloned()
+            .collect()
     }
 
     /// The path this file lives at under a Goble home.
@@ -219,12 +236,9 @@ fn expand_tilde(value: &str, home: Option<&Path>) -> String {
 /// command reads as the user would type it; everything else is single-quoted.
 fn quote_arg(value: &str) -> String {
     if !value.is_empty()
-        && value
-            .chars()
-            .all(|c| {
-                c.is_ascii_alphanumeric()
-                    || matches!(c, '@' | '%' | '_' | '-' | '.' | '/' | ':' | '=')
-            })
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '@' | '%' | '_' | '-' | '.' | '/' | ':' | '=')
+        })
     {
         return value.to_string();
     }
@@ -338,7 +352,9 @@ host = \"db.internal\"
             port: None,
             identity: None,
         };
-        assert!(host.command_line_with_home(None).ends_with("'host with space'"));
+        assert!(host
+            .command_line_with_home(None)
+            .ends_with("'host with space'"));
     }
 
     #[test]

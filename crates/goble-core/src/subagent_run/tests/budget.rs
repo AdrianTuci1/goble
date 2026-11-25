@@ -7,7 +7,7 @@ use crate::subagent_run::child_budget;
 
 use super::{
     background_args, completion, credentials_call_forever, host_for, host_with_wait, parent_chat,
-    roles, run_direct, spec_for, spawn_args, spawn_through_tool, tool_call, wait_until_terminal,
+    roles, run_direct, spawn_args, spawn_through_tool, spec_for, tool_call, wait_until_terminal,
     GateProvider, ScriptedProvider,
 };
 

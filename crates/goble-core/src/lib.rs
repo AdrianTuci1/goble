@@ -1,7 +1,7 @@
 pub mod agent;
 pub mod agent_memory;
-pub mod app_home;
 pub mod agent_runtime;
+pub mod app_home;
 pub mod audit;
 pub mod binaries;
 pub mod cluster_key;
@@ -16,6 +16,7 @@ pub mod execution;
 pub mod harness;
 pub mod hosts;
 pub mod identity;
+pub mod integration;
 pub mod invite;
 pub mod isolate;
 pub mod llm;
@@ -40,11 +41,11 @@ pub mod thread;
 pub mod tls;
 pub mod user;
 pub mod vault;
-pub mod workspace_identity;
 pub mod worker;
 pub mod worker_pool;
 pub mod workflow;
 pub mod workspace;
+pub mod workspace_identity;
 
 pub use cluster_key::{ClusterBackup, ClusterIdentity, ClusterIdentitySnapshot, ClusterKey};
 

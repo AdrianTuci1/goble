@@ -734,7 +734,8 @@ mod tests {
             // "does the script carry X" assertions below flaky.
             worker_bundle: WorkerBundle {
                 worker_id: "worker-123".to_string(),
-                cert_pem: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----".to_string(),
+                cert_pem: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"
+                    .to_string(),
                 key_pem: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string(),
                 ca_cert_pem: "-----BEGIN CERTIFICATE-----\ntest-ca\n-----END CERTIFICATE-----"
                     .to_string(),

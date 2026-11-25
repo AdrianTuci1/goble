@@ -702,7 +702,15 @@ fn the_provider_list_offers_every_known_platform() {
         .collect();
     assert_eq!(
         names,
-        vec!["modal", "e2b", "daytona", "box", "cloud_run", "docker", "ssh"]
+        vec![
+            "modal",
+            "e2b",
+            "daytona",
+            "box",
+            "cloud_run",
+            "docker",
+            "ssh"
+        ]
     );
     // The credential each platform reads is the one the config schema knows.
     for provider in RemoteAgentProvider::ALL {
@@ -874,8 +882,8 @@ enabled = "definitely"
     assert_eq!(config.harness["claude"].args, ["--verbose"]);
 
     // A harness id this build does not know is still a legal override table.
-    let (future, problems) = GobleConfig::load_toml("[harness.future-agent]\nenabled = true\n")
-        .expect("valid TOML");
+    let (future, problems) =
+        GobleConfig::load_toml("[harness.future-agent]\nenabled = true\n").expect("valid TOML");
     assert!(problems.is_empty(), "{problems:?}");
     assert!(future.harness.contains_key("future-agent"));
 }
@@ -896,12 +904,16 @@ fn the_seeded_default_does_not_write_app_or_harness() {
 
 #[test]
 fn setting_a_key_keeps_the_comment_above_it() {
-    let text = "[app]\nfriendly_name = \"Ada\"\n# the telemetry choice is opt-in\ntelemetry = false\n";
+    let text =
+        "[app]\nfriendly_name = \"Ada\"\n# the telemetry choice is opt-in\ntelemetry = false\n";
     let mut doc: toml_edit::DocumentMut = text.parse().expect("parse");
     let op = super::ConfigOp::set(&["app", "telemetry"], super::ConfigValue::Bool(true));
     super::schema::apply_op(&mut doc, &op).expect("apply");
     let written = doc.to_string();
-    assert!(written.contains("# the telemetry choice is opt-in"), "{written}");
+    assert!(
+        written.contains("# the telemetry choice is opt-in"),
+        "{written}"
+    );
     assert!(written.contains("telemetry = true"), "{written}");
     assert!(written.contains("friendly_name = \"Ada\""), "{written}");
 }

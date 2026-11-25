@@ -108,6 +108,7 @@ impl UiState {
                     .with_thinking(vec!["off".to_string(), "on".to_string()]),
                 ],
             }],
+            integrations: Vec::new(),
             harnesses: vec![HarnessEntry::internal("internal", "Goble")],
             selected_harness: "internal".to_string(),
             model_menu_open: Rc::new(RefCell::new(false)),

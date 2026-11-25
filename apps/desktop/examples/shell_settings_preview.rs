@@ -407,7 +407,7 @@ fn main() -> anyhow::Result<()> {
             ),
             (
                 "settings-integrations",
-                vec2f(1600.0, 1000.0),
+                vec2f(1600.0, 1900.0),
                 true,
                 SettingsCategory::Providers,
             ),
@@ -452,6 +452,12 @@ fn main() -> anyhow::Result<()> {
                 vec2f(1600.0, 1000.0),
                 false,
                 SettingsCategory::General,
+            ),
+            (
+                "settings-integrations",
+                vec2f(1600.0, 1900.0),
+                true,
+                SettingsCategory::Providers,
             ),
             (
                 "settings-narrow",
@@ -814,6 +820,35 @@ fn main() -> anyhow::Result<()> {
                             models: vec![HarnessModel::new("acme-1", "Acme-1")],
                         },
                     ];
+                    {
+                        use goble_core::integration::{
+                            IntegrationHealth, IntegrationModel, IntegrationSnapshot,
+                        };
+                        s.integrations = vec![IntegrationSnapshot {
+                            id: "antigravity".to_string(),
+                            name: "Antigravity".to_string(),
+                            icon: "harness-antigravity".to_string(),
+                            installed: true,
+                            version: Some("agy_acp_server_20250115_1".to_string()),
+                            path: Some("/opt/antigravity/bin/agy".to_string()),
+                            health: IntegrationHealth::Connected,
+                            auth: "authenticated · CLI session".to_string(),
+                            models: vec![
+                                IntegrationModel {
+                                    id: "gemini-3-pro".to_string(),
+                                    name: "Gemini 3 Pro".to_string(),
+                                    efforts: vec!["low".to_string(), "high".to_string()],
+                                },
+                                IntegrationModel {
+                                    id: "claude-sonnet-4-5".to_string(),
+                                    name: "Claude Sonnet 4.5".to_string(),
+                                    efforts: Vec::new(),
+                                },
+                            ],
+                            config_path: Some("/home/me/.config/antigravity".to_string()),
+                            detail: "`agy` is connected and reports 2 model(s).".to_string(),
+                        }];
+                    }
                     let pane = s.active_pane_id;
                     s.selected_model = "claude-sonnet-4".to_string();
                     let controls = s.pane_controls_mut(pane);
@@ -831,6 +866,45 @@ fn main() -> anyhow::Result<()> {
                 if name == "composer-permissions-open" {
                     let pane = s.active_pane_id;
                     *s.pane_controls_mut(pane).approval_menu_open.borrow_mut() = true;
+                }
+                if name == "settings-integrations" {
+                    use goble_core::integration::{
+                        IntegrationHealth, IntegrationModel, IntegrationSnapshot,
+                    };
+                    s.settings.folds.insert("harness.antigravity".to_string());
+                    s.settings.integrations = vec![
+                        IntegrationSnapshot {
+                            id: "antigravity".to_string(),
+                            name: "Antigravity".to_string(),
+                            icon: "harness-antigravity".to_string(),
+                            installed: true,
+                            version: Some("agy_acp_server_20250115_1".to_string()),
+                            path: Some("/opt/antigravity/bin/agy".to_string()),
+                            health: IntegrationHealth::Installed,
+                            auth: "sign-in not checked".to_string(),
+                            models: vec![IntegrationModel {
+                                id: "gemini-3-pro".to_string(),
+                                name: "Gemini 3 Pro".to_string(),
+                                efforts: vec!["low".to_string(), "high".to_string()],
+                            }],
+                            config_path: Some("/home/me/.config/antigravity".to_string()),
+                            detail: "`agy` is installed. Sign-in is checked when a session starts."
+                                .to_string(),
+                        },
+                        IntegrationSnapshot {
+                            id: "claude".to_string(),
+                            name: "Claude Code".to_string(),
+                            icon: "harness-claude".to_string(),
+                            installed: true,
+                            version: Some("2.1.0".to_string()),
+                            path: Some("/usr/local/bin/claude".to_string()),
+                            health: IntegrationHealth::Installed,
+                            auth: "CLI manages its own sign-in".to_string(),
+                            models: Vec::new(),
+                            config_path: None,
+                            detail: "`claude` is on PATH.".to_string(),
+                        },
+                    ];
                 }
                 if name == "settings-shortcuts-record" {
                     s.settings.shortcuts_recording = Some("Command palette".to_string());

@@ -252,6 +252,8 @@ pub struct UiSnapshot {
     /// provider the configuration declares models for, each with the thinking
     /// levels its harness runs them at.
     pub model_groups: Vec<goble_desktop_service::ModelGroup>,
+    /// Detected integration snapshots for the selector and Settings.
+    pub integrations: Vec<goble_core::integration::IntegrationSnapshot>,
     /// The harness's own composer catalog: what a draft can list behind `/` and
     /// `$`, and the models the tray shows.
     pub composer_catalog: goble_harness_types::HarnessCatalog,

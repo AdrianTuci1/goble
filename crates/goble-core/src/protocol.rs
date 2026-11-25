@@ -551,7 +551,10 @@ mod tests {
         };
         let json = serde_json::to_value(&upload).unwrap();
         assert_eq!(json["kind"], "upload_attachment");
-        assert_eq!(decode_attachment_bytes(json["data"].as_str().unwrap()).unwrap(), bytes);
+        assert_eq!(
+            decode_attachment_bytes(json["data"].as_str().unwrap()).unwrap(),
+            bytes
+        );
 
         let stored = WorkerMessage::AttachmentStored {
             upload_id: "u1".to_string(),
@@ -561,7 +564,10 @@ mod tests {
         let json = serde_json::to_value(&stored).unwrap();
         assert_eq!(json["kind"], "attachment_stored");
         assert!(json.get("error").is_none());
-        assert_eq!(serde_json::from_value::<WorkerMessage>(json).unwrap(), stored);
+        assert_eq!(
+            serde_json::from_value::<WorkerMessage>(json).unwrap(),
+            stored
+        );
     }
 
     /// A dictation segment names the provider and model to ask, carries the
@@ -592,7 +598,10 @@ mod tests {
         let json = serde_json::to_value(&answer).unwrap();
         assert_eq!(json["kind"], "transcription_result");
         assert!(json.get("error").is_none());
-        assert_eq!(serde_json::from_value::<WorkerMessage>(json).unwrap(), answer);
+        assert_eq!(
+            serde_json::from_value::<WorkerMessage>(json).unwrap(),
+            answer
+        );
     }
 
     /// A failed transcription carries only the reason, and a client that does

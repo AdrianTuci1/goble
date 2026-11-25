@@ -54,7 +54,9 @@ pub(crate) async fn stored_history(store: &Store, chat_id: &str) -> Vec<Message>
     // The chain of thought each assistant turn streamed. A thinking model
     // (DeepSeek) rejects the next request when an assistant message is replayed
     // without it, so the history carries it back exactly as it arrived.
-    let reasoning = store.list_chat_message_reasoning(chat_id).unwrap_or_default();
+    let reasoning = store
+        .list_chat_message_reasoning(chat_id)
+        .unwrap_or_default();
     // A tool row is `<call_id>\n<body>` with no status in its text; the
     // outcome lives on the assistant row's call records. Resolve it here
     // so the model reads a failed call as failed, not as a plain result.
@@ -73,9 +75,7 @@ pub(crate) async fn stored_history(store: &Store, chat_id: &str) -> Vec<Message>
     let answered: HashSet<String> = rows
         .iter()
         .filter(|(_, role, _, _, _)| role == "tool")
-        .filter_map(|(_, _, content, _, _)| {
-            content.split_once('\n').map(|(id, _)| id.to_string())
-        })
+        .filter_map(|(_, _, content, _, _)| content.split_once('\n').map(|(id, _)| id.to_string()))
         .collect();
     let paired: HashSet<String> = rows
         .iter()
@@ -100,68 +100,69 @@ pub(crate) async fn stored_history(store: &Store, chat_id: &str) -> Vec<Message>
         })
         .into_iter()
         .collect();
-    messages.extend(rows.into_iter().filter_map(
-        |(id, role, content, tool_calls, _)| {
-            let is_tool = role.as_str() == "tool";
-            let (content, tool_call_id, tool_status) = if is_tool {
-                match content.split_once('\n') {
-                    Some((id, rest)) if paired.contains(id) => (
-                        rest.to_string(),
-                        Some(id.to_string()),
-                        statuses.get(id).copied(),
-                    ),
-                    // An orphan result, or a row that carries no call id, has
-                    // no `tool_call_id` the provider would accept.
-                    _ => return None,
+    messages.extend(
+        rows.into_iter()
+            .filter_map(|(id, role, content, tool_calls, _)| {
+                let is_tool = role.as_str() == "tool";
+                let (content, tool_call_id, tool_status) = if is_tool {
+                    match content.split_once('\n') {
+                        Some((id, rest)) if paired.contains(id) => (
+                            rest.to_string(),
+                            Some(id.to_string()),
+                            statuses.get(id).copied(),
+                        ),
+                        // An orphan result, or a row that carries no call id, has
+                        // no `tool_call_id` the provider would accept.
+                        _ => return None,
+                    }
+                } else {
+                    (content, None, None)
+                };
+                let mut calls = if role.as_str() == "assistant" || role.as_str() == "tool_calls" {
+                    tool_calls
+                        .and_then(|json| serde_json::from_str::<Vec<LlmToolCall>>(&json).ok())
+                        .map(|calls| {
+                            calls
+                                .into_iter()
+                                .filter(|call| paired.contains(&call.id))
+                                .collect::<Vec<_>>()
+                        })
+                } else {
+                    None
+                };
+                if calls.as_ref().is_some_and(|calls| calls.is_empty()) {
+                    // Nothing calls this message anymore: an empty tool-call-only
+                    // message is not worth a request slot.
+                    if content.is_empty() {
+                        return None;
+                    }
+                    calls = None;
                 }
-            } else {
-                (content, None, None)
-            };
-            let mut calls = if role.as_str() == "assistant" || role.as_str() == "tool_calls" {
-                tool_calls
-                    .and_then(|json| serde_json::from_str::<Vec<LlmToolCall>>(&json).ok())
-                    .map(|calls| {
-                        calls
-                            .into_iter()
-                            .filter(|call| paired.contains(&call.id))
-                            .collect::<Vec<_>>()
-                    })
-            } else {
-                None
-            };
-            if calls.as_ref().is_some_and(|calls| calls.is_empty()) {
-                // Nothing calls this message anymore: an empty tool-call-only
-                // message is not worth a request slot.
-                if content.is_empty() {
+                // A provider rejects an assistant message that carries neither
+                // text nor calls ("content or tool_calls must be set"), and a
+                // suspended, cancelled or empty reply can leave exactly that row
+                // behind. It is not part of the conversation the model reads back.
+                if (role == "assistant" || role == "tool_calls")
+                    && content.trim().is_empty()
+                    && calls.as_ref().is_none_or(Vec::is_empty)
+                {
                     return None;
                 }
-                calls = None;
-            }
-            // A provider rejects an assistant message that carries neither
-            // text nor calls ("content or tool_calls must be set"), and a
-            // suspended, cancelled or empty reply can leave exactly that row
-            // behind. It is not part of the conversation the model reads back.
-            if (role == "assistant" || role == "tool_calls")
-                && content.trim().is_empty()
-                && calls.as_ref().is_none_or(Vec::is_empty)
-            {
-                return None;
-            }
-            Some(Message {
-                role: match role.as_str() {
-                    "system" => Role::System,
-                    "assistant" => Role::Assistant,
-                    "tool_calls" => Role::Assistant,
-                    "tool" => Role::Tool,
-                    _ => Role::User,
-                },
-                content,
-                tool_calls: calls,
-                tool_call_id,
-                tool_status,
-                reasoning_content: reasoning.get(&id).cloned(),
-            })
-        },
-    ));
+                Some(Message {
+                    role: match role.as_str() {
+                        "system" => Role::System,
+                        "assistant" => Role::Assistant,
+                        "tool_calls" => Role::Assistant,
+                        "tool" => Role::Tool,
+                        _ => Role::User,
+                    },
+                    content,
+                    tool_calls: calls,
+                    tool_call_id,
+                    tool_status,
+                    reasoning_content: reasoning.get(&id).cloned(),
+                })
+            }),
+    );
     messages
 }

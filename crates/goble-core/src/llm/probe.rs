@@ -250,11 +250,7 @@ async fn probe(
             status: Some(status.as_u16()),
             latency_ms,
             models: Vec::new(),
-            note: format!(
-                "HTTP {} · {}",
-                status.as_u16(),
-                snippet(&body)
-            ),
+            note: format!("HTTP {} · {}", status.as_u16(), snippet(&body)),
         });
     }
 
@@ -350,9 +346,7 @@ mod tests {
                     Err(_) => break,
                 }
             }
-            let _ = tx
-                .send(String::from_utf8_lossy(&request).to_string())
-                .await;
+            let _ = tx.send(String::from_utf8_lossy(&request).to_string()).await;
             let response = format!(
                 "HTTP/1.1 {status} Mock\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -416,7 +410,11 @@ mod tests {
     #[test]
     fn the_models_url_follows_the_backend() {
         assert_eq!(
-            models_url(ProbeBackend::OpenAi, None, Some("https://api.openai.com/v1/")),
+            models_url(
+                ProbeBackend::OpenAi,
+                None,
+                Some("https://api.openai.com/v1/")
+            ),
             "https://api.openai.com/v1/models"
         );
         assert_eq!(
@@ -476,9 +474,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_anthropic_endpoint_uses_the_v1_path_and_x_api_key() {
-        let (base, mut captured) =
-            mock_server(200, r#"{"data":[{"id":"claude-sonnet-4-20250514"}],"has_more":false}"#)
-                .await;
+        let (base, mut captured) = mock_server(
+            200,
+            r#"{"data":[{"id":"claude-sonnet-4-20250514"}],"has_more":false}"#,
+        )
+        .await;
         let report = probe_model(&entry(&base, Some("sk-ant")), Some("anthropic"))
             .await
             .expect("probe");
@@ -494,8 +494,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_ollama_endpoint_uses_api_tags_and_needs_no_key() {
-        let (base, mut captured) = mock_server(200, r#"{"models":[{"name":"llama3.1:latest"}]}"#)
-            .await;
+        let (base, mut captured) =
+            mock_server(200, r#"{"models":[{"name":"llama3.1:latest"}]}"#).await;
         let report = probe_model(&entry(&base, None), Some("ollama"))
             .await
             .expect("probe");
@@ -534,9 +534,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_model_without_a_key_cannot_be_probed() {
-        let error = probe_model(&entry("https://api.deepseek.com/v1", None), Some("deepseek"))
-            .await
-            .expect_err("no key");
+        let error = probe_model(
+            &entry("https://api.deepseek.com/v1", None),
+            Some("deepseek"),
+        )
+        .await
+        .expect_err("no key");
         assert!(matches!(error, ProbeError::MissingCredential), "{error:?}");
     }
 
@@ -552,7 +555,9 @@ mod tests {
         assert!(report.ok, "{report:?}");
         let request = captured.recv().await.expect("request captured");
         assert!(
-            request.to_ascii_lowercase().contains("authorization: bearer env-key"),
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer env-key"),
             "{request}"
         );
     }

@@ -250,6 +250,8 @@ pub struct SettingsUiState {
     /// (`PATH` resolution, no `--version` probe). The Providers page's Accounts
     /// and Agent CLIs sections render this.
     pub harnesses: Vec<goble_core::harness::HarnessStatus>,
+    /// T3-style integration snapshots: installed/auth/models/config.
+    pub integrations: Vec<goble_core::integration::IntegrationSnapshot>,
     /// Whether the Appearance page's theme-preset list is open.
     pub theme_select_open: bool,
     /// The theme menu's open flag, shared with the element that owns it. The
@@ -353,6 +355,7 @@ impl Default for SettingsUiState {
             folds: BTreeSet::new(),
             form: None,
             harnesses: Vec::new(),
+            integrations: Vec::new(),
             theme_select_open: false,
             theme_select_menu: Rc::new(RefCell::new(false)),
             color_picker_drag: Rc::new(RefCell::new(None)),
@@ -676,6 +679,10 @@ pub enum SettingsAction {
     },
     /// Remove a custom chord, restoring the built-in binding.
     ShortcutDelete(String),
+    /// Re-run integration detection (Antigravity/CLI adapters).
+    RefreshIntegrations,
+    /// Start an integration's own login command (`agy login`), then refresh.
+    IntegrationConnect(String),
 
     // ---- scalar rows (paths are `[section, key]`; see `fields.rs`) ------
     SetToggle {

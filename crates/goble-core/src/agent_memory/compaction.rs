@@ -90,10 +90,7 @@ pub fn merge_compaction(memory: &mut AgentMemory, result: CompactionResult) {
     }
 
     for text in result.next_steps {
-        let exists = memory
-            .progress
-            .iter()
-            .any(|m| text_matches(&m.text, &text));
+        let exists = memory.progress.iter().any(|m| text_matches(&m.text, &text));
         if !exists {
             memory.add_milestone(text);
         }

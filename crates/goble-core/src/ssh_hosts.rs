@@ -65,10 +65,16 @@ impl SshFinding {
     pub fn message(&self) -> String {
         match self {
             SshFinding::NoSshDir { path } => {
-                format!("No SSH directory at {} — no connections are configured", path.display())
+                format!(
+                    "No SSH directory at {} — no connections are configured",
+                    path.display()
+                )
             }
             SshFinding::NoConfig { path } => {
-                format!("No SSH config at {} — this machine names no connections", path.display())
+                format!(
+                    "No SSH config at {} — this machine names no connections",
+                    path.display()
+                )
             }
             SshFinding::NoConcreteHost { path } => format!(
                 "{} declares no concrete host — only wildcard, negated or match rules",
@@ -133,12 +139,14 @@ pub fn read_ssh_hosts(home: &Path) -> SshHosts {
     }
 
     if !config_path.is_file() {
-        out.findings.push(SshFinding::NoConfig { path: config_path });
+        out.findings
+            .push(SshFinding::NoConfig { path: config_path });
     } else {
         let text = read_lossy(&config_path);
         out.hosts = parse_ssh_config(&text, &current_user());
         if out.hosts.is_empty() {
-            out.findings.push(SshFinding::NoConcreteHost { path: config_path });
+            out.findings
+                .push(SshFinding::NoConcreteHost { path: config_path });
         }
     }
 
@@ -186,7 +194,8 @@ pub fn read_ssh_hosts(home: &Path) -> SshHosts {
             });
         }
     }
-    out.key_files.sort_by(|a, b| (&a.name, &a.path).cmp(&(&b.name, &b.path)));
+    out.key_files
+        .sort_by(|a, b| (&a.name, &a.path).cmp(&(&b.name, &b.path)));
     out
 }
 
@@ -333,11 +342,11 @@ fn flush(hosts: &mut Vec<SshHost>, block: Option<HostBlock>, current_user: &str)
         hosts.push(SshHost {
             // A block with no HostName is reached under its alias, so the alias
             // is the honest hostname as well.
-            hostname: block
-                .hostname
+            hostname: block.hostname.clone().unwrap_or_else(|| alias.clone()),
+            user: block
+                .user
                 .clone()
-                .unwrap_or_else(|| alias.clone()),
-            user: block.user.clone().unwrap_or_else(|| current_user.to_string()),
+                .unwrap_or_else(|| current_user.to_string()),
             port: block.port.unwrap_or(22),
             identity_files: block.identity_files.clone(),
             alias,
@@ -624,7 +633,10 @@ Host mu
         );
         assert!(out.findings[0].message().contains("config"));
         assert_eq!(
-            out.key_files.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(),
+            out.key_files
+                .iter()
+                .map(|k| k.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["id_ed25519"]
         );
         assert!(out.key_files[0].exists);

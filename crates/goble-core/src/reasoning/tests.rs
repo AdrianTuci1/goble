@@ -9,7 +9,9 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use crate::harness::{ChatToolCall, CommandDecision, HarnessEvent, ThinkingMode, ToolCallStatus};
-use crate::llm::{CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role};
+use crate::llm::{
+    CompletionRequest, CompletionStreamEvent, LlmProvider, LlmToolCall, Message, Role,
+};
 use crate::store::Store;
 
 fn chat(store: &Store) -> String {
@@ -62,7 +64,9 @@ async fn test_reasoning_mode_switch_and_execute() {
     assert!(events
         .iter()
         .any(|e| matches!(e, HarnessEvent::ReasoningStarted { mode, .. } if mode == "direct")));
-    assert!(events.iter().any(|e| matches!(e, HarnessEvent::ReasoningDone { decision, .. } if decision == "\"execute\"")));
+    assert!(events.iter().any(
+        |e| matches!(e, HarnessEvent::ReasoningDone { decision, .. } if decision == "\"execute\"")
+    ));
 }
 
 /// A planning reply that calls no decision tool is the model's answer: the turn
@@ -89,7 +93,9 @@ async fn a_reasoning_reply_without_a_decision_tool_executes_instead_of_looping()
     assert!(events.iter().any(
         |event| matches!(event, HarnessEvent::ReasoningDone { decision, .. } if decision == "\"execute\"")
     ));
-    assert!(events.iter().any(|event| matches!(event, HarnessEvent::Done)));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, HarnessEvent::Done)));
 }
 
 #[tokio::test]
@@ -227,7 +233,9 @@ async fn test_resume_stores_credential_by_name_not_value() {
             }),
         }],
     );
-    let harness = Harness::new(store.clone()).with_llm(llm).with_reasoning(true);
+    let harness = Harness::new(store.clone())
+        .with_llm(llm)
+        .with_reasoning(true);
     let _: Vec<_> = harness
         .run_turn(&chat_id, "set up a deploy", "mock", "mock")
         .collect()
@@ -438,8 +446,7 @@ impl crate::harness::CommandRunner for RecordingRunner {
 
 /// Drive a turn until its `run_command` call suspends on approval, returning
 /// the store, chat id, recording runner and the events observed so far.
-async fn turn_suspends_on_command() -> (Store, String, Arc<RecordingRunner>, Vec<HarnessEvent>)
-{
+async fn turn_suspends_on_command() -> (Store, String, Arc<RecordingRunner>, Vec<HarnessEvent>) {
     let store = Store::open_in_memory().unwrap();
     let chat_id = chat(&store);
     let llm = llm_with_reasoning_tools(
@@ -604,9 +611,9 @@ async fn test_reject_errors() {
 /// final content is the full concatenation.
 #[tokio::test]
 async fn test_execution_streams_assistant_deltas_into_one_message() {
-    use std::pin::Pin;
-    use futures::Stream;
     use crate::llm::CompletionResponse;
+    use futures::Stream;
+    use std::pin::Pin;
 
     struct SplitProvider;
     #[async_trait::async_trait]
@@ -641,12 +648,19 @@ async fn test_execution_streams_assistant_deltas_into_one_message() {
         .run_turn(&chat_id, "hi", "mock", "mock")
         .collect()
         .await;
-    assert!(events.iter().any(|e| matches!(e, HarnessEvent::AssistantDelta(d) if d == "Hello ")));
-    assert!(events.iter().any(|e| matches!(e, HarnessEvent::AssistantDelta(d) if d == "world")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, HarnessEvent::AssistantDelta(d) if d == "Hello ")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, HarnessEvent::AssistantDelta(d) if d == "world")));
 
     let msgs = store.list_chat_messages(&chat_id).unwrap();
     let assistant = msgs.into_iter().find(|m| m.1 == "assistant").unwrap();
-    assert_eq!(assistant.2, "Hello world", "deltas should be concatenated into one assistant message");
+    assert_eq!(
+        assistant.2, "Hello world",
+        "deltas should be concatenated into one assistant message"
+    );
 }
 
 /// A thinking model's chain of thought is stored with the assistant turn and
@@ -683,9 +697,7 @@ async fn a_thinking_models_reasoning_is_stored_and_replayed() {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             let events = if call == 0 {
                 vec![
-                    CompletionStreamEvent::ReasoningDelta(
-                        "I should read the file.".to_string(),
-                    ),
+                    CompletionStreamEvent::ReasoningDelta("I should read the file.".to_string()),
                     CompletionStreamEvent::AssistantDelta("Checking.".to_string()),
                     CompletionStreamEvent::ToolCalls(vec![LlmToolCall {
                         id: "call_1".to_string(),
@@ -723,7 +735,9 @@ async fn a_thinking_models_reasoning_is_stored_and_replayed() {
 
     let reasoning = store.list_chat_message_reasoning(&chat_id).unwrap();
     assert!(
-        reasoning.values().any(|text| text == "I should read the file."),
+        reasoning
+            .values()
+            .any(|text| text == "I should read the file."),
         "the chain of thought is stored on the tool-call turn: {reasoning:?}"
     );
     assert!(
@@ -742,7 +756,10 @@ async fn a_thinking_models_reasoning_is_stored_and_replayed() {
         .iter()
         .find(|message| {
             message.role == Role::Assistant
-                && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
+                && message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty())
         })
         .expect("the tool-call turn is replayed");
     assert_eq!(
@@ -867,7 +884,10 @@ async fn test_tool_call_is_running_in_store_before_turn_ends() {
     let records = tool_call_records(&store, &chat_id);
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].status, ToolCallStatus::Finished);
-    assert!(records[0].result.is_some(), "a finished call keeps its result");
+    assert!(
+        records[0].result.is_some(),
+        "a finished call keeps its result"
+    );
 }
 
 /// A call that fails is persisted with the error state and the message.
@@ -978,8 +998,7 @@ async fn test_failed_tool_call_is_failed_in_the_llm_history() {
         reasoning_steps: Vec::new(),
         pending_ask: None,
     };
-    let history =
-        build_history(&store, &chat_id, &mission, &[], &[], ThinkingMode::Direct).await;
+    let history = build_history(&store, &chat_id, &mission, &[], &[], ThinkingMode::Direct).await;
     let tool_message = history
         .iter()
         .find(|m| m.role == Role::Tool)
@@ -1029,9 +1048,9 @@ async fn test_a_suspended_batch_keeps_only_the_call_it_stopped_on() {
         .collect()
         .await;
 
-    assert!(events.iter().any(
-        |e| matches!(e, HarnessEvent::CommandProposed { id, .. } if id == "tc_cmd")
-    ));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, HarnessEvent::CommandProposed { id, .. } if id == "tc_cmd")));
     let records = tool_call_records(&store, &chat_id);
     assert_eq!(
         records.len(),
@@ -1050,7 +1069,14 @@ async fn test_history_drops_a_planned_call_with_no_result() {
     let chat_id = chat(&store);
     let now = Utc::now().to_rfc3339();
     store
-        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "user", "where am I?", None, &now)
+        .insert_chat_message(
+            &uuid::Uuid::new_v4().to_string(),
+            &chat_id,
+            "user",
+            "where am I?",
+            None,
+            &now,
+        )
         .unwrap();
     let records = vec![
         ChatToolCall::planned(&LlmToolCall {
@@ -1106,7 +1132,8 @@ async fn test_history_drops_a_planned_call_with_no_result() {
 /// A `tool_calls` row written by an older build carries only
 /// `id`/`name`/`arguments`; the new fields must default rather than fail.
 #[test]
-fn test_tool_call_row_from_older_build_still_parses() {    let old = r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"}}]"#;
+fn test_tool_call_row_from_older_build_still_parses() {
+    let old = r#"[{"id":"call_1","name":"ls","arguments":{"path":"/tmp"}}]"#;
     let records: Vec<ChatToolCall> = serde_json::from_str(old).expect("old row must parse");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].name, "ls");
@@ -1176,7 +1203,10 @@ async fn a_model_stuck_on_one_tool_call_is_stopped_with_a_readable_error() {
         .with_llm(llm)
         .with_reasoning(false);
 
-    let events: Vec<_> = harness.run_turn(&chat_id, "check the folder", "mock", "mock").collect().await;
+    let events: Vec<_> = harness
+        .run_turn(&chat_id, "check the folder", "mock", "mock")
+        .collect()
+        .await;
 
     let stopped = events.iter().find_map(|event| match event {
         HarnessEvent::Error(message) if message.contains("repeated the same tool call") => {
@@ -1220,13 +1250,34 @@ async fn an_empty_assistant_row_is_not_sent_back() {
     let chat_id = chat(&store);
     let now = Utc::now().to_rfc3339();
     store
-        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "user", "hello", None, &now)
+        .insert_chat_message(
+            &uuid::Uuid::new_v4().to_string(),
+            &chat_id,
+            "user",
+            "hello",
+            None,
+            &now,
+        )
         .unwrap();
     store
-        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "assistant", "", None, &now)
+        .insert_chat_message(
+            &uuid::Uuid::new_v4().to_string(),
+            &chat_id,
+            "assistant",
+            "",
+            None,
+            &now,
+        )
         .unwrap();
     store
-        .insert_chat_message(&uuid::Uuid::new_v4().to_string(), &chat_id, "assistant", "hi", None, &now)
+        .insert_chat_message(
+            &uuid::Uuid::new_v4().to_string(),
+            &chat_id,
+            "assistant",
+            "hi",
+            None,
+            &now,
+        )
         .unwrap();
 
     let mission = MissionState {

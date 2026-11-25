@@ -22,6 +22,8 @@ impl UiState {
             self.selected_model = desktop.default_model(&self.settings_llm_provider);
         }
         self.model_groups = desktop.model_groups(&self.settings_llm_provider);
+        self.integrations =
+            goble_core::integration::IntegrationRegistry::with_defaults().snapshot_all();
         // The harness's own answer to "what can this draft list": the commands
         // and skills behind `/` and `$`, and the models behind the tray.
         self.composer_catalog = desktop.composer_catalog(&self.settings_llm_provider);
@@ -145,6 +147,8 @@ impl UiState {
         if self.settings.harnesses.is_empty() {
             self.settings.harnesses = desktop.list_harnesses();
         }
+        self.settings.integrations =
+            goble_core::integration::IntegrationRegistry::with_defaults().snapshot_all();
         self.settings_workers = desktop
             .list_workers()
             .into_iter()

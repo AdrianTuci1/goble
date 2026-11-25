@@ -30,21 +30,21 @@ pub mod import;
 mod migrate;
 pub mod schema;
 pub mod setup;
-pub mod watch;
 #[cfg(test)]
 mod tests;
+pub mod watch;
 
 pub use document::{
     host_views, sha256_hex, ApiKeySource, AppView, ConfigDocument, ConfigError, ConfigFile,
-    ConfigOp, ConfigProblem, ConfigRevision, ConfigSections, ConfigValue, ConfigView,
-    EnvValueView, EnvVarView, FieldError, GroupView, HarnessView, HostView, McpView, ModelView,
-    RemoteAgentView, RemoteView, SecretState, ThemeView, TypedDocument,
+    ConfigOp, ConfigProblem, ConfigRevision, ConfigSections, ConfigValue, ConfigView, EnvValueView,
+    EnvVarView, FieldError, GroupView, HarnessView, HostView, McpView, ModelView, RemoteAgentView,
+    RemoteView, SecretState, ThemeView, TypedDocument,
 };
 pub use editor::{seed_default_document, write_atomic_private, ConfigEditor, EditOutcome};
 pub use import::{import_store_prefs_once, ImportOutcome};
 pub use schema::{
-    apply_op, apply_ops, default_value, field_spec, is_default, redacted_view, validate,
-    view_for, ConfigFieldSpec, FieldKind, SettingsPage, APPROVAL_MODES, FIELDS,
+    apply_op, apply_ops, default_value, field_spec, is_default, redacted_view, validate, view_for,
+    ConfigFieldSpec, FieldKind, SettingsPage, APPROVAL_MODES, FIELDS,
 };
 pub use watch::{poll_for_changes, ConfigChange, ConfigWatcher, CONFIG_WATCH_DEBOUNCE};
 
@@ -614,9 +614,7 @@ pub struct RemoteConfig {
 impl RemoteConfig {
     /// Whether the section says nothing at all, so a save can leave it out.
     fn is_unset(&self) -> bool {
-        self.mode.is_platform()
-            && self.gateway_url.is_none()
-            && self.worker_token.is_none()
+        self.mode.is_platform() && self.gateway_url.is_none() && self.worker_token.is_none()
     }
 
     /// Whether the gateway is both chosen and named: a URL and a worker token.
@@ -628,7 +626,10 @@ impl RemoteConfig {
 
     /// The gateway's URL when the mode names one.
     pub fn gateway_url(&self) -> Option<&str> {
-        self.gateway_url.as_deref().map(str::trim).filter(|u| !u.is_empty())
+        self.gateway_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
     }
 
     /// The worker token when the mode names one.

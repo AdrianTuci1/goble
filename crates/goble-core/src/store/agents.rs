@@ -70,7 +70,10 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_agent_memory(&self, agent_id: &str) -> Result<Option<crate::agent_memory::AgentMemory>> {
+    pub fn get_agent_memory(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<crate::agent_memory::AgentMemory>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT memory FROM agent_memory WHERE agent_id = ?1")?;
         let mut rows = stmt.query(params![agent_id])?;
@@ -85,8 +88,7 @@ impl Store {
     }
 
     pub fn put_agent_memory(&self, memory: &crate::agent_memory::AgentMemory) -> Result<()> {
-        let json =
-            serde_json::to_string(memory).context("failed to serialize agent memory")?;
+        let json = serde_json::to_string(memory).context("failed to serialize agent memory")?;
         self.conn.lock().execute(
             "INSERT INTO agent_memory (agent_id, version, memory, updated_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(agent_id) DO UPDATE SET version=excluded.version, memory=excluded.memory,
@@ -103,9 +105,7 @@ impl Store {
         let mut out = Vec::new();
         for row in rows {
             let json = row?;
-            out.push(
-                serde_json::from_str(&json).context("failed to deserialize agent memory")?,
-            );
+            out.push(serde_json::from_str(&json).context("failed to deserialize agent memory")?);
         }
         Ok(out)
     }

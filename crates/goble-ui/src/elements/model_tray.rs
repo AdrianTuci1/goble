@@ -58,7 +58,7 @@ const MIN_WIDTH: f32 = 240.0;
 const MAX_WIDTH: f32 = 420.0;
 /// The design cap on the card's height (DSH clamps it to the window:
 /// `max-height: min(360px, calc(100dvh - 96px))`).
-const MAX_HEIGHT: f32 = 360.0;
+const MAX_HEIGHT: f32 = 560.0;
 /// The air between the card and the chip it hangs from (DSH:
 /// `bottom: calc(anchor(top) + 8px)`).
 const CARD_GAP: f32 = 8.0;

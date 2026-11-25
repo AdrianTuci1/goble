@@ -224,6 +224,10 @@ pub struct UiState {
     /// thinking levels its harness runs them at. Read from the desktop's
     /// catalog, so the tray shows what a turn can actually run.
     pub model_groups: Vec<goble_desktop_service::ModelGroup>,
+    /// T3-style integration snapshots (Antigravity and the CLI integrations):
+    /// detection, auth, models and config path, loaded once per settings/model
+    /// refresh rather than per frame.
+    pub integrations: Vec<goble_core::integration::IntegrationSnapshot>,
     /// The harness's own composer catalog: the commands and skills a draft can
     /// list, and the models it runs with their thinking levels. Read from the
     /// desktop, so the composer lists what the harness advertises instead of a

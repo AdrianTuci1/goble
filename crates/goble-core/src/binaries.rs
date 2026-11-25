@@ -63,6 +63,9 @@ mod tests {
     fn nothing_found_leaves_the_bare_name() {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let bare = PathBuf::from(format!("goble-cli{}", std::env::consts::EXE_SUFFIX));
-        assert_eq!(resolve_from(&dir.path().join("goble-app"), "goble-cli"), bare);
+        assert_eq!(
+            resolve_from(&dir.path().join("goble-app"), "goble-cli"),
+            bare
+        );
     }
 }

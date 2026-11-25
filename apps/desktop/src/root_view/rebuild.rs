@@ -508,6 +508,7 @@ impl RootView {
                 composer_focused: s.composer_focused,
                 models: s.models.clone(),
                 model_groups: s.model_groups.clone(),
+                integrations: s.integrations.clone(),
                 composer_catalog: s.composer_catalog.clone(),
                 mention_paths,
                 selected_model: s.selected_model.clone(),

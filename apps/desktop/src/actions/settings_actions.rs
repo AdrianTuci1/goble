@@ -184,6 +184,57 @@ fn handle(
                 }
             }
         }
+        SettingsAction::RefreshIntegrations => {
+            state.settings.integrations =
+                goble_core::integration::IntegrationRegistry::with_defaults().snapshot_all();
+            state
+                .settings
+                .set_status(StatusKind::Success, "Integration detection refreshed.");
+        }
+        SettingsAction::IntegrationConnect(id) => {
+            let snapshot = state
+                .settings
+                .integrations
+                .iter()
+                .find(|integration| integration.id == id)
+                .cloned();
+            let Some(snapshot) = snapshot else {
+                state
+                    .settings
+                    .set_status(StatusKind::Error, format!("{id} is not an integration."));
+                return;
+            };
+            if !snapshot.installed {
+                state.settings.set_status(
+                    StatusKind::Warning,
+                    format!(
+                        "{} is not installed; install it and run its login command.",
+                        snapshot.name
+                    ),
+                );
+                return;
+            }
+            let Some(path) = snapshot.path.as_ref() else {
+                state.settings.set_status(
+                    StatusKind::Warning,
+                    "The integration has no executable path.",
+                );
+                return;
+            };
+            match std::process::Command::new(path).arg("login").spawn() {
+                Ok(_) => state.settings.set_status(
+                    StatusKind::Info,
+                    format!(
+                        "Started {} login. Finish in the browser, then refresh.",
+                        snapshot.name
+                    ),
+                ),
+                Err(error) => state.settings.set_status(
+                    StatusKind::Error,
+                    format!("Could not start {} login: {error}", snapshot.name),
+                ),
+            }
+        }
         SettingsAction::ShortcutDelete(id) => {
             let label = id.trim_start_matches("shortcut.");
             state.settings.shortcuts.remove(label);

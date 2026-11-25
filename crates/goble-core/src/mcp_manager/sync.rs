@@ -129,17 +129,15 @@ impl McpManager {
     /// is deliberately not merged with store edits — a server edited only in the
     /// old UI (there is no such path in this build) would be removed on the next
     /// config load, which is the point of declaring the file the source of truth.
-    pub fn sync_from_config(
-        &self,
-        store: &Store,
-        config: &GobleConfig,
-    ) -> Result<McpSyncOutcome> {
+    pub fn sync_from_config(&self, store: &Store, config: &GobleConfig) -> Result<McpSyncOutcome> {
         let rows = store.list_mcp_servers()?;
         let existing: HashMap<String, (String, String, String)> = rows
             .into_iter()
-            .map(|(id, _name, source, source_value, manifest, _, _, _, _, _)| {
-                (id, (source, source_value.unwrap_or_default(), manifest))
-            })
+            .map(
+                |(id, _name, source, source_value, manifest, _, _, _, _, _)| {
+                    (id, (source, source_value.unwrap_or_default(), manifest))
+                },
+            )
             .collect();
 
         let mut outcome = McpSyncOutcome::default();
@@ -160,11 +158,13 @@ impl McpManager {
 
         let now = Utc::now().to_rfc3339();
         for (id, declaration) in &declared {
-            let matches = existing.get(id).is_some_and(|(source, source_value, manifest)| {
-                source == &declaration.source
-                    && source_value == declaration.source_value.as_deref().unwrap_or_default()
-                    && manifest == &declaration.manifest_json
-            });
+            let matches = existing
+                .get(id)
+                .is_some_and(|(source, source_value, manifest)| {
+                    source == &declaration.source
+                        && source_value == declaration.source_value.as_deref().unwrap_or_default()
+                        && manifest == &declaration.manifest_json
+                });
             if matches {
                 outcome.unchanged.push(declaration.name.clone());
                 continue;
@@ -231,12 +231,8 @@ impl McpManager {
             return Err("the server declares no command or url".to_string());
         };
         let args = server.args.clone();
-        let env: HashMap<String, String> = server
-            .env
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        let env: HashMap<String, String> =
+            server.env.clone().unwrap_or_default().into_iter().collect();
         probe_stdio(command, &args, env, timeout)
     }
 }
@@ -338,7 +334,19 @@ pub fn import_store_mcp_once(
         .map_err(|error| ConfigError::Io(ConfigFile::Config, format!("store: {error}")))?;
     let mut ops = Vec::new();
     let mut names = Vec::new();
-    for (id, _name, source, source_value, _manifest, _credentials, _secrets, _tools, _installed, _updated) in rows {
+    for (
+        id,
+        _name,
+        source,
+        source_value,
+        _manifest,
+        _credentials,
+        _secrets,
+        _tools,
+        _installed,
+        _updated,
+    ) in rows
+    {
         let Some(source_value) = source_value.filter(|value| !value.trim().is_empty()) else {
             continue;
         };
@@ -370,7 +378,13 @@ pub fn import_store_mcp_once(
     store
         .set_setting(MCP_IMPORT_MARKER, "1")
         .map_err(|error| ConfigError::Io(ConfigFile::Config, format!("store: {error}")))?;
-    log::info!("{}", McpImportOutcome::Imported { names: names.clone() }.line());
+    log::info!(
+        "{}",
+        McpImportOutcome::Imported {
+            names: names.clone()
+        }
+        .line()
+    );
     Ok(McpImportOutcome::Imported { names })
 }
 
@@ -466,7 +480,10 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 "#,
         );
         let outcome = manager.sync_from_config(&store, &disabled).expect("sync");
-        assert!(outcome.removed.contains(&"penpot".to_string()), "{outcome:?}");
+        assert!(
+            outcome.removed.contains(&"penpot".to_string()),
+            "{outcome:?}"
+        );
         assert_eq!(store_ids(&store), ["files"]);
     }
 
@@ -485,8 +502,14 @@ url = "http://localhost:5500/mcp"
 "#,
         );
         let outcome = manager.sync_from_config(&store, &edited).expect("sync");
-        assert!(outcome.updated.contains(&"penpot".to_string()), "{outcome:?}");
-        assert!(outcome.removed.contains(&"files".to_string()), "{outcome:?}");
+        assert!(
+            outcome.updated.contains(&"penpot".to_string()),
+            "{outcome:?}"
+        );
+        assert!(
+            outcome.removed.contains(&"files".to_string()),
+            "{outcome:?}"
+        );
         let rows = store.list_mcp_servers().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].3.as_deref(), Some("http://localhost:5500/mcp"));
@@ -510,19 +533,14 @@ url = "http://localhost:5500/mcp"
             )
             .unwrap();
         let manager = McpManager::new();
-        let outcome = manager
-            .sync_from_config(&store, &config(""))
-            .expect("sync");
+        let outcome = manager.sync_from_config(&store, &config("")).expect("sync");
         assert!(outcome.removed.contains(&"old".to_string()), "{outcome:?}");
         assert!(store_ids(&store).is_empty());
     }
 
     #[test]
     fn the_reverse_import_writes_tables_once() {
-        let dir = std::env::temp_dir().join(format!(
-            "goble-mcp-import-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("goble-mcp-import-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.toml"), "[theme]\ndark = true\n").unwrap();
@@ -552,7 +570,10 @@ url = "http://localhost:5500/mcp"
         );
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(text.contains("[mcp_servers.penpot]"), "{text}");
-        assert!(text.contains(r#"url = "http://localhost:4400/mcp""#), "{text}");
+        assert!(
+            text.contains(r#"url = "http://localhost:4400/mcp""#),
+            "{text}"
+        );
         assert!(mcp_import_done(&store));
 
         let second = import_store_mcp_once(&editor, &store).expect("second");
@@ -576,10 +597,7 @@ read -r line
 id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
 printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"echo","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id"
 "#;
-        let dir = std::env::temp_dir().join(format!(
-            "goble-mcp-probe-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("goble-mcp-probe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let server = dir.join("mock-mcp-server");

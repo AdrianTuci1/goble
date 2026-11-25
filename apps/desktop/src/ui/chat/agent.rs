@@ -377,37 +377,36 @@ pub fn build_agent_chat(
     // the harness that owns each one. The groups are recognition — a mark and a
     // name over the rows that harness runs — and a pick is always a model. The
     // rows are the desktop's catalog, so the tray lists what a turn can run.
-    // 454: every T3 integration is a group. A configured integration lists its
-    // real catalog models; an unconfigured one carries one honest Configure
-    // status row instead of invented models.
+    // 454/462/464: configured provider groups plus each CLI integration's
+    // real runtime models (Antigravity reads `agy models`). Only integrations
+    // that actually report models become groups; Settings owns the honest
+    // unconfigured/not-installed states.
     let mut groups = state.model_groups.clone();
-    for (harness, label) in [
-        ("anthropic", "Anthropic"),
-        ("openai", "OpenAI"),
-        ("google", "Google"),
-        ("deepseek", "DeepSeek"),
-    ] {
-        if !groups.iter().any(|group| group.harness == harness) {
+    for integration in &state.integrations {
+        if integration.models.is_empty() {
+            continue;
+        }
+        let models: Vec<goble_harness_types::HarnessModel> = integration
+            .models
+            .iter()
+            .map(|model| {
+                goble_harness_types::HarnessModel::new(model.id.clone(), model.name.clone())
+                    .with_thinking(model.efforts.clone())
+            })
+            .collect();
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.harness == integration.id)
+        {
+            group.models.extend(models);
+        } else {
             groups.push(goble_desktop_service::ModelGroup {
-                harness: harness.to_string(),
-                label: label.to_string(),
-                models: vec![goble_harness_types::HarnessModel::new(
-                    format!("__configure__:{harness}"),
-                    "Not configured · Configure",
-                )],
+                harness: integration.id.clone(),
+                label: integration.name.clone(),
+                models,
             });
         }
     }
-    // T3's integration order first; custom providers/harnesses keep their own
-    // order after the four built-ins.
-    let order = |harness: &str| match harness {
-        "anthropic" => 0,
-        "openai" => 1,
-        "google" => 2,
-        "deepseek" => 3,
-        _ => 4,
-    };
-    groups.sort_by_key(|group| order(&group.harness));
     let tray_harnesses: Vec<ModelTrayHarness> = groups
         .iter()
         .map(|group| {

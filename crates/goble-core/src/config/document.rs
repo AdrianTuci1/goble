@@ -25,9 +25,7 @@ use crate::hosts::{HostEntry, HostsFile};
 use super::GobleConfig;
 
 /// Which settings file a document addresses.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigFile {
     /// `~/.goble/config.toml`.
@@ -353,7 +351,10 @@ impl ConfigError {
     pub fn notice(&self) -> String {
         match self {
             ConfigError::Conflict { file, .. } => {
-                format!("{} changed on disk — reload it and try again", file.file_name())
+                format!(
+                    "{} changed on disk — reload it and try again",
+                    file.file_name()
+                )
             }
             ConfigError::Invalid(errors) => errors
                 .first()
@@ -424,14 +425,14 @@ impl ConfigDocument {
     pub fn load(file: ConfigFile, path: &Path) -> Result<Self, ConfigError> {
         let raw = match std::fs::read(path) {
             Ok(bytes) => String::from_utf8(bytes).map_err(|error| {
-                ConfigError::RefusedUnparseable(
-                    format!("not UTF-8: {error}"),
-                    file,
-                )
+                ConfigError::RefusedUnparseable(format!("not UTF-8: {error}"), file)
             })?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => {
-                return Err(ConfigError::Io(file, format!("read {}: {error}", path.display())))
+                return Err(ConfigError::Io(
+                    file,
+                    format!("read {}: {error}", path.display()),
+                ))
             }
         };
         Self::from_text(file, path, raw, 0)
@@ -445,9 +446,9 @@ impl ConfigDocument {
         raw: String,
         generation: u64,
     ) -> Result<Self, ConfigError> {
-        let doc = raw.parse::<DocumentMut>().map_err(|error| {
-            ConfigError::RefusedUnparseable(error.to_string(), file)
-        })?;
+        let doc = raw
+            .parse::<DocumentMut>()
+            .map_err(|error| ConfigError::RefusedUnparseable(error.to_string(), file))?;
         let problems = problems_for(file, &raw);
         Ok(Self {
             file,
@@ -519,10 +520,7 @@ impl ConfigDocument {
 
     /// The top-level table names the file carries, in file order.
     pub fn sections(&self) -> Vec<String> {
-        self.doc
-            .iter()
-            .map(|(key, _)| key.to_string())
-            .collect()
+        self.doc.iter().map(|(key, _)| key.to_string()).collect()
     }
 
     /// Whether the document holds `path`.
@@ -534,9 +532,7 @@ impl ConfigDocument {
     pub fn typed(&self) -> Result<TypedDocument, ConfigError> {
         Ok(match self.file {
             ConfigFile::Config => TypedDocument::Config(Box::new(self.typed_config()?)),
-            ConfigFile::Environment => {
-                TypedDocument::Environment(self.typed_environment()?)
-            }
+            ConfigFile::Environment => TypedDocument::Environment(self.typed_environment()?),
             ConfigFile::Hosts => TypedDocument::Hosts(self.typed_hosts()?),
         })
     }

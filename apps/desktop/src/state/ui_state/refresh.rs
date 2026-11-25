@@ -222,6 +222,7 @@ impl UiState {
             side_composer_focused: false,
             models: Vec::new(),
             model_groups: Vec::new(),
+            integrations: Vec::new(),
             composer_catalog: goble_harness_types::HarnessCatalog::empty(),
             selected_model: String::new(),
             harnesses: vec![HarnessEntry::internal("internal", "Goble")],

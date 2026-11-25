@@ -66,7 +66,11 @@ impl ImportOutcome {
     pub fn line(&self) -> String {
         match self {
             ImportOutcome::Imported { keys } => {
-                format!("imported {} setting(s) into config.toml [app]: {}", keys.len(), keys.join(", "))
+                format!(
+                    "imported {} setting(s) into config.toml [app]: {}",
+                    keys.len(),
+                    keys.join(", ")
+                )
             }
             ImportOutcome::AlreadyImported => "app settings already imported".to_string(),
             ImportOutcome::FileHasApp => {
@@ -111,7 +115,11 @@ pub fn import_store_prefs_once(
     let mut ops = Vec::new();
     let mut keys = Vec::new();
     for key in LEGACY_KEYS {
-        let Some(value) = store.get_setting(key).map_err(store_error)?.filter(|value| !value.trim().is_empty()) else {
+        let Some(value) = store
+            .get_setting(key)
+            .map_err(store_error)?
+            .filter(|value| !value.trim().is_empty())
+        else {
             continue;
         };
         let value = match key {
@@ -166,10 +174,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "goble-config-import-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("goble-config-import-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -214,7 +220,10 @@ mod tests {
         assert!(text.contains("auto_save_on_close = false"), "{text}");
         assert!(text.contains("approval_mode = \"plan\""), "{text}");
         // The old store copies are rollback backups: they stay.
-        assert_eq!(store.get_setting("friendly_name").unwrap().as_deref(), Some("Ada"));
+        assert_eq!(
+            store.get_setting("friendly_name").unwrap().as_deref(),
+            Some("Ada")
+        );
         assert!(app_import_done(&store));
 
         // A second run writes nothing.
@@ -252,10 +261,7 @@ mod tests {
         let outcome = import_store_prefs_once(&editor, &store).expect("no import");
         assert_eq!(outcome, ImportOutcome::NothingToImport);
         assert!(!app_import_done(&store));
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "[theme]\ndark = true\n"
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[theme]\ndark = true\n");
     }
 
     #[test]
@@ -269,7 +275,10 @@ mod tests {
 
         let error = import_store_prefs_once(&editor, &store).expect_err("refused");
         assert!(
-            matches!(error, ConfigError::RefusedUnparseable(_, ConfigFile::Config)),
+            matches!(
+                error,
+                ConfigError::RefusedUnparseable(_, ConfigFile::Config)
+            ),
             "{error:?}"
         );
         assert!(!app_import_done(&store), "the import can retry later");

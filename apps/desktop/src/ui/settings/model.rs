@@ -166,6 +166,8 @@ pub struct RowModel {
     pub reset: Option<SettingsAction>,
     /// A leading colour chip (a theme channel or a palette row).
     pub swatch: Option<ColorU>,
+    /// A leading icon before the label (integration identity rows).
+    pub leading_icon: Option<&'static str>,
     /// A full-width child block under the row (a form, a nested list). It is
     /// not itself focusable; the form's rows are.
     pub children: Vec<RowModel>,
@@ -182,6 +184,7 @@ impl RowModel {
             disabled: false,
             reset: None,
             swatch: None,
+            leading_icon: None,
             children: Vec::new(),
         }
     }
@@ -329,6 +332,12 @@ impl RowModel {
     }
 
     /// A leading colour chip before the label.
+    /// A leading 16pt icon for the row.
+    pub fn with_leading_icon(mut self, icon: &'static str) -> Self {
+        self.leading_icon = Some(icon);
+        self
+    }
+
     pub fn with_swatch(mut self, color: ColorU) -> Self {
         self.swatch = Some(color);
         self

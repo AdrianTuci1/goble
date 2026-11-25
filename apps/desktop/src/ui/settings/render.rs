@@ -413,6 +413,9 @@ fn render_row(
     if let Some(swatch) = row.swatch {
         element = element.with_swatch(swatch);
     }
+    if let Some(icon) = row.leading_icon {
+        element = element.with_leading_icon(icon);
+    }
     if row.disabled {
         element = element.with_disabled(true);
     }
@@ -845,6 +848,9 @@ fn render_sheet_row(
         SettingsRow::new(app, row.label.clone(), String::new()).with_focused(row_ring);
     if let Some(swatch) = row.swatch {
         element = element.with_swatch(swatch);
+    }
+    if let Some(icon) = row.leading_icon {
+        element = element.with_leading_icon(icon);
     }
     if row.disabled {
         element = element.with_disabled(true);

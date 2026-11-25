@@ -455,9 +455,14 @@ fn harness_fold(state: &SettingsUiState, harness: &HarnessStatus) -> SectionMode
         section = section
             .with_row(
                 RowModel::new(
-                    format!("harness.{}.status", harness.id),
-                    integration.health.label(),
+                    format!("harness.{}.identity", harness.id),
+                    harness.name.clone(),
                     integration.detail.clone(),
+                )
+                .with_leading_icon(
+                    goble_core::harness::harness_by_id(&harness.id)
+                        .map(|spec| spec.icon)
+                        .unwrap_or("plug"),
                 )
                 .with_status(status, integration.health.label()),
             )
@@ -532,6 +537,21 @@ fn harness_fold(state: &SettingsUiState, harness: &HarnessStatus) -> SectionMode
             );
         }
     }
+    // Put the integration identity/status/model card ahead of the launch
+    // controls, matching T3's provider card order.
+    let rank = |row: &RowModel| -> usize {
+        let suffix = row.id.rsplit('.').next().unwrap_or_default();
+        match suffix {
+            "identity" => 0,
+            "status" => 1,
+            "auth" => 2,
+            "models" => 3,
+            "config" => 4,
+            "refresh" => 5,
+            _ => 6,
+        }
+    };
+    section.rows.sort_by_key(rank);
     section
 }
 

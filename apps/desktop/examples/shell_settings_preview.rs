@@ -358,6 +358,24 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "chat-rail-empty",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "chat-rail-one",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "chat-rail-many",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "chat-scroll-rail-hover",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -876,6 +894,33 @@ fn main() -> anyhow::Result<()> {
                         .messages
                         .push(message);
                 }
+                if name.starts_with("chat-rail-") || name == "chat-scroll-rail-hover" {
+                    let active = s.active_pane_id;
+                    let runtime = s.pane_runtime.entry(active).or_default();
+                    runtime.messages.clear();
+                    runtime.pending_ask = None;
+                    runtime.pending_command = None;
+                    let turns = match name {
+                        "chat-rail-empty" => 0,
+                        "chat-rail-one" => 1,
+                        _ => 7,
+                    };
+                    for index in 0..turns {
+                        runtime.messages.push(goble_ui::ChatMessage::new(
+                            goble_ui::ChatRole::User,
+                            vec![goble_ui::ChatFragment::text(format!(
+                                "Turn {}: audit the release pipeline",
+                                index + 1
+                            ))],
+                        ));
+                        runtime.messages.push(goble_ui::ChatMessage::new(
+                            goble_ui::ChatRole::Assistant,
+                            vec![goble_ui::ChatFragment::text(
+                                "I checked the pipeline and found the stale cache.",
+                            )],
+                        ));
+                    }
+                }
                 if name == "chat-no-model" {
                     s.show_llm_key_banner = true;
                     s.settings_llm_api_key = "preview-key".to_string();
@@ -1037,7 +1082,7 @@ fn main() -> anyhow::Result<()> {
                     size.x,
                     size.y,
                     1.0,
-                    vec2f(270.0, 500.0),
+                    vec2f(300.0, 477.0),
                     None,
                     &path,
                 );

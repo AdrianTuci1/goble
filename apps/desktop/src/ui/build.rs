@@ -4104,8 +4104,21 @@ mod tests {
     #[test]
     fn the_chat_footer_is_plain_and_the_left_scroll_dots_are_drawn() {
         let app = AppContext::default();
-        let (mut root, _state, _dir) = app_root();
+        let (mut root, state, _dir) = app_root();
         let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let dots = commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::FillRect { rect, .. }
+                        if (rect.width() - 3.0).abs() < 0.01
+                            && (rect.height() - 3.0).abs() < 0.01
+                            && rect.min_x() < 420.0
+                )
+            })
+            .count();
+        assert_eq!(dots, 0, "an empty transcript has no rail markers");
         let texts: Vec<&str> = commands
             .iter()
             .filter_map(|command| match command {
@@ -4119,6 +4132,22 @@ mod tests {
                 "the shortcut strip {label:?} is gone: {texts:?}"
             );
         }
+        {
+            let mut s = state.borrow_mut();
+            let active = s.active_pane_id;
+            let runtime = s.pane_runtime.entry(active).or_default();
+            for index in 0..3 {
+                runtime.messages.push(goble_ui::ChatMessage::new(
+                    goble_ui::ChatRole::User,
+                    vec![goble_ui::ChatFragment::text(format!("turn {index}"))],
+                ));
+                runtime.messages.push(goble_ui::ChatMessage::new(
+                    goble_ui::ChatRole::Assistant,
+                    vec![goble_ui::ChatFragment::text("reply")],
+                ));
+            }
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
         let dots = commands
             .iter()
             .filter(|command| {
@@ -4131,7 +4160,7 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(dots, 8, "the left rail keeps eight round dots, got {dots}");
+        assert_eq!(dots, 2, "three turns are two dots plus the latest segment");
         let long_segment = commands.iter().any(|command| {
             matches!(
                 command,

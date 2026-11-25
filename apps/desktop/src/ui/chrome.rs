@@ -2140,11 +2140,9 @@ pub fn build_side_panel(
     };
     // A horizontal swipe on the content steps the strip; vertical travel goes
     // to the mounted surface unchanged.
-    let content = side_tabs::swipe_content(
-        content,
-        actions.on_side_tab.clone(),
-        state.side_swipe_accum.clone(),
-    );
+    // Tab switching is a mouse gesture: the content no longer eats horizontal
+    // trackpad travel and steps the strip behind the user's back.
+    let content = content;
 
     let body = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)

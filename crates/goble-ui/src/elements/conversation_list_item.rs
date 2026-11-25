@@ -450,9 +450,7 @@ impl ConversationListItem {
         // The band's own colour, which `paint` fills the whole card with (and
         // the fade blends into): the pointer over the card, the selected
         // conversation, or the surface the card sits on.
-        self.bg = if self.selected {
-            app.theme.color(ColorToken::Selected)
-        } else if hover {
+        self.bg = if hover {
             app.theme.color(ColorToken::Hover)
         } else {
             app.theme.color(ColorToken::Surface)

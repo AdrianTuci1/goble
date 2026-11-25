@@ -261,7 +261,7 @@ pub(crate) fn build_diff_pane(
         column = column.with_child(
             Expanded::new(
                 Container::new(empty_state(app, message))
-                    .with_padding(EdgeInsets::new(sm, sm, sm, sm))
+                    .with_padding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0))
                     .finish(),
             )
             .finish(),

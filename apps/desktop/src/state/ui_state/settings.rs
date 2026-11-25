@@ -17,6 +17,32 @@ use crate::ui::settings::{SettingsAction, SettingsRegion, SettingsUiState as Set
 
 impl UiState {
     pub fn refresh_llm_models(&mut self, desktop: &DesktopState) {
+        // The configuration is the source of truth for the turn: a model
+        // declared in `config.toml` carries its endpoint and inline key, and
+        // the form/snapshot must read that same setting instead of starting
+        // from an empty key (which made every send say "No API key
+        // configured" even though the config had one).
+        if self.settings_llm_model.trim().is_empty()
+            || self.settings_llm_model == "gpt-4o"
+        {
+            if let Some(model) = desktop.config_default_model() {
+                self.settings_llm_model = model;
+            }
+        }
+        if self.settings_llm_api_key.trim().is_empty() {
+            let model = self.settings_llm_model.clone();
+            if let Some(setting) =
+                desktop.effective_llm_setting(&self.settings_llm_provider, &model)
+            {
+                self.settings_llm_api_key = setting.api_key;
+                if let Some(base) = setting.base_url {
+                    self.settings_llm_base_url = base;
+                }
+                if !setting.model.trim().is_empty() {
+                    self.settings_llm_model = setting.model;
+                }
+            }
+        }
         self.models = desktop.available_models(&self.settings_llm_provider);
         if self.selected_model.trim().is_empty() {
             self.selected_model = desktop.default_model(&self.settings_llm_provider);

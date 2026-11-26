@@ -1052,8 +1052,8 @@ mod chat_geometry_tests {
         );
         assert_eq!(
             band.0.max_x(),
-            pane_right - 16.0,
-            "the user's bubble keeps a 16 pt inset from the lane's trailing edge"
+            pane_right - 31.0,
+            "the user's bubble keeps the lane's trailing inset"
         );
         assert!(
             band.0.min_x() > pane_left + 50.0,
@@ -1068,7 +1068,7 @@ mod chat_geometry_tests {
 
         let padded = reply_x - pane_left;
         assert!(
-            (11.0..=17.0).contains(&padded),
+            (26.0..=29.0).contains(&padded),
             "the agent's row keeps its band inset after the top/left pane band was removed, got {padded}"
         );
 

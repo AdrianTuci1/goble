@@ -521,6 +521,7 @@ impl UiState {
                 split_ratio: self.side_split_ratio,
                 maximized: self.side_panel_maximized,
                 browser_url: self.browser_url.borrow().clone(),
+                review_rail_width: *self.review_rail_width.borrow(),
             },
         );
     }
@@ -543,6 +544,7 @@ impl UiState {
         self.side_split_ratio = state.split_ratio;
         self.side_panel_maximized = state.maximized;
         *self.browser_url.borrow_mut() = state.browser_url;
+        *self.review_rail_width.borrow_mut() = state.review_rail_width;
     }
 
     pub fn bind_active_pane_conversation(

@@ -1300,6 +1300,7 @@ impl Element for ModelTray {
                         "openai" | "codex" => "harness-codex",
                         "google" | "gemini" => "harness-gemini",
                         "deepseek" => "sparkle",
+                        "goble" => "harness-goble",
                         _ => "plug",
                     };
                     let glyph_x = bounds.min_x() + (bounds.width() - 16.0) / 2.0;

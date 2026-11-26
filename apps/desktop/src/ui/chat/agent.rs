@@ -388,7 +388,7 @@ pub fn build_agent_chat(
         if !integration.installed && integration.models.is_empty() {
             continue;
         }
-        let models: Vec<goble_harness_types::HarnessModel> = integration
+        let mut models: Vec<goble_harness_types::HarnessModel> = integration
             .models
             .iter()
             .map(|model| {
@@ -396,6 +396,27 @@ pub fn build_agent_chat(
                     .with_thinking(model.efforts.clone())
             })
             .collect();
+        // 549: the primary CLI adapters run the provider catalog their harness
+        // owns; if the CLI exposes no `models` command, borrow the configured
+        // provider's real models instead of inventing any.
+        if models.is_empty() {
+            let provider = match integration.id.as_str() {
+                "claude" => Some("anthropic"),
+                "codex" => Some("openai"),
+                "gemini" => Some("google"),
+                _ => None,
+            };
+            if let Some(provider) = provider {
+                if let Some(group) = state.model_groups.iter().find(|group| {
+                    group.harness == provider || group.label.eq_ignore_ascii_case(provider)
+                }) {
+                    models = group.models.clone();
+                }
+            }
+        }
+        if models.is_empty() {
+            continue;
+        }
         if let Some(group) = groups
             .iter_mut()
             .find(|group| group.harness == integration.id)

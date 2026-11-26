@@ -207,6 +207,7 @@ pub struct SidePanelConversationState {
     pub split_ratio: f32,
     pub maximized: bool,
     pub browser_url: String,
+    pub review_rail_width: f32,
 }
 
 impl Default for SidePanelConversationState {
@@ -218,6 +219,7 @@ impl Default for SidePanelConversationState {
             split_ratio: 0.5,
             maximized: false,
             browser_url: String::new(),
+            review_rail_width: 280.0,
         }
     }
 }
@@ -784,6 +786,8 @@ pub struct UiState {
     pub side_panel_by_chat: std::collections::HashMap<String, SidePanelConversationState>,
     /// 535: the live browser URL for the active conversation.
     pub browser_url: Rc<RefCell<String>>,
+    /// 534: the Review Files Changed rail width (per conversation).
+    pub review_rail_width: Rc<RefCell<f32>>,
     /// The inner Terminals/Background Tasks rail is open in Terminal and Task
     /// Output. AF: the per-tab topbar toggles it.
     pub side_rail_open: bool,

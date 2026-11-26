@@ -258,6 +258,7 @@ pub struct UiSnapshot {
     pub llm_credential_source: Option<String>,
     /// 535: the active browser tab's URL (per-conversation state).
     pub browser_url: std::rc::Rc<std::cell::RefCell<String>>,
+    pub review_rail_width: std::rc::Rc<std::cell::RefCell<f32>>,
     /// The harness's own composer catalog: what a draft can list behind `/` and
     /// `$`, and the models the tray shows.
     pub composer_catalog: goble_harness_types::HarnessCatalog,

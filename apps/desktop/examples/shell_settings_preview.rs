@@ -928,6 +928,8 @@ fn main() -> anyhow::Result<()> {
                     // accent channel so the square and the anchored grid are
                     // both in the shot.
                     *s.settings.color_palette_menu.borrow_mut() = Some(0);
+                    *s.settings.color_preview.borrow_mut() =
+                        Some((0, goble_ui::color::ColorU::new(42, 156, 218, 255)));
                 }
                 if name == "overview-popover" {
                     s.right_sidebar_open = true;

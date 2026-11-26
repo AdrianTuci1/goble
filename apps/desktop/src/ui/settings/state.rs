@@ -261,6 +261,9 @@ pub struct SettingsUiState {
     pub theme_select_menu: Rc<RefCell<bool>>,
     /// The HSV control's drag, app-owned so it survives the per-frame rebuild.
     pub color_picker_drag: Rc<RefCell<Option<crate::ui::color_picker::ColorPickerDrag>>>,
+    /// 521: the in-memory colour preview while a palette drag is live. It is
+    /// never written to disk; the commit happens on release.
+    pub color_preview: Rc<RefCell<Option<(usize, goble_ui::color::ColorU)>>>,
     /// The theme colour channel whose palette popover is open (`None` while no
     /// channel's popover is up).
     pub color_palette_menu: Rc<RefCell<Option<usize>>>,
@@ -359,6 +362,7 @@ impl Default for SettingsUiState {
             theme_select_open: false,
             theme_select_menu: Rc::new(RefCell::new(false)),
             color_picker_drag: Rc::new(RefCell::new(None)),
+            color_preview: Rc::new(RefCell::new(None)),
             color_palette_menu: Rc::new(RefCell::new(None)),
             select_open: Rc::new(RefCell::new(BTreeMap::new())),
             appearance_anchors: Rc::new(RefCell::new(AppearanceMenuAnchors::default())),
@@ -679,6 +683,12 @@ pub enum SettingsAction {
     },
     /// Remove a custom chord, restoring the built-in binding.
     ShortcutDelete(String),
+    /// 521: update the live palette preview without touching disk.
+    PreviewColor {
+        channel: usize,
+        color: goble_ui::color::ColorU,
+    },
+    ClearColorPreview,
     /// Re-run integration detection (Antigravity/CLI adapters).
     RefreshIntegrations,
     /// Start an integration's own login command (`agy login`), then refresh.

@@ -235,6 +235,13 @@ fn handle(
                 ),
             }
         }
+        SettingsAction::ClearColorPreview => {
+            *state.settings.color_preview.borrow_mut() = None;
+        }
+        SettingsAction::PreviewColor { channel, color } => {
+            // 521: live preview only; no settings write and no config reload.
+            *state.settings.color_preview.borrow_mut() = Some((channel, color));
+        }
         SettingsAction::ShortcutDelete(id) => {
             let label = id.trim_start_matches("shortcut.");
             state.settings.shortcuts.remove(label);

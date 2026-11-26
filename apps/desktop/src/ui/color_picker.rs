@@ -384,6 +384,9 @@ impl Element for ColorWheel {
 pub struct HsvBarPicker {
     color: ColorU,
     on_change: ColorHandler,
+    on_preview: ColorHandler,
+    on_commit: ColorHandler,
+    last_color: Option<ColorU>,
     drag: Rc<RefCell<Option<ColorPickerDrag>>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -396,6 +399,9 @@ impl HsvBarPicker {
         Self {
             color,
             on_change: None,
+            on_preview: None,
+            on_commit: None,
+            last_color: None,
             drag: Rc::new(RefCell::new(None)),
             size: None,
             origin: None,
@@ -412,6 +418,26 @@ impl HsvBarPicker {
     pub fn with_on_change<F: FnMut(ColorU) + 'static>(mut self, callback: F) -> Self {
         self.on_change = Some(Rc::new(RefCell::new(callback)));
         self
+    }
+
+    /// 521: an in-memory preview for each drag step.
+    pub fn with_on_preview<F: FnMut(ColorU) + 'static>(mut self, callback: F) -> Self {
+        self.on_preview = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// The single commit fired on release.
+    pub fn with_on_commit<F: FnMut(ColorU) + 'static>(mut self, callback: F) -> Self {
+        self.on_commit = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    fn report(&mut self, color: ColorU) {
+        self.last_color = Some(color);
+        let callback = self.on_preview.as_ref().or(self.on_change.as_ref());
+        if let Some(cb) = callback {
+            (cb.borrow_mut())(color);
+        }
     }
 
     fn hsv(&self) -> (f32, f32, f32) {
@@ -547,9 +573,7 @@ impl Element for HsvBarPicker {
                         *dragging.borrow_mut() = Some(ColorPickerDrag {
                             region: ColorRegion::Sv,
                         });
-                        if let Some(cb) = &self.on_change {
-                            (cb.borrow_mut())(self.color_at_sv(r, *position));
-                        }
+                        self.report(self.color_at_sv(r, *position));
                         return true;
                     }
                 }
@@ -558,9 +582,7 @@ impl Element for HsvBarPicker {
                         *dragging.borrow_mut() = Some(ColorPickerDrag {
                             region: ColorRegion::Hue,
                         });
-                        if let Some(cb) = &self.on_change {
-                            (cb.borrow_mut())(self.color_at_hue(r, *position));
-                        }
+                        self.report(self.color_at_hue(r, *position));
                         return true;
                     }
                 }
@@ -576,15 +598,22 @@ impl Element for HsvBarPicker {
                     ColorRegion::Ring => self.abs_sv().map(|r| self.color_at_sv(r, *position)),
                 };
                 if let Some(color) = color {
-                    if let Some(cb) = &self.on_change {
-                        (cb.borrow_mut())(color);
-                    }
+                    self.report(color);
                     true
                 } else {
                     false
                 }
             }
-            DispatchedEvent::MouseUp { .. } => dragging.borrow_mut().take().is_some(),
+            DispatchedEvent::MouseUp { .. } => {
+                if dragging.borrow_mut().take().is_some() {
+                    if let (Some(color), Some(cb)) = (self.last_color, self.on_commit.as_ref()) {
+                        (cb.borrow_mut())(color);
+                    }
+                    self.last_color = None;
+                    return true;
+                }
+                false
+            }
             _ => false,
         }
     }
@@ -607,6 +636,55 @@ mod tests {
 
     fn wheel_box(color: ColorU) -> Box<dyn Element> {
         ColorWheel::new(color).finish()
+    }
+
+    /// 521: every drag step previews in memory; exactly one commit fires on
+    /// release, so no settings write can happen per pixel.
+    #[test]
+    fn the_hsv_picker_previews_each_step_and_commits_once_on_release() {
+        use goble_ui::elements::EventContext;
+        use goble_ui::event::DispatchedEvent;
+        use goble_ui::test_util::render_element;
+        let app = AppContext::default();
+        let previews = Rc::new(RefCell::new(0usize));
+        let commits = Rc::new(RefCell::new(0usize));
+        let p = previews.clone();
+        let c = commits.clone();
+        let mut picker: Box<dyn Element> = Box::new(
+            HsvBarPicker::new(ColorU::new(128, 128, 128, 255))
+                .with_on_preview(move |_| *p.borrow_mut() += 1)
+                .with_on_commit(move |_| *c.borrow_mut() += 1),
+        );
+        let _ = render_element(&mut picker, vec2f(300.0, 220.0), &app);
+        let mut ctx = EventContext::default();
+        picker.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(40.0, 40.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        for x in [60.0, 90.0, 120.0] {
+            picker.dispatch_event(
+                &DispatchedEvent::MouseMove {
+                    position: vec2f(x, 60.0),
+                },
+                &mut ctx,
+                &app,
+            );
+        }
+        assert!(*previews.borrow() >= 4, "each step previews in memory");
+        assert_eq!(*commits.borrow(), 0, "nothing is committed mid-drag");
+        picker.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: vec2f(120.0, 60.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert_eq!(*commits.borrow(), 1, "release commits once");
     }
 
     /// 362: the square and the hue strip are both live drag targets.

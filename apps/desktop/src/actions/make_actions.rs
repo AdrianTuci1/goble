@@ -3328,8 +3328,21 @@ pub fn make_actions(
             let delta = pointer_x - state.sidebar_drag_origin_x;
             state.sidebar_width = (state.sidebar_drag_start_width + delta).clamp(200.0, 480.0);
         })),
-        on_sidebar_drag_end: Rc::new(RefCell::new(move || {
-            on_sidebar_drag_end.borrow_mut().sidebar_dragging = false;
+        on_sidebar_drag_end: Rc::new(RefCell::new({
+            let desktop = desktop.clone();
+            let state = on_sidebar_drag_end;
+            move || {
+                let width = {
+                    let mut state = state.borrow_mut();
+                    state.sidebar_dragging = false;
+                    state.sidebar_width
+                };
+                if let Some(desktop) = desktop.as_ref() {
+                    if let Err(error) = desktop.set_ui_sidebar_width(width) {
+                        log::warn!("set_ui_sidebar_width failed: {error}");
+                    }
+                }
+            }
         })),
         // The shared main/side-panel boundary. The element resolves the
         // pointer to a ratio of the measured content width and clamps it to

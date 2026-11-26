@@ -413,11 +413,36 @@ fn agent_cli_folds(state: &SettingsUiState) -> Vec<SectionModel> {
             .map(|harness| harness_fold_from_config(state, harness))
             .collect();
     }
-    state
-        .harnesses
-        .iter()
-        .map(|harness| harness_fold(state, harness))
-        .collect()
+    // 530: connected/installed integrations first; the rest of the catalog is
+    // one collapsed "More integrations" fold whose open state persists in
+    // `settings.folds`.
+    let mut connected = Vec::new();
+    let mut missing = Vec::new();
+    for harness in &state.harnesses {
+        let fold = harness_fold(state, harness);
+        if harness.installed || harness.configured {
+            connected.push(fold);
+        } else {
+            missing.push(fold);
+        }
+    }
+    if missing.is_empty() {
+        return connected;
+    }
+    let more_id = "harnesses.more";
+    let open = state.folds.contains(more_id);
+    connected.push(
+        SectionModel::new(more_id, "More integrations")
+            .with_description(format!(
+                "{} catalog integrations are not installed or configured.",
+                missing.len()
+            ))
+            .with_fold(open, SettingsAction::ToggleFold(more_id.to_string())),
+    );
+    if open {
+        connected.extend(missing);
+    }
+    connected
 }
 
 fn harness_fold(state: &SettingsUiState, harness: &HarnessStatus) -> SectionModel {

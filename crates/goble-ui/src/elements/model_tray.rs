@@ -239,6 +239,8 @@ pub struct ModelTrayState {
     pub effort_offset: f32,
     /// Filter text typed into the model column's search field.
     pub search: String,
+    /// 529: DSH's "Enable agent teamwork" switch in the model popover.
+    pub teamwork: bool,
     /// The row of the current model's thinking levels.
     pub level: usize,
     /// Whether the card has been placed on the pane's own model yet. The card
@@ -449,6 +451,8 @@ enum PanelRowKind {
     Search,
     /// A model row, by its flat index.
     Model(usize),
+    /// The "Enable agent teamwork" switch.
+    Teamwork,
     /// A thinking row, by its index in the current model's list.
     Level(usize),
 }
@@ -702,7 +706,14 @@ impl ModelTray {
     /// casing and its list instead of running off the surface's edge.
     fn build_panel(&self, available: Option<f32>) -> Panel {
         let state = self.state.borrow().clone();
-        let width = 760.0_f32.min(available.unwrap_or(760.0)).max(420.0);
+        // 529: the first level is the integration list; opening one expands the
+        // nested models + detail panes.
+        let first_level = state.pane == ModelTrayPane::Root;
+        let width = if first_level {
+            280.0_f32.min(available.unwrap_or(280.0)).max(240.0)
+        } else {
+            760.0_f32.min(available.unwrap_or(760.0)).max(420.0)
+        };
         let height = 420.0;
         let provider = state.provider.min(self.harnesses.len().saturating_sub(1));
         let flat = flat_models(&self.harnesses);
@@ -723,39 +734,52 @@ impl ModelTray {
         // Column 1: integrations/providers.
         for index in 0..self.harnesses.len() {
             let y = 32.0 + index as f32 * 36.0 - state.provider_offset;
-            if y + 34.0 < 32.0 || y > height - 8.0 {
+            if y + 34.0 < 32.0 || y > height - if first_level { 52.0 } else { 8.0 } {
                 continue;
             }
             rows.push(PanelRow {
                 kind: PanelRowKind::Provider(index),
-                rect: rectf(4.0, y, 204.0, 34.0),
+                rect: rectf(
+                    if first_level { 8.0 } else { 4.0 },
+                    y,
+                    if first_level { 264.0 } else { 204.0 },
+                    34.0,
+                ),
+            });
+        }
+        if first_level {
+            rows.push(PanelRow {
+                kind: PanelRowKind::Teamwork,
+                rect: rectf(8.0, height - 44.0, 264.0, 32.0),
             });
         }
         // Column 2: the provider's searchable model list.
-        rows.push(PanelRow {
-            kind: PanelRowKind::Search,
-            rect: rectf(216.0, 32.0, 272.0, 30.0),
-        });
-        for (row, (flat_index, _)) in models.iter().enumerate() {
-            let y = 68.0 + row as f32 * 34.0 - state.model_offset;
-            if y + 32.0 < 68.0 || y > height - 8.0 {
-                continue;
-            }
+        if !first_level {
             rows.push(PanelRow {
-                kind: PanelRowKind::Model(*flat_index),
-                rect: rectf(216.0, y, 272.0, 32.0),
+                kind: PanelRowKind::Search,
+                rect: rectf(216.0, 32.0, 272.0, 30.0),
             });
-        }
-        // Column 3: the selected model's detail/effort picker.
-        for index in 0..levels.len() {
-            let y = 68.0 + index as f32 * 34.0 - state.effort_offset;
-            if y + 32.0 < 68.0 || y > height - 8.0 {
-                continue;
+            for (row, (flat_index, _)) in models.iter().enumerate() {
+                let y = 68.0 + row as f32 * 34.0 - state.model_offset;
+                if y + 32.0 < 68.0 || y > height - 8.0 {
+                    continue;
+                }
+                rows.push(PanelRow {
+                    kind: PanelRowKind::Model(*flat_index),
+                    rect: rectf(216.0, y, 272.0, 32.0),
+                });
             }
-            rows.push(PanelRow {
-                kind: PanelRowKind::Level(index),
-                rect: rectf(500.0, y, 248.0, 32.0),
-            });
+            // Column 3: the selected model's detail/effort picker.
+            for index in 0..levels.len() {
+                let y = 68.0 + index as f32 * 34.0 - state.effort_offset;
+                if y + 32.0 < 68.0 || y > height - 8.0 {
+                    continue;
+                }
+                rows.push(PanelRow {
+                    kind: PanelRowKind::Level(index),
+                    rect: rectf(500.0, y, 248.0, 32.0),
+                });
+            }
         }
         let origin = vec2f(
             self.size.map(|size| size.x - width).unwrap_or(-width),
@@ -899,7 +923,7 @@ impl ModelTray {
                 state.cell = cell.min(1);
                 state.cell_active = true;
             }
-            PanelRowKind::Group(_) | PanelRowKind::Search => {}
+            PanelRowKind::Group(_) | PanelRowKind::Search | PanelRowKind::Teamwork => {}
             PanelRowKind::Provider(index) => {
                 state.provider = index;
                 state.pane = ModelTrayPane::Root;
@@ -931,6 +955,11 @@ impl ModelTray {
                 true
             }
             PanelRowKind::Group(_) | PanelRowKind::Search => true,
+            PanelRowKind::Teamwork => {
+                let mut state = self.state.borrow_mut();
+                state.teamwork = !state.teamwork;
+                true
+            }
             PanelRowKind::Provider(index) => {
                 let mut state = self.state.borrow_mut();
                 state.provider = index;
@@ -1061,57 +1090,68 @@ impl Element for ModelTray {
             return;
         }
 
-        // 477: the card is three columns — integrations, models, detail/effort.
-        for (x, label) in [
-            (card.min_x() + 10.0, "Integrations"),
-            (card.min_x() + 224.0, "Models"),
-            (card.min_x() + 506.0, "Effort"),
-        ] {
-            renderer.draw_text(
-                Vector2F::new(x, card.min_y() + 8.0),
-                label,
-                GROUP_FONT_SIZE,
-                app.theme.color(ColorToken::Muted),
-                200.0,
-                GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
-            );
-        }
-        let detail_name = truncate_with_ellipsis(
-            &self.current_model_label(),
-            LABEL_FONT_SIZE,
-            MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
-            230.0,
-        );
+        // 529: the first level draws the integrations header; opening one adds
+        // the nested models + detail columns.
         renderer.draw_text(
-            Vector2F::new(card.min_x() + 506.0, card.min_y() + 30.0),
-            detail_name,
-            LABEL_FONT_SIZE,
-            app.theme.color(ColorToken::Text),
-            230.0,
-            MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
+            Vector2F::new(card.min_x() + 10.0, card.min_y() + 8.0),
+            "Integrations",
+            GROUP_FONT_SIZE,
+            app.theme.color(ColorToken::Muted),
+            200.0,
+            GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
         );
-        if let Some(source) = self.credential_source.as_deref() {
-            renderer.draw_text(
-                Vector2F::new(card.min_x() + 506.0, card.min_y() + 50.0),
-                &format!("Key · {source}"),
-                GROUP_FONT_SIZE,
-                app.theme.color(ColorToken::Muted),
+        if state.pane != ModelTrayPane::Root {
+            for (x, label) in [
+                (card.min_x() + 224.0, "Models"),
+                (card.min_x() + 506.0, "Effort"),
+            ] {
+                renderer.draw_text(
+                    Vector2F::new(x, card.min_y() + 8.0),
+                    label,
+                    GROUP_FONT_SIZE,
+                    app.theme.color(ColorToken::Muted),
+                    200.0,
+                    GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
+                );
+            }
+            let detail_name = truncate_with_ellipsis(
+                &self.current_model_label(),
+                LABEL_FONT_SIZE,
+                MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
                 230.0,
-                GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
             );
-        }
-        for x in [card.min_x() + 214.0, card.min_x() + 496.0] {
-            renderer.fill_rounded_rect(
-                rectf(x, card.min_y() + 6.0, 1.0, card.height() - 12.0),
-                app.theme.color(ColorToken::Border),
-                0.0,
+            renderer.draw_text(
+                Vector2F::new(card.min_x() + 506.0, card.min_y() + 30.0),
+                detail_name,
+                LABEL_FONT_SIZE,
+                app.theme.color(ColorToken::Text),
+                230.0,
+                MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
             );
+            if let Some(source) = self.credential_source.as_deref() {
+                renderer.draw_text(
+                    Vector2F::new(card.min_x() + 506.0, card.min_y() + 50.0),
+                    &format!("Key · {source}"),
+                    GROUP_FONT_SIZE,
+                    app.theme.color(ColorToken::Muted),
+                    230.0,
+                    GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
+                );
+            }
+            for x in [card.min_x() + 214.0, card.min_x() + 496.0] {
+                renderer.fill_rounded_rect(
+                    rectf(x, card.min_y() + 6.0, 1.0, card.height() - 12.0),
+                    app.theme.color(ColorToken::Border),
+                    0.0,
+                );
+            }
         }
-        if self.harnesses.is_empty()
-            || self
-                .harnesses
-                .get(state.provider.min(self.harnesses.len().saturating_sub(1)))
-                .is_some_and(|harness| harness.models.is_empty())
+        if state.pane != ModelTrayPane::Root
+            && (self.harnesses.is_empty()
+                || self
+                    .harnesses
+                    .get(state.provider.min(self.harnesses.len().saturating_sub(1)))
+                    .is_some_and(|harness| harness.models.is_empty()))
         {
             renderer.draw_text(
                 Vector2F::new(card.min_x() + 224.0, card.min_y() + 76.0),
@@ -1200,6 +1240,49 @@ impl Element for ModelTray {
                         app.theme.color(ColorToken::Muted),
                     );
                 }
+                PanelRowKind::Teamwork => {
+                    if state.teamwork {
+                        renderer.fill_rounded_rect(
+                            bounds,
+                            app.theme.color(ColorToken::Selected),
+                            ROW_RADIUS,
+                        );
+                    }
+                    renderer.draw_text(
+                        Vector2F::new(
+                            bounds.min_x() + ROW_PAD_X,
+                            Self::line_y(bounds, MODEL_LINE_HEIGHT),
+                        ),
+                        "Enable agent teamwork",
+                        LABEL_FONT_SIZE,
+                        app.theme.color(ColorToken::Text),
+                        bounds.width() - 44.0,
+                        MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                    );
+                    let box_rect = rectf(
+                        bounds.max_x() - ROW_PAD_X - 28.0,
+                        bounds.min_y() + (ROW_HEIGHT - 16.0) / 2.0,
+                        28.0,
+                        16.0,
+                    );
+                    renderer.fill_rounded_rect(
+                        box_rect,
+                        app.theme.color(if state.teamwork {
+                            ColorToken::Accent
+                        } else {
+                            ColorToken::SurfaceRaised
+                        }),
+                        8.0,
+                    );
+                    if state.teamwork {
+                        renderer.draw_icon(
+                            Vector2F::new(box_rect.min_x() + 8.0, box_rect.min_y() + 1.0),
+                            icon_atlas_name("check"),
+                            14.0,
+                            app.theme.color(ColorToken::Text),
+                        );
+                    }
+                }
                 PanelRowKind::Provider(index) => {
                     let Some(harness) = self.harnesses.get(index) else {
                         continue;
@@ -1213,10 +1296,10 @@ impl Element for ModelTray {
                     }
                     let icon: &'static str = match harness.harness.as_str() {
                         "antigravity" => "harness-antigravity",
-                        "claude" => "harness-claude",
-                        "codex" => "harness-codex",
-                        "gemini" => "harness-gemini",
-                        "deepseek" => "harness-deepseek",
+                        "anthropic" | "claude" => "harness-claude",
+                        "openai" | "codex" => "harness-codex",
+                        "google" | "gemini" => "harness-gemini",
+                        "deepseek" => "sparkle",
                         _ => "plug",
                     };
                     let glyph_x = bounds.min_x() + (bounds.width() - 16.0) / 2.0;
@@ -1819,13 +1902,12 @@ mod tests {
         let app = AppContext::default();
         let bounds = ModelTrayBounds::new();
         bounds.set_width(500.0);
-        let tray = ComposerModelTray::new(
-            harnesses(),
-            Rc::new(RefCell::new(ModelTrayState::default())),
-            Rc::new(RefCell::new(true)),
-        )
-        .with_current("deepseek-flash", "off")
-        .with_bounds(bounds.clone());
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        state.borrow_mut().seeded = true;
+        state.borrow_mut().pane = ModelTrayPane::Model;
+        let tray = ComposerModelTray::new(harnesses(), state, Rc::new(RefCell::new(true)))
+            .with_current("deepseek-flash", "off")
+            .with_bounds(bounds.clone());
         let mut menu = tray.popup(Box::new(
             crate::elements::Empty::new().with_size(vec2f(100.0, 28.0)),
         ));
@@ -1882,6 +1964,7 @@ mod tests {
             model_offset: 0.0,
             effort_offset: 0.0,
             search: String::new(),
+            teamwork: false,
             level: 0,
             seeded: true,
         }));
@@ -1922,12 +2005,10 @@ mod tests {
                 ]),
         ];
         let open = Rc::new(RefCell::new(true));
-        let tray = ComposerModelTray::new(
-            harnesses,
-            Rc::new(RefCell::new(ModelTrayState::default())),
-            open,
-        )
-        .with_current("long", "high");
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        state.borrow_mut().seeded = true;
+        state.borrow_mut().pane = ModelTrayPane::Model;
+        let tray = ComposerModelTray::new(harnesses, state, open).with_current("long", "high");
         let mut menu = tray.popup(Box::new(
             crate::elements::Empty::new().with_size(vec2f(100.0, 28.0)),
         ));
@@ -2001,6 +2082,29 @@ mod tests {
             "the keyboard's cell is the highlighted one: {:?}",
             drawn_texts(&commands)
         );
+    }
+
+    /// 529: the first level carries DSH's agent-teamwork switch.
+    #[test]
+    fn the_nested_first_level_toggles_agent_teamwork() {
+        let app = AppContext::default();
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        let tray = ComposerModelTray::new(harnesses(), state.clone(), Rc::new(RefCell::new(true)));
+        let mut menu = tray.popup(Box::new(
+            crate::elements::Empty::new().with_size(vec2f(100.0, 28.0)),
+        ));
+        let _ = painted(&mut menu, &app, vec2f(100.0, 300.0));
+        let panel = menu.panel_bounds().expect("the card is drawn");
+        let point = vec2f(panel.min_x() + 40.0, panel.max_y() - 28.0);
+        assert!(menu.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: point,
+                button: 0,
+            },
+            &mut EventContext::default(),
+            &app,
+        ));
+        assert!(state.borrow().teamwork);
     }
 
     /// 516: each column scrolls independently under the wheel.
@@ -2078,7 +2182,7 @@ mod tests {
             &AppContext::default(),
         );
         let panel = menu.panel.as_ref().expect("an open card has a panel");
-        assert!(panel.size.x >= MIN_WIDTH && panel.size.x <= MAX_WIDTH);
+        assert!(panel.size.x >= 240.0 && panel.size.x <= MAX_WIDTH);
         assert!(panel.size.y <= MAX_HEIGHT + CARD_PADDING * 2.0);
         assert!(
             panel.origin.y <= -(CARD_GAP),

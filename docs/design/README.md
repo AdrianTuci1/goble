@@ -191,7 +191,7 @@ Appearance with the colour palette open, Shortcuts, narrow; no descriptions,
 floating close x), the diff reviewer, the floating file window (also over the sidebar and side panel, with no tiled duplicate) and the
 changed-files card. Next to them: the DSH-style right-aligned user bubble and
 inline image message (`chat-parity-*`), the slash menu floating above an
-unchanged composer (`slash-menu-*`), the Review tab beside the main chat
+unchanged composer (`slash-menu-*`), the Review tab (all changed files in one scroller, not one expanded file) beside the main chat
 (`split-review-*`), the file viewer with Review beside it
 (`split-file-viewer-*`) and the narrow split (`split-review-narrow-*`). The
 review surface has no inner header band: directly under the one general topbar

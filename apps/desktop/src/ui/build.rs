@@ -2178,9 +2178,16 @@ mod tests {
             let commands = render_element(&mut root, size, &app);
 
             let rules = thin_rules(&commands);
-            assert!(
-                rules.is_empty(),
-                "{}: no divider rule at a resizable boundary: {rules:?}",
+            // 527: exactly one full-height rule at the sidebar boundary.
+            let sidebar_rule = rules.iter().filter(|rect| {
+                rect.width() <= 1.5
+                    && rect.height() >= 40.0
+                    && (rect.min_x() - (crate::ui::SIDEBAR_WIDTH - 0.5)).abs() < 1.0
+            });
+            assert_eq!(
+                sidebar_rule.count(),
+                1,
+                "{}: one sidebar divider rule: {rules:?}",
                 command()
             );
 

@@ -366,12 +366,10 @@ fn the_composer_model_card_registers_and_closes_from_outside() {
         Some("composer.model"),
         "the composer model card registered as the open menu"
     );
-    // 477: the card draws its three columns.
+    // 529: the card opens on the first level, the integrations column.
     assert!(
-        text_origin(&commands, "Integrations").is_some()
-            && text_origin(&commands, "Models").is_some()
-            && text_origin(&commands, "Effort").is_some(),
-        "the three-column model card is drawn"
+        text_origin(&commands, "Integrations").is_some(),
+        "the nested model card opens on integrations"
     );
 
     // Hover over the card belongs to the card: the transcript behind it keeps

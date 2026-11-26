@@ -216,6 +216,24 @@ impl DesktopState {
         Ok(())
     }
 
+    /// 528: the sidebar width persists across launches.
+    pub fn get_ui_sidebar_width(&self) -> Option<f32> {
+        self.store
+            .lock()
+            .get_setting("ui.sidebar_width")
+            .ok()
+            .flatten()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|width| width.is_finite())
+    }
+
+    pub fn set_ui_sidebar_width(&self, width: f32) -> anyhow::Result<()> {
+        self.store
+            .lock()
+            .set_setting("ui.sidebar_width", &format!("{width:.1}"))?;
+        Ok(())
+    }
+
     pub fn get_ui_workspaces(&self) -> Option<String> {
         self.store
             .lock()

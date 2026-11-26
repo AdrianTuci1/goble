@@ -310,6 +310,12 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "composer-model-first",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "composer-narrow",
                 vec2f(820.0, 900.0),
                 false,
@@ -772,7 +778,7 @@ fn main() -> anyhow::Result<()> {
                     s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
                     s.active_side_tab = 0;
                 }
-                if name == "composer-model-open" {
+                if name == "composer-model-open" || name == "composer-model-first" {
                     use goble_desktop_service::ModelGroup;
                     use goble_harness_types::HarnessModel;
                     s.model_groups = vec![
@@ -861,6 +867,10 @@ fn main() -> anyhow::Result<()> {
                         tray.pane = goble_ui::elements::ModelTrayPane::Model;
                         tray.row = 1;
                     }
+                    if name == "composer-model-first" {
+                        controls.model_tray_state.borrow_mut().pane =
+                            goble_ui::elements::ModelTrayPane::Root;
+                    }
                     *controls.model_menu_open.borrow_mut() = true;
                     *controls.model_tray_open.borrow_mut() = true;
                 }
@@ -872,6 +882,15 @@ fn main() -> anyhow::Result<()> {
                     use goble_core::integration::{
                         IntegrationHealth, IntegrationModel, IntegrationSnapshot,
                     };
+                    for harness in &mut s.settings.harnesses {
+                        if harness.id == "antigravity" {
+                            harness.installed = true;
+                            harness.configured = true;
+                            harness.enabled = true;
+                            harness.path = Some("/opt/antigravity/bin/agy".to_string());
+                            harness.version = Some("agy_acp_server_20250115_1".to_string());
+                        }
+                    }
                     s.settings.folds.insert("harness.antigravity".to_string());
                     s.settings.integrations = vec![
                         IntegrationSnapshot {

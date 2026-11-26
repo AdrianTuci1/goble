@@ -8,6 +8,7 @@ use goble_ui::elements::{
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
 use goble_ui::platform::window::CursorKind;
+use goble_ui::theme::ColorToken;
 
 /// Splits horizontal space: fixed-width sidebar + main area filling the rest.
 /// The engine's `Flex` cannot yet distribute remaining space, so this custom
@@ -130,12 +131,14 @@ impl Element for SidebarLayout {
         // the conversation list never blinks while a long pane streams.
         self.main.paint(origin + vec2f(self.width, 0.0), ctx, app);
         self.sidebar.paint(origin, ctx, app);
-
-        // No rule is drawn on the sidebar's edge: the resize cursor over the
-        // invisible grab band is the edge's whole affordance (the same
-        // cursor-only treatment as the agent content lane's handles). It is
-        // requested after both children paint, so the sidebar's own content
-        // and the panes' lanes keep their cursor requests except over the band.
+        // 527: exactly one full-height 1px rule on the sidebar boundary.
+        if let (Some(size), Some(renderer)) = (self.size, ctx.renderer.as_mut()) {
+            renderer.fill_rounded_rect(
+                rectf(origin.x + self.width - 0.5, origin.y, 1.0, size.y),
+                app.theme.color(ColorToken::Border),
+                0.0,
+            );
+        }
         self.request_cursor(ctx, app);
     }
 

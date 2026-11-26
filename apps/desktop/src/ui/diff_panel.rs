@@ -373,7 +373,7 @@ pub(crate) fn build_review_tab(
                     controls.diff_list_scroll.clone(),
                     controls.diff_revert_confirm.clone(),
                     controls.diff_commit_focus.clone(),
-                    (panel_width - rail_width - if show_rail { 1.0 } else { 0.0 } - sm * 2.0 - 8.0)
+                    (panel_width - rail_width - if show_rail { 1.0 } else { 0.0 })
                         .max(200.0),
                     rail_width,
                 ))
@@ -1399,7 +1399,7 @@ fn file_header(
     let header = HoverRow::new(
         ConstrainedBox::new(
             Container::new(row)
-                .with_padding(EdgeInsets::new(12.0, 8.0, 12.0, 8.0))
+                .with_padding(EdgeInsets::new(0.0, 8.0, 0.0, 8.0))
                 .finish(),
         )
         .with_width(content_width)
@@ -1496,14 +1496,17 @@ fn file_body(
         // Y: in wrapped mode the add/del band spans the measured diff column;
         // unwrapped diffs keep their natural width so the sideways scroller
         // can move the whole box.
-        let diff = if view.wrap {
-            ConstrainedBox::new(diff).with_width(content_width).finish()
+        // 506: the change bands span the whole list column, even when the
+        // comparison is not wrapped; the width is the column's, not the
+        // longest line's.
+        let diff = ConstrainedBox::new(diff).with_min_width(content_width).finish();
+        if view.wrap {
+            diff
         } else {
             Scrollable::new(diff, Axis::Horizontal)
                 .with_state(horizontal_state(&hscroll, &file.absolute_path))
                 .finish()
-        };
-        diff
+        }
     }
 }
 

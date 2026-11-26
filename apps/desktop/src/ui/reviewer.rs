@@ -1539,7 +1539,7 @@ pub(crate) fn files_changed_rail(
         }
         let row = HoverRow::new(
             Container::new(row)
-                .with_padding(EdgeInsets::new(8.0, 9.0, 8.0, 9.0))
+                .with_padding(EdgeInsets::new(0.0, 9.0, 0.0, 9.0))
                 .finish(),
         )
         .with_selected(sel)
@@ -1563,7 +1563,7 @@ pub(crate) fn files_changed_rail(
                     .with_theme_color(ColorToken::Muted, app)
                     .finish(),
             )
-            .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
+            .with_padding(EdgeInsets::new(0.0, 10.0, 0.0, 10.0))
             .finish(),
         )
         .with_child(Divider::horizontal().finish())

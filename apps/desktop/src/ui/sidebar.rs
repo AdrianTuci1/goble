@@ -22,9 +22,9 @@ use goble_ui::elements::conversation_list_item::{
 };
 use goble_ui::elements::{
     AgentCardUi, AppContext, Axis, ConstrainedBox, Container, ConversationEntry,
-    CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, MainAxisSize,
-    Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput, Spacer, Text,
-    Tooltip, TooltipPosition,
+    CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow,
+    MainAxisSize, Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput,
+    Spacer, Text, Tooltip, TooltipPosition,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -1197,8 +1197,7 @@ fn workspaces_list(
             }
             flat_block =
                 flat_block.with_child(session_row(app, state, actions, entry, "flat", &group_ids));
-            flat_block =
-                flat_block.with_child(Divider::horizontal().with_thickness(1.0).finish());
+            flat_block = flat_block.with_child(Divider::horizontal().with_thickness(1.0).finish());
         }
         blocks.push(flat_block.finish());
     }
@@ -1292,8 +1291,7 @@ fn workspaces_list(
                     "conversations",
                     &group_ids,
                 ));
-                block =
-                    block.with_child(Divider::horizontal().with_thickness(1.0).finish());
+                block = block.with_child(Divider::horizontal().with_thickness(1.0).finish());
             }
             blocks.push(block.finish());
         }

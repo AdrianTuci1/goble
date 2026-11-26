@@ -600,7 +600,7 @@ pub fn build_chrome_row(
         let has_tabs = state
             .side_tabs
             .iter()
-            .any(|kind| *kind != SideTabKind::Overview);
+            .any(|kind| !matches!(*kind, SideTabKind::Overview | SideTabKind::NewTab));
         let tab_strip: Box<dyn Element> = if has_tabs {
             TabStripScroller::new(app, state, actions).finish()
         } else {
@@ -946,7 +946,7 @@ impl TabStripScroller {
         let mut indices = Vec::new();
         let mut active = 0;
         for (index, kind) in state.side_tabs.iter().enumerate() {
-            if *kind == SideTabKind::Overview {
+            if matches!(*kind, SideTabKind::Overview | SideTabKind::NewTab) {
                 continue;
             }
             if index == state.active_side_tab {
@@ -2011,6 +2011,7 @@ pub fn build_side_panel(
         build_overview_content(app, state, actions)
     } else {
         match kind {
+            SideTabKind::Browser => crate::ui::browser::build_browser_tab(app, state),
             SideTabKind::Overview | SideTabKind::NewTab => {
                 build_overview_content(app, state, actions)
             }
@@ -2652,6 +2653,7 @@ fn side_tab_topbar(
         }
         SideTabKind::Overview => ("Overview".to_string(), None),
         SideTabKind::NewTab => ("New tab".to_string(), None),
+        SideTabKind::Browser => ("Browser".to_string(), None),
         SideTabKind::Review => ("Review".to_string(), None),
     };
     row = row.with_child(

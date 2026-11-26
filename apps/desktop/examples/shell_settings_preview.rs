@@ -454,6 +454,12 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::Shortcuts,
             ),
             (
+                "side-browser",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "side-tab-new",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -929,6 +935,13 @@ fn main() -> anyhow::Result<()> {
                 if name == "settings-shortcuts-record" {
                     s.settings.shortcuts_recording = Some("Command palette".to_string());
                     s.settings.shortcuts_recorded = vec!["⌘".to_string(), "K".to_string()];
+                }
+                if name == "side-browser" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Browser];
+                    s.active_side_tab = 0;
+                    *s.browser_url.borrow_mut() =
+                        "https://github.com/AdrianTuci1/goble".to_string();
                 }
                 if name == "side-tab-new" {
                     s.right_sidebar_open = true;

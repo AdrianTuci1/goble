@@ -46,6 +46,7 @@ pub mod vault;
 pub mod worker;
 
 mod actions;
+mod browser;
 mod build;
 mod pane;
 pub mod settings;

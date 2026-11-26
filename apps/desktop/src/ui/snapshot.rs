@@ -256,6 +256,8 @@ pub struct UiSnapshot {
     pub integrations: Vec<goble_core::integration::IntegrationSnapshot>,
     /// Where the composer's API key came from, when it has one.
     pub llm_credential_source: Option<String>,
+    /// 535: the active browser tab's URL (per-conversation state).
+    pub browser_url: std::rc::Rc<std::cell::RefCell<String>>,
     /// The harness's own composer catalog: what a draft can list behind `/` and
     /// `$`, and the models the tray shows.
     pub composer_catalog: goble_harness_types::HarnessCatalog,

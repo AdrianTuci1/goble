@@ -141,6 +141,9 @@ pub enum SideTabKind {
     /// A freshly opened, not-yet-chosen tab. It shows Overview's launcher and
     /// is replaced by the first kind chosen from it.
     NewTab,
+    /// 535: the embedded browser tab (platform webview; honest placeholder
+    /// when the build has no native view).
+    Browser,
 }
 
 impl SideTabKind {
@@ -154,6 +157,7 @@ impl SideTabKind {
             Self::TaskOutput => "Task output",
             Self::Review => "Review",
             Self::NewTab => "New tab",
+            Self::Browser => "Browser",
         }
     }
 
@@ -167,6 +171,7 @@ impl SideTabKind {
             Self::TaskOutput => "terminal-input",
             Self::Review => "file",
             Self::NewTab => "plus",
+            Self::Browser => "globe",
         }
     }
 }
@@ -201,6 +206,7 @@ pub struct SidePanelConversationState {
     pub open: bool,
     pub split_ratio: f32,
     pub maximized: bool,
+    pub browser_url: String,
 }
 
 impl Default for SidePanelConversationState {
@@ -211,6 +217,7 @@ impl Default for SidePanelConversationState {
             open: false,
             split_ratio: 0.5,
             maximized: false,
+            browser_url: String::new(),
         }
     }
 }
@@ -775,6 +782,8 @@ pub struct UiState {
     pub side_tabs: Vec<SideTabKind>,
     /// 512: each conversation's own side-panel state, keyed by conversation id.
     pub side_panel_by_chat: std::collections::HashMap<String, SidePanelConversationState>,
+    /// 535: the live browser URL for the active conversation.
+    pub browser_url: Rc<RefCell<String>>,
     /// The inner Terminals/Background Tasks rail is open in Terminal and Task
     /// Output. AF: the per-tab topbar toggles it.
     pub side_rail_open: bool,

@@ -1,5 +1,18 @@
 use super::*;
 
+/// 537: the browser URL travels with the conversation.
+#[test]
+fn switching_conversations_restores_their_own_browser_url() {
+    let mut state = UiState::mock();
+    state.selected_id = Some("conv-a".to_string());
+    *state.browser_url.borrow_mut() = "https://a.example".to_string();
+    state.bind_active_pane_conversation("conv-b".to_string(), None);
+    assert_eq!(state.browser_url.borrow().as_str(), "");
+    *state.browser_url.borrow_mut() = "https://b.example".to_string();
+    state.bind_active_pane_conversation("conv-a".to_string(), None);
+    assert_eq!(state.browser_url.borrow().as_str(), "https://a.example");
+}
+
 /// 512: each conversation keeps its own side-panel tabs/active tab/open state.
 #[test]
 fn switching_conversations_restores_their_own_side_panel() {

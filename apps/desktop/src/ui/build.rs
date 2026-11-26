@@ -5066,4 +5066,18 @@ mod tests {
             started.elapsed()
         );
     }
+
+    /// 528: a persisted sidebar width is restored before the first frame.
+    #[test]
+    fn the_sidebar_width_is_persisted_and_restored() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        desktop.set_ui_sidebar_width(420.0).expect("persist width");
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        assert_eq!(view.state_rc().borrow().sidebar_width, 420.0);
+    }
 }

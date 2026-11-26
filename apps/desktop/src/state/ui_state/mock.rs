@@ -335,6 +335,7 @@ impl UiState {
             side_panel_maximized: false,
             side_tabs: Vec::new(),
             side_panel_by_chat: std::collections::HashMap::new(),
+            browser_url: std::rc::Rc::new(std::cell::RefCell::new(String::new())),
             side_review: None,
             side_file: None,
             last_opened_file: None,

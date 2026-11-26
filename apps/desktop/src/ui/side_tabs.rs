@@ -57,7 +57,7 @@ pub fn build_tab_strip(
         // Overview is the panel's home surface, not a strip chip: the strip is
         // empty while it is the only surface, and every real tab (Terminal,
         // Side Question, Files, ...) is the one that gets a chip.
-        if *kind == SideTabKind::Overview {
+        if matches!(*kind, SideTabKind::Overview | SideTabKind::NewTab) {
             continue;
         }
         let on_select = actions.on_side_tab.clone();

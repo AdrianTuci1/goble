@@ -373,8 +373,7 @@ pub(crate) fn build_review_tab(
                     controls.diff_list_scroll.clone(),
                     controls.diff_revert_confirm.clone(),
                     controls.diff_commit_focus.clone(),
-                    (panel_width - rail_width - if show_rail { 1.0 } else { 0.0 })
-                        .max(200.0),
+                    (panel_width - rail_width - if show_rail { 1.0 } else { 0.0 }).max(200.0),
                     rail_width,
                 ))
                 .finish(),
@@ -1499,7 +1498,9 @@ fn file_body(
         // 506: the change bands span the whole list column, even when the
         // comparison is not wrapped; the width is the column's, not the
         // longest line's.
-        let diff = ConstrainedBox::new(diff).with_min_width(content_width).finish();
+        let diff = ConstrainedBox::new(diff)
+            .with_min_width(content_width)
+            .finish();
         if view.wrap {
             diff
         } else {

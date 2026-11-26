@@ -31,7 +31,7 @@ impl IntegrationHealth {
         match self {
             Self::Connected => "connected",
             Self::Installed => "installed · sign-in not checked",
-            Self::NotAuthenticated => "not authenticated",
+            Self::NotAuthenticated => "needs auth",
             Self::NotFound => "not found",
             Self::Disabled => "disabled",
         }
@@ -467,5 +467,134 @@ mod tests {
             assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
         }
         assert!(ids.len() >= 20, "the registry carries the full T3 CLI set");
+    }
+}
+
+/// 499: the persisted/re-detected state machine every integration follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntegrationAuthState {
+    NotInstalled,
+    Installed,
+    NeedsAuth,
+    Authenticating,
+    Connected,
+    Error,
+}
+
+impl IntegrationAuthState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NotInstalled => "not installed",
+            Self::Installed => "installed",
+            Self::NeedsAuth => "needs auth",
+            Self::Authenticating => "authenticating",
+            Self::Connected => "connected",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// A tiny deterministic state machine used by Settings' auth action and the
+/// selector's NeedsAuth gate. It never reports Connected unless the adapter
+/// actually reports models after a successful check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthStateMachine {
+    pub state: IntegrationAuthState,
+    pub error: Option<String>,
+}
+
+impl AuthStateMachine {
+    pub fn from_snapshot(snapshot: &IntegrationSnapshot) -> Self {
+        let state = match snapshot.health {
+            IntegrationHealth::NotFound => IntegrationAuthState::NotInstalled,
+            IntegrationHealth::Disabled => IntegrationAuthState::NotInstalled,
+            IntegrationHealth::NotAuthenticated => IntegrationAuthState::NeedsAuth,
+            IntegrationHealth::Installed => IntegrationAuthState::Installed,
+            IntegrationHealth::Connected => IntegrationAuthState::Connected,
+        };
+        Self { state, error: None }
+    }
+
+    pub fn begin_auth(&mut self) -> bool {
+        if self.state == IntegrationAuthState::NotInstalled {
+            return false;
+        }
+        self.state = IntegrationAuthState::Authenticating;
+        self.error = None;
+        true
+    }
+
+    pub fn succeed(&mut self, has_models: bool) {
+        self.state = if has_models {
+            IntegrationAuthState::Connected
+        } else {
+            IntegrationAuthState::Installed
+        };
+        self.error = None;
+    }
+
+    pub fn fail(&mut self, error: impl Into<String>) {
+        self.state = IntegrationAuthState::Error;
+        self.error = Some(error.into());
+    }
+
+    pub fn cancel(&mut self, fallback: IntegrationAuthState) {
+        if self.state == IntegrationAuthState::Authenticating {
+            self.state = fallback;
+        }
+    }
+}
+
+#[cfg(test)]
+mod auth_state_tests {
+    use super::*;
+
+    fn snapshot(health: IntegrationHealth) -> IntegrationSnapshot {
+        IntegrationSnapshot {
+            id: "x".to_string(),
+            name: "X".to_string(),
+            icon: "plug".to_string(),
+            installed: health != IntegrationHealth::NotFound,
+            version: None,
+            path: None,
+            health,
+            auth: String::new(),
+            models: Vec::new(),
+            config_path: None,
+            detail: String::new(),
+        }
+    }
+
+    #[test]
+    fn auth_moves_only_through_the_documented_states() {
+        let mut machine = AuthStateMachine::from_snapshot(&snapshot(IntegrationHealth::Installed));
+        assert_eq!(machine.state, IntegrationAuthState::Installed);
+        assert!(machine.begin_auth());
+        assert_eq!(machine.state, IntegrationAuthState::Authenticating);
+        machine.succeed(true);
+        assert_eq!(machine.state, IntegrationAuthState::Connected);
+
+        let mut missing = AuthStateMachine::from_snapshot(&snapshot(IntegrationHealth::NotFound));
+        assert!(!missing.begin_auth(), "a missing CLI cannot authenticate");
+        assert_eq!(missing.state, IntegrationAuthState::NotInstalled);
+    }
+
+    #[test]
+    fn auth_failure_and_cancel_are_explicit() {
+        let mut machine = AuthStateMachine::from_snapshot(&snapshot(IntegrationHealth::Installed));
+        machine.begin_auth();
+        machine.fail("browser closed");
+        assert_eq!(machine.state, IntegrationAuthState::Error);
+        assert_eq!(machine.error.as_deref(), Some("browser closed"));
+        machine.cancel(IntegrationAuthState::Installed);
+        assert_eq!(machine.state, IntegrationAuthState::Error);
+    }
+
+    #[test]
+    fn success_without_models_never_claims_connected() {
+        let mut machine = AuthStateMachine::from_snapshot(&snapshot(IntegrationHealth::Installed));
+        machine.begin_auth();
+        machine.succeed(false);
+        assert_eq!(machine.state, IntegrationAuthState::Installed);
     }
 }

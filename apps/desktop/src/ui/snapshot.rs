@@ -254,6 +254,8 @@ pub struct UiSnapshot {
     pub model_groups: Vec<goble_desktop_service::ModelGroup>,
     /// Detected integration snapshots for the selector and Settings.
     pub integrations: Vec<goble_core::integration::IntegrationSnapshot>,
+    /// Where the composer's API key came from, when it has one.
+    pub llm_credential_source: Option<String>,
     /// The harness's own composer catalog: what a draft can list behind `/` and
     /// `$`, and the models the tray shows.
     pub composer_catalog: goble_harness_types::HarnessCatalog,

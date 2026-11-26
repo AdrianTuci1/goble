@@ -351,6 +351,8 @@ pub struct UiState {
     pub settings_llm_provider: String,
     pub settings_llm_model: String,
     pub settings_llm_api_key: String,
+    /// Human label for where that key came from (environment/config/store).
+    pub llm_credential_source: Option<String>,
     pub settings_llm_base_url: String,
     pub settings_llm_temperature: String,
     pub settings_workers: Vec<(String, String, String, bool)>,

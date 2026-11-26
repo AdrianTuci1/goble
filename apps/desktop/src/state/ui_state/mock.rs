@@ -157,6 +157,7 @@ impl UiState {
             settings_llm_provider: "openai".to_string(),
             settings_llm_model: "gpt-4o".to_string(),
             settings_llm_api_key: String::new(),
+            llm_credential_source: None,
             settings_llm_base_url: String::new(),
             settings_llm_temperature: "0.7".to_string(),
             settings_workers: Vec::new(),

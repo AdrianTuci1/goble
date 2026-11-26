@@ -656,6 +656,7 @@ pub fn build_agent_chat(
                 controls.model_tray_open.clone(),
             )
             .with_current(controls.model.clone(), controls.thinking.clone())
+            .with_credential_source(state.llm_credential_source.clone())
             .with_on_select_model(move |row| {
                 if let Some(id) = tray_model_ids.get(row) {
                     if id.starts_with("__configure__:") {

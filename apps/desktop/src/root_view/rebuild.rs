@@ -509,6 +509,7 @@ impl RootView {
                 models: s.models.clone(),
                 model_groups: s.model_groups.clone(),
                 integrations: s.integrations.clone(),
+                llm_credential_source: s.llm_credential_source.clone(),
                 composer_catalog: s.composer_catalog.clone(),
                 mention_paths,
                 selected_model: s.selected_model.clone(),

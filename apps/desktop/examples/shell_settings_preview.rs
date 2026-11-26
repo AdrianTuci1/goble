@@ -849,6 +849,7 @@ fn main() -> anyhow::Result<()> {
                             detail: "`agy` is connected and reports 2 model(s).".to_string(),
                         }];
                     }
+                    s.llm_credential_source = Some("environment".to_string());
                     let pane = s.active_pane_id;
                     s.selected_model = "claude-sonnet-4".to_string();
                     let controls = s.pane_controls_mut(pane);

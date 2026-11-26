@@ -6,6 +6,7 @@ pub mod audit;
 pub mod binaries;
 pub mod cluster_key;
 pub mod config;
+pub mod credential;
 pub mod crypto;
 pub mod deployment;
 pub mod device_transfer;

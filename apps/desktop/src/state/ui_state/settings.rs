@@ -22,9 +22,7 @@ impl UiState {
         // the form/snapshot must read that same setting instead of starting
         // from an empty key (which made every send say "No API key
         // configured" even though the config had one).
-        if self.settings_llm_model.trim().is_empty()
-            || self.settings_llm_model == "gpt-4o"
-        {
+        if self.settings_llm_model.trim().is_empty() || self.settings_llm_model == "gpt-4o" {
             if let Some(model) = desktop.config_default_model() {
                 self.settings_llm_model = model;
             }
@@ -43,6 +41,29 @@ impl UiState {
                 }
             }
         }
+        // 485/492: one resolver sees the env source too; a key present there
+        // makes can_run_agent_turn true even when config/store are empty.
+        if self.settings_llm_api_key.trim().is_empty() {
+            let env = goble_core::credential::provider_env_var(&self.settings_llm_provider)
+                .and_then(|name| std::env::var(name).ok());
+            let resolved =
+                goble_core::credential::resolve(&goble_core::credential::CredentialSources {
+                    env,
+                    ..Default::default()
+                });
+            if let Some(key) = resolved.value {
+                self.settings_llm_api_key = key;
+            }
+        }
+        let env_present = goble_core::credential::provider_env_var(&self.settings_llm_provider)
+            .is_some_and(|name| std::env::var_os(name).is_some());
+        self.llm_credential_source = if env_present {
+            Some("environment".to_string())
+        } else if !self.settings_llm_api_key.trim().is_empty() {
+            Some("config/store".to_string())
+        } else {
+            None
+        };
         self.models = desktop.available_models(&self.settings_llm_provider);
         if self.selected_model.trim().is_empty() {
             self.selected_model = desktop.default_model(&self.settings_llm_provider);

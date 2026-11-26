@@ -528,6 +528,7 @@ pub struct ModelTray {
     /// them.
     current_model: String,
     current_level: String,
+    credential_source: Option<String>,
     on_select_model: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_select_level: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     panel: Option<Panel>,
@@ -547,6 +548,7 @@ impl ModelTray {
         open: Rc<RefCell<bool>>,
         current_model: impl Into<String>,
         current_level: impl Into<String>,
+        credential_source: Option<String>,
         on_select_model: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
         on_select_level: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
         bounds: Option<ModelTrayBounds>,
@@ -558,6 +560,7 @@ impl ModelTray {
             open,
             current_model: current_model.into(),
             current_level: current_level.into(),
+            credential_source,
             on_select_model,
             on_select_level,
             panel: None,
@@ -1069,6 +1072,16 @@ impl Element for ModelTray {
             230.0,
             MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
         );
+        if let Some(source) = self.credential_source.as_deref() {
+            renderer.draw_text(
+                Vector2F::new(card.min_x() + 506.0, card.min_y() + 50.0),
+                &format!("Key · {source}"),
+                GROUP_FONT_SIZE,
+                app.theme.color(ColorToken::Muted),
+                230.0,
+                GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
+            );
+        }
         for x in [card.min_x() + 214.0, card.min_x() + 496.0] {
             renderer.fill_rounded_rect(
                 rectf(x, card.min_y() + 6.0, 1.0, card.height() - 12.0),
@@ -1428,6 +1441,7 @@ pub struct ComposerModelTray {
     /// opens on them and marks them in the lists.
     pub model: String,
     pub level: String,
+    pub credential_source: Option<String>,
     /// A taken model: its flat index in the list the card drew.
     pub on_select_model: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     /// A taken thinking level, named by the id its harness reports.
@@ -1450,6 +1464,7 @@ impl ComposerModelTray {
             open,
             model: String::new(),
             level: String::new(),
+            credential_source: None,
             on_select_model: None,
             on_select_level: None,
             bounds: None,
@@ -1459,6 +1474,12 @@ impl ComposerModelTray {
     pub fn with_current(mut self, model: impl Into<String>, level: impl Into<String>) -> Self {
         self.model = model.into();
         self.level = level.into();
+        self
+    }
+
+    /// 492: show where the key came from in the detail column.
+    pub fn with_credential_source(mut self, source: Option<String>) -> Self {
+        self.credential_source = source;
         self
     }
 
@@ -1490,6 +1511,7 @@ impl ComposerModelTray {
             self.open.clone(),
             self.model.clone(),
             self.level.clone(),
+            self.credential_source.clone(),
             self.on_select_model.clone(),
             self.on_select_level.clone(),
             self.bounds.clone(),
@@ -1918,6 +1940,34 @@ mod tests {
             1,
             "the keyboard's cell is the highlighted one: {:?}",
             drawn_texts(&commands)
+        );
+    }
+
+    /// 477: the models column lists every model of the selected integration.
+    #[test]
+    fn the_models_column_lists_each_model_name() {
+        let app = AppContext::default();
+        let harnesses = vec![
+            ModelTrayHarness::new("anthropic", "Anthropic").with_models(vec![
+                ModelTrayModel::new("opus", "Claude Opus 4"),
+                ModelTrayModel::new("sonnet", "Claude Sonnet 4"),
+            ]),
+        ];
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        state.borrow_mut().seeded = true;
+        state.borrow_mut().pane = ModelTrayPane::Model;
+        let tray = ComposerModelTray::new(harnesses, state, Rc::new(RefCell::new(true)))
+            .with_current("sonnet", "high");
+        let mut menu = tray.popup(Box::new(crate::elements::Empty::new()));
+        let commands = painted(&mut menu, &app, vec2f(100.0, 300.0));
+        let texts = drawn_texts(&commands);
+        assert!(
+            texts.iter().any(|text| text == "Claude Opus 4"),
+            "{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|text| text == "Claude Sonnet 4"),
+            "{texts:?}"
         );
     }
 

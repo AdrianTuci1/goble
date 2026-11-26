@@ -2374,7 +2374,7 @@ fn build_overview_content(
         ("file", "Open File", 1, None),
         ("terminal-square", "Terminal", 2, None),
         ("environment-cloud", "Browser", 3, None),
-        ("message-plus-square", "Side Question", 4, None),
+        ("side-question", "Side Question", 4, None),
         ("plug", "Plugins", 5, Some("chevron-right")),
     ] {
         let disabled = matches!(action, 3);
@@ -2462,18 +2462,25 @@ fn build_overview_content(
                 .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
                 .finish(),
         );
-        for (index, task) in tasks.iter().take(4).enumerate() {
+        for task in tasks.iter().take(4) {
+            let text = task.description.to_ascii_lowercase();
+            // 615: the running task uses the terminal-2 glyph with a blinking
+            // cursor bar; a failed command uses circle-x; an elapsed/timed task
+            // shows the timer glyph.
+            let (icon, trailing) = if text.contains("fail") || text.contains("error") {
+                ("circle-x", None)
+            } else if text.contains("elapsed") || text.contains("timed") {
+                ("timer", Some("timer"))
+            } else {
+                ("terminal-2", None)
+            };
             sections = sections.with_child(
                 HoverRow::new(panel_row(
                     app,
-                    if index == 0 {
-                        "circle-x"
-                    } else {
-                        "terminal-input"
-                    },
+                    icon,
                     &task.description,
                     false,
-                    None,
+                    trailing,
                 ))
                 .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
                 .with_corner_radius(8.0)

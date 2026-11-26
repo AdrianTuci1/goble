@@ -269,6 +269,10 @@ const ICON_FILES: &[(&str, &[u8])] = &[
     icon_bytes!("terminal-square", "terminal-square.svg"),
     icon_bytes!("review-file", "review-file.svg"),
     icon_bytes!("overview", "overview.svg"),
+    icon_bytes!("side-question", "side-question.svg"),
+    icon_bytes!("terminal-2", "terminal-2.svg"),
+    icon_bytes!("circle-x", "circle-x.svg"),
+    icon_bytes!("timer", "timer.svg"),
 ];
 
 /// Whether `name` is a canonical icon file registered in the atlas.

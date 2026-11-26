@@ -1,5 +1,29 @@
 use super::*;
 
+/// 512: each conversation keeps its own side-panel tabs/active tab/open state.
+#[test]
+fn switching_conversations_restores_their_own_side_panel() {
+    let mut state = UiState::mock();
+    state.selected_id = Some("conv-a".to_string());
+    state.right_sidebar_open = true;
+    state.side_tabs = vec![crate::state::SideTabKind::Review];
+    state.active_side_tab = 0;
+
+    state.bind_active_pane_conversation("conv-b".to_string(), None);
+    assert!(
+        !state.right_sidebar_open,
+        "a new conversation starts closed"
+    );
+    assert_eq!(state.side_tabs, vec![crate::state::SideTabKind::Overview]);
+    state.right_sidebar_open = true;
+    state.side_tabs = vec![crate::state::SideTabKind::Files];
+    state.active_side_tab = 0;
+
+    state.bind_active_pane_conversation("conv-a".to_string(), None);
+    assert!(state.right_sidebar_open);
+    assert_eq!(state.side_tabs, vec![crate::state::SideTabKind::Review]);
+}
+
 #[test]
 fn unbound_active_pane_falls_back_to_selected_conversation() {
     let mut state = UiState::mock();

@@ -1484,14 +1484,9 @@ impl ChatComposer {
                     .with_font_size(CONTROL_TEXT_SIZE)
                     .finish(),
             );
-        if let Some(effort) = effort {
-            content = content.with_child(
-                Text::new(effort)
-                    .with_color(caption_color(app))
-                    .with_font_size(CONTROL_TEXT_SIZE)
-                    .finish(),
-            );
-        }
+        // 517: the composer chip names only the model; effort is chosen in
+        // the popover's detail column.
+        let _ = effort;
         // 303: in the composer the model is a plain text selector, with no
         // pill, outline, chevron or hover fill.
         let content = Padding::new(content.finish(), EdgeInsets::new(4.0, 0.0, 4.0, 0.0)).finish();

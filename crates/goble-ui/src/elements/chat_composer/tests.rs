@@ -3281,12 +3281,16 @@ fn an_unconfigured_integration_draws_its_honest_status_row() {
         .with_model_tray(tray);
     let (_, commands) = paint_composer_in(&app, &mut composer, vec2f(900.0, 600.0));
     let texts = drawn_texts(&commands);
-    for text in ["Anthropic", "Not configured · Configure", "OpenAI", "GPT-5"] {
+    for text in ["Not configured · Configure", "GPT-5"] {
         assert!(
             texts.iter().any(|drawn| drawn == text),
             "{text:?}: {texts:?}"
         );
     }
+    // 514: the integration column is icon-only, so provider names are tooltips.
+    assert!(!texts
+        .iter()
+        .any(|text| text == "Anthropic" || text == "OpenAI"));
 }
 
 /// The chip is DSH's model seat (`ModelSelect.module.css` `.trigger`): the
@@ -3334,10 +3338,9 @@ fn the_model_chip_names_the_catalogue_model_and_captions_the_effort() {
         )),
         "453: the chip shows only the model name, no provider prefix"
     );
-    let effort = color_of("High").expect("the seat captions the effort");
     assert!(
-        effort.r < name.r && effort.g < name.g && effort.b < name.b,
-        "the effort reads dimmer than the model name: {effort:?} against {name:?}"
+        color_of("High").is_none(),
+        "517: the composer chip no longer shows effort"
     );
     assert!(
         !drawn_texts(&commands)
@@ -3417,10 +3420,6 @@ fn a_long_model_chip_value_ellipsizes_inside_dshs_cap() {
         !texts.iter().any(|text| text == long),
         "the full name cannot fit the chip"
     );
-    assert!(
-        !texts.iter().any(|text| text == "High"),
-        "the effort gives its space up before the name: {texts:?}"
-    );
 
     // A name that fits keeps every pixel; the effort is the box that shrinks.
     let mut composer = chip(
@@ -3436,10 +3435,8 @@ fn a_long_model_chip_value_ellipsizes_inside_dshs_cap() {
         "the model name keeps its whole run: {texts:?}"
     );
     assert!(
-        texts
-            .iter()
-            .any(|text| text.starts_with("Extraordin") && text.ends_with('…')),
-        "the effort absorbs the deficit and ellipsizes: {texts:?}"
+        !texts.iter().any(|text| text == "High"),
+        "517: no effort is appended to the chip"
     );
 }
 

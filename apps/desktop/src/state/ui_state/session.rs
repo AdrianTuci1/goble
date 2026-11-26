@@ -510,6 +510,39 @@ impl UiState {
     /// runtime is cleared (there is no per-conversation data to reload), which
     /// also stops a freshly created conversation from inheriting the previous
     /// one's messages.
+    /// Save the live side panel under one conversation.
+    fn save_side_panel(&mut self, conversation_id: &str) {
+        self.side_panel_by_chat.insert(
+            conversation_id.to_string(),
+            super::SidePanelConversationState {
+                tabs: self.side_tabs.clone(),
+                active: self.active_side_tab,
+                open: self.right_sidebar_open,
+                split_ratio: self.side_split_ratio,
+                maximized: self.side_panel_maximized,
+            },
+        );
+    }
+
+    /// Load a conversation's side panel, defaulting a new conversation to the
+    /// closed Overview surface.
+    fn restore_side_panel(&mut self, conversation_id: &str) {
+        let state = self
+            .side_panel_by_chat
+            .get(conversation_id)
+            .cloned()
+            .unwrap_or_default();
+        self.side_tabs = if state.tabs.is_empty() {
+            vec![SideTabKind::Overview]
+        } else {
+            state.tabs
+        };
+        self.active_side_tab = state.active.min(self.side_tabs.len().saturating_sub(1));
+        self.right_sidebar_open = state.open;
+        self.side_split_ratio = state.split_ratio;
+        self.side_panel_maximized = state.maximized;
+    }
+
     pub fn bind_active_pane_conversation(
         &mut self,
         conversation_id: String,
@@ -522,6 +555,12 @@ impl UiState {
         // back: leaving the agent view turns the pane's harness off too, so the
         // surface it draws is the one `pane_view` reports. The child's card
         // stays in the block list and its messages stay in the store.
+        // 512: save the side panel with the conversation being left.
+        if let Some(previous) = self.selected_id.clone() {
+            if previous != conversation_id {
+                self.save_side_panel(&previous);
+            }
+        }
         if self.sub_agent_views.remove(&self.active_pane_id).is_some() {
             self.leave_agent_view(self.active_pane_id);
         }
@@ -531,7 +570,8 @@ impl UiState {
             session.conversation_id = conversation_id.clone();
         }
         self.clear_pane_transcript_selection(pane_id);
-        self.selected_id = Some(conversation_id);
+        self.selected_id = Some(conversation_id.clone());
+        self.restore_side_panel(&conversation_id);
         if let Some(desktop) = desktop {
             self.refresh_messages(desktop);
         } else {

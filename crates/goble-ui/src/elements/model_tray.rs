@@ -218,7 +218,7 @@ fn model_by_id<'a>(harnesses: &'a [ModelTrayHarness], id: &str) -> Option<&'a Mo
 
 /// The card's selection, app-owned: the element is rebuilt every frame, so the
 /// pane the menu is on and the rows the arrows moved to have to live outside it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelTrayState {
     pub pane: ModelTrayPane,
     /// The root pane's cell the keyboard is on: 0 = Model, 1 = Effort.
@@ -233,6 +233,10 @@ pub struct ModelTrayState {
     pub row: usize,
     /// The provider/integration column's selected row.
     pub provider: usize,
+    /// Independent per-column scroll offsets.
+    pub provider_offset: f32,
+    pub model_offset: f32,
+    pub effort_offset: f32,
     /// Filter text typed into the model column's search field.
     pub search: String,
     /// The row of the current model's thinking levels.
@@ -532,6 +536,7 @@ pub struct ModelTray {
     on_select_model: Option<Rc<RefCell<dyn FnMut(usize) + 'static>>>,
     on_select_level: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     panel: Option<Panel>,
+    last_pointer: Option<Vector2F>,
     size: Option<Vector2F>,
     origin: Option<Point>,
     /// The surface the card is placed inside, when the host publishes one; a
@@ -564,6 +569,7 @@ impl ModelTray {
             on_select_model,
             on_select_level,
             panel: None,
+            last_pointer: None,
             size: None,
             origin: None,
             bounds,
@@ -716,9 +722,13 @@ impl ModelTray {
         let mut rows = Vec::new();
         // Column 1: integrations/providers.
         for index in 0..self.harnesses.len() {
+            let y = 32.0 + index as f32 * 36.0 - state.provider_offset;
+            if y + 34.0 < 32.0 || y > height - 8.0 {
+                continue;
+            }
             rows.push(PanelRow {
                 kind: PanelRowKind::Provider(index),
-                rect: rectf(4.0, 32.0 + index as f32 * 36.0, 204.0, 34.0),
+                rect: rectf(4.0, y, 204.0, 34.0),
             });
         }
         // Column 2: the provider's searchable model list.
@@ -727,16 +737,24 @@ impl ModelTray {
             rect: rectf(216.0, 32.0, 272.0, 30.0),
         });
         for (row, (flat_index, _)) in models.iter().enumerate() {
+            let y = 68.0 + row as f32 * 34.0 - state.model_offset;
+            if y + 32.0 < 68.0 || y > height - 8.0 {
+                continue;
+            }
             rows.push(PanelRow {
                 kind: PanelRowKind::Model(*flat_index),
-                rect: rectf(216.0, 68.0 + row as f32 * 34.0, 272.0, 32.0),
+                rect: rectf(216.0, y, 272.0, 32.0),
             });
         }
         // Column 3: the selected model's detail/effort picker.
         for index in 0..levels.len() {
+            let y = 68.0 + index as f32 * 34.0 - state.effort_offset;
+            if y + 32.0 < 68.0 || y > height - 8.0 {
+                continue;
+            }
             rows.push(PanelRow {
                 kind: PanelRowKind::Level(index),
-                rect: rectf(500.0, 68.0 + index as f32 * 34.0, 248.0, 32.0),
+                rect: rectf(500.0, y, 248.0, 32.0),
             });
         }
         let origin = vec2f(
@@ -1201,33 +1219,45 @@ impl Element for ModelTray {
                         "deepseek" => "harness-deepseek",
                         _ => "plug",
                     };
+                    let glyph_x = bounds.min_x() + (bounds.width() - 16.0) / 2.0;
                     renderer.draw_icon(
-                        Vector2F::new(
-                            bounds.min_x() + ROW_PAD_X,
-                            bounds.min_y() + (ROW_HEIGHT - 14.0) / 2.0,
-                        ),
+                        Vector2F::new(glyph_x, bounds.min_y() + (ROW_HEIGHT - 16.0) / 2.0),
                         icon_atlas_name(icon),
-                        14.0,
-                        app.theme.color(ColorToken::Muted),
+                        16.0,
+                        app.theme.color(if state.provider == index {
+                            ColorToken::Text
+                        } else {
+                            ColorToken::Muted
+                        }),
                     );
-                    let label_max = (bounds.width() - ROW_PAD_X * 2.0 - 22.0).max(0.0);
-                    let label = truncate_with_ellipsis(
-                        &harness.label,
-                        LABEL_FONT_SIZE,
-                        MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
-                        label_max,
-                    );
-                    renderer.draw_text(
-                        Vector2F::new(
-                            bounds.min_x() + ROW_PAD_X + 22.0,
-                            Self::line_y(bounds, MODEL_LINE_HEIGHT),
-                        ),
-                        label,
-                        LABEL_FONT_SIZE,
-                        app.theme.color(ColorToken::Text),
-                        label_max,
-                        MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
-                    );
+                    // 514: the name is a tooltip, not a text column.
+                    let hovering = ctx.cursor_inside
+                        && ctx.cursor_position.x >= bounds.min_x()
+                        && ctx.cursor_position.x <= bounds.max_x()
+                        && ctx.cursor_position.y >= bounds.min_y()
+                        && ctx.cursor_position.y <= bounds.max_y();
+                    if hovering {
+                        let label = truncate_with_ellipsis(
+                            &harness.label,
+                            GROUP_FONT_SIZE,
+                            GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
+                            180.0,
+                        );
+                        let tip = rectf(bounds.max_x() + 6.0, bounds.min_y() + 4.0, 180.0, 22.0);
+                        renderer.fill_rounded_rect(
+                            tip,
+                            app.theme.color(ColorToken::SurfaceRaised),
+                            6.0,
+                        );
+                        renderer.draw_text(
+                            Vector2F::new(tip.min_x() + 7.0, tip.min_y() + 4.0),
+                            label,
+                            GROUP_FONT_SIZE,
+                            app.theme.color(ColorToken::Text),
+                            166.0,
+                            GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
+                        );
+                    }
                 }
                 PanelRowKind::Search => {
                     renderer.draw_text(
@@ -1380,8 +1410,33 @@ impl Element for ModelTray {
             DispatchedEvent::MouseMove { position } => *position,
             DispatchedEvent::MouseDown { position, .. }
             | DispatchedEvent::MouseUp { position, .. } => *position,
+            DispatchedEvent::Scroll { delta, .. } => {
+                if *self.open.borrow() {
+                    if let Some(position) = self.last_pointer {
+                        if let Some(panel) = self.panel_bounds() {
+                            if !contains(panel, position) {
+                                return self.trigger.dispatch_event(event, ctx, app);
+                            }
+                            let mut state = self.state.borrow_mut();
+                            let local_x = position.x - panel.min_x();
+                            if local_x < 214.0 {
+                                state.provider_offset = (state.provider_offset - delta.y).max(0.0);
+                            } else if local_x < 496.0 {
+                                state.model_offset = (state.model_offset - delta.y).max(0.0);
+                            } else {
+                                state.effort_offset = (state.effort_offset - delta.y).max(0.0);
+                            }
+                            return true;
+                        }
+                    }
+                }
+                return self.trigger.dispatch_event(event, ctx, app);
+            }
             _ => return self.trigger.dispatch_event(event, ctx, app),
         };
+        if matches!(event, DispatchedEvent::MouseMove { .. }) {
+            self.last_pointer = Some(position);
+        }
         if !*self.open.borrow() {
             return self.trigger.dispatch_event(event, ctx, app);
         }
@@ -1823,6 +1878,9 @@ mod tests {
             cell_active: false,
             row: 0,
             provider: 0,
+            provider_offset: 0.0,
+            model_offset: 0.0,
+            effort_offset: 0.0,
             search: String::new(),
             level: 0,
             seeded: true,
@@ -1870,7 +1928,9 @@ mod tests {
             open,
         )
         .with_current("long", "high");
-        let mut menu = tray.popup(Box::new(crate::elements::Empty::new()));
+        let mut menu = tray.popup(Box::new(
+            crate::elements::Empty::new().with_size(vec2f(100.0, 28.0)),
+        ));
         let commands = painted(&mut menu, &app, vec2f(100.0, 300.0));
         let texts = drawn_texts(&commands);
         assert!(
@@ -1941,6 +2001,37 @@ mod tests {
             "the keyboard's cell is the highlighted one: {:?}",
             drawn_texts(&commands)
         );
+    }
+
+    /// 516: each column scrolls independently under the wheel.
+    #[test]
+    fn the_three_columns_scroll_independently() {
+        let app = AppContext::default();
+        let harnesses: Vec<ModelTrayHarness> = (0..20)
+            .map(|index| {
+                ModelTrayHarness::new(format!("h{index}"), format!("H {index}")).with_models(vec![
+                    ModelTrayModel::new(format!("m{index}"), format!("Model {index}")),
+                ])
+            })
+            .collect();
+        let state = Rc::new(RefCell::new(ModelTrayState::default()));
+        state.borrow_mut().seeded = true;
+        state.borrow_mut().pane = ModelTrayPane::Root;
+        let tray = ComposerModelTray::new(harnesses, state.clone(), Rc::new(RefCell::new(true)))
+            .with_current("m0", "");
+        let mut menu = tray.popup(Box::new(crate::elements::Empty::new()));
+        let commands = painted(&mut menu, &app, vec2f(100.0, 300.0));
+        let _ = commands;
+        let panel = menu.panel_bounds().expect("the card is drawn");
+        let pointer = vec2f(panel.min_x() + 80.0, panel.min_y() + 120.0);
+        let mut ctx = EventContext::default();
+        let _ = menu.dispatch_event(
+            &DispatchedEvent::MouseMove { position: pointer },
+            &mut ctx,
+            &app,
+        );
+        assert!(menu.dispatch_event(&DispatchedEvent::scroll(vec2f(0.0, -80.0)), &mut ctx, &app,));
+        assert!(state.borrow().provider_offset > 0.0);
     }
 
     /// 477: the models column lists every model of the selected integration.

@@ -191,7 +191,30 @@ pub enum SideTabAction {
     Reorder(usize, usize),
 }
 
-#[derive(Clone)]
+/// 512: the side panel's per-conversation state. Tabs, the active tab, the
+/// open/closed flag and the width/maximized flags travel with the conversation
+/// rather than the window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SidePanelConversationState {
+    pub tabs: Vec<SideTabKind>,
+    pub active: usize,
+    pub open: bool,
+    pub split_ratio: f32,
+    pub maximized: bool,
+}
+
+impl Default for SidePanelConversationState {
+    fn default() -> Self {
+        Self {
+            tabs: vec![SideTabKind::Overview],
+            active: 0,
+            open: false,
+            split_ratio: 0.5,
+            maximized: false,
+        }
+    }
+}
+
 pub struct UiState {
     pub current_tab: AppTab,
     pub conversations: Vec<ConversationEntry>,
@@ -750,6 +773,8 @@ pub struct UiState {
     /// surfaces. The app machine keeps it non-empty (see
     /// [`UiState::ensure_side_tabs`]).
     pub side_tabs: Vec<SideTabKind>,
+    /// 512: each conversation's own side-panel state, keyed by conversation id.
+    pub side_panel_by_chat: std::collections::HashMap<String, SidePanelConversationState>,
     /// The inner Terminals/Background Tasks rail is open in Terminal and Task
     /// Output. AF: the per-tab topbar toggles it.
     pub side_rail_open: bool,

@@ -383,6 +383,11 @@ pub fn build_agent_chat(
     // unconfigured/not-installed states.
     let mut groups = state.model_groups.clone();
     for integration in &state.integrations {
+        // 515: only adapters that are actually installed/available (or that
+        // report models) appear; a missing CLI is Settings-only.
+        if !integration.installed && integration.models.is_empty() {
+            continue;
+        }
         let models: Vec<goble_harness_types::HarnessModel> = integration
             .models
             .iter()

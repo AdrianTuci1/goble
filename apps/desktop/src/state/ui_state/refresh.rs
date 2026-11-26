@@ -423,6 +423,7 @@ impl UiState {
             chrome_more_open: Rc::new(RefCell::new(false)),
             side_panel_maximized: false,
             side_tabs: Vec::new(),
+            side_panel_by_chat: std::collections::HashMap::new(),
             side_review: None,
             side_file: None,
             last_opened_file: None,

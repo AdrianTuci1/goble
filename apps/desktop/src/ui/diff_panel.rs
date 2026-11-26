@@ -1351,13 +1351,6 @@ fn file_header(
                 .finish(),
         )
         .with_child(
-            Text::new(reviewer::status_of(file).letter())
-                .with_font_family(FontFamily::Mono)
-                .with_font_size(10.0)
-                .with_theme_color(reviewer::status_of(file).color(), app)
-                .finish(),
-        )
-        .with_child(
             Text::new(name)
                 .with_font_size(13.0)
                 .with_weight(FontWeight::SemiBold)

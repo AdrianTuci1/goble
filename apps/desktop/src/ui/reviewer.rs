@@ -1568,6 +1568,7 @@ pub(crate) fn files_changed_rail(
         )
         .with_child(Divider::horizontal().finish())
         .with_child(Expanded::new(Scrollable::new(list.finish(), Axis::Vertical).finish()).finish())
+        .with_child(Divider::horizontal().finish())
         .finish();
     ConstrainedBox::new(rail).with_width(width).finish()
 }

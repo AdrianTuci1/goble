@@ -236,26 +236,35 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
     // L: the rail is one full-height secondary column (same grey tone top to
     // bottom), with a smaller muted heading, no search field, no row rules, and
     // no user/avatar footer.
+    // 567: the "Settings" title sits on the sheet surface; the grey rail starts
+    // directly below it and runs to the sheet's bottom edge.
+    let title = Container::new(
+        Text::new("Settings")
+            .with_font_size(12.0)
+            .with_weight(FontWeight::Medium)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(14.0, 14.0, 12.0, 6.0))
+    .finish();
+    let grey = Container::new(
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(12.0)
+            .with_child(ConstrainedBox::new(nav).with_height(520.0).finish())
+            .with_child(Spacer::new().finish())
+            .with_child(feedback)
+            .finish(),
+    )
+    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+    .finish();
     let column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(12.0)
-        .with_child(
-            Container::new(
-                Text::new("Settings")
-                    .with_font_size(12.0)
-                    .with_weight(FontWeight::Medium)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(14.0, 14.0, 12.0, 2.0))
-            .finish(),
-        )
-        .with_child(ConstrainedBox::new(nav).with_height(520.0).finish())
-        .with_child(Spacer::new().finish())
-        .with_child(feedback)
+        .with_child(title)
+        .with_child(Expanded::new(grey).finish())
         .finish();
-    // 334: the sheet itself is the rail's only full-height background.
     ConstrainedBox::new(column).with_width(196.0).finish()
 }
 

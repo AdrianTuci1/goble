@@ -2118,27 +2118,28 @@ pub fn build_side_panel(
     };
     // AF: every tab except Review (which already owns its row) gets its own
     // 1 pt-separated topbar inside the panel content.
-    let content: Box<dyn Element> = if kind == SideTabKind::Review || start_surface {
-        content
-    } else {
-        let topbar = side_tab_topbar(app, state, actions, kind);
-        let inner_pad = if kind == SideTabKind::Terminal {
-            EdgeInsets::new(0.0, 0.0, 0.0, 0.0)
+    let content: Box<dyn Element> =
+        if kind == SideTabKind::Review || kind == SideTabKind::Browser || start_surface {
+            content
         } else {
-            EdgeInsets::uniform(
-                crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET + 8.0,
-            )
+            let topbar = side_tab_topbar(app, state, actions, kind);
+            let inner_pad = if kind == SideTabKind::Terminal {
+                EdgeInsets::new(0.0, 0.0, 0.0, 0.0)
+            } else {
+                EdgeInsets::uniform(
+                    crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET + 8.0,
+                )
+            };
+            let mut column = Flex::column()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(topbar)
+                .with_child(Divider::horizontal().finish());
+            column = column.with_child(
+                Expanded::new(Container::new(content).with_padding(inner_pad).finish()).finish(),
+            );
+            column.finish()
         };
-        let mut column = Flex::column()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_child(topbar)
-            .with_child(Divider::horizontal().finish());
-        column = column.with_child(
-            Expanded::new(Container::new(content).with_padding(inner_pad).finish()).finish(),
-        );
-        column.finish()
-    };
     // A horizontal swipe on the content steps the strip; vertical travel goes
     // to the mounted surface unchanged.
     // Tab switching is a mouse gesture: the content no longer eats horizontal

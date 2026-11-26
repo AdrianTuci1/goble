@@ -396,9 +396,14 @@ pub fn handle_tray_key(
         "Tab" if modifiers.shift => back(&mut state),
         "Enter" | "Tab" => match state.pane {
             ModelTrayPane::Root => {
-                // 477: the first column is the integration list.
-                state.pane = ModelTrayPane::Model;
-                ModelTrayKey::DrillModel
+                let cell = if state.cell_active { state.cell } else { 0 };
+                if cell == 1 && levels > 0 {
+                    state.pane = ModelTrayPane::Effort;
+                    ModelTrayKey::DrillEffort
+                } else {
+                    state.pane = ModelTrayPane::Model;
+                    ModelTrayKey::DrillModel
+                }
             }
             ModelTrayPane::Model => ModelTrayKey::AcceptModel(state.row),
             ModelTrayPane::Effort => ModelTrayKey::AcceptLevel(state.level_at(harnesses)),
@@ -407,15 +412,11 @@ pub fn handle_tray_key(
             let delta = if key == "ArrowDown" { 1 } else { -1 };
             match state.pane {
                 ModelTrayPane::Root => {
-                    let providers = harnesses.len();
-                    if providers > 0 {
-                        state.provider = wrap(state.provider.min(providers - 1), delta, providers);
-                        let first = flat_models(harnesses)
-                            .iter()
-                            .position(|(group, _)| *group == state.provider)
-                            .unwrap_or(0);
-                        state.row = first;
-                        state.level = 0;
+                    let cells = if levels == 0 { 1 } else { 2 };
+                    if state.cell_active {
+                        state.cell = wrap(state.cell.min(cells - 1), delta, cells);
+                    } else {
+                        state.cell = if delta > 0 { 0 } else { cells - 1 };
                     }
                     state.cell_active = true;
                 }
@@ -706,81 +707,68 @@ impl ModelTray {
     /// casing and its list instead of running off the surface's edge.
     fn build_panel(&self, available: Option<f32>) -> Panel {
         let state = self.state.borrow().clone();
-        // 529: the first level is the integration list; opening one expands the
-        // nested models + detail panes.
-        let first_level = state.pane == ModelTrayPane::Root;
-        let width = if first_level {
-            280.0_f32.min(available.unwrap_or(280.0)).max(240.0)
-        } else {
-            760.0_f32.min(available.unwrap_or(760.0)).max(420.0)
-        };
-        let height = 420.0;
-        let provider = state.provider.min(self.harnesses.len().saturating_sub(1));
         let flat = flat_models(&self.harnesses);
-        let models: Vec<(usize, &ModelTrayModel)> = flat
-            .iter()
-            .copied()
-            .filter(|(group, _)| *group == provider)
-            .collect();
-        let selected_model = models
-            .iter()
-            .find(|(_, model)| model.id == self.current_model)
-            .or_else(|| models.first())
-            .map(|(_, model)| *model);
-        let levels = selected_model
-            .map(|model| model.thinking.clone())
-            .unwrap_or_default();
+        let levels = self.levels();
         let mut rows = Vec::new();
-        // Column 1: integrations/providers.
-        for index in 0..self.harnesses.len() {
-            let y = 32.0 + index as f32 * 36.0 - state.provider_offset;
-            if y + 34.0 < 32.0 || y > height - if first_level { 52.0 } else { 8.0 } {
-                continue;
-            }
-            rows.push(PanelRow {
-                kind: PanelRowKind::Provider(index),
-                rect: rectf(
-                    if first_level { 8.0 } else { 4.0 },
-                    y,
-                    if first_level { 264.0 } else { 204.0 },
-                    34.0,
-                ),
-            });
-        }
-        if first_level {
-            rows.push(PanelRow {
-                kind: PanelRowKind::Teamwork,
-                rect: rectf(8.0, height - 44.0, 264.0, 32.0),
-            });
-        }
-        // Column 2: the provider's searchable model list.
-        if !first_level {
-            rows.push(PanelRow {
-                kind: PanelRowKind::Search,
-                rect: rectf(216.0, 32.0, 272.0, 30.0),
-            });
-            for (row, (flat_index, _)) in models.iter().enumerate() {
-                let y = 68.0 + row as f32 * 34.0 - state.model_offset;
-                if y + 32.0 < 68.0 || y > height - 8.0 {
-                    continue;
-                }
+        let (width, height) = match state.pane {
+            ModelTrayPane::Root => {
+                // 559: DSH's first level is exactly Model / Effort / Teamwork.
                 rows.push(PanelRow {
-                    kind: PanelRowKind::Model(*flat_index),
-                    rect: rectf(216.0, y, 272.0, 32.0),
+                    kind: PanelRowKind::Cell(0),
+                    rect: rectf(8.0, 8.0, 264.0, 34.0),
                 });
-            }
-            // Column 3: the selected model's detail/effort picker.
-            for index in 0..levels.len() {
-                let y = 68.0 + index as f32 * 34.0 - state.effort_offset;
-                if y + 32.0 < 68.0 || y > height - 8.0 {
-                    continue;
-                }
                 rows.push(PanelRow {
-                    kind: PanelRowKind::Level(index),
-                    rect: rectf(500.0, y, 248.0, 32.0),
+                    kind: PanelRowKind::Cell(1),
+                    rect: rectf(8.0, 44.0, 264.0, 34.0),
                 });
+                rows.push(PanelRow {
+                    kind: PanelRowKind::Teamwork,
+                    rect: rectf(8.0, 92.0, 264.0, 34.0),
+                });
+                (280.0, 140.0)
             }
-        }
+            ModelTrayPane::Effort => {
+                for index in 0..levels.len() {
+                    let y = 32.0 + index as f32 * 32.0 - state.effort_offset;
+                    if y + 32.0 < 32.0 || y > 420.0 {
+                        continue;
+                    }
+                    rows.push(PanelRow {
+                        kind: PanelRowKind::Level(index),
+                        rect: rectf(8.0, y, 304.0, 32.0),
+                    });
+                }
+                (320.0, (48.0 + levels.len() as f32 * 32.0).min(420.0))
+            }
+            ModelTrayPane::Model => {
+                rows.push(PanelRow {
+                    kind: PanelRowKind::Search,
+                    rect: rectf(8.0, 32.0, 304.0, 30.0),
+                });
+                let mut y = 66.0 - state.model_offset;
+                let mut group: Option<usize> = None;
+                for (index, (owner, _model)) in flat.iter().enumerate() {
+                    if group != Some(*owner) {
+                        group = Some(*owner);
+                        if y + 20.0 >= 66.0 && y <= 420.0 {
+                            rows.push(PanelRow {
+                                kind: PanelRowKind::Group(*owner),
+                                rect: rectf(8.0, y, 304.0, 20.0),
+                            });
+                        }
+                        y += 20.0;
+                    }
+                    if y + 32.0 >= 66.0 && y <= 420.0 {
+                        rows.push(PanelRow {
+                            kind: PanelRowKind::Model(index),
+                            rect: rectf(8.0, y, 304.0, 32.0),
+                        });
+                    }
+                    y += 32.0;
+                }
+                (320.0, 420.0)
+            }
+        };
         let origin = vec2f(
             self.size.map(|size| size.x - width).unwrap_or(-width),
             -(height + CARD_GAP),
@@ -1090,75 +1078,30 @@ impl Element for ModelTray {
             return;
         }
 
-        // 529: the first level draws the integrations header; opening one adds
-        // the nested models + detail columns.
-        renderer.draw_text(
-            Vector2F::new(card.min_x() + 10.0, card.min_y() + 8.0),
-            "Integrations",
-            GROUP_FONT_SIZE,
-            app.theme.color(ColorToken::Muted),
-            200.0,
-            GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
-        );
-        if state.pane != ModelTrayPane::Root {
-            for (x, label) in [
-                (card.min_x() + 224.0, "Models"),
-                (card.min_x() + 506.0, "Effort"),
-            ] {
-                renderer.draw_text(
-                    Vector2F::new(x, card.min_y() + 8.0),
-                    label,
-                    GROUP_FONT_SIZE,
-                    app.theme.color(ColorToken::Muted),
-                    200.0,
-                    GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
-                );
-            }
-            let detail_name = truncate_with_ellipsis(
-                &self.current_model_label(),
-                LABEL_FONT_SIZE,
-                MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
-                230.0,
-            );
+        // 559: the nested pane's header. The root level has no header: its
+        // three rows are the whole surface.
+        let header = match state.pane {
+            ModelTrayPane::Root => None,
+            ModelTrayPane::Model => Some("Models"),
+            ModelTrayPane::Effort => Some("Effort"),
+        };
+        if let Some(header) = header {
             renderer.draw_text(
-                Vector2F::new(card.min_x() + 506.0, card.min_y() + 30.0),
-                detail_name,
-                LABEL_FONT_SIZE,
-                app.theme.color(ColorToken::Text),
-                230.0,
-                MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
+                Vector2F::new(card.min_x() + 12.0, card.min_y() + 8.0),
+                header,
+                GROUP_FONT_SIZE,
+                app.theme.color(ColorToken::Muted),
+                200.0,
+                GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
             );
-            if let Some(source) = self.credential_source.as_deref() {
-                renderer.draw_text(
-                    Vector2F::new(card.min_x() + 506.0, card.min_y() + 50.0),
-                    &format!("Key · {source}"),
-                    GROUP_FONT_SIZE,
-                    app.theme.color(ColorToken::Muted),
-                    230.0,
-                    GROUP_LINE_HEIGHT / GROUP_FONT_SIZE,
-                );
-            }
-            for x in [card.min_x() + 214.0, card.min_x() + 496.0] {
-                renderer.fill_rounded_rect(
-                    rectf(x, card.min_y() + 6.0, 1.0, card.height() - 12.0),
-                    app.theme.color(ColorToken::Border),
-                    0.0,
-                );
-            }
         }
-        if state.pane != ModelTrayPane::Root
-            && (self.harnesses.is_empty()
-                || self
-                    .harnesses
-                    .get(state.provider.min(self.harnesses.len().saturating_sub(1)))
-                    .is_some_and(|harness| harness.models.is_empty()))
-        {
+        if state.pane == ModelTrayPane::Model && flat.is_empty() {
             renderer.draw_text(
-                Vector2F::new(card.min_x() + 224.0, card.min_y() + 76.0),
+                Vector2F::new(card.min_x() + 12.0, card.min_y() + 74.0),
                 "No models reported",
                 LABEL_FONT_SIZE,
                 app.theme.color(ColorToken::Muted),
-                250.0,
+                280.0,
                 MODEL_LINE_HEIGHT / LABEL_FONT_SIZE,
             );
         }
@@ -1732,16 +1675,12 @@ mod tests {
             ),
             ModelTrayKey::Moved
         );
-        assert_eq!(
-            state.borrow().provider,
-            1,
-            "Down moves the integration column"
-        );
+        assert_eq!(state.borrow().cell, 1, "Down moves onto Effort");
         assert_eq!(
             handle_tray_key(&key("Enter"), &harnesses, "deepseek-flash", "off", &state),
-            ModelTrayKey::DrillModel
+            ModelTrayKey::DrillEffort
         );
-        assert_eq!(state.borrow().pane(), ModelTrayPane::Model);
+        assert_eq!(state.borrow().pane(), ModelTrayPane::Effort);
     }
 
     /// The model pane's arrows walk the flat model list (wrapping) and Enter
@@ -1917,11 +1856,11 @@ mod tests {
         painted(&mut menu, &app, vec2f(600.0, 300.0));
         let (origin, size) = menu.placed_panel().expect("an open card has a panel");
         assert!(
-            (size.x - 500.0).abs() < 0.5,
-            "the three-column casing fits the available width: {size:?}"
+            (size.x - 320.0).abs() < 0.5,
+            "the nested model pane casing: {size:?}"
         );
         assert!(
-            (origin.x - (700.0 - 500.0)).abs() < 0.5,
+            (origin.x - (700.0 - 320.0)).abs() < 0.5,
             "the trailing edge is on the chip's right edge: {origin:?}"
         );
         assert!(
@@ -1934,8 +1873,8 @@ mod tests {
         painted(&mut menu, &app, vec2f(600.0, 300.0));
         let (origin, _) = menu.placed_panel().expect("an open card has a panel");
         assert!(
-            (origin.x - 12.0).abs() < 0.5,
-            "the card clamps to the surface's leading edge when it cannot fit: {origin:?}"
+            (origin.x - 180.0).abs() < 0.5,
+            "the card keeps its trailing edge inside the surface: {origin:?}"
         );
 
         // A chip near the surface's leading edge cannot open leftwards: the
@@ -1944,8 +1883,8 @@ mod tests {
         painted(&mut menu, &app, vec2f(20.0, 300.0));
         let (origin, _) = menu.placed_panel().expect("an open card has a panel");
         assert!(
-            (origin.x - 12.0).abs() < 0.5,
-            "the card clamps to the surface's leading edge: {origin:?}"
+            (origin.x - 24.0).abs() < 0.5,
+            "the card clamps to the 12pt inset inside the surface: {origin:?}"
         );
     }
 
@@ -2055,9 +1994,10 @@ mod tests {
         };
 
         let commands = painted(&mut menu, &app, vec2f(100.0, 300.0));
-        assert!(
-            highlights(&commands) >= 1,
-            "the integration/model column opens on its selected row: {:?}",
+        assert_eq!(
+            highlights(&commands),
+            0,
+            "the first level opens with no cell highlighted: {:?}",
             drawn_texts(&commands)
         );
 

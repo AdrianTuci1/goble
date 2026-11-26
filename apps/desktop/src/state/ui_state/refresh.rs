@@ -116,6 +116,9 @@ impl UiState {
     /// Add a tab kind, or show it when it is already in the strip: one tab per
     /// kind, so the "+" menu never stacks duplicates of the same pane view.
     pub fn add_side_tab(&mut self, kind: SideTabKind) {
+        if kind == SideTabKind::Browser && self.browser_url.borrow().trim().is_empty() {
+            *self.browser_url.borrow_mut() = "https://www.google.com/".to_string();
+        }
         if kind == SideTabKind::Files {
             self.hydrate_side_file();
         }

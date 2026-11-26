@@ -543,7 +543,13 @@ impl UiState {
         self.right_sidebar_open = state.open;
         self.side_split_ratio = state.split_ratio;
         self.side_panel_maximized = state.maximized;
-        *self.browser_url.borrow_mut() = state.browser_url;
+        *self.browser_url.borrow_mut() = if state.browser_url.trim().is_empty()
+            && self.side_tabs.contains(&SideTabKind::Browser)
+        {
+            "https://www.google.com/".to_string()
+        } else {
+            state.browser_url
+        };
         *self.review_rail_width.borrow_mut() = state.review_rail_width;
     }
 

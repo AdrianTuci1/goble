@@ -3287,10 +3287,9 @@ fn an_unconfigured_integration_draws_its_honest_status_row() {
             "{text:?}: {texts:?}"
         );
     }
-    // 514: the integration column is icon-only, so provider names are tooltips.
-    assert!(!texts
-        .iter()
-        .any(|text| text == "Anthropic" || text == "OpenAI"));
+    // 559: provider names appear as group headings in the nested model list.
+    assert!(texts.iter().any(|text| text == "Anthropic"));
+    assert!(texts.iter().any(|text| text == "OpenAI"));
 }
 
 /// The chip is DSH's model seat (`ModelSelect.module.css` `.trigger`): the

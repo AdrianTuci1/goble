@@ -18,11 +18,17 @@ use goble_ui::theme::ColorToken;
 use super::UiSnapshot;
 
 pub(crate) fn build_browser_tab(app: &AppContext, state: &UiSnapshot) -> Box<dyn Element> {
+    let current_url = state.browser_url.borrow().clone();
+    let shown_url = if current_url.trim().is_empty() {
+        "https://www.google.com/".to_string()
+    } else {
+        current_url
+    };
     let url = state.browser_url.clone();
     let url_for_field = url.clone();
     let url_for_buttons = url.clone();
     let field = TextInput::new()
-        .with_value(state.browser_url.borrow().clone())
+        .with_value(shown_url)
         .with_placeholder("https://")
         .with_full_width(true)
         .with_on_change(move |value| *url_for_field.borrow_mut() = value)
@@ -75,7 +81,6 @@ pub(crate) fn build_browser_tab(app: &AppContext, state: &UiSnapshot) -> Box<dyn
             .finish(),
     )
     .with_background(Fill::Solid(app.theme.color(ColorToken::Bg)))
-    .with_padding(EdgeInsets::uniform(16.0))
     .finish();
     let column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
@@ -83,9 +88,8 @@ pub(crate) fn build_browser_tab(app: &AppContext, state: &UiSnapshot) -> Box<dyn
         .with_child(bar)
         .with_child(Container::new(Expanded::new(placeholder).finish()).finish())
         .finish();
-    Container::new(column)
-        .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-        .finish()
+    // 557: the page area is edge-to-edge; no frame, border, margin or inset.
+    column
 }
 
 struct TooltipButton {

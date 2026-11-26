@@ -1,5 +1,16 @@
 use super::*;
 
+/// 558: opening Browser starts on Google, not a blank state.
+#[test]
+fn a_new_browser_tab_starts_on_google() {
+    let mut state = UiState::mock();
+    state.add_side_tab(crate::state::SideTabKind::Browser);
+    assert_eq!(
+        state.browser_url.borrow().as_str(),
+        "https://www.google.com/"
+    );
+}
+
 /// 537: the browser URL travels with the conversation.
 #[test]
 fn switching_conversations_restores_their_own_browser_url() {

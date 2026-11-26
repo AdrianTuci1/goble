@@ -310,6 +310,12 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "composer-effort-open",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "composer-model-first",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -784,7 +790,10 @@ fn main() -> anyhow::Result<()> {
                     s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
                     s.active_side_tab = 0;
                 }
-                if name == "composer-model-open" || name == "composer-model-first" {
+                if name == "composer-model-open"
+                    || name == "composer-model-first"
+                    || name == "composer-effort-open"
+                {
                     use goble_desktop_service::ModelGroup;
                     use goble_harness_types::HarnessModel;
                     s.model_groups = vec![
@@ -876,6 +885,9 @@ fn main() -> anyhow::Result<()> {
                     if name == "composer-model-first" {
                         controls.model_tray_state.borrow_mut().pane =
                             goble_ui::elements::ModelTrayPane::Root;
+                    } else if name == "composer-effort-open" {
+                        controls.model_tray_state.borrow_mut().pane =
+                            goble_ui::elements::ModelTrayPane::Effort;
                     }
                     *controls.model_menu_open.borrow_mut() = true;
                     *controls.model_tray_open.borrow_mut() = true;
@@ -940,8 +952,7 @@ fn main() -> anyhow::Result<()> {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![goble_app::state::SideTabKind::Browser];
                     s.active_side_tab = 0;
-                    *s.browser_url.borrow_mut() =
-                        "https://github.com/AdrianTuci1/goble".to_string();
+                    *s.browser_url.borrow_mut() = "https://www.google.com/".to_string();
                 }
                 if name == "side-tab-new" {
                     s.right_sidebar_open = true;

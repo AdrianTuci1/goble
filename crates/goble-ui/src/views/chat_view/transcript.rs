@@ -951,7 +951,12 @@ impl ChatView {
                                 .with_max_width(EMPTY_FRAME_MAX_WIDTH)
                                 .finish(),
                         )
-                        .with_padding(EdgeInsets::new(margin, 0.0, margin, 0.0))
+                        .with_padding(EdgeInsets::new(
+                            (margin - 20.0).max(0.0),
+                            0.0,
+                            (margin - 20.0).max(0.0),
+                            0.0,
+                        ))
                         .finish(),
                     )
                     .finish(),
@@ -1670,7 +1675,14 @@ impl ChatView {
             // shorter than the pane is flushed to the end of it, so the last
             // message sits on the input (warp-new) instead of leaving the gap
             // between it and the input on screen.
-            let transcript = Scrollable::new(message_column.finish(), Axis::Vertical)
+            let transcript = Scrollable::new(
+                Padding::new(
+                    message_column.finish(),
+                    EdgeInsets::new(15.0, 0.0, 15.0, 0.0),
+                )
+                .finish(),
+                Axis::Vertical,
+            )
                 .with_state(self.scroll.clone())
                 .with_bottom_anchor(true)
                 .finish();
@@ -1758,7 +1770,7 @@ impl ChatView {
             .with_anchor(self.composer_anchor.clone())
             // While a turn is in flight the status row above the input carries
             // the one Stop control; an idle input keeps it in its action row.
-            .with_stop_visible(self.composer_stop_visible && !self.turn_status.is_in_flight())
+            .with_stop_visible(self.composer_stop_visible || self.turn_status.is_in_flight())
             // The rich input is one card on both surfaces, and the owner's
             // instruction row is a fixed line **under** it, right-aligned. A
             // terminal pane's bar is built from this same widget in this same
@@ -1969,15 +1981,9 @@ impl ChatView {
             // doing, and the row also carries the turn's Stop. An idle pane
             // pays no status height: the composer's own fixed row under the
             // card carries the hints now.
-            if self.turn_status.is_in_flight() {
-                let mut footer = TurnStatusFooter::new(self.turn_status.clone());
-                if self.composer_stop_visible {
-                    if let Some(cb) = self.on_stop.clone() {
-                        footer = footer.with_stop(move || (cb.borrow_mut())());
-                    }
-                }
-                column = column.with_child(footer.finish());
-            }
+            // The turn-status row above the card is gone: its text was not
+            // used, and Stop now lives in the composer's own footer while the
+            // turn is in flight.
             // The command list is the one band that no longer takes a row in
             // this column. It is an overlay anchored above the composer: the
             // `ComposerOverlay` lays the composer out exactly as the closed

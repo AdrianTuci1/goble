@@ -1704,13 +1704,11 @@ impl ChatView {
             // for the whole turn it opens. The header is an overlay of the
             // transcript's stack, so it covers the top strip instead of taking
             // a row from the scrolling content.
-            let transcript: Box<dyn Element> = match sticky.overlay() {
-                Some(header) => Stack::new()
-                    .with_children(vec![transcript])
-                    .with_overlay(header, Vector2F::zero())
-                    .finish(),
-                None => transcript,
-            };
+            // The latest user message is no longer pinned under the topbar:
+            // it scrolls with the transcript and leaves the visible area with
+            // its own bubble.
+            let transcript: Box<dyn Element> = transcript;
+            let _ = &sticky;
             if self.has_terminal_blocks() {
                 if let Some(bar) = self.build_global_filter_bar(app) {
                     // The filter bar is content-sized, the transcript takes the

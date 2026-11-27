@@ -1326,4 +1326,23 @@ mod tests {
             vec![ChatFragment::link("docs", "https://x.ai")]
         );
     }
+
+    /// 618: a path in prose or inline code is never auto-linkified; only a real
+    /// markdown link/URL becomes a link action.
+    #[test]
+    fn prose_and_inline_code_paths_are_plain_text() {
+        for source in ["open src/main.rs now", "open `src/main.rs` now"] {
+            let fragments = parse_markdown(source);
+            assert!(
+                fragments.iter().all(|fragment| {
+                    !matches!(fragment.kind, ChatFragmentKind::Link { .. })
+                }),
+                "{source:?} produced a link: {fragments:?}"
+            );
+        }
+        let fragments = parse_markdown("[file](https://example.com/x)");
+        assert!(fragments
+            .iter()
+            .any(|fragment| matches!(fragment.kind, ChatFragmentKind::Link { .. })));
+    }
 }

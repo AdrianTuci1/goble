@@ -331,7 +331,7 @@ pub(crate) fn build_review_tab(
     let mut column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(build_review_topbar(app, actions, pane_id))
+        .with_child(build_review_topbar(app, state, actions, pane_id))
         .with_child(Divider::horizontal().finish());
     if let (Some(Some(detail)), Some(controls)) = (detail, controls.as_ref()) {
         if commit_open {
@@ -411,7 +411,12 @@ struct CommitView {
 
 /// 223: the review's own 1 pt-separated icon row, directly under the general
 /// topbar. The general bar owns only the chips and window controls.
-fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> Box<dyn Element> {
+fn build_review_topbar(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    pane_id: u64,
+) -> Box<dyn Element> {
     let on_diff = actions.on_diff_panel.clone();
     let toggle_files = {
         let on_diff = on_diff.clone();
@@ -435,7 +440,6 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
     )
     .with_position(TooltipPosition::Below)
     .finish();
-    // 472: the Review row shows only Search and the sidebar toggle.
     let sidebar = Tooltip::new(
         TopbarButton::new(
             Icon::new("panel-left-outline")
@@ -451,11 +455,139 @@ fn build_review_topbar(app: &AppContext, actions: &UiActions, pane_id: u64) -> B
     )
     .with_position(TooltipPosition::Below)
     .finish();
+    let detail = state
+        .pane_diffs
+        .get(&pane_id)
+        .and_then(|detail| detail.as_ref());
+    let files = detail.map(|detail| detail.files.len()).unwrap_or(0);
+    if files == 0 {
+        // 595: empty review keeps only the magnifier and the sidebar toggle.
+        return ConstrainedBox::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(2.0)
+                .with_child(Expanded::new(Empty::new().finish()).finish())
+                .with_child(search)
+                .with_child(sidebar)
+                .finish(),
+        )
+        .with_height(32.0)
+        .finish();
+    }
+    let added: u64 = detail.map(|detail| detail.added()).unwrap_or(0);
+    let removed: u64 = detail.map(|detail| detail.removed()).unwrap_or(0);
+    let pill_menu = PopupMenu::new(
+        HoverRow::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(4.0)
+                .with_child(
+                    Text::new("Uncommitted")
+                        .with_font_size(12.0)
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                )
+                .with_child(
+                    Icon::new("chevron-down")
+                        .with_size(11.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .finish(),
+        )
+        .with_padding(EdgeInsets::new(7.0, 3.0, 7.0, 3.0))
+        .with_corner_radius(7.0)
+        .finish(),
+        vec![
+            PopupMenuItem::new("Uncommitted")
+                .with_description("All working tree changes")
+                .selected(),
+            PopupMenuItem::new("Branch").with_description("Changes on this branch"),
+            PopupMenuItem::new("Agent edit").with_description("Edits by the agent"),
+        ],
+    )
+    .with_open(state.review_uncommitted_open.clone())
+    .with_position(PopupMenuPosition::Below)
+    .with_on_select(|_| {})
+    .finish();
+    let counts = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(5.0)
+        .with_child(
+            Text::new(format!("+{added}"))
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(11.0)
+                .with_theme_color(ColorToken::Success, app)
+                .finish(),
+        )
+        .with_child(
+            Text::new(format!("−{removed}"))
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(11.0)
+                .with_theme_color(ColorToken::Error, app)
+                .finish(),
+        )
+        .finish();
+    let commit = {
+        let on_diff = on_diff.clone();
+        Button::new(
+            Text::new("Commit")
+                .with_font_size(12.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_variant(ButtonVariant::Primary)
+            .with_on_click(move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::ToggleCommit))
+            .finish()
+    };
+    let commit_menu = PopupMenu::new(
+        TopbarButton::new(
+            Icon::new("chevron-down")
+                .with_size(11.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_size(22.0)
+        .with_corner_radius(6.0)
+        .finish(),
+        vec![
+            PopupMenuItem::new("Amend").with_description("Amend the last commit"),
+            PopupMenuItem::new("Push").with_description("Push the current branch"),
+        ],
+    )
+    .with_open(state.review_commit_open.clone())
+    .with_position(PopupMenuPosition::Below)
+    .with_on_select(|_| {})
+    .finish();
+    let on_diff_kebab = on_diff.clone();
+    let kebab = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("dots-vertical")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        )
+        .with_size(26.0)
+        .with_corner_radius(7.0)
+        .with_on_click(move || {
+            (on_diff_kebab.borrow_mut())(pane_id, DiffPanelAction::ToggleSidebar)
+        })
+        .finish(),
+        "Review options",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
     let row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(2.0)
+        .with_spacing(6.0)
+        .with_child(pill_menu)
+        .with_child(counts)
         .with_child(Expanded::new(Empty::new().finish()).finish())
+        .with_child(commit)
+        .with_child(commit_menu)
+        .with_child(kebab)
         .with_child(search)
         .with_child(sidebar)
         .finish();

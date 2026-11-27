@@ -512,6 +512,8 @@ impl RootView {
                 llm_credential_source: s.llm_credential_source.clone(),
                 browser_url: s.browser_url.clone(),
                 review_rail_width: s.review_rail_width.clone(),
+                review_uncommitted_open: s.review_uncommitted_open.clone(),
+                review_commit_open: s.review_commit_open.clone(),
                 composer_catalog: s.composer_catalog.clone(),
                 mention_paths,
                 selected_model: s.selected_model.clone(),

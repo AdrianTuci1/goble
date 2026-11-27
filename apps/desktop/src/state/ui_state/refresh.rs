@@ -429,6 +429,8 @@ impl UiState {
             side_panel_by_chat: std::collections::HashMap::new(),
             browser_url: std::rc::Rc::new(std::cell::RefCell::new(String::new())),
             review_rail_width: std::rc::Rc::new(std::cell::RefCell::new(280.0)),
+            review_uncommitted_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
+            review_commit_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
             side_review: None,
             side_file: None,
             last_opened_file: None,

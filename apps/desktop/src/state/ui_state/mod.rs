@@ -788,6 +788,9 @@ pub struct UiState {
     pub browser_url: Rc<RefCell<String>>,
     /// 534: the Review Files Changed rail width (per conversation).
     pub review_rail_width: Rc<RefCell<f32>>,
+    /// 616: Review topbar menus (Uncommitted pill / Commit split).
+    pub review_uncommitted_open: Rc<RefCell<bool>>,
+    pub review_commit_open: Rc<RefCell<bool>>,
     /// The inner Terminals/Background Tasks rail is open in Terminal and Task
     /// Output. AF: the per-tab topbar toggles it.
     pub side_rail_open: bool,

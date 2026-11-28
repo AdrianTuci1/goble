@@ -2439,7 +2439,7 @@ fn build_overview_content(
         ("side-question", "Side Question", 4, None),
         ("plug", "Plugins", 5, Some("chevron-right")),
     ] {
-        let disabled = matches!(action, 3);
+        let disabled = false;
         let row = if disabled {
             HoverRow::new(panel_row(app, icon, label, true, trailing))
                 .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
@@ -2457,6 +2457,7 @@ fn build_overview_content(
                     0 => (on_diff.borrow_mut())(active, DiffPanelAction::Open(None)),
                     1 => (on_files_tab.borrow_mut())(),
                     2 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Terminal)),
+                    3 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Browser)),
                     4 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Agent)),
                     5 => (on_plugins.borrow_mut())(),
                     _ => {}

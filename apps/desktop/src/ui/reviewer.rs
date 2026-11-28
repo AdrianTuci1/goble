@@ -805,26 +805,14 @@ impl ReviewDiff {
                 );
             }
         } else {
-            if let Some(number) = cell.old_no {
-                draw_number(
-                    renderer,
-                    origin.x + 24.0,
-                    y,
-                    number,
-                    if cell.kind == DiffLineKind::Removed {
-                        color
-                    } else {
-                        muted
-                    },
-                );
-            }
-            if let Some(number) = cell.new_no {
+            // 628: one gutter, carrying the number for the visible side.
+            if let Some(number) = cell.new_no.or(cell.old_no) {
                 draw_number(
                     renderer,
                     origin.x + gutter - 12.0,
                     y,
                     number,
-                    if cell.kind == DiffLineKind::Added {
+                    if matches!(cell.kind, DiffLineKind::Added | DiffLineKind::Removed) {
                         color
                     } else {
                         muted
@@ -1568,7 +1556,6 @@ pub(crate) fn files_changed_rail(
         )
         .with_child(Divider::horizontal().finish())
         .with_child(Expanded::new(Scrollable::new(list.finish(), Axis::Vertical).finish()).finish())
-        .with_child(Divider::horizontal().finish())
         .finish();
     ConstrainedBox::new(rail).with_width(width).finish()
 }

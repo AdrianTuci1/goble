@@ -73,7 +73,7 @@ const COMPACT_COMMIT: f32 = 280.0;
 /// heights those blocks are laid out at, and a test pins the editor's rows to
 /// the same box the field uses.
 /// DSH's changed-file card header: a 40pt file tile in a 60pt row.
-const FILE_HEADER_HEIGHT: f32 = 48.0;
+const FILE_HEADER_HEIGHT: f32 = 38.4;
 const FILE_TILE_SIZE: f32 = 40.0;
 /// The height of the review's controls bar under the pane's topbar, and of the
 /// hairline that separates the two. The bars are the pane's overlay chrome, so
@@ -560,6 +560,22 @@ fn build_review_topbar(
     .with_position(PopupMenuPosition::Below)
     .with_on_select(|_| {})
     .finish();
+    let split = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(0.0)
+        .with_child(commit)
+        .with_child(
+            ConstrainedBox::new(
+                Container::new(Empty::new().finish())
+                    .with_background(Fill::Solid(app.theme.color(ColorToken::Border)))
+                    .finish(),
+            )
+            .with_width(1.0)
+            .with_height(18.0)
+            .finish(),
+        )
+        .with_child(commit_menu)
+        .finish();
     let on_diff_kebab = on_diff.clone();
     let kebab = Tooltip::new(
         TopbarButton::new(
@@ -585,13 +601,12 @@ fn build_review_topbar(
         .with_child(pill_menu)
         .with_child(counts)
         .with_child(Expanded::new(Empty::new().finish()).finish())
-        .with_child(commit)
-        .with_child(commit_menu)
+        .with_child(split)
         .with_child(kebab)
         .with_child(search)
         .with_child(sidebar)
         .finish();
-    ConstrainedBox::new(row).with_height(32.0).finish()
+    ConstrainedBox::new(row).with_height(44.0).finish()
 }
 
 /// The topbar's leading content: the directory this review covers, its branch
@@ -1430,6 +1445,7 @@ fn file_block(
             view,
             content_width,
         ));
+        column = column.with_child(Divider::horizontal().finish());
     }
     // 252: the expanded diff sits directly in the flat list — no card, border,
     // radius or inset around the row.

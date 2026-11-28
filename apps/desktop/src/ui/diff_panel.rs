@@ -1618,23 +1618,30 @@ impl Element for OpenFileTabOnHover {
         ctx: &mut goble_ui::elements::EventContext,
         app: &AppContext,
     ) -> bool {
-        if let (
-            goble_ui::event::DispatchedEvent::MouseMove { position },
-            Some(origin),
-            Some(size),
-        ) = (event, self.origin, self.size)
-        {
-            let inside = position.x >= origin.x()
-                && position.x <= origin.x() + size.x
-                && position.y >= origin.y()
-                && position.y <= origin.y() + size.y;
-            if inside && !self.inside {
-                (self.on_diff.borrow_mut())(
-                    self.pane_id,
-                    DiffPanelAction::OpenFileTab(self.path.clone()),
+        if let (Some(origin), Some(size)) = (self.origin, self.size) {
+            let position = match event {
+                goble_ui::event::DispatchedEvent::MouseMove { position }
+                | goble_ui::event::DispatchedEvent::MouseDown { position, .. }
+                | goble_ui::event::DispatchedEvent::MouseUp { position, .. } => Some(*position),
+                _ => None,
+            };
+            if let Some(position) = position {
+                let inside = position.x >= origin.x()
+                    && position.x <= origin.x() + size.x
+                    && position.y >= origin.y()
+                    && position.y <= origin.y() + size.y;
+                let clicked = matches!(
+                    event,
+                    goble_ui::event::DispatchedEvent::MouseUp { button: 0, .. }
                 );
+                if inside && (!self.inside || clicked) {
+                    (self.on_diff.borrow_mut())(
+                        self.pane_id,
+                        DiffPanelAction::OpenFileTab(self.path.clone()),
+                    );
+                }
+                self.inside = inside;
             }
-            self.inside = inside;
         }
         self.child.dispatch_event(event, ctx, app)
     }

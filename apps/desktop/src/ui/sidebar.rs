@@ -11,6 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::state::{SideTabAction, SideTabKind};
 use goble_ui::color::ColorU;
 use goble_ui::elements::conversation_list_item::{
     sidebar_relative_time, SidebarActionRow, SidebarGroupRow, SidebarIconButton, SidebarList,
@@ -279,12 +280,22 @@ fn agents_view(
         .with_state(state.sidebar_scroll.clone())
         .finish();
 
-    let on_automations = actions.on_toggle_automations.clone();
+    let on_automations = actions.on_side_tab.clone();
+    let automations_active = state
+        .side_tabs
+        .get(state.active_side_tab)
+        .is_some_and(|kind| *kind == SideTabKind::Automations);
     let automations = SidebarActionRow::new("clock", "Automations")
-        .with_label_color(ColorToken::Text)
+        .with_label_color(if automations_active {
+            ColorToken::Accent
+        } else {
+            ColorToken::Text
+        })
         .with_hovered(is_hovered(state, "sidebar.automations"))
         .with_hover_cell(state.sidebar_hover_row.clone(), "sidebar.automations")
-        .with_on_click(move || (on_automations.borrow_mut())())
+        .with_on_click(move || {
+            (on_automations.borrow_mut())(SideTabAction::Add(SideTabKind::Automations))
+        })
         .finish();
     let customizations = sidebar_action(
         app,

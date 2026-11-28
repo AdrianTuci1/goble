@@ -3043,7 +3043,12 @@ pub fn make_actions(
             match action {
                 SideTabAction::Select(index) => state.select_side_tab(index),
                 SideTabAction::Close(index) => state.close_side_tab(index),
-                SideTabAction::Add(kind) => state.add_side_tab(kind),
+                SideTabAction::Add(kind) => {
+                    if kind == crate::state::SideTabKind::Automations {
+                        state.right_sidebar_open = true;
+                    }
+                    state.add_side_tab(kind)
+                }
                 SideTabAction::Cycle(step) => state.cycle_side_tab(step),
                 SideTabAction::ToggleRail => {
                     state.side_rail_open = !state.side_rail_open;

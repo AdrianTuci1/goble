@@ -35,7 +35,7 @@ pub fn build_crons_drawer(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(sm)
         .with_child(
-            Text::new("Agent crons")
+            Text::new("Automations")
                 .with_font_size(12.0)
                 .with_theme_color(ColorToken::Text, app)
                 .finish(),
@@ -60,7 +60,7 @@ pub fn build_crons_drawer(
     }
 
     let on_cron_create = actions.on_cron_create.clone();
-    let create_button = Button::new(Text::new("New cron").finish())
+    let create_button = Button::new(Text::new("New automation").finish())
         .with_variant(ButtonVariant::Primary)
         .with_on_click(move || (on_cron_create.borrow_mut())())
         .finish();

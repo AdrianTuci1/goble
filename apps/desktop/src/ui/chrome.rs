@@ -2021,6 +2021,7 @@ pub fn build_side_panel(
     } else {
         match kind {
             SideTabKind::Browser => crate::ui::browser::build_browser_tab(app, state),
+            SideTabKind::Automations => crate::ui::crons::build_crons_drawer(app, state, actions),
             SideTabKind::FileTab => match state.side_file_tab.as_ref() {
                 Some(path) => {
                     let crumbs = path
@@ -2720,6 +2721,7 @@ fn side_tab_topbar(
         SideTabKind::NewTab => ("New tab".to_string(), None),
         SideTabKind::Browser => ("Browser".to_string(), None),
         SideTabKind::FileTab => ("File".to_string(), None),
+        SideTabKind::Automations => ("Automations".to_string(), None),
         SideTabKind::Review => ("Review".to_string(), None),
     };
     row = row.with_child(

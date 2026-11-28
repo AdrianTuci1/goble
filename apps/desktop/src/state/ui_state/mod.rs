@@ -141,6 +141,8 @@ pub enum SideTabKind {
     /// A freshly opened, not-yet-chosen tab. It shows Overview's launcher and
     /// is replaced by the first kind chosen from it.
     NewTab,
+    /// 645: the Automations surface shown as the side panel's content.
+    Automations,
     /// 616: the hover-opened file tab, backed by `side_file_tab`.
     FileTab,
     /// 535: the embedded browser tab (platform webview; honest placeholder
@@ -161,6 +163,7 @@ impl SideTabKind {
             Self::NewTab => "New tab",
             Self::Browser => "Browser",
             Self::FileTab => "File",
+            Self::Automations => "Automations",
         }
     }
 
@@ -176,6 +179,7 @@ impl SideTabKind {
             Self::NewTab => "plus",
             Self::Browser => "globe",
             Self::FileTab => "file",
+            Self::Automations => "clock",
         }
     }
 }

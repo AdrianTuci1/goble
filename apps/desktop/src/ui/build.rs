@@ -4529,9 +4529,10 @@ mod tests {
             })
             .expect("the Automations row");
         click(&mut root, &app, automations + vec2f(8.0, 6.0));
-        assert!(
-            state.borrow().automations_open,
-            "the clock opens the popover"
+        assert_eq!(
+            state.borrow().active_side_tab_kind(),
+            crate::state::SideTabKind::Automations,
+            "the clock shows the Automations side-panel surface"
         );
         let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
         let texts: Vec<&str> = commands
@@ -4541,7 +4542,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for label in ["Automation tasks", "Nightly audit", "New automation"] {
+        for label in ["Automations", "Nightly audit", "New automation"] {
             assert!(
                 texts.contains(&label),
                 "the real automation popover lists {label:?}: {texts:?}"

@@ -73,7 +73,7 @@ const COMPACT_COMMIT: f32 = 280.0;
 /// heights those blocks are laid out at, and a test pins the editor's rows to
 /// the same box the field uses.
 /// DSH's changed-file card header: a 40pt file tile in a 60pt row.
-const FILE_HEADER_HEIGHT: f32 = 38.4;
+const FILE_HEADER_HEIGHT: f32 = 31.0;
 const FILE_TILE_SIZE: f32 = 40.0;
 /// The height of the review's controls bar under the pane's topbar, and of the
 /// hairline that separates the two. The bars are the pane's overlay chrome, so
@@ -606,7 +606,9 @@ fn build_review_topbar(
         .with_child(search)
         .with_child(sidebar)
         .finish();
-    ConstrainedBox::new(row).with_height(44.0).finish()
+    ConstrainedBox::new(row)
+        .with_height(crate::ui::chrome::CHROME_HEIGHT)
+        .finish()
 }
 
 /// The topbar's leading content: the directory this review covers, its branch
@@ -1499,9 +1501,7 @@ fn file_header(
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(10.0)
         .with_child(
-            Icon::new(reviewer::file_type_icon(&file.path))
-                .with_size(16.0)
-                .finish(),
+            reviewer::FileTypeIcon::new(reviewer::file_type_icon(&file.path), 16.0).finish(),
         )
         .with_child(
             Text::new(name)

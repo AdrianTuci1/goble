@@ -207,22 +207,24 @@ pub(crate) fn build_explorer(
             fixed(INDENT)
         });
         line = line.with_child(fixed(CHEVRON_GAP));
-        line = line.with_child(
-            ConstrainedBox::new(
-                Icon::new(if row.is_dir {
-                    // One folder glyph for both states, as the reference tool's
-                    // tree draws it: the chevron beside it is what says whether
-                    // the directory is open, and a second folder shape in
-                    // another drawing style would make the tree read as two
-                    // icon sets.
-                    "folder"
-                } else {
-                    file_icon_name(&row.name)
-                })
+        let file_icon: Box<dyn Element> = if row.is_dir {
+            // One folder glyph for both states, as the reference tool's tree
+            // draws it: the chevron beside it is what says whether the
+            // directory is open.
+            Icon::new("folder")
                 .with_size(16.0)
                 .with_theme_color(row_color, app)
-                .finish(),
+                .finish()
+        } else {
+            // 665: file types keep their multi-colour brand marks.
+            crate::ui::reviewer::FileTypeIcon::new(
+                crate::ui::reviewer::file_type_icon(&row.name),
+                16.0,
             )
+            .finish()
+        };
+        line = line.with_child(
+            ConstrainedBox::new(file_icon)
             .with_width(INDENT)
             .with_height(INDENT)
             .finish(),

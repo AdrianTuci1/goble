@@ -484,6 +484,59 @@ impl IconAtlas {
     }
 }
 
+/// 665: full-colour RGBA for the file-type family. The icon element's normal
+/// path draws a tinted alpha silhouette; these assets carry their own brand
+/// colours, so file rows use this instead.
+pub fn colored_icon(name: &str) -> Option<(u32, u32, std::sync::Arc<[u8]>)> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, (u32, u32, Arc<[u8]>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().ok()?.get(name) {
+        return Some((hit.0, hit.1, Arc::clone(&hit.2)));
+    }
+    let (_, bytes) = ICON_FILES.iter().find(|(icon, _)| *icon == name)?;
+    let (rgba, width, height) = rasterize_icon_rgba(bytes)?;
+    let data = Arc::<[u8]>::from(rgba);
+    cache
+        .lock()
+        .ok()?
+        .insert(name.to_string(), (width, height, Arc::clone(&data)));
+    Some((width, height, data))
+}
+
+fn rasterize_icon_rgba(data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let options = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(data, &options).ok()?;
+    let size = tree.size();
+    let scale = CELL_SIZE as f32 / size.width().max(size.height());
+    let width = (size.width() * scale).ceil().max(1.0) as u32;
+    let height = (size.height() * scale).ceil().max(1.0) as u32;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for pixel in pixmap.pixels() {
+        let a = pixel.alpha();
+        if a == 0 {
+            rgba.extend_from_slice(&[0, 0, 0, 0]);
+        } else {
+            // tiny-skia stores premultiplied RGBA.
+            let unpremultiply = |v: u8| ((v as u16 * 255) / a as u16).min(255) as u8;
+            rgba.extend_from_slice(&[
+                unpremultiply(pixel.red()),
+                unpremultiply(pixel.green()),
+                unpremultiply(pixel.blue()),
+                a,
+            ]);
+        }
+    }
+    Some((rgba, width, height))
+}
+
 fn rasterize_icon(data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     let options = resvg::usvg::Options::default();
     let tree = resvg::usvg::Tree::from_data(data, &options).ok()?;
@@ -525,6 +578,21 @@ mod tests {
     /// Every harness mark is a filled silhouette in the atlas's one tint. A
     /// path that resvg cannot parse, or one that only sets `currentColor`,
     /// would draw nothing at the 16 pt the sidebar gives it.
+    /// 665: brand file marks keep their own colours instead of the atlas tint.
+    #[test]
+    fn file_type_icons_keep_their_colours() {
+        let (width, height, data) =
+            colored_icon("file-python").expect("python file icon");
+        assert!(width > 0 && height > 0);
+        assert!(
+            data.chunks_exact(4).any(|pixel| {
+                pixel[3] > 0
+                    && (pixel[0] != pixel[1] || pixel[1] != pixel[2] || pixel[0] != pixel[2])
+            }),
+            "python file icon rasterized monochrome"
+        );
+    }
+
     #[test]
     fn harness_marks_rasterize_with_ink() {
         for (name, bytes) in ICON_FILES

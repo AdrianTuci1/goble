@@ -1488,9 +1488,7 @@ pub(crate) fn files_changed_rail(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(7.0)
             .with_child(
-                Icon::new(file_type_icon(&file.path))
-                    .with_size(16.0)
-                    .finish(),
+                FileTypeIcon::new(file_type_icon(&file.path), 16.0).finish(),
             )
             .with_child(
                 Text::new(status_of(file).letter())
@@ -1577,6 +1575,61 @@ fn short_dir(path: &str) -> String {
 
 /// 268: the real per-extension icon asset for a changed file, with the
 /// generic document as the fallback.
+/// 665: file-type assets are multi-colour, so they bypass the tinted icon
+/// pipeline and draw as images.
+pub(crate) struct FileTypeIcon {
+    name: &'static str,
+    size: f32,
+    size_out: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl FileTypeIcon {
+    pub(crate) fn new(name: &'static str, size: f32) -> Self {
+        Self {
+            name,
+            size,
+            size_out: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for FileTypeIcon {
+    fn layout(
+        &mut self,
+        _constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        self.size_out = Some(vec2f(self.size, self.size));
+        vec2f(self.size, self.size)
+    }
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        if let Some((width, height, data)) =
+            goble_ui::platform::icon_atlas::colored_icon(self.name)
+        {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                renderer.draw_image(
+                    rectf(origin.x, origin.y, self.size, self.size),
+                    format!("file-type:{}", self.name),
+                    width,
+                    height,
+                    1,
+                    data,
+                );
+            }
+        }
+    }
+    fn size(&self) -> Option<Vector2F> {
+        self.size_out
+    }
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
+
 pub(crate) fn file_type_icon(path: &str) -> &'static str {
     let name = short_name(path);
     let lower = name.to_ascii_lowercase();

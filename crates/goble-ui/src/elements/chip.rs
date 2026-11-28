@@ -127,9 +127,7 @@ impl Element for Chip {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
         let size = self.size.unwrap_or(Vector2F::zero());
-        let hovered = self
-            .bounds()
-            .is_some_and(|bounds| ctx.hovered(bounds));
+        let hovered = self.bounds().is_some_and(|bounds| ctx.hovered(bounds));
         let h_pad = self.horizontal_padding(app);
         let v_pad = self.vertical_padding(app);
         // Hover ink is chosen here, while the pointer is known: the child runs

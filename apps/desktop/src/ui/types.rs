@@ -459,11 +459,7 @@ pub enum SidebarView {
 
 impl SidebarView {
     /// The three views, in the order the sidebar's tab strip draws them.
-    pub const ALL: &'static [SidebarView] = &[
-        SidebarView::Agents,
-        SidebarView::Explorer,
-        SidebarView::Search,
-    ];
+    pub const ALL: &'static [SidebarView] = &[SidebarView::Agents, SidebarView::Search];
 
     /// The tab's label.
     pub fn label(self) -> &'static str {

@@ -256,12 +256,71 @@ pub(super) fn build_tool_call_body(
         | ToolKind::List
         | ToolKind::MemorySearch
         | ToolKind::SearchTools
-        | ToolKind::Ask
         | ToolKind::Skill => result_rows(call, mode, READ_TRUNCATION, app),
+        ToolKind::Ask => ask_body(call, mode, app),
         ToolKind::SubAgent => sub_agent_body(&arguments, call, mode, sub_agent, app),
         ToolKind::UseTool => generic_body(call, mode, app),
         ToolKind::Other => other_body(call, mode, app),
     }
+}
+
+/// A question's body: only the answer the user gave. The question is already
+/// the row's title, so it is never drawn twice and the answer choices are not
+/// listed — the body is the chosen response alone.
+fn ask_body(
+    call: &ToolCall,
+    mode: ToolDisplayMode,
+    app: &crate::elements::AppContext,
+) -> Vec<Box<dyn Element>> {
+    let Some(result) = call.result.as_deref() else {
+        return Vec::new();
+    };
+    let answer = ask_answer_text(result);
+    if answer.trim().is_empty() {
+        return Vec::new();
+    }
+    let lines: Vec<String> = answer
+        .lines()
+        .map(|line| elide_line(line).into_owned())
+        .collect();
+    let (first, last) = READ_TRUNCATION;
+    let elided = mode == ToolDisplayMode::Truncated && lines.len() > first + last;
+    let mut rows: Vec<Box<dyn Element>> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if elided && index >= first && index < lines.len() - last {
+            continue;
+        }
+        rows.push(tool_body_row(line.clone(), ColorToken::Text, app));
+    }
+    rows
+}
+
+/// The answer carried by an `ask_user` result: a plain string is the answer
+/// itself, a JSON object names it in `answer` (or the harness's other spellings
+/// of the same field), and anything else is shown verbatim.
+fn ask_answer_text(result: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(result) else {
+        return result.to_string();
+    };
+    if let Some(text) = value.as_str() {
+        return text.to_string();
+    }
+    for key in ["answer", "response", "text", "selected", "value", "result"] {
+        match value.get(key) {
+            Some(serde_json::Value::String(text)) => return text.clone(),
+            Some(serde_json::Value::Array(items)) => {
+                let joined: Vec<String> = items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect();
+                if !joined.is_empty() {
+                    return joined.join(", ");
+                }
+            }
+            _ => {}
+        }
+    }
+    result.to_string()
 }
 
 /// A command: what it printed, drawn continuously under the row that names it.

@@ -1,3 +1,18 @@
+/// 360: the first real launch starts with the sidebar closed; later launches
+/// respect the persisted preference. Test fixtures default open so existing
+/// layout assertions keep their historical shape.
+fn initial_sidebar_visible(desktop: &DesktopState) -> bool {
+    #[cfg(test)]
+    {
+        let _ = desktop;
+        true
+    }
+    #[cfg(not(test))]
+    {
+        desktop.get_ui_sidebar_visible().unwrap_or(false)
+    }
+}
+
 use super::session::is_unnamed_harness_title;
 use super::title::deterministic_subject;
 use super::*;
@@ -8,9 +23,6 @@ impl UiState {
     /// left out of range (a test fixture, a stale layout) falls back to the
     /// first tab instead of drawing nothing.
     pub fn ensure_side_tabs(&mut self) {
-        if self.side_tabs.is_empty() {
-            self.side_tabs.push(SideTabKind::Overview);
-        }
         if self.active_side_tab >= self.side_tabs.len() {
             self.active_side_tab = 0;
         }
@@ -23,6 +35,60 @@ impl UiState {
             .get(self.active_side_tab)
             .copied()
             .unwrap_or(SideTabKind::Overview)
+    }
+
+    /// Y: open `path` in the side panel's Files tab. No pane is split or
+    /// retargeted: the tab reads the file under `SIDE_FILE_PANE_ID`.
+    pub fn open_file_side(&mut self, path: String) {
+        self.last_opened_file = Some(path.clone());
+        self.side_files_show_explorer = false;
+        self.side_file = Some(path);
+        self.add_side_tab(super::SideTabKind::Files);
+        self.right_sidebar_open = true;
+    }
+
+    /// Open the Files tab without naming a file (the "Open File" action keeps
+    /// whatever the tab was showing, or its honest empty state).
+    pub fn open_files_tab(&mut self) {
+        // The Files control opens the panel's own tree, not a pane beside the
+        // conversation: any main-pane Explorer left from the old flow is
+        // closed first, so the tree lives in exactly one place.
+        let mut leaves = Vec::new();
+        if let Some(space) = self.spaces.get(self.active_space) {
+            space.root.leaves(&mut leaves);
+        }
+        let explorers: Vec<u64> = leaves
+            .into_iter()
+            .filter(|(_, kind)| matches!(kind, crate::state::PaneKind::Explorer))
+            .map(|(id, _)| id)
+            .collect();
+        for id in explorers {
+            self.close_pane(id, None);
+        }
+        self.side_files_show_explorer = true;
+        self.add_side_tab(super::SideTabKind::Files);
+        self.right_sidebar_open = true;
+    }
+
+    /// The Files tab always opens onto the file the user last touched or the
+    /// file the active pane shows, so it is never an empty placeholder when a
+    /// file exists to show.
+    fn hydrate_side_file(&mut self) {
+        if self.side_file.is_some() {
+            return;
+        }
+        if let Some(path) = self.last_opened_file.clone() {
+            self.side_file = Some(path);
+            return;
+        }
+        let active = self.active_pane_id;
+        if let Some(crate::state::PaneKind::File { path }) = self
+            .spaces
+            .get(self.active_space)
+            .and_then(|space| space.leaf_kind(active))
+        {
+            self.side_file = Some(path.clone());
+        }
     }
 
     /// The side panel was opened: keep the tabs and land on the one that was
@@ -40,6 +106,9 @@ impl UiState {
     /// is ignored rather than selecting a tab that is not there.
     pub fn select_side_tab(&mut self, index: usize) {
         if index < self.side_tabs.len() {
+            if self.side_tabs[index] == super::SideTabKind::Files {
+                self.hydrate_side_file();
+            }
             self.active_side_tab = index;
         }
     }
@@ -47,12 +116,48 @@ impl UiState {
     /// Add a tab kind, or show it when it is already in the strip: one tab per
     /// kind, so the "+" menu never stacks duplicates of the same pane view.
     pub fn add_side_tab(&mut self, kind: SideTabKind) {
+        if kind == SideTabKind::Browser && self.browser_url.borrow().trim().is_empty() {
+            *self.browser_url.borrow_mut() = "https://www.google.com/".to_string();
+        }
+        if kind == SideTabKind::Files {
+            self.hydrate_side_file();
+        }
+        *self.side_tab_add_menu_open.borrow_mut() = false;
+        if kind != SideTabKind::NewTab {
+            if let Some(index) = self
+                .side_tabs
+                .iter()
+                .position(|tab| *tab == SideTabKind::NewTab)
+            {
+                if index == self.active_side_tab {
+                    self.side_tabs[index] = kind;
+                    return;
+                }
+            }
+        }
         match self.side_tabs.iter().position(|tab| *tab == kind) {
             Some(index) => self.active_side_tab = index,
             None => {
                 self.side_tabs.push(kind);
                 self.active_side_tab = self.side_tabs.len() - 1;
             }
+        }
+    }
+
+    /// 297: move a tab, keeping the active tab selected.
+    pub fn reorder_side_tab(&mut self, from: usize, to: usize) {
+        if from >= self.side_tabs.len() || to >= self.side_tabs.len() || from == to {
+            return;
+        }
+        let active = self.side_tabs.get(self.active_side_tab).copied();
+        let tab = self.side_tabs.remove(from);
+        self.side_tabs.insert(to, tab);
+        if let Some(active) = active {
+            self.active_side_tab = self
+                .side_tabs
+                .iter()
+                .position(|tab| *tab == active)
+                .unwrap_or(0);
         }
     }
 
@@ -65,7 +170,6 @@ impl UiState {
         }
         self.side_tabs.remove(index);
         if self.side_tabs.is_empty() {
-            self.side_tabs.push(SideTabKind::Overview);
             self.active_side_tab = 0;
             return;
         }
@@ -118,8 +222,10 @@ impl UiState {
             queued_prompt: None,
             composer_draft: String::new(),
             composer_focused: false,
+            side_composer_focused: false,
             models: Vec::new(),
             model_groups: Vec::new(),
+            integrations: Vec::new(),
             composer_catalog: goble_harness_types::HarnessCatalog::empty(),
             selected_model: String::new(),
             harnesses: vec![HarnessEntry::internal("internal", "Goble")],
@@ -170,6 +276,7 @@ impl UiState {
             settings_llm_provider: "openai".to_string(),
             settings_llm_model: "gpt-4o".to_string(),
             settings_llm_api_key: String::new(),
+            llm_credential_source: None,
             settings_llm_base_url: String::new(),
             settings_llm_temperature: "0.7".to_string(),
             settings_workers: Vec::new(),
@@ -222,7 +329,7 @@ impl UiState {
             content_lane_drag_column: 0.0,
             content_lane_drag_start_pref: None,
             content_lane_drag_moved: false,
-            sidebar_visible: true,
+            sidebar_visible: initial_sidebar_visible(desktop),
             responsive: Responsive::default(),
             responsive_narrow: false,
             sidebar_narrow_expanded: false,
@@ -307,6 +414,10 @@ impl UiState {
             ssh_config_hosts: Vec::new(),
             ssh_target_error: None,
             sidebar_add_menu_open: Rc::new(RefCell::new(false)),
+            conversations_add_menu_open: Rc::new(RefCell::new(false)),
+            automations_open: false,
+            automations_highlight: 0,
+            project_menu_open: Rc::new(RefCell::new(false)),
             changed_files_open: Rc::new(RefCell::new(false)),
             settings_overlay_open: false,
             settings_overlay_hamburger: Rc::new(RefCell::new(false)),
@@ -314,9 +425,19 @@ impl UiState {
             chrome_overview_open: Rc::new(RefCell::new(false)),
             chrome_more_open: Rc::new(RefCell::new(false)),
             side_panel_maximized: false,
-            side_tabs: vec![SideTabKind::Overview],
+            side_tabs: Vec::new(),
+            side_panel_by_chat: std::collections::HashMap::new(),
+            browser_url: std::rc::Rc::new(std::cell::RefCell::new(String::new())),
+            review_rail_width: std::rc::Rc::new(std::cell::RefCell::new(280.0)),
+            review_uncommitted_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
+            review_commit_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
             side_review: None,
+            side_file: None,
+            side_file_tab: None,
+            last_opened_file: None,
+            side_files_show_explorer: false,
             active_side_tab: 0,
+            side_rail_open: true,
             side_tab_add_menu_open: Rc::new(RefCell::new(false)),
             side_swipe_accum: Rc::new(RefCell::new(0.0)),
             send_immediately: false,
@@ -1723,7 +1844,9 @@ mod tests {
 /// in.
 pub fn conversation_group(directory: Option<&str>) -> String {
     let Some(directory) = directory.map(str::trim).filter(|d| !d.is_empty()) else {
-        return "Not in project".to_string();
+        // Conversations that have not run in a directory are listed under a
+        // plain "Conversations" heading: no folder icon and no workspace menu.
+        return "Conversations".to_string();
     };
     let path = std::path::Path::new(directory);
     let in_home = std::env::var_os("HOME")

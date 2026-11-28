@@ -167,16 +167,22 @@ pub fn page(state: &SettingsUiState) -> PageModel {
             continue;
         }
         matched += 1;
-        let keys = binding
-            .keys
-            .iter()
-            .map(|key| (*key).to_string())
-            .collect::<Vec<_>>();
+        let keys = state
+            .shortcuts
+            .get(binding.label)
+            .cloned()
+            .unwrap_or_else(|| binding.keys.iter().map(|key| (*key).to_string()).collect());
         let remap = ActionModel::new(
-            "Remapping is not available in this build.",
+            "Remove this custom chord.",
             SettingsAction::ShortcutRemap(format!("shortcut.{}", binding.label)),
         )
         .with_icon("trash")
+        .with_ghost();
+        let add = ActionModel::new(
+            "Add a shortcut",
+            SettingsAction::ShortcutAdd(format!("shortcut.{}", binding.label)),
+        )
+        .with_icon("plus")
         .with_ghost();
         section = section.with_row(
             RowModel::new(
@@ -184,8 +190,26 @@ pub fn page(state: &SettingsUiState) -> PageModel {
                 binding.label,
                 binding.hint,
             )
-            .key_chips(keys, Some(remap)),
+            .key_chips_with_add(keys, Some(remap), Some(add)),
         );
+        if state.shortcuts_recording.as_deref() == Some(binding.label) {
+            let cancel = ActionModel::new("Cancel recording", SettingsAction::ShortcutCancel)
+                .with_icon("x")
+                .with_ghost();
+            let recorded = if state.shortcuts_recorded.is_empty() {
+                vec!["Press a chord…".to_string()]
+            } else {
+                state.shortcuts_recorded.clone()
+            };
+            section = section.with_row(
+                RowModel::new(
+                    format!("shortcut.record.{}", binding.label),
+                    "Recording…",
+                    "Press the next key combination; Escape cancels.",
+                )
+                .key_chips(recorded, Some(cancel)),
+            );
+        }
     }
     if matched == 0 {
         section = section.with_row(empty_row(&query));
@@ -313,7 +337,7 @@ mod tests {
             .find(|row| row.id == "shortcut.Command palette")
             .expect("the command-palette row");
         match &row.control {
-            ControlModel::KeyChips { keys, action } => {
+            ControlModel::KeyChips { keys, action, .. } => {
                 assert_eq!(keys, &vec!["⌘".to_string(), "K".to_string()]);
                 let action = action.as_ref().expect("the trailing trash action");
                 assert_eq!(action.icon, Some("trash"));
@@ -341,5 +365,34 @@ mod tests {
             command,
             goble_ui::render::RenderCommand::DrawIcon { name, .. } if name == "trash-02"
         )));
+    }
+
+    /// 366-371: every binding row carries an Add action after the trash, and
+    /// the recorder row is inserted directly below the active binding.
+    #[test]
+    fn the_shortcut_recorder_opens_below_its_row() {
+        let mut state = SettingsUiState::default();
+        state.shortcuts_recording = Some("Command palette".to_string());
+        state.shortcuts_recorded = vec!["⌘".to_string(), "K".to_string()];
+        let model = page(&state);
+        let rows = binding_rows(&model);
+        let first = rows.first().expect("a binding row");
+        match &first.control {
+            ControlModel::KeyChips {
+                action, add_action, ..
+            } => {
+                assert!(action.is_some(), "the trash action stays");
+                assert!(add_action.is_some(), "the add action follows it");
+            }
+            other => panic!("the row is not key chips: {other:?}"),
+        }
+        assert_eq!(rows[1].label, "Recording…");
+        match &rows[1].control {
+            ControlModel::KeyChips { keys, action, .. } => {
+                assert_eq!(keys, &vec!["⌘".to_string(), "K".to_string()]);
+                assert!(action.is_some(), "the recorder has its x control");
+            }
+            other => panic!("the recorder is not key chips: {other:?}"),
+        }
     }
 }

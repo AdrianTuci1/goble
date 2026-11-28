@@ -1,5 +1,71 @@
 use super::*;
 
+/// 558: opening Browser starts on Google, not a blank state.
+#[test]
+fn a_new_browser_tab_starts_on_google() {
+    let mut state = UiState::mock();
+    state.add_side_tab(crate::state::SideTabKind::Browser);
+    assert_eq!(
+        state.browser_url.borrow().as_str(),
+        "https://www.google.com/"
+    );
+}
+
+/// 616: a Review file hover opens its dedicated file tab.
+#[test]
+fn opening_a_file_tab_activates_it() {
+    let mut state = UiState::mock();
+    state.open_file_tab("/tmp/project/src/main.rs".to_string());
+    assert_eq!(
+        state.side_file_tab.as_deref(),
+        Some("/tmp/project/src/main.rs")
+    );
+    assert!(state
+        .side_tabs
+        .contains(&crate::state::SideTabKind::FileTab));
+    assert_eq!(
+        state.active_side_tab_kind(),
+        crate::state::SideTabKind::FileTab
+    );
+}
+
+/// 537: the browser URL travels with the conversation.
+#[test]
+fn switching_conversations_restores_their_own_browser_url() {
+    let mut state = UiState::mock();
+    state.selected_id = Some("conv-a".to_string());
+    *state.browser_url.borrow_mut() = "https://a.example".to_string();
+    state.bind_active_pane_conversation("conv-b".to_string(), None);
+    assert_eq!(state.browser_url.borrow().as_str(), "");
+    *state.browser_url.borrow_mut() = "https://b.example".to_string();
+    state.bind_active_pane_conversation("conv-a".to_string(), None);
+    assert_eq!(state.browser_url.borrow().as_str(), "https://a.example");
+}
+
+/// 512: each conversation keeps its own side-panel tabs/active tab/open state.
+#[test]
+fn switching_conversations_restores_their_own_side_panel() {
+    let mut state = UiState::mock();
+    state.selected_id = Some("conv-a".to_string());
+    state.right_sidebar_open = true;
+    state.side_tabs = vec![crate::state::SideTabKind::Review];
+    state.active_side_tab = 0;
+
+    state.bind_active_pane_conversation("conv-b".to_string(), None);
+    assert!(
+        !state.right_sidebar_open,
+        "a new conversation starts closed"
+    );
+    assert_eq!(state.side_tabs, vec![crate::state::SideTabKind::Overview]);
+    state.right_sidebar_open = true;
+    state.side_tabs = vec![crate::state::SideTabKind::Files];
+    state.active_side_tab = 0;
+
+    state.bind_active_pane_conversation("conv-a".to_string(), None);
+    assert!(state.right_sidebar_open);
+    assert_eq!(state.side_tabs, vec![crate::state::SideTabKind::Review]);
+}
+
 #[test]
 fn unbound_active_pane_falls_back_to_selected_conversation() {
     let mut state = UiState::mock();
@@ -139,6 +205,30 @@ fn a_turn_runs_only_with_a_key_a_provider_and_a_model() {
 
     state.settings_llm_api_key = "sk-test".to_string();
     assert!(state.can_run_agent_turn(1));
+
+    // 480: with that configured model/key, Enter is a real send gesture.
+    let sent: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+    let sink = sent.clone();
+    use goble_ui::elements::Element;
+    let mut composer = goble_ui::ChatComposer::new()
+        .with_value("ship it")
+        .with_focused(true)
+        .with_on_send(move |text| sink.borrow_mut().push(text));
+    let app = goble_ui::AppContext::default();
+    let _ = composer.layout(
+        goble_ui::elements::SizeConstraint::loose(goble_ui::geometry::vec2f(600.0, 500.0)),
+        &mut goble_ui::elements::LayoutContext::default(),
+        &app,
+    );
+    assert!(composer.dispatch_event(
+        &goble_ui::event::DispatchedEvent::KeyDown {
+            key: "Enter".to_string(),
+            modifiers: goble_ui::event::ModifiersState::none(),
+        },
+        &mut goble_ui::EventContext::default(),
+        &app,
+    ));
+    assert_eq!(sent.borrow().as_slice(), ["ship it"]);
 
     state.settings_llm_provider.clear();
     assert!(

@@ -234,7 +234,11 @@ mod tests {
     use crate::render::RenderCommand;
 
     /// The (text, size, wrap width) of the run the element drew.
-    fn drawn_run(element: &mut Box<dyn Element>, width: f32, app: &AppContext) -> (String, Vector2F, f32) {
+    fn drawn_run(
+        element: &mut Box<dyn Element>,
+        width: f32,
+        app: &AppContext,
+    ) -> (String, Vector2F, f32) {
         let commands = crate::test_util::render_element(element, vec2f(width, 4000.0), app);
         let size = element.size().expect("the element laid out");
         commands

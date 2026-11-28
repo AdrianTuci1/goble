@@ -71,16 +71,12 @@ fn test_merge_completes_goals_and_milestones() {
         },
     );
     assert!(memory.goals[0].done);
-    assert!(
-        memory
-            .progress
-            .iter()
-            .any(|m| m.text == "add tests" && m.done)
-    );
-    assert!(
-        memory
-            .progress
-            .iter()
-            .any(|m| m.text == "write docs" && !m.done)
-    );
+    assert!(memory
+        .progress
+        .iter()
+        .any(|m| m.text == "add tests" && m.done));
+    assert!(memory
+        .progress
+        .iter()
+        .any(|m| m.text == "write docs" && !m.done));
 }

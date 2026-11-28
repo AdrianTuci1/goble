@@ -93,8 +93,8 @@ impl ConfigWatcher {
             .map_err(|error| format!("create watch root {}: {error}", root.display()))?;
 
         let (raw_tx, raw_rx) = mpsc::channel::<PathBuf>();
-        let mut watcher = notify::recommended_watcher(
-            move |event: notify::Result<notify::Event>| {
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else {
                     return;
                 };
@@ -102,9 +102,8 @@ impl ConfigWatcher {
                     // A closed receiver just means the watcher is shutting down.
                     let _ = raw_tx.send(path);
                 }
-            },
-        )
-        .map_err(|error| format!("start file watcher: {error}"))?;
+            })
+            .map_err(|error| format!("start file watcher: {error}"))?;
         watcher
             .watch(&root, RecursiveMode::NonRecursive)
             .map_err(|error| format!("watch {}: {error}", root.display()))?;
@@ -226,7 +225,10 @@ fn changes_for(editor: &ConfigEditor, touched: &BTreeSet<ConfigFile>) -> Vec<Con
             // is no change to report.
             continue;
         }
-        if previous.as_ref().is_some_and(|previous| previous.hash == hash) {
+        if previous
+            .as_ref()
+            .is_some_and(|previous| previous.hash == hash)
+        {
             // Nothing changed, or it is the revision we last read/wrote.
             continue;
         }
@@ -260,10 +262,8 @@ mod tests {
     use crate::config::{ConfigOp, ConfigValue};
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "goble-config-watch-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("goble-config-watch-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -289,11 +289,9 @@ mod tests {
         fs::write(&path, "[app]\n").unwrap();
         let editor = Arc::new(ConfigEditor::new(dir.clone()));
         editor.load(ConfigFile::Config).unwrap();
-        let watcher = ConfigWatcher::start_with_debounce(
-            Arc::clone(&editor),
-            Duration::from_millis(120),
-        )
-        .expect("watcher starts");
+        let watcher =
+            ConfigWatcher::start_with_debounce(Arc::clone(&editor), Duration::from_millis(120))
+                .expect("watcher starts");
 
         // Our own write must not come back as an external change.
         editor
@@ -315,8 +313,8 @@ mod tests {
         let mut external = fs::read_to_string(&path).unwrap();
         external.push_str("# written by another editor\n");
         fs::write(&path, &external).unwrap();
-        let change = wait_for_change(&watcher, Duration::from_secs(10))
-            .expect("external edit is reported");
+        let change =
+            wait_for_change(&watcher, Duration::from_secs(10)).expect("external edit is reported");
         assert_eq!(change.file, ConfigFile::Config);
         assert!(change.external);
         assert_eq!(
@@ -338,11 +336,9 @@ mod tests {
         fs::write(&path, "[app]\n").unwrap();
         let editor = Arc::new(ConfigEditor::new(dir.clone()));
         editor.load(ConfigFile::Config).unwrap();
-        let watcher = ConfigWatcher::start_with_debounce(
-            Arc::clone(&editor),
-            Duration::from_millis(250),
-        )
-        .expect("watcher starts");
+        let watcher =
+            ConfigWatcher::start_with_debounce(Arc::clone(&editor), Duration::from_millis(250))
+                .expect("watcher starts");
 
         for index in 0..6 {
             fs::write(&path, format!("[app]\nfriendly_name = \"{index}\"\n")).unwrap();
@@ -352,7 +348,10 @@ mod tests {
         let first = wait_for_change(&watcher, Duration::from_secs(10)).expect("one event");
         assert_eq!(first.file, ConfigFile::Config);
         let extra = wait_for_change(&watcher, Duration::from_millis(800));
-        assert!(extra.is_none(), "the burst produced a second event: {extra:?}");
+        assert!(
+            extra.is_none(),
+            "the burst produced a second event: {extra:?}"
+        );
     }
 
     #[test]

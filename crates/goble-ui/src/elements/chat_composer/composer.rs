@@ -3,10 +3,10 @@ use std::rc::Rc;
 
 use super::band::BandCard;
 use super::hints_row::ComposerHintsRow;
-use crate::elements::model_tray::MODEL_MENU_VIEWPORT_INSET;
 use super::proposal::CommandProposalUi;
 use crate::color::ColorU;
 use crate::elements::conversation_list_item::truncate_with_ellipsis;
+use crate::elements::model_tray::MODEL_MENU_VIEWPORT_INSET;
 use crate::elements::text::measure_text;
 use crate::elements::{
     harness_bar_mark, AppContext, ApprovalMode, Border, ComposerButton, ComposerModelTray,
@@ -115,9 +115,8 @@ pub const COMPOSER_CARD_RESERVED_HEIGHT: f32 =
 /// band form lays out the same height (the folded gutter becomes
 /// [`COMPOSER_BAND_BOTTOM_INSET`], which pays for the same row), so a terminal
 /// bar and an agent input are identical in height.
-pub const COMPOSER_BAR_RESERVED_HEIGHT: f32 = COMPOSER_CARD_RESERVED_HEIGHT
-    + COMPOSER_HINTS_GAP
-    + COMPOSER_HINTS_ROW_HEIGHT;
+pub const COMPOSER_BAR_RESERVED_HEIGHT: f32 =
+    COMPOSER_CARD_RESERVED_HEIGHT + COMPOSER_HINTS_GAP + COMPOSER_HINTS_ROW_HEIGHT;
 /// The environment menu is wider than the other dropdowns: its rows carry a
 /// description line under the label ("Clones this repo in a cloud
 /// environment…"), and the reference shows it cut with an ellipsis on one line
@@ -378,6 +377,70 @@ pub struct ChatComposer {
     origin: Option<Point>,
 }
 
+/// 401: the approval card (and its trigger) is queued on the frame's last
+/// paint layer while open, so it sits above every other composer menu.
+struct DeferredApprovalCard {
+    inner: Rc<RefCell<Box<dyn Element>>>,
+    open: Rc<RefCell<bool>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl DeferredApprovalCard {
+    fn new(inner: Box<dyn Element>, open: Rc<RefCell<bool>>) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(inner)),
+            open,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for DeferredApprovalCard {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.borrow_mut().layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.inner.borrow_mut().paint(origin, ctx, app);
+        if *self.open.borrow() {
+            app.hover_chips
+                .borrow_mut()
+                .push_shared(origin, Rc::clone(&self.inner));
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut crate::elements::EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.inner.borrow_mut().dispatch_event(event, ctx, app)
+    }
+}
+
 impl ChatComposer {
     pub fn new() -> Self {
         Self {
@@ -491,10 +554,7 @@ impl ChatComposer {
     /// Retired with [`Self::with_path_label`]: the single composer names no
     /// bound SSH session over its editor. The argument is accepted and ignored.
     #[doc(hidden)]
-    pub fn with_ssh_session(
-        self,
-        _session: Option<goble_core::ssh_command::SshSession>,
-    ) -> Self {
+    pub fn with_ssh_session(self, _session: Option<goble_core::ssh_command::SshSession>) -> Self {
         self
     }
 
@@ -1019,10 +1079,7 @@ impl ChatComposer {
     /// Share the attach menu's keyboard highlight with the app, so Up/Down and
     /// Enter keep working across the per-frame rebuild the way the model card's
     /// highlight does.
-    pub fn with_attach_menu_highlight(
-        mut self,
-        highlight: Rc<RefCell<Option<usize>>>,
-    ) -> Self {
+    pub fn with_attach_menu_highlight(mut self, highlight: Rc<RefCell<Option<usize>>>) -> Self {
         self.attach_menu_highlight = highlight;
         self
     }
@@ -1039,10 +1096,7 @@ impl ChatComposer {
     /// default menu (built from `on_attach`/`on_image`/`on_link`/`on_code`/
     /// `on_voice`) does not need it: each row already routes to its own host
     /// callback.
-    pub fn with_on_select_attach_item<F: FnMut(usize) + 'static>(
-        mut self,
-        callback: F,
-    ) -> Self {
+    pub fn with_on_select_attach_item<F: FnMut(usize) + 'static>(mut self, callback: F) -> Self {
         self.on_select_attach_item = Some(Rc::new(RefCell::new(callback)));
         self
     }
@@ -1224,7 +1278,6 @@ impl ChatComposer {
     /// keyboard paths below and in the editor), never with a press on the bar.
     fn footer_row(&mut self, app: &AppContext) -> Option<Box<dyn Element>> {
         let left = self.action_children(app);
-        let environment = self.environment_control(app);
         let right = self.stop_control(app);
         // A submit surface keeps the footer row even when every control in it is
         // absent: the row is what reserves [`COMPOSER_FOOTER_HEIGHT`] inside the
@@ -1233,7 +1286,6 @@ impl ChatComposer {
         // must not shrink the card.
         let submits = self.on_send.is_some() || self.on_cmd_enter.is_some();
         if left.is_empty()
-            && environment.is_none()
             && right.is_none()
             && self.footer_action.is_none()
             && !submits
@@ -1253,24 +1305,19 @@ impl ChatComposer {
                 .with_size(vec2f(0.0, COMPOSER_FOOTER_HEIGHT))
                 .finish(),
         );
-        let wrap = Wrap::row()
+        // 439: one line, never a wrapped second row. The model truncates and
+        // the approval control drops to its icon before anything wraps.
+        let left_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
-            .with_run_spacing(sm)
             .with_children(left)
             .finish();
         let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(sm)
-            .with_child(Expanded::new(wrap).finish());
-        // The owner allowed the environment icon to move out of the retired
-        // top band and into the footer. It sits at the trailing end, beside
-        // the stop circle, so its tray and tooltip open inside the pane
-        // rather than spilling over the content lane's leading edge.
-        if let Some(environment) = environment {
-            row = row.with_child(environment);
-        }
+            .with_child(Expanded::new(left_row).finish());
         if let Some(right) = right {
             row = row.with_child(right);
         }
@@ -1377,6 +1424,7 @@ impl ChatComposer {
                 .map(|model| model.name.clone())
                 .filter(|name| !name.trim().is_empty())
         });
+        // 453: just the model's display name — no provider/company prefix.
         let text = match catalogue_label {
             Some(name) => name,
             None if label.trim().is_empty() => MODEL_NOT_CONFIGURED.to_string(),
@@ -1436,30 +1484,18 @@ impl ChatComposer {
                     .with_font_size(CONTROL_TEXT_SIZE)
                     .finish(),
             );
-        if let Some(effort) = effort {
-            content = content.with_child(
-                Text::new(effort)
-                    .with_color(caption_color(app))
-                    .with_font_size(CONTROL_TEXT_SIZE)
-                    .finish(),
-            );
-        }
-        content = content.with_child(
-            Icon::new(if open { "chevron-up" } else { "chevron-down" })
-                .with_size(12.0)
-                .with_color(caption_color(app))
-                .finish(),
-        );
-        // DSH's chip padding is asymmetric — 8pt before the label, 4pt after the
-        // chevron — so the content carries the inset and the button's own
-        // symmetric pad is zero.
-        let content = Padding::new(content.finish(), EdgeInsets::new(8.0, 0.0, 4.0, 0.0)).finish();
+        // 517: the composer chip names only the model; effort is chosen in
+        // the popover's detail column.
+        let _ = effort;
+        // 303: in the composer the model is a plain text selector, with no
+        // pill, outline, chevron or hover fill.
+        let content = Padding::new(content.finish(), EdgeInsets::new(4.0, 0.0, 4.0, 0.0)).finish();
         let button = ComposerButton::new(content)
             .with_height(28.0)
             .with_h_pad(0.0)
-            .with_radius(MODEL_CHIP_RADIUS)
+            .with_radius(0.0)
             .with_outline(false)
-            .with_hover_fill(ColorToken::Selected);
+            .with_hover_fill(ColorToken::ContentBg);
         // Opening the card makes this composer the keyboard's owner as well as
         // the pointer's. Without it, a chip pressed in a pane that had lost
         // focus opened a card whose Up/Down/Enter went nowhere (the composer
@@ -1551,22 +1587,27 @@ impl ChatComposer {
     /// them without opening it. The label is the mode's own word, so the pane
     /// never has to open the menu to say what policy is in force.
     fn approval_control(&self, app: &AppContext, mode: ApprovalMode) -> Box<dyn Element> {
-        // No glyph: the mode's word is the control, and its colour says which
-        // policy is in force.
-        let mut pill = ContextPill::new("sliders", mode.label())
-            .without_icon()
-            .with_label_color(mode.color())
-            .with_hover_fill(ColorToken::Selected)
-            .with_tooltip(format!(
-                "Approval mode · {} · shift+tab to cycle",
-                mode.description()
-            ))
-            .with_tray_side(PillTraySide::Above);
+        // 394: one neutral control, the mode's icon and label in primary ink.
+        // 439: on a narrow footer the label drops and only the icon + tooltip
+        // stay, so the row never wraps.
+        let compact = self.layout_width.is_some_and(|width| width < 460.0);
+        let mut pill =
+            ContextPill::new(mode.icon(), if compact { "" } else { mode.display_label() })
+                .with_label_color(ColorToken::Text)
+                .with_hover_fill(ColorToken::ContentBg)
+                .with_tooltip(format!(
+                    "Approval mode · {} · shift+tab to cycle",
+                    mode.display_description()
+                ))
+                .with_tray_side(PillTraySide::Above)
+                .with_menu_max_width(360.0);
         if let Some(cb) = self.on_select_approval_mode.clone() {
-            let items = ApprovalMode::ALL
+            let items = ApprovalMode::DISPLAY_ORDER
                 .iter()
                 .map(|option| {
-                    let mut item = PopupMenuItem::new(option.label());
+                    let mut item = PopupMenuItem::new(option.display_label())
+                        .with_icon(option.icon())
+                        .with_description(option.display_description());
                     if *option == mode {
                         item = item.selected();
                     }
@@ -1575,11 +1616,15 @@ impl ChatComposer {
                 .collect();
             pill = pill
                 .with_menu(items, self.approval_menu_open.clone(), move |index| {
-                    (cb.borrow_mut())(ApprovalMode::from_index(index))
+                    let chosen = ApprovalMode::DISPLAY_ORDER
+                        .get(index)
+                        .copied()
+                        .unwrap_or(ApprovalMode::Manual);
+                    (cb.borrow_mut())(chosen)
                 })
                 .with_highlight_index(self.approval_menu_highlight.clone());
         }
-        pill.finish(app)
+        DeferredApprovalCard::new(pill.finish(app), self.approval_menu_open.clone()).finish()
     }
 
     /// Shift+Tab cycles the pane's approval mode. Taken before the editor sees
@@ -1682,7 +1727,11 @@ impl ChatComposer {
         match key.as_str() {
             "ArrowDown" | "ArrowUp" => {
                 let len = items.len();
-                let current = self.attach_menu_highlight.borrow().unwrap_or(0).min(len - 1);
+                let current = self
+                    .attach_menu_highlight
+                    .borrow()
+                    .unwrap_or(0)
+                    .min(len - 1);
                 let next = if key == "ArrowDown" {
                     (current + 1) % len
                 } else {
@@ -1692,7 +1741,11 @@ impl ChatComposer {
                 true
             }
             "Enter" | "Tab" if !modifiers.shift => {
-                let index = self.attach_menu_highlight.borrow().unwrap_or(0).min(items.len() - 1);
+                let index = self
+                    .attach_menu_highlight
+                    .borrow()
+                    .unwrap_or(0)
+                    .min(items.len() - 1);
                 *self.attach_menu_open.borrow_mut() = false;
                 self.fire_attach_row(&actions, custom, index);
                 true
@@ -2186,9 +2239,8 @@ impl Element for ChatComposer {
         self.rebuild(app);
         // DSH sizes its card against `min(..., 100vw - 24px)`: publish the
         // composer card's width less the two 12pt viewport insets.
-        self.model_tray_bounds.set_width(
-            (card_width - 2.0 * MODEL_MENU_VIEWPORT_INSET).max(0.0),
-        );
+        self.model_tray_bounds
+            .set_width((card_width - 2.0 * MODEL_MENU_VIEWPORT_INSET).max(0.0));
         let size = self.root.as_mut().unwrap().layout(constraint, ctx, app);
         self.size = Some(size);
         size

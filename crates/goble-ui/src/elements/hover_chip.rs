@@ -181,8 +181,8 @@ mod tests {
     /// A tooltip-wrapped box, an opaque panel painted after it, and the layer
     /// the root paints last — the composition that used to hide the chip.
     fn covered_chip() -> Box<dyn Element> {
-        let target = Tooltip::new(Empty::new().with_size(vec2f(40.0, 32.0)).finish(), "Run")
-            .finish();
+        let target =
+            Tooltip::new(Empty::new().with_size(vec2f(40.0, 32.0)).finish(), "Run").finish();
         let cover = Container::new(Empty::new().with_size(vec2f(200.0, 200.0)).finish())
             .with_background(Fill::Solid(COVER))
             .finish();
@@ -272,7 +272,10 @@ mod tests {
         // The pointer outside the window.
         let commands = paint_frame(&mut root, &app, None);
         assert!(chip_text_index(&commands).is_none(), "no chip is drawn");
-        assert!(chip_box_index(&commands, &app).is_none(), "no chip is drawn");
+        assert!(
+            chip_box_index(&commands, &app).is_none(),
+            "no chip is drawn"
+        );
         assert!(app.hover_chips.borrow().is_empty());
 
         // The pointer inside the window, but away from the tooltip's element.

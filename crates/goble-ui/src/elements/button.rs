@@ -269,8 +269,7 @@ mod tests {
         let app = AppContext::default();
 
         // First instance consumes the MouseDown and sets its local press state.
-        let mut down_button =
-            Button::new(Empty::new().with_size(vec2f(80.0, 32.0)).finish());
+        let mut down_button = Button::new(Empty::new().with_size(vec2f(80.0, 32.0)).finish());
         down_button.layout(
             SizeConstraint::loose(vec2f(200.0, 200.0)),
             &mut LayoutContext::default(),
@@ -288,9 +287,8 @@ mod tests {
         // A fresh Button (as the next frame builds) handles the MouseUp.
         let clicked = Rc::new(RefCell::new(false));
         let clicked_clone = clicked.clone();
-        let mut up_button =
-            Button::new(Empty::new().with_size(vec2f(80.0, 32.0)).finish())
-                .with_on_click(move || *clicked_clone.borrow_mut() = true);
+        let mut up_button = Button::new(Empty::new().with_size(vec2f(80.0, 32.0)).finish())
+            .with_on_click(move || *clicked_clone.borrow_mut() = true);
         up_button.layout(
             SizeConstraint::loose(vec2f(200.0, 200.0)),
             &mut LayoutContext::default(),
@@ -338,9 +336,7 @@ mod tests {
             _ => None,
         });
         let stroke = commands.iter().find_map(|command| match command {
-            crate::render::RenderCommand::StrokeRect { corner_radius, .. } => {
-                Some(*corner_radius)
-            }
+            crate::render::RenderCommand::StrokeRect { corner_radius, .. } => Some(*corner_radius),
             _ => None,
         });
         assert_eq!(fill, Some(0.0), "the fill is square: {commands:?}");

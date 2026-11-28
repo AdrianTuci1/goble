@@ -126,11 +126,41 @@ fn run_saved_host_line(state: &mut UiState, pane_id: u64, cwd: &str, host: &Host
 /// focused walks through files in one pane rather than tiling the tab with
 /// them. The pane keeps no conversation and no working directory of its own:
 /// the explorer's tree follows the last pane that had one.
+pub(super) fn open_explorer_pane(state: &mut UiState, desktop: Option<&Arc<DesktopState>>) {
+    if let Some(space) = state.spaces.get(state.active_space) {
+        if matches!(
+            space.leaf_kind(state.active_pane_id),
+            Some(PaneKind::Explorer)
+        ) {
+            return;
+        }
+    }
+    let space_idx = state.active_space;
+    let Some(space) = state.spaces.get_mut(space_idx) else {
+        return;
+    };
+    let Some(new_id) = space.split_with_kind(
+        state.active_pane_id,
+        SplitDir::Horizontal,
+        &mut state.next_pane_id,
+        PaneKind::Explorer,
+    ) else {
+        return;
+    };
+    state.focus_pane(new_id);
+    ensure_pane_hover(state, new_id);
+    state.sync_active_view();
+    if let Some(desktop) = desktop {
+        state.save_panes(desktop);
+    }
+}
+
 pub(super) fn open_file_pane(
     state: &mut UiState,
     file_path: String,
     desktop: Option<&Arc<DesktopState>>,
 ) {
+    state.last_opened_file = Some(file_path.clone());
     if state.active_pane_shows_file() {
         let active = state.active_pane_id;
         state.show_file_in_pane(active, file_path);

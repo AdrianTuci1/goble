@@ -30,7 +30,20 @@ impl Store {
 
     pub fn list_device_identities(
         &self,
-    ) -> Result<Vec<(String, String, String, String, String, String, bool, String, String, String)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            bool,
+            String,
+            String,
+            String,
+        )>,
+    > {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, cluster_name, cert_pem, key_pem, ca_cert_pem, role, is_owner, deployment_mode, deployment_config, created_at FROM device_identities ORDER BY created_at DESC",
@@ -115,7 +128,10 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub fn get_cluster_invite_by_code(&self, code: &str) -> Result<Option<(String, String, String, String, bool, String)>> {
+    pub fn get_cluster_invite_by_code(
+        &self,
+        code: &str,
+    ) -> Result<Option<(String, String, String, String, bool, String)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, cluster_name, code, pem_bundle, revoked, created_at FROM cluster_invites WHERE code = ?1",

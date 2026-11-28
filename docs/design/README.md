@@ -164,36 +164,71 @@ semantic id used by code (`ellipsis`, `flat-list`, `terminal`, `files`,
 
 ### Previews
 
+Every side-panel tab owns a content topbar under the general bar: Terminal
+(`zsh` + rail toggle), Task Output (`Background Task Output` + copy/rail
+toggle), Side Question (`New side question`), Files (path), Agent and Overview;
+Terminal and Task Output share the inner Terminals/Background Tasks rail with a
+full-height 1 px separator. The floating file panel is movable by its titlebar,
+resizes from the bottom-right grip, raises on click, and keeps its dock toggle.
+Previews: `side-terminal-*`, `side-task-output-*`, `side-question-*`,
+`floating-file-*`, `floating-file-small-*`.
+
 `docs/design/previews/` holds the headless-rendered screenshots used to check
 parity with the reference photos in `.refs/t3-new/`: shell (wide/narrow, dark
 and light), topbar with More open (plain, Split flyout, Copy flyout) and
-Overview open, the empty side panel (no chip, no `+`), the Terminal tab, the
-Side Question conversation, multiple tabs with `+` beside them, the tight-width
-overflow strip, the split mid-resize state with the 1 pt inter-panel hairline,
-the terminal shell, Settings (General, Appearance with its in-field swatch,
+Overview open, the empty side panel's Start surface with its `+`, the Terminal
+tab, the Side Question conversation, multiple tabs with `+` beside them and a
+reordered strip, the tight-width overflow strip, the split mid-resize state
+with the 1 pt inter-panel hairline, a stacked split's gutter band and close X,
+the file explorer opened from Files, the terminal shell (an interactive
+`user@host ~ %` prompt), the composer's project picker above the input (right-aligned), the Conversations
+heading with its new-chat "+" and shared project menu, the Automations panel
+(tasks and empty, switch on/off), the no-model announcement and the turn-driven
+scroll rail hover, the terminal rail with prev/next and per-window close, the
+square+hue colour control, the composer's model and permission trays, Settings
+(with an open select above later rows, integrations, General, Appearance with its in-field swatch,
 Appearance with the colour palette open, Shortcuts, narrow; no descriptions,
-floating close x), the diff reviewer, the floating file window and the
+floating close x), the diff reviewer, the floating file window (also over the sidebar and side panel, with no tiled duplicate) and the
 changed-files card. Next to them: the DSH-style right-aligned user bubble and
 inline image message (`chat-parity-*`), the slash menu floating above an
-unchanged composer (`slash-menu-*`), the Review tab beside the main chat
+unchanged composer (`slash-menu-*`), the Review tab (all changed files in one scroller, not one expanded file) beside the main chat
 (`split-review-*`), the file viewer with Review beside it
 (`split-file-viewer-*`) and the narrow split (`split-review-narrow-*`). The
 review surface has no inner header band: directly under the one general topbar
-its stacked/unified diff column sits on the left (type badge, bold filename,
-muted directory, counts, fold chevron and inline stacked diff) and the single
-"Files Changed" rail on the right. The topbar's right edge ends in exactly the
-add-tab, maximize and panel toggles. The
+its file column sits on the left as a flat list (per-extension letter badge,
+bold filename, muted tail-truncated path, counts, fold chevron, thin row
+dividers and inline stacked diff; no per-row outer border) and the "Files
+Changed" flat rail on the right at about 40% of the panel width (no per-row
+border). The general topbar ends in the tab chips plus maximize and the side-panel
+toggle; the review's own 1 px-separated row below it carries the kebab, search
+and round menu. The
 chat's changed-files card is the simpler T3 model: one collapsible bordered
 card on the chat background, "N files changed" + counts + chevron and a
 Review button, expanding to full-path rows with counts flush right; on narrow
 widths only the path shrinks, with a leading ellipsis.
 
 The topbar Search opens the centered spotlight (`spotlight-*`): scope pill,
-query field, sort/filter menu and real conversation rows. The tab-strip
+query field, sort/filter menu and real conversation rows. `spotlight-compare-*`
+puts the supplied reference and the Goble render side by side at the same full
+window scale. Files open in the right panel's Files tab (`side-files-*`), not a
+main pane; the left sidebar carries Projects/Conversations only and no file
+tree (`sidebar-no-files-*`). The review surface follows `review_target.webp`:
+full-width file cards with a 1 px rounded Border, the real per-extension file
+icon, bold name, left-truncated path, counts and a trailing chevron; the
+expanded file shows its inline diff inside the card with line numbers,
+full-width add/del bands and syntax colours; a fixed 260 pt Files Changed rail
+sits on the right. The review topbar ends in the More kebab and the round panel
+menu, and a 1 px rule separates panel 1 from panel 2; tabs and title centre on
+the 44 pt bar. `review-compare-*` is the same-scale side-by-side. The side
+panel launcher follows `side_panel_launcher_target.webp`: capsule search with
+a blue focus ring, hover-card rows (Review/Open File/Terminal/Browser/Side
+Question/Plugins), a Background Tasks count pill with four rows and See all;
+`launcher-compare-*` is the same-scale comparison. The tab-strip
 evidence shows multiple chips, a hovered chip with its close X and the pinned
-`+` menu (`side-tabs-hover-*`, `side-tabs-add-*`). The app is one flat grey
-(`Surface`) surface — window, panes, cards and workspace sheet share it, with
-no darker card fill, border, rounded casing, shadow or 4 px band; the only
+`+` menu (`side-tabs-hover-*`, `side-tabs-add-*`). The shell material (topbar, sidebar) is the grey `Surface`; the content
+material (`ContentBg`, the shell Bg pushed toward black) is shared by the
+panes, cards, workspace sheet, chat lane, spotlight and settings sheet. There
+is no border, rounded casing, shadow or 4 px band around content; the only
 separation is the full-height 1 px main/side hairline. The topbar's two panel
 toggles use DSH's own `panel-left-outline` glyph and its mirrored right-hand
 twin. The active conversation title is a rounded pill that turns into an inline

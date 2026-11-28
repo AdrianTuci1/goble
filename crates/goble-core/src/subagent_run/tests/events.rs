@@ -1,6 +1,6 @@
 use crate::harness::{HarnessEvent, SPAWN_SUBAGENT_TOOL};
-use crate::store::Store;
 use crate::llm::TokenUsage;
+use crate::store::Store;
 use futures::StreamExt;
 
 use super::{
@@ -188,5 +188,8 @@ async fn a_childs_reported_usage_lands_on_the_parent_conversation() {
         .chat_usage(&parent_chat)
         .expect("reading the parent's usage")
         .expect("the child's call is on the parent's row");
-    assert_eq!((usage.input, usage.cached, usage.output), (900, Some(700), 40));
+    assert_eq!(
+        (usage.input, usage.cached, usage.output),
+        (900, Some(700), 40)
+    );
 }

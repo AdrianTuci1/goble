@@ -19,6 +19,7 @@ mod composer;
 mod dock;
 mod header;
 mod overlays;
+pub(crate) mod project_pill;
 mod sub_agent;
 mod workflow;
 
@@ -77,6 +78,7 @@ pub(crate) fn pane_session_snapshot(state: &UiSnapshot, pane_id: u64) -> PaneCha
             messages: state.chat_messages.clone(),
             composer_draft: state.composer_draft.clone(),
             composer_path: state.composer_path.clone(),
+            composer_focused: state.composer_focused,
             // A pane with no snapshot entry draws no connection line; it is only
             // ever a pane that has not been refreshed yet, never a viewer pane
             // whose state went missing.

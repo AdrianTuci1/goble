@@ -15,8 +15,8 @@ use goble_ui::theme::ThemePreset;
 use goble_ui::{ChatMessage, ChatRole};
 
 use super::pane_ops::{
-    close_space_at, ensure_pane_hover, open_diff_pane, open_file_pane, open_pane_harness,
-    open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
+    close_space_at, ensure_pane_hover, open_diff_pane, open_explorer_pane, open_file_pane,
+    open_pane_harness, open_ssh_host_pane, reconnect_ssh_host, split_active_pane,
 };
 use super::prompt::{
     run_terminal_command, send_agent_prompt, send_agent_prompt_with_attachments,
@@ -257,6 +257,7 @@ pub fn make_actions(
     let on_create_focus_change = Rc::clone(&state);
     let on_create_submit = Rc::clone(&state);
     let on_toggle_sidebar = Rc::clone(&state);
+    let desktop_toggle_sidebar = desktop.clone();
     let on_diff_panel = Rc::clone(&state);
     let desktop_diff_panel = desktop.clone();
     let on_file_menu = Rc::clone(&state);
@@ -287,6 +288,12 @@ pub fn make_actions(
     let on_archive_cancel = Rc::clone(&state);
     let on_archived_filter_change = Rc::clone(&state);
     let on_add_workspace = Rc::clone(&state);
+    let on_bind_project = Rc::clone(&state);
+    let desktop_bind_project = desktop.clone();
+    let on_new_project_conversation = Rc::clone(&state);
+    let desktop_new_project_conversation = desktop.clone();
+    let on_clear_project = Rc::clone(&state);
+    let desktop_clear_project = desktop.clone();
     let desktop_add_workspace = desktop.clone();
     let on_sidebar_workspace_new_session = Rc::clone(&state);
     let media_sidebar_workspace_new_session = Rc::clone(&media);
@@ -303,6 +310,10 @@ pub fn make_actions(
     let on_toast_dismiss = Rc::clone(&state);
     let on_toggle_explorer_dir = Rc::clone(&state);
     let on_explorer_file_click = Rc::clone(&state);
+    let on_open_file_side = Rc::clone(&state);
+    let on_open_files_tab = Rc::clone(&state);
+    let on_open_explorer = Rc::clone(&state);
+    let desktop_explorer = desktop.clone();
     let on_open_file_floating = Rc::clone(&state);
     let desktop_open_file_floating = desktop.clone();
     let on_dock_float = Rc::clone(&state);
@@ -346,6 +357,7 @@ pub fn make_actions(
     let on_select_dir = Rc::clone(&state);
     let on_select_medium = Rc::clone(&media);
     let on_create_medium = Rc::clone(&media);
+    let create_medium_new_project = Rc::clone(&on_create_medium);
     let on_select_branch = Rc::clone(&state);
     let on_stop = Rc::clone(&state);
     let on_open_sub_agent = Rc::clone(&state);
@@ -452,6 +464,9 @@ pub fn make_actions(
     let on_cron_create = Rc::clone(&state);
     let on_cron_delete = Rc::clone(&state);
     let on_cron_trigger = Rc::clone(&state);
+    let on_cron_toggle = Rc::clone(&state);
+    let on_toggle_automations = Rc::clone(&state);
+    let desktop_cron_toggle = desktop.clone();
     let on_sidebar_drag_start = Rc::clone(&state);
     let on_sidebar_drag_move = Rc::clone(&state);
     let on_sidebar_drag_end = Rc::clone(&state);
@@ -544,6 +559,8 @@ pub fn make_actions(
     let on_remove_authorized_key = Rc::clone(&state);
     let on_config_llm_key = Rc::clone(&state);
     let on_open_config_file = Rc::clone(&state);
+    let on_open_models_settings = Rc::clone(&state);
+    let desktop_open_models_settings = desktop.clone();
     let on_choose_workspace = Rc::clone(&state);
     let on_open_remote_settings = Rc::clone(&state);
     let on_close_llm_dialog = Rc::clone(&state);
@@ -1249,10 +1266,8 @@ pub fn make_actions(
                         .slash_dismissed
                         .borrow_mut() = false;
                 }
-                SideChatAction::Focus(_focused) => {
-                    // Focus is per element tree: the frame that draws the side
-                    // composer is the one that owns its caret, so there is no
-                    // app-wide flag to flip here.
+                SideChatAction::Focus(focused) => {
+                    state.side_composer_focused = focused;
                 }
                 SideChatAction::Attach => {
                     if let Some(path) = goble_ui::platform::current::pick_file() {
@@ -2469,9 +2484,13 @@ pub fn make_actions(
                             *controls.diff_git_status.borrow_mut() = Some((error, false));
                         }
                     }
+                    DiffPanelAction::OpenFileTab(path) => {
+                        state.open_file_tab(path);
+                    }
                     DiffPanelAction::OpenFile(path) => {
-                        state.focus_pane(pane_id);
-                        open_file_pane(&mut state, path, desktop_diff_panel.as_ref());
+                        // Y: a file reference opens the side panel's Files tab;
+                        // it never splits or retargets a main pane.
+                        state.open_file_side(path);
                     }
                     DiffPanelAction::CopyPaths(paths) => {
                         crate::clipboard::copy_text(&paths.join("\n"));
@@ -2541,6 +2560,11 @@ pub fn make_actions(
             // visibility preference for the wide layout (DSH's
             // `narrowExpanded`); above it, it is the ordinary toggle.
             state.toggle_sidebar_responsive();
+            if let Some(desktop) = desktop_toggle_sidebar.as_deref() {
+                if let Err(error) = desktop.set_ui_sidebar_visible(state.sidebar_visible) {
+                    log::warn!("set_ui_sidebar_visible failed: {error}");
+                }
+            }
         })),
         on_toggle_conversations_expanded: Rc::new(RefCell::new(move || {
             let mut state = on_toggle_conversations_expanded.borrow_mut();
@@ -2668,6 +2692,53 @@ pub fn make_actions(
             let mut state = on_add_workspace.borrow_mut();
             state.add_workspace(&path, desktop_add_workspace.as_deref());
         })),
+        on_bind_project: Rc::new(RefCell::new(move || {
+            let Some(path) = goble_ui::platform::current::pick_directory() else {
+                return;
+            };
+            let mut state = on_bind_project.borrow_mut();
+            state.set_active_pane_path(path.clone());
+            if let Some(chat) = state.pane_conversation_id(state.active_pane_id) {
+                if let Some(desktop) = desktop_bind_project.as_ref() {
+                    if let Err(e) = desktop.set_chat_working_dir(&chat, &path) {
+                        log::warn!("set_chat_working_dir failed: {e}");
+                    }
+                }
+            }
+        })),
+        on_new_project_conversation: Rc::new(RefCell::new(move || {
+            let Some(path) = goble_ui::platform::current::pick_directory() else {
+                return;
+            };
+            let mut state = on_new_project_conversation.borrow_mut();
+            create_conversation_space(
+                &mut state,
+                &create_medium_new_project,
+                desktop_new_project_conversation.as_ref(),
+                NEW_CONVERSATION_TITLE,
+                None,
+            );
+            let pane = state.active_pane_id;
+            state.set_active_pane_path(path.clone());
+            if let Some(chat) = state.pane_conversation_id(pane) {
+                if let Some(desktop) = desktop_new_project_conversation.as_ref() {
+                    if let Err(e) = desktop.set_chat_working_dir(&chat, &path) {
+                        log::warn!("set_chat_working_dir failed: {e}");
+                    }
+                }
+            }
+        })),
+        on_clear_project: Rc::new(RefCell::new(move || {
+            let mut state = on_clear_project.borrow_mut();
+            state.set_active_pane_path(String::new());
+            if let Some(chat) = state.pane_conversation_id(state.active_pane_id) {
+                if let Some(desktop) = desktop_clear_project.as_ref() {
+                    if let Err(e) = desktop.set_chat_working_dir(&chat, "") {
+                        log::warn!("set_chat_working_dir failed: {e}");
+                    }
+                }
+            }
+        })),
         // A workspace row's New-session control: a conversation in that
         // workspace's directory, so its card lands under the workspace's folder
         // group (which is the directory's last segment).
@@ -2761,8 +2832,17 @@ pub fn make_actions(
             }
         })),
         on_explorer_file_click: Rc::new(RefCell::new(move |path: String| {
-            let mut state = on_explorer_file_click.borrow_mut();
-            open_file_pane(&mut state, path, desktop_file_view.as_ref());
+            on_explorer_file_click.borrow_mut().open_file_side(path);
+        })),
+        on_open_file_side: Rc::new(RefCell::new(move |path: String| {
+            on_open_file_side.borrow_mut().open_file_side(path);
+        })),
+        on_open_files_tab: Rc::new(RefCell::new(move || {
+            on_open_files_tab.borrow_mut().open_files_tab();
+        })),
+        on_open_explorer: Rc::new(RefCell::new(move || {
+            let mut state = on_open_explorer.borrow_mut();
+            open_explorer_pane(&mut state, desktop_explorer.as_ref());
         })),
         // DSH's "Open in floating panel": the file pane opens first (beside the
         // active pane, or as a chip in the file pane already in front), then the
@@ -2939,6 +3019,14 @@ pub fn make_actions(
                 state.refresh_settings(desktop);
             }
         })),
+        on_open_models_settings: Rc::new(RefCell::new(move || {
+            let mut state = on_open_models_settings.borrow_mut();
+            state.settings.page = crate::ui::SettingsCategory::Providers;
+            state.settings_overlay_open = true;
+            if let Some(desktop) = desktop_open_models_settings.as_deref() {
+                state.refresh_settings(desktop);
+            }
+        })),
         on_close_settings_overlay: Rc::new(RefCell::new(move || {
             on_close_settings_overlay.borrow_mut().settings_overlay_open = false;
         })),
@@ -2955,8 +3043,17 @@ pub fn make_actions(
             match action {
                 SideTabAction::Select(index) => state.select_side_tab(index),
                 SideTabAction::Close(index) => state.close_side_tab(index),
-                SideTabAction::Add(kind) => state.add_side_tab(kind),
+                SideTabAction::Add(kind) => {
+                    if kind == crate::state::SideTabKind::Automations {
+                        state.right_sidebar_open = true;
+                    }
+                    state.add_side_tab(kind)
+                }
                 SideTabAction::Cycle(step) => state.cycle_side_tab(step),
+                SideTabAction::ToggleRail => {
+                    state.side_rail_open = !state.side_rail_open;
+                }
+                SideTabAction::Reorder(from, to) => state.reorder_side_tab(from, to),
             }
             // The Terminal tab mounts the live grid: make sure the active
             // pane's PTY exists before that surface reads it (the dock starts
@@ -3213,6 +3310,21 @@ pub fn make_actions(
                 }
             }
         })),
+        on_toggle_automations: Rc::new(RefCell::new(move || {
+            let mut state = on_toggle_automations.borrow_mut();
+            state.automations_open = !state.automations_open;
+            state.automations_highlight = usize::MAX;
+        })),
+        on_cron_toggle: Rc::new(RefCell::new(move |id: String, enabled: bool| {
+            let mut state = on_cron_toggle.borrow_mut();
+            if let Some(desktop) = desktop_cron_toggle.as_ref() {
+                if let Err(error) = desktop.set_workflow_enabled(&id, enabled) {
+                    log::warn!("set_workflow_enabled failed: {error}");
+                } else {
+                    state.refresh_crons(desktop);
+                }
+            }
+        })),
         on_sidebar_drag_start: Rc::new(RefCell::new(move |pointer_x: f32| {
             let mut state = on_sidebar_drag_start.borrow_mut();
             state.sidebar_drag_origin_x = pointer_x;
@@ -3224,8 +3336,21 @@ pub fn make_actions(
             let delta = pointer_x - state.sidebar_drag_origin_x;
             state.sidebar_width = (state.sidebar_drag_start_width + delta).clamp(200.0, 480.0);
         })),
-        on_sidebar_drag_end: Rc::new(RefCell::new(move || {
-            on_sidebar_drag_end.borrow_mut().sidebar_dragging = false;
+        on_sidebar_drag_end: Rc::new(RefCell::new({
+            let desktop = desktop.clone();
+            let state = on_sidebar_drag_end;
+            move || {
+                let width = {
+                    let mut state = state.borrow_mut();
+                    state.sidebar_dragging = false;
+                    state.sidebar_width
+                };
+                if let Some(desktop) = desktop.as_ref() {
+                    if let Err(error) = desktop.set_ui_sidebar_width(width) {
+                        log::warn!("set_ui_sidebar_width failed: {error}");
+                    }
+                }
+            }
         })),
         // The shared main/side-panel boundary. The element resolves the
         // pointer to a ratio of the measured content width and clamps it to
@@ -3333,16 +3458,16 @@ pub fn make_actions(
         })),
         on_split_down: Rc::new(RefCell::new(move || {
             let (mut state, media) = (on_split_down.borrow_mut(), media_split_down.borrow());
+            // A stacked split opens a chat pane, not a terminal: the terminal
+            // lives in the side panel / dock.
             split_active_pane(
                 &mut state,
                 SplitDir::Vertical,
                 desktop_split_down.as_ref(),
                 &media,
-                PaneKind::Terminal,
+                PaneKind::Chat,
             );
             drop(media);
-            let pane_id = state.active_pane_id;
-            open_pane_harness(&mut state, pane_id, desktop_split_down.as_ref());
             if let Some(desktop) = &desktop_split_down {
                 state.save_panes(desktop);
             }
@@ -3938,7 +4063,12 @@ pub fn make_actions(
             // the space's own state and is persisted with the rect.
             let space_idx = state.active_space;
             if let Some(space) = state.spaces.get_mut(space_idx) {
-                if space.layout == LayoutKind::Floating {
+                if space.layout == LayoutKind::Floating
+                    || space
+                        .floating
+                        .iter()
+                        .any(|pane| pane.pane_id == id && pane.overlay)
+                {
                     space.raise_pane(id);
                 }
             }

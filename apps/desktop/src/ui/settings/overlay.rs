@@ -236,111 +236,36 @@ fn overlay_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Bo
     // L: the rail is one full-height secondary column (same grey tone top to
     // bottom), with a smaller muted heading, no search field, no row rules, and
     // no user/avatar footer.
+    // 567: the "Settings" title sits on the sheet surface; the grey rail starts
+    // directly below it and runs to the sheet's bottom edge.
+    let title = Container::new(
+        Text::new("Settings")
+            .with_font_size(12.0)
+            .with_weight(FontWeight::Medium)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_padding(EdgeInsets::new(14.0, 14.0, 12.0, 6.0))
+    .finish();
+    let grey = Container::new(
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(12.0)
+            .with_child(ConstrainedBox::new(nav).with_height(520.0).finish())
+            .with_child(Spacer::new().finish())
+            .with_child(feedback)
+            .finish(),
+    )
+    .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+    .finish();
     let column = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(12.0)
-        .with_child(
-            Container::new(
-                Text::new("Settings")
-                    .with_font_size(12.0)
-                    .with_weight(FontWeight::Medium)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(14.0, 14.0, 12.0, 2.0))
-            .finish(),
-        )
-        .with_child(ConstrainedBox::new(nav).with_height(520.0).finish())
-        .with_child(Spacer::new().finish())
-        .with_child(feedback)
+        .with_child(title)
+        .with_child(Expanded::new(grey).finish())
         .finish();
-    ConstrainedBox::new(RailSurface::new(column, app).finish())
-        .with_width(196.0)
-        .finish()
-}
-
-/// The rail's full-height secondary column. It paints the same grey from the
-/// sheet's top edge to its bottom edge, with the sheet's own radius on the two
-/// OUTER (left) corners and a square edge on the page side — the rounded sheet
-/// must not be squared off by its rail child.
-struct RailSurface {
-    child: Box<dyn Element>,
-    fill: goble_ui::ColorU,
-    radius: f32,
-    size: Option<goble_ui::geometry::Vector2F>,
-    origin: Option<goble_ui::elements::Point>,
-}
-
-impl RailSurface {
-    fn new(child: Box<dyn Element>, app: &AppContext) -> Self {
-        Self {
-            child,
-            fill: app.theme.color(ColorToken::SurfaceRaised),
-            radius: 16.0,
-            size: None,
-            origin: None,
-        }
-    }
-}
-
-impl Element for RailSurface {
-    fn layout(
-        &mut self,
-        constraint: goble_ui::elements::SizeConstraint,
-        ctx: &mut goble_ui::elements::LayoutContext,
-        app: &AppContext,
-    ) -> goble_ui::geometry::Vector2F {
-        let size = self.child.layout(constraint, ctx, app);
-        self.size = Some(size);
-        size
-    }
-
-    fn paint(
-        &mut self,
-        origin: goble_ui::geometry::Vector2F,
-        ctx: &mut goble_ui::elements::PaintContext,
-        app: &AppContext,
-    ) {
-        self.origin = Some(goble_ui::elements::Point::from_vec2f(
-            origin,
-            Default::default(),
-        ));
-        let Some(size) = self.size else { return };
-        if let Some(renderer) = ctx.renderer.as_mut() {
-            let rect = goble_ui::geometry::rectf(origin.x, origin.y, size.x, size.y);
-            renderer.fill_rounded_rect(rect, self.fill, self.radius);
-            // Square the page-side edge after rounding: only the two left
-            // corners should follow the sheet's radius.
-            renderer.fill_rect(
-                goble_ui::geometry::rectf(
-                    origin.x + self.radius,
-                    origin.y,
-                    (size.x - self.radius).max(0.0),
-                    size.y,
-                ),
-                self.fill,
-            );
-        }
-        self.child.paint(origin, ctx, app);
-    }
-
-    fn size(&self) -> Option<goble_ui::geometry::Vector2F> {
-        self.size
-    }
-
-    fn origin(&self) -> Option<goble_ui::elements::Point> {
-        self.origin
-    }
-
-    fn dispatch_event(
-        &mut self,
-        event: &goble_ui::event::DispatchedEvent,
-        ctx: &mut goble_ui::elements::EventContext,
-        app: &AppContext,
-    ) -> bool {
-        self.child.dispatch_event(event, ctx, app)
-    }
+    ConstrainedBox::new(column).with_width(196.0).finish()
 }
 
 /// The rail labels and order from the reference photos, mapped onto the real

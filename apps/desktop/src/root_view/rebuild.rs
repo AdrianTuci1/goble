@@ -330,10 +330,21 @@ impl RootView {
             // cache lives beside the state, so a frame that changes nothing
             // reads no directory.
             let explorer_root = s.active_working_directory();
+            // 322: an Explorer pane in the workspace reads the same tree as the
+            // old sidebar explorer, so the cache is live when either surface is
+            // on screen.
+            let explorer_visible = s.sidebar_view == SidebarView::Explorer
+                || s.spaces.iter().any(|space| {
+                    let mut leaves = Vec::new();
+                    space.root.leaves(&mut leaves);
+                    leaves
+                        .iter()
+                        .any(|(_, kind)| matches!(kind, crate::state::PaneKind::Explorer))
+                });
             let explorer_rows = self.explorer.borrow_mut().rows(
                 &explorer_root,
                 &s.explorer_expanded,
-                s.sidebar_view == SidebarView::Explorer,
+                explorer_visible,
             );
             // Every file view on screen reads its file here, once — when the
             // file changed — instead of per frame in the element tree, and the
@@ -343,6 +354,15 @@ impl RootView {
                 let mut leaves = Vec::new();
                 if let Some(space) = s.spaces.get(s.active_space) {
                     space.root.file_leaves(&mut leaves);
+                    // 381: detached floating file windows are not tree leaves;
+                    // read them in the same pass so their content is real.
+                    for pane in &space.floating {
+                        if let Some(crate::state::PaneKind::File { path }) = pane.kind.as_ref() {
+                            if !space.root.contains_leaf(pane.pane_id) {
+                                leaves.push((pane.pane_id, path.clone()));
+                            }
+                        }
+                    }
                 }
                 let mut open = Vec::new();
                 let mut active = HashMap::new();
@@ -361,6 +381,11 @@ impl RootView {
                     }
                     active.insert(pane_id, path);
                     lists.insert(pane_id, paths);
+                }
+                if let Some(path) = s.side_file.clone() {
+                    open.push((crate::state::SIDE_FILE_PANE_ID, path.clone()));
+                    active.insert(crate::state::SIDE_FILE_PANE_ID, path);
+                    lists.insert(crate::state::SIDE_FILE_PANE_ID, Vec::new());
                 }
                 let contents = self.file_cache.borrow_mut().read_open(&open, &active);
                 (contents, lists)
@@ -483,6 +508,12 @@ impl RootView {
                 composer_focused: s.composer_focused,
                 models: s.models.clone(),
                 model_groups: s.model_groups.clone(),
+                integrations: s.integrations.clone(),
+                llm_credential_source: s.llm_credential_source.clone(),
+                browser_url: s.browser_url.clone(),
+                review_rail_width: s.review_rail_width.clone(),
+                review_uncommitted_open: s.review_uncommitted_open.clone(),
+                review_commit_open: s.review_commit_open.clone(),
                 composer_catalog: s.composer_catalog.clone(),
                 mention_paths,
                 selected_model: s.selected_model.clone(),
@@ -627,6 +658,10 @@ impl RootView {
                 sidebar_focus_row: s.sidebar_focus_row.clone(),
                 sidebar_menu_open: s.sidebar_menu_open.clone(),
                 sidebar_add_menu_open: s.sidebar_add_menu_open.clone(),
+                conversations_add_menu_open: s.conversations_add_menu_open.clone(),
+                automations_open: s.automations_open,
+                automations_highlight: s.automations_highlight,
+                project_menu_open: s.project_menu_open.clone(),
                 changed_files_open: s.changed_files_open.clone(),
                 settings_overlay_open: s.settings_overlay_open,
                 settings_overlay_hamburger: s.settings_overlay_hamburger.clone(),
@@ -636,6 +671,10 @@ impl RootView {
                 side_panel_maximized: s.side_panel_maximized,
                 side_tabs: s.side_tabs.clone(),
                 active_side_tab: s.active_side_tab,
+                side_rail_open: s.side_rail_open,
+                side_file: s.side_file.clone(),
+                side_file_tab: s.side_file_tab.clone(),
+                side_files_show_explorer: s.side_files_show_explorer,
                 spotlight: s.spotlight.clone(),
                 side_tab_add_menu_open: s.side_tab_add_menu_open.clone(),
                 side_swipe_accum: s.side_swipe_accum.clone(),

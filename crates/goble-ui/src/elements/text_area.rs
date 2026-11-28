@@ -482,9 +482,7 @@ impl TextArea {
             );
             // The caret's left edge is the sum of the advances before it: the
             // very pen the run draws that character at.
-            let x: f32 = advances[..caret_column.min(advances.len())]
-                .iter()
-                .sum();
+            let x: f32 = advances[..caret_column.min(advances.len())].iter().sum();
             let caret_top = lines.get(caret_row).map_or(0.0, |line| line.top);
             let height = lines
                 .iter()
@@ -499,8 +497,7 @@ impl TextArea {
                     // The row's own characters, whitespace the run leaves out
                     // included: a selection over those spaces is still a
                     // selection.
-                    let row_text: String =
-                        row_chars(&starts, row, &display).into_iter().collect();
+                    let row_text: String = row_chars(&starts, row, &display).into_iter().collect();
                     let from = selected.start.max(start);
                     let to = selected.end.min(start + row_text.chars().count());
                     if from == to {
@@ -514,9 +511,7 @@ impl TextArea {
                         false,
                     );
                     let pen = |index: usize| -> f32 {
-                        row_advances[..index.min(row_advances.len())]
-                            .iter()
-                            .sum()
+                        row_advances[..index.min(row_advances.len())].iter().sum()
                     };
                     children.push(
                         SelectionUnderlay::new(
@@ -637,9 +632,8 @@ impl TextArea {
                 .unwrap_or(chars.len());
             if index >= window.start && index < window.end {
                 let line: String = chars[start..end].iter().collect();
-                column = column.with_child(self.line_row(
-                    app, index, &line, start, caret, &selection, plain,
-                ));
+                column = column
+                    .with_child(self.line_row(app, index, &line, start, caret, &selection, plain));
             }
             index += 1;
             if end >= chars.len() {
@@ -779,12 +773,9 @@ impl TextArea {
         let advances = line_advances(&runs, self.font_size);
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Start);
         if self.line_numbers > 0 {
-            let number = TextSpan::plain(format!(
-                "{:>width$} ",
-                index + 1,
-                width = self.line_numbers
-            ))
-            .with_color(app.theme.color(ColorToken::Muted));
+            let number =
+                TextSpan::plain(format!("{:>width$} ", index + 1, width = self.line_numbers))
+                    .with_color(app.theme.color(ColorToken::Muted));
             row = row.with_child(runs_code(self.font_size, self.line_height, vec![number]));
         }
 
@@ -819,7 +810,14 @@ impl TextArea {
             // to — the row paints every run in the mono face, whatever family
             // its span names — so the block redraws it on its own slot.
             let glyph = run_char(&runs, column).and_then(|(ch, weight, italic)| {
-                block_glyph(shape, Some(ch), self.font_size, FontFamily::Mono, weight, italic)
+                block_glyph(
+                    shape,
+                    Some(ch),
+                    self.font_size,
+                    FontFamily::Mono,
+                    weight,
+                    italic,
+                )
             });
             let ink = glyph.map(|glyph| caret::caret_ink(app, x, cell, self.line_box(), glyph));
             (
@@ -991,9 +989,13 @@ impl TextArea {
                 Some(true)
             }
             "Enter" => {
-                if let Some(cb) = self.on_submit.as_ref() {
-                    (cb.borrow_mut())(*modifiers);
-                    return Some(false);
+                // 436: Shift+Enter is always a newline, even when the host
+                // wired a submit callback.
+                if !modifiers.shift {
+                    if let Some(cb) = self.on_submit.as_ref() {
+                        (cb.borrow_mut())(*modifiers);
+                        return Some(false);
+                    }
                 }
                 self.replace_selection();
                 let caret = self.caret_index();
@@ -1097,10 +1099,7 @@ impl TextArea {
         if self.multiline {
             self.index_at_point(position, bounds.min_x(), bounds.min_y())
         } else if self.wrapping {
-            self.index_at_folded_point(
-                position.x - bounds.min_x(),
-                position.y - bounds.min_y(),
-            )
+            self.index_at_folded_point(position.x - bounds.min_x(), position.y - bounds.min_y())
         } else {
             self.index_at_offset(position.x - bounds.min_x())
         }
@@ -1135,10 +1134,7 @@ impl TextArea {
             FontFamily::System,
             false,
         );
-        let row = lines
-            .iter()
-            .rposition(|line| y >= line.top)
-            .unwrap_or(0);
+        let row = lines.iter().rposition(|line| y >= line.top).unwrap_or(0);
         if row >= lines.len() {
             return 0;
         }
@@ -1163,10 +1159,11 @@ impl TextArea {
         // it across the call, and the field's own value/caret are written back
         // right after.
         let clipboard = self.clipboard.clone();
-        let mut clipboard_borrow: Option<std::cell::RefMut<'_, dyn Clipboard>> = match clipboard.as_ref() {
-            Some(cell) => Some(cell.borrow_mut()),
-            None => None,
-        };
+        let mut clipboard_borrow: Option<std::cell::RefMut<'_, dyn Clipboard>> =
+            match clipboard.as_ref() {
+                Some(cell) => Some(cell.borrow_mut()),
+                None => None,
+            };
         let outcome = match clipboard_borrow.as_mut() {
             Some(clip) => vim
                 .borrow_mut()
@@ -1503,13 +1500,7 @@ fn index_in(line: &str, offset: f32, font_size: f32, family: FontFamily) -> usiz
         boundary.push(ch);
         // The pen after the prefix, not its ink extent: a prefix ending in a
         // space has no extra ink, and its boundary still has to advance.
-        let end = advance_width(
-            &boundary,
-            font_size,
-            FontWeight::Regular,
-            family,
-            false,
-        );
+        let end = advance_width(&boundary, font_size, FontWeight::Regular, family, false);
         let distance = (end - offset).abs();
         if distance < nearest.1 {
             nearest = (index + 1, distance);
@@ -1577,7 +1568,13 @@ fn char_advances(
         advances.push(if ch.is_control() {
             0.0
         } else {
-            advance_width(ch.encode_utf8(&mut buffer), font_size, weight, family, italic)
+            advance_width(
+                ch.encode_utf8(&mut buffer),
+                font_size,
+                weight,
+                family,
+                italic,
+            )
         });
     }
     advances
@@ -1826,9 +1823,11 @@ impl Element for TextArea {
                         }
                     }
                     "Enter" => {
-                        if let Some(cb) = self.on_submit.as_ref() {
-                            (cb.borrow_mut())(*modifiers);
-                            return true;
+                        if !modifiers.shift {
+                            if let Some(cb) = self.on_submit.as_ref() {
+                                (cb.borrow_mut())(*modifiers);
+                                return true;
+                            }
                         }
                         insert_char(Rc::make_mut(&mut self.value), caret, '\n');
                         self.set_caret_index(caret + 1);
@@ -1974,7 +1973,11 @@ mod tests {
             "abXcd",
             "the character lands where the beam sits, not at the end"
         );
-        assert_eq!(*caret.borrow(), 3, "the beam advances over what it inserted");
+        assert_eq!(
+            *caret.borrow(),
+            3,
+            "the beam advances over what it inserted"
+        );
 
         // Backspace takes the character before the beam, not the last one.
         press(&mut area, "Home");
@@ -2070,7 +2073,11 @@ mod tests {
         assert_eq!(vim.borrow().selection(0, 3), None);
 
         press(&mut area, "x");
-        assert_eq!(area.value(), "bc", "x deletes the character under the caret");
+        assert_eq!(
+            area.value(),
+            "bc",
+            "x deletes the character under the caret"
+        );
         press(&mut area, "u");
         assert_eq!(area.value(), "abc", "u puts the deleted character back");
     }
@@ -2191,10 +2198,18 @@ mod tests {
         // Past the end of the line the beam clamps to the end, where the next
         // character typed joins on.
         assert!(click(&mut area, 190.0));
-        assert_eq!(*caret.borrow(), 4, "a press in the empty tail ends the line");
+        assert_eq!(
+            *caret.borrow(),
+            4,
+            "a press in the empty tail ends the line"
+        );
 
         assert!(click(&mut area, 0.0));
-        assert_eq!(*caret.borrow(), 0, "a press at the left edge leads the line");
+        assert_eq!(
+            *caret.borrow(),
+            0,
+            "a press at the left edge leads the line"
+        );
 
         assert!(
             !click(&mut area, 400.0),
@@ -2272,7 +2287,10 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 RenderCommand::DrawText {
-                    text, origin, color, ..
+                    text,
+                    origin,
+                    color,
+                    ..
                 } => Some((text.as_str(), *origin, *color)),
                 _ => None,
             })
@@ -2303,7 +2321,9 @@ mod tests {
             .expect("the line is drawn");
         let ink_at = commands
             .iter()
-            .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "h"))
+            .position(
+                |command| matches!(command, RenderCommand::DrawText { text, .. } if text == "h"),
+            )
             .expect("the covered letter is redrawn inverted");
         assert!(
             cell_at < run_at,
@@ -2399,9 +2419,13 @@ mod tests {
                     font_family,
                     font_italic,
                     ..
-                } if text == "abcdef" => {
-                    Some((*origin, *font_size, *font_weight, *font_family, *font_italic))
-                }
+                } if text == "abcdef" => Some((
+                    *origin,
+                    *font_size,
+                    *font_weight,
+                    *font_family,
+                    *font_italic,
+                )),
                 _ => None,
             })
             .expect("the line is drawn");
@@ -2456,7 +2480,9 @@ mod tests {
             .expect("the line is drawn");
         let ink_at = commands
             .iter()
-            .position(|command| matches!(command, RenderCommand::DrawText { text, .. } if text == "d"))
+            .position(
+                |command| matches!(command, RenderCommand::DrawText { text, .. } if text == "d"),
+            )
             .expect("the covered letter is redrawn");
         assert!(cell_at < run_at, "the fill is behind the line");
         assert!(
@@ -2667,9 +2693,12 @@ mod tests {
             let runs: Vec<(&str, Vector2F)> = commands
                 .iter()
                 .filter_map(|command| match command {
-                    RenderCommand::DrawText { origin, text, color, .. } if *color != bg => {
-                        Some((text.as_str(), *origin))
-                    }
+                    RenderCommand::DrawText {
+                        origin,
+                        text,
+                        color,
+                        ..
+                    } if *color != bg => Some((text.as_str(), *origin)),
                     _ => None,
                 })
                 .collect();
@@ -2695,7 +2724,13 @@ mod tests {
             // An inverted glyph is only drawn where the cell covers one, and it
             // sits on the cell's own pen.
             for command in &commands {
-                if let RenderCommand::DrawText { origin, color, text, .. } = command {
+                if let RenderCommand::DrawText {
+                    origin,
+                    color,
+                    text,
+                    ..
+                } = command
+                {
                     if *color == bg {
                         assert_eq!(
                             text.chars().count(),
@@ -3019,7 +3054,10 @@ mod tests {
                 &app,
             );
         }
-        assert!(vim.borrow().selection(2, 4).is_some(), "a selection is live");
+        assert!(
+            vim.borrow().selection(2, 4).is_some(),
+            "a selection is live"
+        );
 
         let commands = render_element(&mut area, vec2f(200.0, 40.0), &app);
         let bg = app.theme.color(ColorToken::Bg);
@@ -3027,9 +3065,7 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 // The block's own inverted glyph is not part of the line.
-                RenderCommand::DrawText { text, color, .. } if *color != bg => {
-                    Some(text.as_str())
-                }
+                RenderCommand::DrawText { text, color, .. } if *color != bg => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -3039,12 +3075,10 @@ mod tests {
             "the selection leaves the line in one run"
         );
         assert!(
-            commands
-                .iter()
-                .any(|command| matches!(
-                    command,
-                    RenderCommand::FillRect { color, .. } if *color == selected
-                )),
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. } if *color == selected
+            )),
             "the selection is a rectangle under the text: {commands:?}"
         );
     }
@@ -3085,7 +3119,11 @@ mod tests {
         assert_eq!(*value.borrow(), "ab\ncdX", "and the host is told the text");
 
         press(&mut area, "Home");
-        assert_eq!(*caret.borrow(), 3, "Home is the start of the caret's own line");
+        assert_eq!(
+            *caret.borrow(),
+            3,
+            "Home is the start of the caret's own line"
+        );
         press(&mut area, "Enter");
         assert_eq!(area.value(), "ab\n\ncdX", "Enter opens a line at the beam");
         assert_eq!(*caret.borrow(), 4, "and the beam leads the new line");
@@ -3093,14 +3131,26 @@ mod tests {
         press(&mut area, "Backspace");
         assert_eq!(area.value(), "ab\ncdX", "Backspace closes the line again");
         press(&mut area, "Delete");
-        assert_eq!(area.value(), "ab\ndX", "Delete takes the character after the beam");
+        assert_eq!(
+            area.value(),
+            "ab\ndX",
+            "Delete takes the character after the beam"
+        );
         assert_eq!(*caret.borrow(), 3, "and leaves the beam where it was");
 
         press(&mut area, "ArrowRight");
         press(&mut area, "ArrowRight");
-        assert_eq!(*caret.borrow(), 5, "the beam walks to the end of the last line");
+        assert_eq!(
+            *caret.borrow(),
+            5,
+            "the beam walks to the end of the last line"
+        );
         press(&mut area, "ArrowUp");
-        assert_eq!(*caret.borrow(), 2, "Up lands on the line above, in the same column");
+        assert_eq!(
+            *caret.borrow(),
+            2,
+            "Up lands on the line above, in the same column"
+        );
         press(&mut area, "ArrowDown");
         assert_eq!(*caret.borrow(), 5, "and Down comes back to the same column");
     }
@@ -3140,7 +3190,11 @@ mod tests {
             &app,
         );
         assert_eq!(*caret.borrow(), 5, "the shift-extended beam moves");
-        assert_eq!(*anchor.borrow(), Some(4), "and the selection began where it was");
+        assert_eq!(
+            *anchor.borrow(),
+            Some(4),
+            "and the selection began where it was"
+        );
 
         let commands = render_element(&mut area, vec2f(400.0, 200.0), &app);
         assert!(
@@ -3211,7 +3265,15 @@ mod tests {
             .with_multiline(true)
             .with_focused(false);
         let mut event_ctx = EventContext::default();
-        for key in ["x", "Backspace", "Delete", "Enter", "ArrowLeft", "Home", "End"] {
+        for key in [
+            "x",
+            "Backspace",
+            "Delete",
+            "Enter",
+            "ArrowLeft",
+            "Home",
+            "End",
+        ] {
             assert!(
                 !area.dispatch_event(
                     &DispatchedEvent::KeyDown {
@@ -3260,7 +3322,11 @@ mod tests {
         app: &AppContext,
         size: Vector2F,
     ) -> Vec<crate::render::RenderCommand> {
-        let _ = root.layout(SizeConstraint::loose(size), &mut LayoutContext::default(), app);
+        let _ = root.layout(
+            SizeConstraint::loose(size),
+            &mut LayoutContext::default(),
+            app,
+        );
         let mut ctx = PaintContext::new(crate::render::Renderer::new());
         root.paint(vec2f(0.0, 0.0), &mut ctx, app);
         ctx.renderer
@@ -3326,8 +3392,7 @@ mod tests {
         // has newlines: a last, empty one.
         let scroll_range = (lines + 1) as f32 * line_box - viewport;
         assert_eq!(
-            max_offset,
-            scroll_range,
+            max_offset, scroll_range,
             "the rows outside the window stand in at their own height, so the region \
              still scrolls through the whole buffer"
         );
@@ -3458,7 +3523,11 @@ mod tests {
         scroll.borrow_mut().reset();
         let _ = frame_of(&mut root, &app, size);
         let commands = frame_of(&mut root, &app, size);
-        assert_eq!(scroll.borrow().offset(), 0.0, "the buffer is back at its top");
+        assert_eq!(
+            scroll.borrow().offset(),
+            0.0,
+            "the buffer is back at its top"
+        );
         assert_eq!(
             drawn_line_numbers(&commands)[0],
             1,
@@ -3571,9 +3640,7 @@ mod tests {
         let cell = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::FillRect { rect, .. }
-                    if rect.size.height == caret::CARET_HEIGHT =>
-                {
+                RenderCommand::FillRect { rect, .. } if rect.size.height == caret::CARET_HEIGHT => {
                     Some(*rect)
                 }
                 _ => None,
@@ -3645,9 +3712,7 @@ mod tests {
         let cell = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::FillRect { rect, .. }
-                    if rect.size.height == caret::CARET_HEIGHT =>
-                {
+                RenderCommand::FillRect { rect, .. } if rect.size.height == caret::CARET_HEIGHT => {
                     Some(*rect)
                 }
                 _ => None,
@@ -3782,7 +3847,10 @@ mod tests {
                 false,
             )
         };
-        assert!(pen(value) > pen("ab"), "the trailing spaces advance the pen");
+        assert!(
+            pen(value) > pen("ab"),
+            "the trailing spaces advance the pen"
+        );
 
         for at in [2usize, 5] {
             let caret = Rc::new(RefCell::new(at));
@@ -3844,7 +3912,10 @@ mod tests {
             FontFamily::System,
             false,
         );
-        assert!(lines.len() > 1, "the draft folds over several rows: {value:?}");
+        assert!(
+            lines.len() > 1,
+            "the draft folds over several rows: {value:?}"
+        );
         // The break consumed the space between the rows, so the second row
         // starts after it: the press lands on the row's first character.
         let second = row_starts(&lines, value)[1];
@@ -3892,14 +3963,26 @@ mod tests {
         // Shift+Home selects back to the start: a copy takes that range, a cut
         // takes it out of the draft.
         assert!(area.dispatch_event(&shift_key("Home"), &mut ctx, &app));
-        assert_eq!(*anchor.borrow(), Some(11), "the selection starts at the beam");
+        assert_eq!(
+            *anchor.borrow(),
+            Some(11),
+            "the selection starts at the beam"
+        );
         assert_eq!(*caret.borrow(), 0, "and runs to the start of the line");
         assert!(area.dispatch_event(&command_key("c"), &mut ctx, &app));
-        assert_eq!(clipboard.text(), "hello there", "the copy took the selection");
+        assert_eq!(
+            clipboard.text(),
+            "hello there",
+            "the copy took the selection"
+        );
         assert_eq!(area.value(), "hello there world", "and changed nothing");
 
         assert!(area.dispatch_event(&command_key("x"), &mut ctx, &app));
-        assert_eq!(clipboard.text(), "hello there", "the cut carries the same text");
+        assert_eq!(
+            clipboard.text(),
+            "hello there",
+            "the cut carries the same text"
+        );
         assert_eq!(area.value(), " world", "and takes it out of the draft");
         assert_eq!(*caret.borrow(), 0, "leaving the beam where it began");
     }

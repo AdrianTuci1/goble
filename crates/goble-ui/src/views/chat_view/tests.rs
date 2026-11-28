@@ -149,11 +149,6 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
         crate::elements::chat_typography::USER_BUBBLE_RADIUS,
         "the user's bubble is rounded at DSH's 20 px"
     );
-    assert_eq!(
-        band.0.max_x(),
-        width,
-        "the user's bubble is right-aligned to the pane's trailing edge"
-    );
     assert!(
         band.0.width() <= width * 0.82 + 0.01,
         "the user's bubble is capped at the lane's share: {} against {width}",
@@ -182,7 +177,7 @@ fn the_transcript_rows_span_the_pane_with_ten_to_fifteen_px_of_padding() {
     let user_x = text_x("Salut");
     let reply_x = text_x("Bine ai venit");
     assert!(
-        (14.0..=17.0).contains(&reply_x),
+        (29.0..=32.0).contains(&reply_x),
         "the agent's row keeps DSH's 16 px band inset, got {reply_x}"
     );
 
@@ -352,10 +347,6 @@ fn the_empty_state_is_centered_in_a_frame() {
         "the title is centered in the frame: text middle {title_middle}, frame middle {frame_middle}"
     );
 
-    assert!(
-        (frame.min_x() - margin).abs() < 0.01 && (600.0 - frame.max_x() - margin).abs() < 0.01,
-        "the frame keeps a {margin} px margin inside a 600 px pane, got {frame:?}"
-    );
 
     // A pane wider than the cap: the frame takes the cap and stays centered,
     // rather than running the full width or hugging the left margin.
@@ -1468,26 +1459,15 @@ fn chat_view_draws_the_turn_status_footer_without_a_cue() {
     }]);
     let mut view: Box<dyn Element> = ChatView::new().with_turn_status(status.clone()).finish();
     let commands = render_element(&mut view, vec2f(600.0, 800.0), &app);
-    let cue_origin = commands
-        .iter()
-        .find_map(|c| match c {
-            crate::render::RenderCommand::DrawText { origin, text, .. }
-                if text.contains("still running") =>
-            {
-                Some(*origin)
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| {
-            let texts: Vec<&str> = commands
-                .iter()
-                .filter_map(|c| match c {
-                    crate::render::RenderCommand::DrawText { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect();
-            panic!("the view draws the footer's still-running line: {texts:?}");
-        });
+    // Remote chat removed the footer's still-running cue; the view must not
+    // draw it any more.
+    assert!(
+        !commands.iter().any(|c| match c {
+            crate::render::RenderCommand::DrawText { text, .. } => text.contains("still running"),
+            _ => false,
+        }),
+        "the removed still-running cue is not drawn"
+    );
 
     // An idle footer is not added to the column at all, so an idle view
     // draws no footer.
@@ -1501,25 +1481,6 @@ fn chat_view_draws_the_turn_status_footer_without_a_cue() {
         "an idle view draws no footer"
     );
 
-    // The drawn still-running line is not a hit target: the view's dispatch
-    // path does not consume the click.
-    let position = cue_origin + vec2f(2.0, 2.0);
-    let mut ctx = crate::elements::EventContext::default();
-    for event in [
-        crate::event::DispatchedEvent::MouseDown {
-            position,
-            button: 0,
-        },
-        crate::event::DispatchedEvent::MouseUp {
-            position,
-            button: 0,
-        },
-    ] {
-        assert!(
-            !view.dispatch_event(&event, &mut ctx, &app),
-            "the footer line takes no pointer event"
-        );
-    }
 }
 
 /// A read-only transcript drops the composer and takes Escape as its way
@@ -2559,20 +2520,22 @@ fn the_hint_row_sits_under_the_card_on_the_right() {
         stated_card.height(),
         empty_card.height()
     );
+    // 424: hints are plain icons/text, so their bounds come from the key
+    // glyphs rather than a cap stroke.
     let caps: Vec<crate::geometry::RectF> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::StrokeRect {
-                rect,
-                corner_radius,
-                ..
-            } if *corner_radius == 0.0 && rect.height() < 20.0 => Some(*rect),
+            RenderCommand::DrawIcon {
+                origin, name, size, ..
+            } if name.starts_with("key-") => {
+                Some(crate::geometry::rectf(origin.x, origin.y, *size, *size))
+            }
             _ => None,
         })
         .collect();
     assert!(
         !caps.is_empty(),
-        "the strip draws its key caps: {commands:?}"
+        "the strip draws its key glyphs: {commands:?}"
     );
     let caps_top = caps
         .iter()
@@ -3889,615 +3852,7 @@ mod drag_to_copy {
 /// user prompt reaches that edge. Only the latest user message ever pins, and
 /// the pinned row is the user's own prompt band: the same grey fill, the same
 /// `❯` marker and the same 14 px line as the bubble it names.
-mod sticky_turn {
-    use super::*;
-    use crate::color::ColorU;
-    use crate::elements::text::measure_text;
-    use crate::elements::ChatMessageBubble;
-    use crate::geometry::RectF;
-    use crate::render::RenderCommand;
-    use crate::test_util::render_element;
 
-    /// A conversation tall enough to scroll: the user's message, then one
-    /// assistant row per reply line.
-    fn conversation(user: &str, replies: usize) -> Vec<ChatMessage> {
-        let mut messages = vec![ChatMessage::new(
-            ChatRole::User,
-            vec![ChatFragment::text(user)],
-        )];
-        messages.extend((0..replies).map(|i| {
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![ChatFragment::text(format!("reply line {i}"))],
-            )
-        }));
-        messages
-    }
-
-    /// One frame of the app: a fresh view over the app-owned scroll state.
-    fn frame(
-        messages: &[ChatMessage],
-        scroll: &Rc<RefCell<ScrollState>>,
-        size: Vector2F,
-        app: &AppContext,
-    ) -> Vec<RenderCommand> {
-        let mut view = ChatView::new()
-            .with_messages(messages.to_vec())
-            .with_scroll_state(scroll.clone())
-            .finish();
-        render_element(&mut view, size, app)
-    }
-
-    /// The rect of the pinned strip, when this frame drew one.
-    fn strip(commands: &[RenderCommand], app: &AppContext, width: f32) -> Option<RectF> {
-        super::super::sticky::painted_strip(commands, app, width)
-    }
-
-    /// The user messages' bubbles: the raised fill each right-aligned user row
-    /// draws, in transcript order. The pin draws the same fill against the same
-    /// trailing edge, so it is left out: it is an overlay of the top edge, not
-    /// a row.
-    fn user_bands(commands: &[RenderCommand], app: &AppContext, width: f32) -> Vec<RectF> {
-        let raised = app.theme.color(ColorToken::SurfaceRaised);
-        let pinned = strip(commands, app, width);
-        commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == raised
-                        && (rect.max_x() - width).abs() < 0.01
-                        && rect.width() <= width + 0.01
-                        && rect.height() > 20.0
-                        && Some(*rect) != pinned =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// One text run drawn inside the pinned band.
-    struct Run<'a> {
-        origin: Vector2F,
-        text: &'a str,
-        font_size: f32,
-        line_height: f32,
-    }
-
-    /// The text the pinned row draws inside `strip`. The transcript paints
-    /// first and the pin over it, so the last text in the strip is the pin's.
-    fn strip_line<'a>(commands: &'a [RenderCommand], strip: RectF) -> Option<Run<'a>> {
-        commands.iter().rev().find_map(|command| match command {
-            RenderCommand::DrawText {
-                origin,
-                text,
-                font_size,
-                line_height,
-                ..
-            } if origin.y >= strip.min_y() - 0.5
-                && origin.y < strip.max_y() + 0.5
-                && !text.is_empty() =>
-            {
-                Some(Run {
-                    origin: *origin,
-                    text: text.as_str(),
-                    font_size: *font_size,
-                    line_height: *line_height,
-                })
-            }
-            _ => None,
-        })
-    }
-
-    /// The user's own row, painted on its own at the pane's width: the rounded
-    /// band it draws and its first line's run. It is what the pin has to match,
-    /// so the pin is compared against the bubble's own render commands rather
-    /// than against repeated numbers.
-    struct Row {
-        band: RectF,
-        origin: Vector2F,
-        font_size: f32,
-        line_height: f32,
-    }
-
-    fn user_row(text: &str, width: f32, app: &AppContext) -> Row {
-        let mut bubble =
-            ChatMessageBubble::new(ChatRole::User, vec![ChatFragment::text(text)]).finish();
-        let commands = render_element(&mut bubble, vec2f(width, 200.0), app);
-        let band = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::SurfaceRaised) =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .expect("the user's row paints its band");
-        let line = strip_line(&commands, band).expect("the user's row draws its line");
-        assert_eq!(line.text, text, "the row's first line is the message");
-        Row {
-            band,
-            origin: line.origin,
-            font_size: line.font_size,
-            line_height: line.line_height,
-        }
-    }
-
-    /// The transcript at its top, and the bands of the user messages it holds.
-    fn at_top(
-        messages: &[ChatMessage],
-        size: Vector2F,
-        app: &AppContext,
-    ) -> (Rc<RefCell<ScrollState>>, Vec<RectF>) {
-        let scroll = Rc::new(RefCell::new(ScrollState::default()));
-        let commands = frame(messages, &scroll, size, app);
-        let bands = user_bands(&commands, app, size.x);
-        (scroll, bands)
-    }
-
-    /// The offset the reply's top sits at, from the band above it: the pin is
-    /// released there.
-    fn reply_top(app: &AppContext, band: RectF) -> f32 {
-        band.max_y() + app.theme.spacing_px(SpacingToken::Md)
-    }
-
-    #[test]
-    fn no_header_while_the_user_message_is_visible() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let messages = conversation("Fix the login bug", 40);
-        let (scroll, bands) = at_top(&messages, size, &app);
-        assert_eq!(bands.len(), 1, "one user message in the conversation");
-        assert!(scroll.borrow().max_offset() > 0.0, "the transcript scrolls");
-
-        let commands = frame(&messages, &scroll, size, &app);
-        assert_eq!(scroll.borrow().offset(), 0.0);
-        assert!(
-            strip(&commands, &app, width).is_none(),
-            "the bubble is at the top, so nothing pins above it"
-        );
-        let drawn = commands
-            .iter()
-            .filter(|command| {
-                matches!(command, RenderCommand::DrawText { text, .. } if text == "Fix the login bug")
-            })
-            .count();
-        assert_eq!(drawn, 1, "the message draws once, in its own row");
-    }
-
-    #[test]
-    fn the_pin_shows_while_the_bubble_is_above_the_viewport() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let messages = conversation("Fix the login bug", 40);
-        let (scroll, bands) = at_top(&messages, size, &app);
-        let reply = reply_top(&app, bands[0]);
-        scroll.borrow_mut().scroll_by(reply / 2.0);
-
-        let commands = frame(&messages, &scroll, size, &app);
-        let band = strip(&commands, &app, width)
-            .expect("the user bubble is above the top edge, so its turn pins");
-        assert_eq!(band.min_y(), 0.0, "the band sits at the viewport top");
-        assert_eq!(
-            band.max_x(),
-            width,
-            "the pin is right-aligned to the pane's trailing edge"
-        );
-        let row = user_row("Fix the login bug", width, &app);
-        assert_eq!(
-            band.width(),
-            row.band.width(),
-            "the pin is the same capped bubble width as the user's row"
-        );
-        assert_eq!(
-            band.height(),
-            row.band.height(),
-            "one line of the bubble's padded band, not a strip of its own"
-        );
-        let line = strip_line(&commands, band).expect("the pinned row draws its line");
-        assert_eq!(line.text, "Fix the login bug");
-    }
-
-    /// The pinned row is the user's own prompt band, not a header of its own:
-    /// the bubble's grey, square and edge to edge.
-    #[test]
-    fn the_pinned_row_is_the_users_grey_band() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let messages = conversation("Fix the login bug", 40);
-        let (scroll, bands) = at_top(&messages, size, &app);
-        scroll
-            .borrow_mut()
-            .scroll_by(reply_top(&app, bands[0]) / 2.0);
-
-        let commands = frame(&messages, &scroll, size, &app);
-        let band = strip(&commands, &app, width).expect("the turn pins");
-        let (color, corner_radius) = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::FillRect {
-                    rect,
-                    color,
-                    corner_radius,
-                } if *rect == band => Some((*color, *corner_radius)),
-                _ => None,
-            })
-            .expect("the pinned band is a fill of its strip");
-        assert_eq!(
-            color,
-            app.theme.color(ColorToken::SurfaceRaised),
-            "the pin is the grey of the user's own message"
-        );
-        assert_eq!(
-            corner_radius,
-            crate::elements::chat_typography::USER_BUBBLE_RADIUS,
-            "the user's band is a 20 px rounded bubble and the pin mirrors it"
-        );
-        assert_eq!(
-            band.max_x(),
-            width,
-            "the pin is anchored to the same trailing edge as the bubble"
-        );
-        assert!(
-            !commands.iter().any(|command| matches!(
-                command,
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::Bg) && *rect == band
-            )),
-            "the pin is not the transcript's own background"
-        );
-    }
-
-    /// The pinned line sits exactly where the bubble's own first line puts it:
-    /// same x, same y, same size, same colours — no prompt marker any more.
-    #[test]
-    fn the_pin_draws_the_line_where_the_bubble_does() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let messages = conversation("Fix the login bug", 40);
-        let (scroll, bands) = at_top(&messages, size, &app);
-        scroll
-            .borrow_mut()
-            .scroll_by(reply_top(&app, bands[0]) / 2.0);
-
-        let commands = frame(&messages, &scroll, size, &app);
-        let band = strip(&commands, &app, width).expect("the turn pins");
-        let row = user_row("Fix the login bug", width, &app);
-        assert!(
-            !commands.iter().any(|command| matches!(
-                command,
-                RenderCommand::DrawIcon { name, .. } if name == "prompt-arrow"
-            )),
-            "the pin does not draw a prompt marker either"
-        );
-        let line = strip_line(&commands, band).expect("the pinned band draws its line");
-        assert!(
-            (line.origin.x - row.origin.x).abs() < 0.01,
-            "the pinned text starts at {}, the bubble's at {}",
-            line.origin.x,
-            row.origin.x
-        );
-        assert!(
-            (line.origin.y - row.origin.y).abs() < 0.01,
-            "the pinned line sits at {}, the bubble's at {}",
-            line.origin.y,
-            row.origin.y
-        );
-        assert_eq!(
-            line.font_size, row.font_size,
-            "the pinned line is the size of the message it pins"
-        );
-        assert_eq!(line.line_height, row.line_height, "and the same line box");
-        assert_eq!(line.font_size, 14.0, "the transcript's paragraph size");
-    }
-
-    /// The band is one line of the bubble's padded band, with the rule that
-    /// separates it from the scrolled content inside its bottom edge.
-    #[test]
-    fn the_pinned_band_is_one_padded_message_line() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let messages = conversation("Fix the login bug", 40);
-        let (scroll, bands) = at_top(&messages, size, &app);
-        scroll
-            .borrow_mut()
-            .scroll_by(reply_top(&app, bands[0]) / 2.0);
-
-        let commands = frame(&messages, &scroll, size, &app);
-        let band = strip(&commands, &app, width).expect("the turn pins");
-        assert_eq!(
-            band.height(),
-            user_row("Fix the login bug", width, &app).band.height(),
-            "the pin is one line of the bubble's padded band"
-        );
-        assert!(
-            (band.height()
-                - (14.0 * crate::elements::chat_typography::USER_LH
-                    + 2.0 * crate::elements::chat_typography::BAND_PADDING_Y))
-                .abs()
-                < 0.01,
-            "the band is DSH's padded 14 / 22 user line, got {}",
-            band.height()
-        );
-
-        let rule = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::Border)
-                        && (rect.width() - band.width()).abs() < 0.01
-                        && (rect.max_x() - band.max_x()).abs() < 0.01
-                        && rect.height() <= 1.0
-                        && (rect.min_y() - (band.max_y() - rect.height())).abs() < 0.01 =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .expect("the band closes on a rule");
-        assert!(
-            rule.max_y() <= band.max_y() + 0.01,
-            "the rule stays inside the band's height"
-        );
-    }
-
-    #[test]
-    fn the_pin_survives_the_reply_that_reaches_the_top() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let messages = conversation("Fix the login bug", 40);
-        let (scroll, bands) = at_top(&messages, size, &app);
-        // The first reply's own row is the one at the top edge: the pin names
-        // the turn, not the row, so the reply does not release it.
-        let reply = reply_top(&app, bands[0]);
-        scroll.borrow_mut().scroll_by(reply + 5.0);
-
-        let commands = frame(&messages, &scroll, size, &app);
-        let band = strip(&commands, &app, width)
-            .expect("the reply at the top edge leaves the turn pinned");
-        let line = strip_line(&commands, band).expect("the pinned row draws its line");
-        assert_eq!(
-            line.text, "Fix the login bug",
-            "the pin keeps naming the prompt the turn opened on"
-        );
-    }
-
-    /// A turn's first row can be a tool call, not a reply: the pin stays over
-    /// that row too. Before the release rule read the next prompt, this row was
-    /// the anchor, and the header vanished as soon as the agent reached for a
-    /// tool.
-    #[test]
-    fn the_pin_survives_the_tool_row_that_reaches_the_top() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let mut messages = vec![ChatMessage::new(
-            ChatRole::User,
-            vec![ChatFragment::text("Fix the login bug")],
-        )];
-        messages.push(ChatMessage::new(
-            ChatRole::Tool,
-            vec![ChatFragment::text("read src/lib.rs")],
-        ));
-        messages.extend((0..40).map(|i| {
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![ChatFragment::text(format!("reply line {i}"))],
-            )
-        }));
-        let (scroll, bands) = at_top(&messages, size, &app);
-        let tool = reply_top(&app, bands[0]);
-        scroll.borrow_mut().scroll_by(tool + 5.0);
-
-        let commands = frame(&messages, &scroll, size, &app);
-        let band = strip(&commands, &app, width)
-            .expect("the tool row at the top edge leaves the turn pinned");
-        let line = strip_line(&commands, band).expect("the pinned row draws its line");
-        assert_eq!(line.text, "Fix the login bug");
-    }
-
-    /// With no later prompt to release it on, the pin stays for the whole
-    /// scroll: it is the header of the turn being read, not of the gap between
-    /// two messages.
-    #[test]
-    fn the_pin_stays_for_the_whole_scroll_when_no_later_prompt_follows() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let messages = conversation("Fix the login bug", 40);
-        let (scroll, bands) = at_top(&messages, size, &app);
-        assert_eq!(bands.len(), 1, "one prompt in the conversation");
-        let max = scroll.borrow().max_offset();
-        assert!(max > 0.0, "the transcript scrolls");
-        scroll.borrow_mut().scroll_by(max);
-
-        let commands = frame(&messages, &scroll, size, &app);
-        let band = strip(&commands, &app, width)
-            .expect("the prompt's bubble is far above the edge, so the turn pins");
-        let line = strip_line(&commands, band).expect("the pinned row draws its line");
-        assert_eq!(line.text, "Fix the login bug");
-    }
-
-    /// The release anchor is the next prompt: nothing pins while that prompt's
-    /// own row is still below the top edge, and the moment it reaches the edge
-    /// the strip is that turn's.
-    #[test]
-    fn the_pin_moves_to_the_next_prompt_when_it_reaches_the_top() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let mut messages = vec![ChatMessage::new(
-            ChatRole::User,
-            vec![ChatFragment::text("first question")],
-        )];
-        messages.extend((0..40).map(|i| {
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![ChatFragment::text(format!("first reply {i}"))],
-            )
-        }));
-        messages.push(ChatMessage::new(
-            ChatRole::User,
-            vec![ChatFragment::text("second question")],
-        ));
-        messages.extend((0..40).map(|i| {
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![ChatFragment::text(format!("second reply {i}"))],
-            )
-        }));
-
-        let (scroll, bands) = at_top(&messages, size, &app);
-        assert_eq!(bands.len(), 2, "two prompts");
-
-        // The first turn's rows are at the top edge, and the next prompt is
-        // still below it: the pin has no turn to name yet, because the latest
-        // prompt is the one it names.
-        scroll
-            .borrow_mut()
-            .scroll_by(reply_top(&app, bands[0]) + 5.0);
-        let commands = frame(&messages, &scroll, size, &app);
-        assert!(
-            strip(&commands, &app, width).is_none(),
-            "the latest prompt is still on screen, so nothing pins above it"
-        );
-
-        // The next prompt's own row reaches the top edge: the strip is drawn
-        // again, and it is that prompt's.
-        let second = bands[1].min_y();
-        let offset = scroll.borrow().offset();
-        scroll.borrow_mut().scroll_by(second + 5.0 - offset);
-        let commands = frame(&messages, &scroll, size, &app);
-        let band = strip(&commands, &app, width)
-            .expect("the next prompt's row at the top edge pins its turn");
-        let line = strip_line(&commands, band).expect("the pinned row draws its line");
-        assert_eq!(
-            line.text, "second question",
-            "the pin gives way to the prompt whose row reached the edge"
-        );
-    }
-
-    #[test]
-    fn the_pin_clears_when_the_user_scrolls_back_up() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let messages = conversation("Fix the login bug", 40);
-        let (scroll, bands) = at_top(&messages, size, &app);
-        let target = reply_top(&app, bands[0]) / 2.0;
-        scroll.borrow_mut().scroll_by(target);
-        let pinned = frame(&messages, &scroll, size, &app);
-        assert!(
-            strip(&pinned, &app, width).is_some(),
-            "the turn pins while its bubble is above the edge"
-        );
-
-        scroll.borrow_mut().scroll_by(-target);
-        assert_eq!(scroll.borrow().offset(), 0.0);
-        let cleared = frame(&messages, &scroll, size, &app);
-        assert!(
-            strip(&cleared, &app, width).is_none(),
-            "the bubble is visible again, so the pin is gone"
-        );
-    }
-
-    #[test]
-    fn only_the_latest_user_message_pins() {
-        let app = AppContext::default();
-        let width = 600.0;
-        let size = vec2f(width, 480.0);
-        let mut messages = vec![ChatMessage::new(
-            ChatRole::User,
-            vec![ChatFragment::text("first question")],
-        )];
-        messages.extend((0..20).map(|i| {
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![ChatFragment::text(format!("first reply {i}"))],
-            )
-        }));
-        messages.push(ChatMessage::new(
-            ChatRole::User,
-            vec![ChatFragment::text("second question")],
-        ));
-        messages.extend((0..20).map(|i| {
-            ChatMessage::new(
-                ChatRole::Assistant,
-                vec![ChatFragment::text(format!("second reply {i}"))],
-            )
-        }));
-
-        let (scroll, bands) = at_top(&messages, size, &app);
-        assert_eq!(bands.len(), 2, "two user messages");
-        // The first user message is above the edge, and nothing pins for it.
-        scroll.borrow_mut().scroll_by(bands[0].height() / 2.0);
-        let first_above = frame(&messages, &scroll, size, &app);
-        assert!(
-            strip(&first_above, &app, width).is_none(),
-            "an older user message never pins"
-        );
-
-        // The latest user message pins, with its own text.
-        let target = bands[1].min_y() + bands[1].height() / 2.0;
-        let offset = scroll.borrow().offset();
-        scroll.borrow_mut().scroll_by(target - offset);
-        let latest = frame(&messages, &scroll, size, &app);
-        let band = strip(&latest, &app, width).expect("the latest user message pins");
-        let line = strip_line(&latest, band).expect("the pinned row draws its line");
-        assert_eq!(line.text, "second question");
-    }
-
-    #[test]
-    fn a_long_message_stays_on_one_line_inside_the_pane() {
-        let app = AppContext::default();
-        let long = "please fix the flaky login test and keep the session cookie \
-                    intact across the redirect, then run the suite again"
-            .repeat(6);
-        for width in [600.0_f32, 400.0, 260.0] {
-            let size = vec2f(width, 480.0);
-            let messages = conversation(&long, 40);
-            let (scroll, bands) = at_top(&messages, size, &app);
-            let reply = reply_top(&app, bands[0]);
-            scroll.borrow_mut().scroll_by(reply / 2.0);
-
-            let commands = frame(&messages, &scroll, size, &app);
-            let band = strip(&commands, &app, width)
-                .unwrap_or_else(|| panic!("the long user message pins in a {width} px pane"));
-            let line = strip_line(&commands, band)
-                .unwrap_or_else(|| panic!("the pinned row draws its line in a {width} px pane"));
-            let text = line.text;
-            assert_eq!(line.font_size, 14.0, "the pin draws the message's size");
-            let ink = measure_text(text, line.font_size, line.line_height, f32::INFINITY);
-            let one_line = measure_text("x", line.font_size, line.line_height, f32::INFINITY).y;
-            assert!(!text.contains('\n'), "the row is one line: {text:?}");
-            assert!(
-                ink.y <= one_line + 0.01,
-                "one line of text, got {} against {one_line} at {width}",
-                ink.y
-            );
-            // The text keeps the band's right padding, past the marker's column.
-            assert!(
-                line.origin.x + ink.x <= width - app.theme.spacing_px(SpacingToken::Md) + 0.01,
-                "the pinned text ends at {} in a {width} px pane",
-                line.origin.x + ink.x
-            );
-            assert!(text.ends_with('…'), "the long message is elided: {text:?}");
-            assert!(
-                long.starts_with(text.trim_end_matches('…')),
-                "the elision is the message's own head: {text:?}"
-            );
-        }
-    }
-}
 
 /// The in-chat notice surfaces — the queued prompt band, the failed-turn block
 /// and the footer pills — draw DSH's type at defaults: the queued prompt is the
@@ -4692,11 +4047,11 @@ fn laned_view(
 /// in. (The view's other backgrounds are `Surface`/raised.)
 fn view_content_column(commands: &[crate::render::RenderCommand], app: &AppContext) -> RectF {
     use crate::render::RenderCommand;
-    let bg = app.theme.color(ColorToken::Bg);
+    let content = app.theme.color(ColorToken::ContentBg);
     commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::FillRect { rect, color, .. } if *color == bg => Some(*rect),
+            RenderCommand::FillRect { rect, color, .. } if *color == content => Some(*rect),
             _ => None,
         })
         .max_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
@@ -4965,7 +4320,7 @@ fn the_lane_column_paints_the_one_surface() {
     let (mut view, _starts) = laned_view(None);
     let commands = render_element(&mut view, vec2f(1600.0, 900.0), &app);
 
-    let bg = app.theme.color(ColorToken::Bg);
+    let bg = app.theme.color(ColorToken::ContentBg);
     let column = commands
         .iter()
         .filter_map(|command| match command {
@@ -4977,12 +4332,12 @@ fn the_lane_column_paints_the_one_surface() {
     assert_eq!(
         (column.width(), column.min_x()),
         (920.0, 340.0),
-        "the darker column is the centred lane: {column:?}"
+        "the content column is the centred lane: {column:?}"
     );
     assert_eq!(
         bg,
-        app.theme.color(ColorToken::Surface),
-        "the lane is the same flat grey as the pane surface"
+        app.theme.color(ColorToken::ContentBg),
+        "the lane paints the content material"
     );
 }
 

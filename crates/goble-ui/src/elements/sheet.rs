@@ -76,8 +76,7 @@ impl Element for Sheet {
             return Vector2F::zero();
         }
         let panel_width = self.width.min(constraint.max.x).max(0.0);
-        let panel_constraint =
-            SizeConstraint::loose(vec2f(panel_width, constraint.max.y.max(0.0)));
+        let panel_constraint = SizeConstraint::loose(vec2f(panel_width, constraint.max.y.max(0.0)));
         let child_size = self.child.layout(panel_constraint, ctx, app);
         self.panel_origin = vec2f((constraint.max.x - panel_width).max(0.0), 0.0);
         self.panel_size = vec2f(panel_width, constraint.max.y.max(0.0));
@@ -94,13 +93,13 @@ impl Element for Sheet {
         }
         let size = self.size.unwrap_or(Vector2F::zero());
         if let Some(renderer) = ctx.renderer.as_mut() {
-            let backdrop = RectF::new(
-                PointF::new(origin.x, origin.y),
-                Size2F::new(size.x, size.y),
-            );
+            let backdrop = RectF::new(PointF::new(origin.x, origin.y), Size2F::new(size.x, size.y));
             renderer.fill_rounded_rect(backdrop, BACKDROP_COLOR, 0.0);
         }
-        let child_origin = vec2f(origin.x + self.panel_origin.x, origin.y + self.panel_origin.y);
+        let child_origin = vec2f(
+            origin.x + self.panel_origin.x,
+            origin.y + self.panel_origin.y,
+        );
         self.child.paint(child_origin, ctx, app);
     }
 
@@ -130,7 +129,10 @@ impl Element for Sheet {
             None => return false,
         };
         let panel_bounds = RectF::new(
-            PointF::new(origin.x + self.panel_origin.x, origin.y + self.panel_origin.y),
+            PointF::new(
+                origin.x + self.panel_origin.x,
+                origin.y + self.panel_origin.y,
+            ),
             Size2F::new(self.panel_size.x, self.panel_size.y),
         );
         let cb = self.on_close.clone();

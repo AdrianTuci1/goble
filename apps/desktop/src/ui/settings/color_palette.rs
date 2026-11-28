@@ -1573,8 +1573,13 @@ fn palette_panel(
     let submit_actions = actions.clone();
     let focus_id = hex_focus_draft(channel);
     let focus_dispatch = actions.dispatch.clone();
+    let field_value = state
+        .color_preview
+        .borrow()
+        .and_then(|(target, color)| (target == channel).then(|| color.to_hex_string()))
+        .unwrap_or_else(|| value.to_string());
     let field = SettingsTextField::new()
-        .with_value(value.to_string())
+        .with_value(field_value)
         .with_placeholder(&channel_color(&state, channel_key(channel)).to_hex_string())
         .with_width(160.0)
         .with_focused(hex_focused)
@@ -1644,18 +1649,36 @@ fn palette_panel(
         .with_child(reset)
         .finish();
 
-    let grid = ColorGrid::new(
-        entries.to_vec(),
-        selected,
-        highlight,
-        actions.dispatch.clone(),
-        path.clone(),
-        Rc::clone(&state.color_palette_menu),
-        channel,
-    )
-    .finish();
+    // 362: the DSH control is the saturation/value square and the full-width
+    // hue strip, not a preset grid. The hex field still writes exact values.
+    let picker_path = path.clone();
+    let preview_color = state
+        .color_preview
+        .borrow()
+        .and_then(|(target, color)| (target == channel).then_some(color))
+        .unwrap_or_else(|| channel_color(&state, channel_key(channel)));
+    let preview_dispatch = actions.dispatch.clone();
+    let preview_channel = channel;
+    let commit_dispatch = actions.dispatch.clone();
+    let commit_clear = actions.dispatch.clone();
+    let picker = crate::ui::color_picker::HsvBarPicker::new(preview_color)
+        .with_drag(Rc::clone(&state.color_picker_drag))
+        .with_on_preview(move |color| {
+            (preview_dispatch.borrow_mut())(SettingsAction::PreviewColor {
+                channel: preview_channel,
+                color,
+            });
+        })
+        .with_on_commit(move |color| {
+            (commit_dispatch.borrow_mut())(SettingsAction::SetText {
+                path: picker_path.clone(),
+                value: color.to_hex_string(),
+            });
+            (commit_clear.borrow_mut())(SettingsAction::ClearColorPreview);
+        })
+        .finish();
 
-    let hint = Text::new("Preset colours from the active palette · type #rrggbb to override.")
+    let hint = Text::new("Drag the square for saturation/value, the strip for hue · type #rrggbb for an exact value.")
         .with_font_size(11.0)
         .with_line_height(1.35)
         .with_color(app.theme.color(ColorToken::Muted))
@@ -1666,7 +1689,7 @@ fn palette_panel(
         .with_spacing(8.0)
         .with_child(header)
         .with_child(hex_row)
-        .with_child(grid)
+        .with_child(picker)
         .with_child(hint)
         .finish();
     ConstrainedBox::new(

@@ -233,6 +233,72 @@ impl Element for RootView {
                     self.redraw_requested = true;
                     return true;
                 }
+                if state.automations_open {
+                    state.automations_open = false;
+                    self.redraw_requested = true;
+                    return true;
+                }
+                // AG: Escape hides the topmost floating file window (it docks
+                // back into the layout its close control docks into).
+                let floating = state.spaces.get(state.active_space).and_then(|space| {
+                    space
+                        .floating
+                        .iter()
+                        .rev()
+                        .find(|pane| pane.overlay && !pane.minimized)
+                        .map(|pane| pane.pane_id)
+                });
+                if let Some(pane) = floating {
+                    if state.dock_floating_pane(pane, None) {
+                        self.redraw_requested = true;
+                        return true;
+                    }
+                }
+            }
+        }
+        // 349: the Automations popover owns Up/Down/Enter while it is open.
+        if let DispatchedEvent::KeyDown { key, .. } = event {
+            if self.state.borrow().automations_open {
+                if let Some(actions) = &self.actions {
+                    match key.as_str() {
+                        "ArrowDown" | "ArrowUp" => {
+                            let mut state = self.state.borrow_mut();
+                            let len = state.crons.len() + 1;
+                            let delta = if key == "ArrowDown" { 1 } else { -1 };
+                            let current = if state.automations_highlight < len {
+                                state.automations_highlight as i32
+                            } else if delta > 0 {
+                                -1
+                            } else {
+                                len as i32
+                            };
+                            state.automations_highlight =
+                                (current + delta).rem_euclid(len as i32) as usize;
+                            self.redraw_requested = true;
+                            return true;
+                        }
+                        "Enter" => {
+                            let (index, enabled, id) = {
+                                let state = self.state.borrow();
+                                let index = state.automations_highlight;
+                                let cron = state.crons.get(index);
+                                (
+                                    index,
+                                    cron.map(|cron| cron.enabled),
+                                    cron.map(|cron| cron.id.clone()),
+                                )
+                            };
+                            if let (Some(enabled), Some(id)) = (enabled, id) {
+                                (actions.on_cron_toggle.borrow_mut())(id, !enabled);
+                            } else if index >= self.state.borrow().crons.len() {
+                                (actions.on_cron_create.borrow_mut())();
+                            }
+                            self.redraw_requested = true;
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         // Global shortcuts (warp-new style pane splitting + pane focus
@@ -365,6 +431,21 @@ impl Element for RootView {
                         (actions.on_pane_navigate.borrow_mut())(dir);
                         return true;
                     }
+                }
+            }
+        }
+        // 349: an outside press dismisses the Automations popover.
+        if self.state.borrow().automations_open {
+            if let DispatchedEvent::MouseDown { position, .. } = event {
+                let left = crate::ui::SIDEBAR_WIDTH + 24.0;
+                let inside = position.x >= left
+                    && position.x <= left + 480.0
+                    && position.y >= 56.0
+                    && position.y <= 696.0;
+                if !inside {
+                    self.state.borrow_mut().automations_open = false;
+                    self.redraw_requested = true;
+                    return true;
                 }
             }
         }

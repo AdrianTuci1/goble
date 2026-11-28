@@ -39,7 +39,9 @@ impl Theme {
         Self {
             name: "dark",
             colors: ColorScheme {
-                bg: ColorU::hex(0x161616),
+                // The window/shell ground is black; the grey `Surface` is the
+                // topbar and sidebar material.
+                bg: ColorU::hex(0x0e0e0e),
                 surface: ColorU::hex(0x161616),
                 surface_raised: ColorU::hex(0x1e1e1e),
                 border: ColorU::hex(0x262626),
@@ -76,7 +78,7 @@ impl Theme {
             name: "light",
             colors: ColorScheme {
                 bg: ColorU::hex(0xffffff),
-                surface: ColorU::hex(0xffffff),
+                surface: ColorU::hex(0xf0f0f0),
                 surface_raised: ColorU::hex(0xf0f0f0),
                 border: ColorU::hex(0xe0e0e0),
                 text: ColorU::hex(0x1f1f1f),
@@ -208,14 +210,7 @@ impl Theme {
     pub fn color(&self, token: ColorToken) -> ColorU {
         match token {
             ColorToken::Bg => self.bg.unwrap_or(self.colors.bg),
-            ColorToken::ContentBg => {
-                let bg = self.bg.unwrap_or(self.colors.bg);
-                if bg.r < 128 {
-                    bg.mix(&ColorU::new(0, 0, 0, 255), 0.45)
-                } else {
-                    bg
-                }
-            }
+            ColorToken::ContentBg => self.bg.unwrap_or(self.colors.bg),
             ColorToken::Surface => self.surface.unwrap_or(self.colors.surface),
             ColorToken::SurfaceRaised => self.colors.surface_raised,
             ColorToken::Border => self.colors.border,
@@ -760,7 +755,12 @@ mod tests {
     fn theme_default_is_dark() {
         let theme = Theme::default();
         assert_eq!(theme.name, "dark");
-        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x161616));
+        assert_eq!(theme.color(ColorToken::Bg), ColorU::hex(0x0e0e0e));
+        assert_eq!(theme.color(ColorToken::Surface), ColorU::hex(0x161616));
+        assert!(
+            theme.color(ColorToken::ContentBg).r < theme.color(ColorToken::Surface).r,
+            "content is darker than the shell surface"
+        );
     }
 
     #[test]

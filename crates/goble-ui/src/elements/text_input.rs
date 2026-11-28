@@ -8,6 +8,7 @@ use crate::elements::{
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{vec2f, PointF, Vector2F};
+use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, SpacingToken};
 
 pub struct TextInput {
@@ -25,9 +26,16 @@ pub struct TextInput {
     /// frame. A placeholder is still drawn as written — it is the call site's
     /// sentence, not the value.
     masked: bool,
+    /// Optional text styling for the field's own run. A caller that overlays a
+    /// field on an existing label passes the label's size/weight so the text
+    /// does not change metrics when the field appears.
+    font_size: Option<f32>,
+    font_weight: Option<FontWeight>,
     /// V: the inline title editor starts with the whole value selected; the
     /// first typed character replaces it and Backspace clears it.
     select_all: bool,
+    /// The insertion point as a character index into `value`.
+    caret: usize,
     on_change: Option<Rc<RefCell<dyn FnMut(String) + 'static>>>,
     on_focus_change: Option<Rc<RefCell<dyn FnMut(bool) + 'static>>>,
     on_submit: Option<Rc<RefCell<dyn FnMut() + 'static>>>,
@@ -45,7 +53,10 @@ impl TextInput {
             full_width: false,
             plain: false,
             masked: false,
+            font_size: None,
+            font_weight: None,
             select_all: false,
+            caret: 0,
             on_change: None,
             on_focus_change: None,
             on_submit: None,
@@ -57,6 +68,7 @@ impl TextInput {
 
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
+        self.caret = self.value.chars().count();
         self
     }
 
@@ -101,6 +113,16 @@ impl TextInput {
     /// Draw the value write-only: one dot per character, never the text. The
     /// placeholder still says what to type, and the caret still moves with the
     /// value the field holds (the mask has the same length).
+    pub fn with_font_size(mut self, size: f32) -> Self {
+        self.font_size = Some(size);
+        self
+    }
+
+    pub fn with_font_weight(mut self, weight: FontWeight) -> Self {
+        self.font_weight = Some(weight);
+        self
+    }
+
     pub fn with_masked(mut self, masked: bool) -> Self {
         self.masked = masked;
         self
@@ -137,38 +159,47 @@ impl TextInput {
         } else {
             ColorToken::Text
         };
-        let text = Text::new(display)
-            .with_theme_color(color, app)
-            .with_max_lines(1)
-            .finish();
-        // A focused field shows its insertion beam in front of the text while
-        // the field is empty — over the placeholder's first character, where the
-        // user's own text starts — and after it once there is a value. The beam
-        // takes no room in the row, so neither position moves the text.
+        let make_text = |content: &str| {
+            let mut text = Text::new(content.to_string())
+                .with_theme_color(color, app)
+                .with_max_lines(1);
+            if let Some(size) = self.font_size {
+                text = text.with_font_size(size);
+            }
+            if let Some(weight) = self.font_weight {
+                text = text.with_weight(weight);
+            }
+            text.finish()
+        };
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         if self.full_width {
-            // The row is the field's whole band: its main axis is the band's
-            // width, so the container below stretches with it.
             row = row.with_main_axis_size(MainAxisSize::Max);
         }
-        // The beam is taller than a line of text, so the row always reserves
-        // its height: focusing the field paints the beam into the same band
-        // instead of growing the field by the difference.
         row = row.with_child(Empty::new().with_size(vec2f(0.0, CARET_HEIGHT)).finish());
         if self.focused && empty {
             row = row.with_child(caret_beam(app));
-        }
-        if self.focused && self.select_all && !empty {
+            row = row.with_child(make_text(&display));
+        } else if self.focused && self.select_all && !empty {
             row = row.with_child(
-                Container::new(text)
+                Container::new(make_text(&display))
                     .with_background(Fill::Solid(app.theme.color(ColorToken::Selection)))
                     .finish(),
             );
-        } else {
-            row = row.with_child(text);
-        }
-        if self.focused && !empty {
+            // The selection's insertion point is at its end.
             row = row.with_child(caret_beam(app));
+        } else if self.focused && !empty {
+            // 440: split at the caret so the beam is drawn where typing will
+            // land. The beam takes no horizontal advance, so the line's own
+            // metrics do not move as the caret moves.
+            let count = self.value.chars().count();
+            let caret = self.caret.min(count);
+            let before: String = self.value.chars().take(caret).collect();
+            let after: String = self.value.chars().skip(caret).collect();
+            row = row.with_child(make_text(&before));
+            row = row.with_child(caret_beam(app));
+            row = row.with_child(make_text(&after));
+        } else {
+            row = row.with_child(make_text(&display));
         }
         let container = if self.plain {
             // A prompt line owns no chrome: only a little vertical padding so
@@ -190,6 +221,24 @@ impl TextInput {
             }
         };
         self.root = Some(container.finish());
+    }
+
+    /// 440: the character offset nearest a horizontal point in the field.
+    fn caret_from_x(&self, x: f32) -> usize {
+        let size = self.font_size.unwrap_or(13.0);
+        let mut best = 0;
+        let mut best_distance = x.abs();
+        let mut prefix = String::new();
+        for (index, ch) in self.value.chars().enumerate() {
+            prefix.push(ch);
+            let width = crate::elements::text::measure_text(&prefix, size, 1.2, f32::INFINITY).x;
+            let distance = (width - x).abs();
+            if distance < best_distance {
+                best_distance = distance;
+                best = index + 1;
+            }
+        }
+        best
     }
 }
 
@@ -240,6 +289,10 @@ impl Element for TextInput {
                         let was_focused = self.focused;
                         self.focused = true;
                         self.select_all = false;
+                        // 440: place the caret at the clicked offset.
+                        let pad = if self.plain { 0.0 } else { 12.0 };
+                        let local = position.x - bounds.min_x() - pad;
+                        self.caret = self.caret_from_x(local);
                         if !was_focused {
                             if let Some(cb) = self.on_focus_change.as_ref() {
                                 (cb.borrow_mut())(true);
@@ -260,29 +313,78 @@ impl Element for TextInput {
                 if !self.focused {
                     return false;
                 }
-                if key == "Backspace" {
-                    if self.select_all {
-                        self.value.clear();
+                let count = self.value.chars().count();
+                let changed = match key.as_str() {
+                    "Enter" => {
+                        if let Some(cb) = self.on_submit.as_ref() {
+                            (cb.borrow_mut())();
+                        }
+                        return true;
+                    }
+                    "ArrowRight" if self.select_all => {
                         self.select_all = false;
-                    } else {
-                        self.value.pop();
+                        self.caret = count;
+                        false
                     }
-                } else if key == "Enter" {
-                    if let Some(cb) = self.on_submit.as_ref() {
-                        (cb.borrow_mut())();
-                    }
-                    return true;
-                } else if key.len() == 1 {
-                    if self.select_all {
-                        self.value.clear();
+                    "ArrowLeft" if self.select_all => {
                         self.select_all = false;
+                        self.caret = 0;
+                        false
                     }
-                    self.value.push_str(key);
-                } else {
-                    return false;
-                }
-                if let Some(cb) = self.on_change.as_ref() {
-                    (cb.borrow_mut())(self.value.clone());
+                    "ArrowRight" => {
+                        self.select_all = false;
+                        self.caret = (self.caret + 1).min(count);
+                        false
+                    }
+                    "ArrowLeft" => {
+                        self.select_all = false;
+                        self.caret = self.caret.saturating_sub(1);
+                        false
+                    }
+                    "Home" => {
+                        self.select_all = false;
+                        self.caret = 0;
+                        false
+                    }
+                    "End" => {
+                        self.select_all = false;
+                        self.caret = count;
+                        false
+                    }
+                    "Backspace" => {
+                        if self.select_all {
+                            self.value.clear();
+                            self.select_all = false;
+                            self.caret = 0;
+                            true
+                        } else if self.caret > 0 {
+                            let mut chars: Vec<char> = self.value.chars().collect();
+                            chars.remove(self.caret - 1);
+                            self.caret -= 1;
+                            self.value = chars.into_iter().collect();
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ if key.chars().count() == 1 => {
+                        if self.select_all {
+                            self.value.clear();
+                            self.select_all = false;
+                            self.caret = 0;
+                        }
+                        let mut chars: Vec<char> = self.value.chars().collect();
+                        chars.insert(self.caret.min(chars.len()), key.chars().next().unwrap());
+                        self.caret += 1;
+                        self.value = chars.into_iter().collect();
+                        true
+                    }
+                    _ => return false,
+                };
+                if changed {
+                    if let Some(cb) = self.on_change.as_ref() {
+                        (cb.borrow_mut())(self.value.clone());
+                    }
                 }
                 true
             }
@@ -613,6 +715,40 @@ mod select_all_tests {
     use crate::geometry::vec2f;
     use crate::render::RenderCommand;
     use crate::test_util::render_element;
+
+    /// 440: Right-arrow with all text selected deselects and puts the caret at
+    /// the END, so the next character appends instead of replacing the run.
+    #[test]
+    fn right_arrow_deselects_and_moves_the_caret_to_the_end() {
+        let app = AppContext::default();
+        let seen: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = seen.clone();
+        let mut input = TextInput::new()
+            .with_value("Alpha title")
+            .with_focused(true)
+            .with_select_all(true)
+            .with_on_change(move |value| sink.borrow_mut().push(value))
+            .finish();
+        let mut ctx = EventContext::default();
+        assert!(input.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "ArrowRight".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert!(input.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "!".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        ));
+        assert_eq!(seen.borrow().as_slice(), ["Alpha title!"]);
+    }
 
     #[test]
     fn select_all_highlights_the_run_and_typing_replaces_it() {

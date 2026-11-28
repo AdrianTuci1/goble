@@ -113,6 +113,8 @@ pub struct PaneChatSnapshot {
     pub messages: Vec<UiChatMessage>,
     pub composer_draft: String,
     pub composer_path: String,
+    /// Whether this pane's composer owns the keyboard.
+    pub composer_focused: bool,
     /// This pane's viewer session, when the pane is a viewer pane: the worker
     /// its conversation runs on and the state of that connection. `None` for
     /// every other pane, including a chat pane — which is what makes the two
@@ -250,6 +252,15 @@ pub struct UiSnapshot {
     /// provider the configuration declares models for, each with the thinking
     /// levels its harness runs them at.
     pub model_groups: Vec<goble_desktop_service::ModelGroup>,
+    /// Detected integration snapshots for the selector and Settings.
+    pub integrations: Vec<goble_core::integration::IntegrationSnapshot>,
+    /// Where the composer's API key came from, when it has one.
+    pub llm_credential_source: Option<String>,
+    /// 535: the active browser tab's URL (per-conversation state).
+    pub browser_url: std::rc::Rc<std::cell::RefCell<String>>,
+    pub review_rail_width: std::rc::Rc<std::cell::RefCell<f32>>,
+    pub review_uncommitted_open: std::rc::Rc<std::cell::RefCell<bool>>,
+    pub review_commit_open: std::rc::Rc<std::cell::RefCell<bool>>,
     /// The harness's own composer catalog: what a draft can list behind `/` and
     /// `$`, and the models the tray shows.
     pub composer_catalog: goble_harness_types::HarnessCatalog,
@@ -516,6 +527,10 @@ pub struct UiSnapshot {
     pub sidebar_menu_open: Rc<RefCell<bool>>,
     /// The Workspaces header's add menu (New Project / SSH Host…).
     pub sidebar_add_menu_open: Rc<RefCell<bool>>,
+    pub conversations_add_menu_open: Rc<RefCell<bool>>,
+    pub automations_open: bool,
+    pub automations_highlight: usize,
+    pub project_menu_open: Rc<RefCell<bool>>,
     /// The chat changed-files card's fold.
     pub changed_files_open: Rc<RefCell<bool>>,
     /// The settings overlay's open flag and narrow-window hamburger.
@@ -530,6 +545,13 @@ pub struct UiSnapshot {
     /// is open. The panel draws one of these surfaces in its content area.
     pub side_tabs: Vec<SideTabKind>,
     pub active_side_tab: usize,
+    /// AF: inner Terminals/Background Tasks rail visibility.
+    pub side_rail_open: bool,
+    /// Y: the file the side panel's Files tab shows, independent of the active
+    /// pane's kind.
+    pub side_file: Option<String>,
+    pub side_file_tab: Option<String>,
+    pub side_files_show_explorer: bool,
     /// Q: the topbar spotlight window.
     pub spotlight: crate::ui::spotlight::SpotlightState,
     pub side_tab_add_menu_open: Rc<RefCell<bool>>,

@@ -80,7 +80,7 @@ __GOBLE_HOST=$(command -p hostname 2>/dev/null || command -p uname -n 2>/dev/nul
 __goble_block_id=0
 # The integration hides the shell's prompt, so the emulator is told not to
 # expect the shell's prompt to be visible. A later phase negotiates the toggle.
-__goble_honor_ps1=0
+__goble_honor_ps1=1
 __GOBLE_ACTIVE=1
 
 # ---------------------------------------------------------------------------

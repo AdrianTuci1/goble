@@ -193,13 +193,7 @@ impl OpenMenus {
     /// while open calls this once per surface rectangle it owns; the root view
     /// reconciles the reports after the tree has painted
     /// ([`OpenMenus::end_paint`]).
-    pub fn report(
-        &self,
-        id: MenuId,
-        close: MenuClose,
-        surfaces: Vec<RectF>,
-        pointer: MenuPointer,
-    ) {
+    pub fn report(&self, id: MenuId, close: MenuClose, surfaces: Vec<RectF>, pointer: MenuPointer) {
         self.state.borrow_mut().reports.push(MenuReport {
             id,
             close,
@@ -318,10 +312,10 @@ impl OpenMenus {
     /// drop-down's own trigger does, so the root view leaves it alone.
     pub fn pointer_on_anchor(&self, position: Vector2F) -> bool {
         let state = self.state.borrow();
-        state.open.as_ref().is_some_and(|open| {
-            open.anchor
-                .is_some_and(|anchor| contains(anchor, position))
-        })
+        state
+            .open
+            .as_ref()
+            .is_some_and(|open| open.anchor.is_some_and(|anchor| contains(anchor, position)))
     }
 
     /// Record the open menu's own trigger box, so a press on the trigger is

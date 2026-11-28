@@ -229,6 +229,12 @@ pub struct SettingsUiState {
     pub shortcuts_search: String,
     /// Whether the Shortcuts page's search field has the caret.
     pub shortcuts_search_focused: bool,
+    /// Custom chords added on the Shortcuts page, keyed by the binding label.
+    pub shortcuts: BTreeMap<String, Vec<String>>,
+    /// The binding label whose inline recorder is open.
+    pub shortcuts_recording: Option<String>,
+    /// The chord chips recorded so far.
+    pub shortcuts_recorded: Vec<String>,
     /// The notice above the page.
     pub notice: Option<SettingsNotice>,
     /// The last outcome line under the page header.
@@ -244,6 +250,8 @@ pub struct SettingsUiState {
     /// (`PATH` resolution, no `--version` probe). The Providers page's Accounts
     /// and Agent CLIs sections render this.
     pub harnesses: Vec<goble_core::harness::HarnessStatus>,
+    /// T3-style integration snapshots: installed/auth/models/config.
+    pub integrations: Vec<goble_core::integration::IntegrationSnapshot>,
     /// Whether the Appearance page's theme-preset list is open.
     pub theme_select_open: bool,
     /// The theme menu's open flag, shared with the element that owns it. The
@@ -251,6 +259,11 @@ pub struct SettingsUiState {
     /// build; the plain `theme_select_open` above remains the state action's
     /// record (the older page and its tests read it).
     pub theme_select_menu: Rc<RefCell<bool>>,
+    /// The HSV control's drag, app-owned so it survives the per-frame rebuild.
+    pub color_picker_drag: Rc<RefCell<Option<crate::ui::color_picker::ColorPickerDrag>>>,
+    /// 521: the in-memory colour preview while a palette drag is live. It is
+    /// never written to disk; the commit happens on release.
+    pub color_preview: Rc<RefCell<Option<(usize, goble_ui::color::ColorU)>>>,
     /// The theme colour channel whose palette popover is open (`None` while no
     /// channel's popover is up).
     pub color_palette_menu: Rc<RefCell<Option<usize>>>,
@@ -336,14 +349,20 @@ impl Default for SettingsUiState {
             search_focused: false,
             shortcuts_search: String::new(),
             shortcuts_search_focused: false,
+            shortcuts: BTreeMap::new(),
+            shortcuts_recording: None,
+            shortcuts_recorded: Vec::new(),
             notice: None,
             status: None,
             busy: false,
             folds: BTreeSet::new(),
             form: None,
             harnesses: Vec::new(),
+            integrations: Vec::new(),
             theme_select_open: false,
             theme_select_menu: Rc::new(RefCell::new(false)),
+            color_picker_drag: Rc::new(RefCell::new(None)),
+            color_preview: Rc::new(RefCell::new(None)),
             color_palette_menu: Rc::new(RefCell::new(None)),
             select_open: Rc::new(RefCell::new(BTreeMap::new())),
             appearance_anchors: Rc::new(RefCell::new(AppearanceMenuAnchors::default())),
@@ -653,6 +672,27 @@ pub enum SettingsAction {
     /// the handler reports that instead of deleting anything; the binding id
     /// names the row the user pressed.
     ShortcutRemap(String),
+    /// Open the inline recorder under one shortcut row.
+    ShortcutAdd(String),
+    /// Close the recorder without changing the binding.
+    ShortcutCancel,
+    /// One captured key event while the recorder is open.
+    ShortcutCapture {
+        key: String,
+        modifiers: Vec<String>,
+    },
+    /// Remove a custom chord, restoring the built-in binding.
+    ShortcutDelete(String),
+    /// 521: update the live palette preview without touching disk.
+    PreviewColor {
+        channel: usize,
+        color: goble_ui::color::ColorU,
+    },
+    ClearColorPreview,
+    /// Re-run integration detection (Antigravity/CLI adapters).
+    RefreshIntegrations,
+    /// Start an integration's own login command (`agy login`), then refresh.
+    IntegrationConnect(String),
 
     // ---- scalar rows (paths are `[section, key]`; see `fields.rs`) ------
     SetToggle {

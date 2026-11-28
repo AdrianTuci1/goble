@@ -19,17 +19,28 @@ fn test_in_memory_store() {
 fn test_chat_workspace_routing_roundtrip() {
     let store = Store::open_in_memory().unwrap();
     store
-        .insert_chat("c1", "Demo", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+        .insert_chat(
+            "c1",
+            "Demo",
+            None,
+            None,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+        )
         .unwrap();
     assert_eq!(store.get_chat_workspace_routing("c1").unwrap(), None);
 
-    store.set_chat_workspace_routing("c1", Some("local")).unwrap();
+    store
+        .set_chat_workspace_routing("c1", Some("local"))
+        .unwrap();
     assert_eq!(
         store.get_chat_workspace_routing("c1").unwrap(),
         Some("local".to_string())
     );
 
-    store.set_chat_workspace_routing("c1", Some("remote")).unwrap();
+    store
+        .set_chat_workspace_routing("c1", Some("remote"))
+        .unwrap();
     assert_eq!(
         store.get_chat_workspace_routing("c1").unwrap(),
         Some("remote".to_string())
@@ -49,7 +60,14 @@ fn test_chat_workspace_routing_roundtrip() {
 fn test_chat_medium_roundtrip() {
     let store = Store::open_in_memory().unwrap();
     store
-        .insert_chat("c1", "Demo", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+        .insert_chat(
+            "c1",
+            "Demo",
+            None,
+            None,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+        )
         .unwrap();
     assert_eq!(store.get_chat_medium("c1").unwrap(), None);
 
@@ -73,7 +91,14 @@ fn test_chat_medium_roundtrip() {
     // conversation's leaks into them.
     assert_eq!(store.get_chat_medium("missing").unwrap(), None);
     store
-        .insert_chat("c2", "Other", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+        .insert_chat(
+            "c2",
+            "Other",
+            None,
+            None,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+        )
         .unwrap();
     assert_eq!(store.get_chat_medium("c2").unwrap(), None);
 }
@@ -127,7 +152,14 @@ fn test_chat_title_roundtrip() {
 fn test_chat_usage_accumulates_and_stays_absent_when_unreported() {
     let store = Store::open_in_memory().unwrap();
     store
-        .insert_chat("c1", "Demo", None, None, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+        .insert_chat(
+            "c1",
+            "Demo",
+            None,
+            None,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+        )
         .unwrap();
     assert_eq!(
         store.chat_usage("c1").unwrap(),
@@ -141,7 +173,11 @@ fn test_chat_usage_accumulates_and_stays_absent_when_unreported() {
 
     let usage = store.chat_usage("c1").unwrap().expect("the total");
     assert_eq!(usage.input, 1_500);
-    assert_eq!(usage.cached, Some(900), "the cache-sharing call left it as it was");
+    assert_eq!(
+        usage.cached,
+        Some(900),
+        "the cache-sharing call left it as it was"
+    );
     assert_eq!(usage.output, 100);
     assert_eq!(usage.total(), 1_600);
 }
@@ -158,11 +194,11 @@ fn test_credentials_roundtrip() {
     assert_eq!(store.list_credential_names().unwrap(), vec!["github_token"]);
     // Upsert updates in place; the name set is unchanged.
     store.set_credential("github_token", "rotated").unwrap();
-    assert_eq!(store.get_credential("github_token").unwrap(), Some("rotated".to_string()));
     assert_eq!(
-        store.list_credential_names().unwrap(),
-        vec!["github_token"]
+        store.get_credential("github_token").unwrap(),
+        Some("rotated".to_string())
     );
+    assert_eq!(store.list_credential_names().unwrap(), vec!["github_token"]);
 }
 
 #[test]
@@ -177,7 +213,9 @@ fn test_access_grants_roundtrip() {
     store.grant_access("p1", "read", "mcp:search").unwrap();
     let grants = store.list_access("p1").unwrap();
     assert_eq!(grants.len(), 2);
-    assert!(grants.iter().any(|(g, s, _)| g == "run" && s == "workspace"));
+    assert!(grants
+        .iter()
+        .any(|(g, s, _)| g == "run" && s == "workspace"));
 
     assert!(store.revoke_access("p1", "run", "workspace").unwrap());
     assert!(!store.revoke_access("p1", "run", "workspace").unwrap());
@@ -514,6 +552,8 @@ fn test_workflow_crud() {
     assert_eq!(workflows.len(), 1);
     assert_eq!(workflows[0].1, "Deploy");
     assert!(workflows[0].5);
+    store.set_workflow_enabled("wf1", false).unwrap();
+    assert!(!store.list_workflows().unwrap()[0].5);
     store.delete_workflow("wf1").unwrap();
     assert!(store.list_workflows().unwrap().is_empty());
 }
@@ -705,7 +745,13 @@ fn test_secret_groups_roundtrip_and_lifecycle() {
     assert!(store.delete_secret_entry_named("g1", "DB_URL").unwrap());
     assert!(!store.delete_secret_entry_named("g1", "DB_URL").unwrap());
     store
-        .upsert_secret_entry("e4", "g1", "DATABASE_URL", "postgres://y", "2024-01-02T00:00:01Z")
+        .upsert_secret_entry(
+            "e4",
+            "g1",
+            "DATABASE_URL",
+            "postgres://y",
+            "2024-01-02T00:00:01Z",
+        )
         .unwrap();
     let names: Vec<String> = store
         .get_secret_group("g1")
@@ -715,14 +761,20 @@ fn test_secret_groups_roundtrip_and_lifecycle() {
         .into_iter()
         .map(|e| e.name)
         .collect();
-    assert_eq!(names, vec!["API_KEY".to_string(), "DATABASE_URL".to_string()]);
+    assert_eq!(
+        names,
+        vec!["API_KEY".to_string(), "DATABASE_URL".to_string()]
+    );
 
     // Removing one entry leaves the others. (`e2` is already gone: the rename
     // above removed the entry that carried `DB_URL`.)
     assert!(!store.delete_secret_entry("e2").unwrap());
     assert!(store.delete_secret_entry("e4").unwrap());
     assert!(!store.delete_secret_entry("e4").unwrap());
-    assert_eq!(store.get_secret_group("g1").unwrap().unwrap().entries.len(), 1);
+    assert_eq!(
+        store.get_secret_group("g1").unwrap().unwrap().entries.len(),
+        1
+    );
 
     // Deleting a group removes its entries and leaves the other groups alone.
     assert!(store.delete_secret_group("g1").unwrap());
@@ -750,9 +802,7 @@ fn test_secret_groups_roundtrip_and_lifecycle() {
 fn test_chat_archived_roundtrip() {
     let store = Store::open_in_memory().unwrap();
     let ts = "2024-01-01T00:00:00Z";
-    store
-        .insert_chat("c1", "Demo", None, None, ts, ts)
-        .unwrap();
+    store.insert_chat("c1", "Demo", None, None, ts, ts).unwrap();
     store
         .insert_chat("c2", "Other", None, None, ts, ts)
         .unwrap();
@@ -802,9 +852,7 @@ fn test_chat_archived_roundtrip() {
 fn test_chat_starred_roundtrip() {
     let store = Store::open_in_memory().unwrap();
     let ts = "2024-01-01T00:00:00Z";
-    store
-        .insert_chat("c1", "Demo", None, None, ts, ts)
-        .unwrap();
+    store.insert_chat("c1", "Demo", None, None, ts, ts).unwrap();
     store
         .insert_chat("c2", "Other", None, None, ts, ts)
         .unwrap();

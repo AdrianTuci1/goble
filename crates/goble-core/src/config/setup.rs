@@ -127,9 +127,7 @@ impl SetupStatus {
             env: CREDENTIAL_ENV_KEYS
                 .iter()
                 .map(|key| {
-                    let set = env
-                        .get(*key)
-                        .is_some_and(|value| !value.trim().is_empty());
+                    let set = env.get(*key).is_some_and(|value| !value.trim().is_empty());
                     ((*key).to_string(), set)
                 })
                 .collect(),
@@ -175,7 +173,10 @@ impl SetupStatus {
         if set.is_empty() {
             lines.push("credentials in this environment: none of the provider keys".to_string());
         } else {
-            lines.push(format!("credentials in this environment: {}", set.join(", ")));
+            lines.push(format!(
+                "credentials in this environment: {}",
+                set.join(", ")
+            ));
         }
         lines
     }
@@ -337,19 +338,39 @@ provider = "docker"
         assert_eq!(status.env.get("MODAL_TOKEN_ID"), Some(&false));
 
         let lines = status.lines().join("\n");
-        assert!(lines.contains("agent builder: e2b · missing E2B_API_KEY"), "{lines}");
-        assert!(lines.contains("hub: /home/me/.goble/hub.toml · not configured"), "{lines}");
-        assert!(lines.contains("credentials in this environment: E2B_API_KEY"), "{lines}");
+        assert!(
+            lines.contains("agent builder: e2b · missing E2B_API_KEY"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("hub: /home/me/.goble/hub.toml · not configured"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("credentials in this environment: E2B_API_KEY"),
+            "{lines}"
+        );
     }
 
     #[test]
     fn the_remote_brief_names_the_state_the_command_and_the_path() {
         let brief = status().brief(SetupTarget::Remote, "/opt/goble/bin/goble-cli");
-        assert!(brief.contains("/opt/goble/bin/goble-cli setup gateway"), "{brief}");
+        assert!(
+            brief.contains("/opt/goble/bin/goble-cli setup gateway"),
+            "{brief}"
+        );
         assert!(brief.contains("setup remote --name"), "{brief}");
         assert!(brief.contains("/home/me/.goble/config.toml"), "{brief}");
         assert!(brief.contains("missing E2B_API_KEY"), "{brief}");
-        for provider in ["modal", "e2b", "daytona", "box", "cloud_run", "docker", "ssh"] {
+        for provider in [
+            "modal",
+            "e2b",
+            "daytona",
+            "box",
+            "cloud_run",
+            "docker",
+            "ssh",
+        ] {
             assert!(brief.contains(provider), "the brief names {provider}");
         }
         assert!(brief.contains("one question at a time"), "{brief}");
@@ -360,7 +381,10 @@ provider = "docker"
         let brief = status().brief(SetupTarget::Hub, "goble-cli");
         assert!(brief.contains("goble-cli setup hub"), "{brief}");
         assert!(brief.contains("/home/me/.goble/hub.toml"), "{brief}");
-        assert!(brief.contains("does not ship the hub binary yet"), "{brief}");
+        assert!(
+            brief.contains("does not ship the hub binary yet"),
+            "{brief}"
+        );
     }
 
     #[test]

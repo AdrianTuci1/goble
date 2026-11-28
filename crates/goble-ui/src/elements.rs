@@ -561,6 +561,19 @@ impl Border {
         }
     }
 
+    /// Only the leading edge: the rule that separates an inner rail from the
+    /// content beside it.
+    pub fn left(width: f32) -> Self {
+        Self {
+            width,
+            color: Fill::None,
+            top: false,
+            left: true,
+            bottom: false,
+            right: false,
+        }
+    }
+
     pub fn with_border_fill<F: Into<Fill>>(mut self, fill: F) -> Self {
         self.color = fill.into();
         self

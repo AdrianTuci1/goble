@@ -55,20 +55,20 @@ impl RunMetrics {
 
     /// The metrics a monospaced terminal/code run is drawn with.
     pub const fn mono(font_size: f32, line_height: f32) -> Self {
-        Self::new(font_size, line_height, FontFamily::Mono, FontWeight::Regular, false)
+        Self::new(
+            font_size,
+            line_height,
+            FontFamily::Mono,
+            FontWeight::Regular,
+            false,
+        )
     }
 
     fn advance(&self, text: &str) -> f32 {
         if text.is_empty() {
             return 0.0;
         }
-        advance_width(
-            text,
-            self.font_size,
-            self.weight,
-            self.family,
-            self.italic,
-        )
+        advance_width(text, self.font_size, self.weight, self.family, self.italic)
     }
 
     /// The width one monospaced cell is drawn at. Drawing rounds every glyph
@@ -429,11 +429,7 @@ impl SelectableText {
     }
 
     /// The boxes a selection covers, in window coordinates, one per line.
-    pub fn highlight_rects(
-        &self,
-        anchor: SelectionPoint,
-        cursor: SelectionPoint,
-    ) -> Vec<RectF> {
+    pub fn highlight_rects(&self, anchor: SelectionPoint, cursor: SelectionPoint) -> Vec<RectF> {
         if self.lines.is_empty() {
             return Vec::new();
         }

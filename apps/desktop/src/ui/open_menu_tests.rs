@@ -366,11 +366,13 @@ fn the_composer_model_card_registers_and_closes_from_outside() {
         Some("composer.model"),
         "the composer model card registered as the open menu"
     );
-    // The card draws the two DSH root cells.
-    assert!(
-        text_origin(&commands, "Model").is_some() || text_origin(&commands, "No efforts").is_some(),
-        "the model card is drawn"
-    );
+    // 559: the card opens on Model / Effort / Enable agent teamwork.
+    for label in ["Model", "Effort", "Enable agent teamwork"] {
+        assert!(
+            text_origin(&commands, label).is_some(),
+            "the first level draws {label:?}"
+        );
+    }
 
     // Hover over the card belongs to the card: the transcript behind it keeps
     // its own hover state empty.

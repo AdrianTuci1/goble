@@ -57,6 +57,8 @@ pub enum ColorRegion {
     Sv,
     /// The hue ring.
     Ring,
+    /// The straight hue strip below the square.
+    Hue,
 }
 
 /// A drag in progress (which region of the wheel). Shared via an `Rc` so the
@@ -354,6 +356,7 @@ impl Element for ColorWheel {
                 let color = match region {
                     ColorRegion::Sv => self.abs_sv().map(|r| self.color_at_sv(r, *position)),
                     ColorRegion::Ring => self.abs_wheel().map(|r| self.color_at_ring(r, *position)),
+                    ColorRegion::Hue => None,
                 };
                 match color {
                     Some(color) => {
@@ -367,6 +370,246 @@ impl Element for ColorWheel {
             }
             DispatchedEvent::MouseUp { .. } => {
                 if dragging.borrow_mut().take().is_some() {
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+/// 362: DSH's color control — a rounded saturation/value square over a
+/// full-width hue strip. Both regions are draggable and report live.
+pub struct HsvBarPicker {
+    color: ColorU,
+    on_change: ColorHandler,
+    on_preview: ColorHandler,
+    on_commit: ColorHandler,
+    last_color: Option<ColorU>,
+    drag: Rc<RefCell<Option<ColorPickerDrag>>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+    sv_rect: Option<RectF>,
+    hue_rect: Option<RectF>,
+}
+
+impl HsvBarPicker {
+    pub fn new(color: ColorU) -> Self {
+        Self {
+            color,
+            on_change: None,
+            on_preview: None,
+            on_commit: None,
+            last_color: None,
+            drag: Rc::new(RefCell::new(None)),
+            size: None,
+            origin: None,
+            sv_rect: None,
+            hue_rect: None,
+        }
+    }
+
+    pub fn with_drag(mut self, drag: Rc<RefCell<Option<ColorPickerDrag>>>) -> Self {
+        self.drag = drag;
+        self
+    }
+
+    pub fn with_on_change<F: FnMut(ColorU) + 'static>(mut self, callback: F) -> Self {
+        self.on_change = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// 521: an in-memory preview for each drag step.
+    pub fn with_on_preview<F: FnMut(ColorU) + 'static>(mut self, callback: F) -> Self {
+        self.on_preview = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    /// The single commit fired on release.
+    pub fn with_on_commit<F: FnMut(ColorU) + 'static>(mut self, callback: F) -> Self {
+        self.on_commit = Some(Rc::new(RefCell::new(callback)));
+        self
+    }
+
+    fn report(&mut self, color: ColorU) {
+        self.last_color = Some(color);
+        let callback = self.on_preview.as_ref().or(self.on_change.as_ref());
+        if let Some(cb) = callback {
+            (cb.borrow_mut())(color);
+        }
+    }
+
+    fn hsv(&self) -> (f32, f32, f32) {
+        rgb_to_hsv(ColorU::new(self.color.r, self.color.g, self.color.b, 255))
+    }
+
+    fn abs_sv(&self) -> Option<RectF> {
+        let o = self.origin?;
+        let r = self.sv_rect?;
+        Some(rectf(
+            o.x() + r.min_x(),
+            o.y() + r.min_y(),
+            r.width(),
+            r.height(),
+        ))
+    }
+
+    fn abs_hue(&self) -> Option<RectF> {
+        let o = self.origin?;
+        let r = self.hue_rect?;
+        Some(rectf(
+            o.x() + r.min_x(),
+            o.y() + r.min_y(),
+            r.width(),
+            r.height(),
+        ))
+    }
+
+    fn color_at_sv(&self, r: RectF, pos: Vector2F) -> ColorU {
+        let (h, _, _) = self.hsv();
+        let s = ((pos.x - r.min_x()) / r.width()).clamp(0.0, 1.0);
+        let v = (1.0 - (pos.y - r.min_y()) / r.height()).clamp(0.0, 1.0);
+        hsv_to_rgb(h, s, v)
+    }
+
+    fn color_at_hue(&self, r: RectF, pos: Vector2F) -> ColorU {
+        let (_, s, v) = self.hsv();
+        let hue = ((pos.x - r.min_x()) / r.width()).clamp(0.0, 1.0) * 360.0;
+        hsv_to_rgb(hue, s, v)
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for HsvBarPicker {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let _ = app;
+        let width = constraint.max.x.min(300.0).max(120.0);
+        let square = 150.0_f32.min((constraint.max.y - 36.0).max(60.0));
+        self.sv_rect = Some(rectf(0.0, 0.0, width, square));
+        self.hue_rect = Some(rectf(0.0, square + 10.0, width, 16.0));
+        let size = vec2f(width, square + 26.0);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        let (hue, sat, val) = self.hsv();
+        if let Some(r) = self.abs_sv() {
+            let rows = 32;
+            let row_h = r.height() / rows as f32;
+            for row in 0..rows {
+                let v = 1.0 - row as f32 / rows as f32;
+                let y = r.min_y() + row as f32 * row_h;
+                let row_rect = rectf(r.min_x(), y, r.width(), row_h);
+                let level = (v * 255.0).round() as u8;
+                renderer.fill_rect(row_rect, ColorU::new(level, level, level, 255));
+                renderer.fill_rect_fade_right(row_rect, hsv_to_rgb(hue, 1.0, v), 0.0);
+            }
+            renderer.stroke_rect(r, app.theme.color(ColorToken::Border), 1.0, 0.0);
+            let kx = r.min_x() + sat * r.width() - KNOB * 0.5;
+            let ky = r.min_y() + (1.0 - val) * r.height() - KNOB * 0.5;
+            renderer.fill_rounded_rect(rectf(kx, ky, KNOB, KNOB), ColorU::new(0, 0, 0, 180), 2.0);
+            renderer.fill_rounded_rect(
+                rectf(kx + 1.0, ky + 1.0, KNOB - 2.0, KNOB - 2.0),
+                hsv_to_rgb(hue, sat, val),
+                1.5,
+            );
+        }
+        if let Some(r) = self.abs_hue() {
+            let segments = 48;
+            let w = r.width() / segments as f32;
+            for index in 0..segments {
+                let color = hsv_to_rgb(index as f32 * 360.0 / segments as f32, 1.0, 1.0);
+                renderer.fill_rect(
+                    rectf(r.min_x() + index as f32 * w, r.min_y(), w + 0.5, r.height()),
+                    color,
+                );
+            }
+            let cx = r.min_x() + (hue / 360.0) * r.width();
+            renderer.fill_rounded_rect(
+                rectf(cx - 7.0, r.min_y() - 2.0, 14.0, r.height() + 4.0),
+                ColorU::new(0, 0, 0, 220),
+                7.0,
+            );
+            renderer.fill_rounded_rect(
+                rectf(cx - 5.0, r.min_y(), 10.0, r.height()),
+                hsv_to_rgb(hue, 1.0, 1.0),
+                5.0,
+            );
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        let dragging = self.drag.clone();
+        match event {
+            DispatchedEvent::MouseDown { position, .. } => {
+                if let Some(r) = self.abs_sv() {
+                    if contains(r, *position) {
+                        *dragging.borrow_mut() = Some(ColorPickerDrag {
+                            region: ColorRegion::Sv,
+                        });
+                        self.report(self.color_at_sv(r, *position));
+                        return true;
+                    }
+                }
+                if let Some(r) = self.abs_hue() {
+                    if contains(r, *position) {
+                        *dragging.borrow_mut() = Some(ColorPickerDrag {
+                            region: ColorRegion::Hue,
+                        });
+                        self.report(self.color_at_hue(r, *position));
+                        return true;
+                    }
+                }
+                false
+            }
+            DispatchedEvent::MouseMove { position } => {
+                let Some(drag) = *dragging.borrow() else {
+                    return false;
+                };
+                let color = match drag.region {
+                    ColorRegion::Sv => self.abs_sv().map(|r| self.color_at_sv(r, *position)),
+                    ColorRegion::Hue => self.abs_hue().map(|r| self.color_at_hue(r, *position)),
+                    ColorRegion::Ring => self.abs_sv().map(|r| self.color_at_sv(r, *position)),
+                };
+                if let Some(color) = color {
+                    self.report(color);
+                    true
+                } else {
+                    false
+                }
+            }
+            DispatchedEvent::MouseUp { .. } => {
+                if dragging.borrow_mut().take().is_some() {
+                    if let (Some(color), Some(cb)) = (self.last_color, self.on_commit.as_ref()) {
+                        (cb.borrow_mut())(color);
+                    }
+                    self.last_color = None;
                     return true;
                 }
                 false
@@ -393,6 +636,91 @@ mod tests {
 
     fn wheel_box(color: ColorU) -> Box<dyn Element> {
         ColorWheel::new(color).finish()
+    }
+
+    /// 521: every drag step previews in memory; exactly one commit fires on
+    /// release, so no settings write can happen per pixel.
+    #[test]
+    fn the_hsv_picker_previews_each_step_and_commits_once_on_release() {
+        use goble_ui::elements::EventContext;
+        use goble_ui::event::DispatchedEvent;
+        use goble_ui::test_util::render_element;
+        let app = AppContext::default();
+        let previews = Rc::new(RefCell::new(0usize));
+        let commits = Rc::new(RefCell::new(0usize));
+        let p = previews.clone();
+        let c = commits.clone();
+        let mut picker: Box<dyn Element> = Box::new(
+            HsvBarPicker::new(ColorU::new(128, 128, 128, 255))
+                .with_on_preview(move |_| *p.borrow_mut() += 1)
+                .with_on_commit(move |_| *c.borrow_mut() += 1),
+        );
+        let _ = render_element(&mut picker, vec2f(300.0, 220.0), &app);
+        let mut ctx = EventContext::default();
+        picker.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(40.0, 40.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        for x in [60.0, 90.0, 120.0] {
+            picker.dispatch_event(
+                &DispatchedEvent::MouseMove {
+                    position: vec2f(x, 60.0),
+                },
+                &mut ctx,
+                &app,
+            );
+        }
+        assert!(*previews.borrow() >= 4, "each step previews in memory");
+        assert_eq!(*commits.borrow(), 0, "nothing is committed mid-drag");
+        picker.dispatch_event(
+            &DispatchedEvent::MouseUp {
+                position: vec2f(120.0, 60.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert_eq!(*commits.borrow(), 1, "release commits once");
+    }
+
+    /// 362: the square and the hue strip are both live drag targets.
+    #[test]
+    fn the_hsv_bar_picker_reports_sv_and_hue_drags() {
+        use goble_ui::elements::EventContext;
+        use goble_ui::event::DispatchedEvent;
+        use goble_ui::test_util::render_element;
+        let app = AppContext::default();
+        let changed = Rc::new(RefCell::new(None));
+        let cb = changed.clone();
+        let mut picker: Box<dyn Element> = Box::new(
+            HsvBarPicker::new(ColorU::new(128, 128, 128, 255))
+                .with_on_change(move |color| *cb.borrow_mut() = Some(color)),
+        );
+        let _ = render_element(&mut picker, vec2f(300.0, 220.0), &app);
+        let mut ctx = EventContext::default();
+        picker.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(40.0, 40.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(changed.borrow().is_some(), "the SV square reports a colour");
+        *changed.borrow_mut() = None;
+        picker.dispatch_event(
+            &DispatchedEvent::MouseDown {
+                position: vec2f(150.0, 165.0),
+                button: 0,
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(changed.borrow().is_some(), "the hue strip reports a colour");
     }
 
     #[test]

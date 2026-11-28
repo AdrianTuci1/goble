@@ -295,7 +295,13 @@ pub fn build_agent_chat(
     // lane only meters this pane's conversation column (drawn on the darker
     // `Bg`); the topbar and the work dock stay full-pane-width chrome bands and
     // never follow the adjustable width.
-    let content_lane_pref = state.content_lane_prefs.get(&pane_id).copied();
+    // 309: the transcript/text lane is narrower than the composer band, so a
+    // full-width line can never run into the composer controls.
+    let content_lane_pref = state
+        .content_lane_prefs
+        .get(&pane_id)
+        .copied()
+        .or(Some(820.0));
     // The window's single chrome row owns the title and actions now; the panel
     // starts directly under it with no second header row.
     let header: Box<dyn Element> = goble_ui::elements::Empty::new()
@@ -354,59 +360,10 @@ pub fn build_agent_chat(
             (stop.borrow_mut())(pane_id, child_id)
         }))
     };
-    // The dock under the header owns the pane's in-flight work: one collapsible
-    // group per kind, its rows carrying the controls that enter and stop them.
-    // A child view draws no dock of its own — the early return above keeps the
-    // child's surface free of the parent's.
-    let work_dock: Option<Box<dyn Element>> = {
-        let groups = session.work_dock.clone();
-        if groups.is_empty() {
-            None
-        } else {
-            let on_toggle = actions.on_toggle_work_section.clone();
-            let on_show_all = actions.on_show_all_work_section.clone();
-            let open_workflow_run = actions.on_open_workflow_run.clone();
-            let on_open: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
-                let open_sub_agent = on_open_sub_agent.clone();
-                let open_workflow_run = open_workflow_run.clone();
-                Rc::new(RefCell::new(move |section: WorkSection, id: String| {
-                    match section {
-                        WorkSection::Subagents => (open_sub_agent.borrow_mut())(id),
-                        // A workflow row opens that run's detail in this pane,
-                        // the way a sub-agent row opens the child in it.
-                        WorkSection::Workflows => (open_workflow_run.borrow_mut())(pane_id, id),
-                        // A task is a tool call already drawn in the transcript;
-                        // there is no separate surface to open. A watcher is the
-                        // same call under the monitor tool.
-                        WorkSection::Tasks | WorkSection::Watchers => {}
-                    }
-                }))
-            };
-            let on_stop: Rc<RefCell<dyn FnMut(WorkSection, String)>> = {
-                let stop_sub_agent = on_stop_sub_agent.clone();
-                Rc::new(RefCell::new(move |section: WorkSection, id: String| {
-                    if section == WorkSection::Subagents {
-                        (stop_sub_agent.borrow_mut())(id);
-                    }
-                }))
-            };
-            Some(
-                // The dock's band spans the whole pane, flush with the pane's
-                // slot like the topbar above it (the body card keeps its own
-                // inset); only the cards inside it are bounded to the pane's
-                // content lane, exactly as the header row is.
-                goble_ui::WorkDock::new(groups)
-                    .with_phase(session.work_dock_phase)
-                    .with_content_lane(content_lane_pref)
-                    .with_band_bleed(crate::ui::panes::PANE_INSET)
-                    .with_on_toggle(move |section| (on_toggle.borrow_mut())(section))
-                    .with_on_show_all(move |section| (on_show_all.borrow_mut())(section))
-                    .with_on_open(on_open)
-                    .with_on_stop(on_stop)
-                    .finish(),
-            )
-        }
-    };
+    // No tasks/sub-agents strip in the chat panel header: work items live in
+    // the side panel's rail/Overview.
+    let work_dock: Option<Box<dyn Element>> = None;
+    let work_dock: Option<Box<dyn Element>> = None;
     let on_select_harness = actions.on_select_harness.clone();
     let on_select_dir = actions.on_select_dir.clone();
     let on_select_branch = actions.on_select_branch.clone();
@@ -416,30 +373,64 @@ pub fn build_agent_chat(
     let on_cmd_enter = actions.on_cmd_enter.clone();
     let on_send_to_cloud = actions.on_send_to_cloud.clone();
 
-    // Model dropdown: one item per available model; the current one is marked
-    // selected. Selecting an item maps the index back to a model name.
-    let model_items = state
-        .models
-        .iter()
-        .map(|name| {
-            let mut item = PopupMenuItem::new(name.clone()).with_icon("cpu");
-            if name == &controls.model {
-                item = item.selected();
-            }
-            item
-        })
-        .collect::<Vec<_>>();
-    let on_model_select = actions.on_model_select.clone();
-    let models_for_select = state.models.clone();
-    let model_menu_open = controls.model_menu_open.clone();
-    let model_index = controls.model_index.clone();
-
     // The tray the same control opens: the models a pane can run, grouped under
     // the harness that owns each one. The groups are recognition — a mark and a
     // name over the rows that harness runs — and a pick is always a model. The
     // rows are the desktop's catalog, so the tray lists what a turn can run.
-    let tray_harnesses: Vec<ModelTrayHarness> = state
-        .model_groups
+    // 454/462/464: configured provider groups plus each CLI integration's
+    // real runtime models (Antigravity reads `agy models`). Only integrations
+    // that actually report models become groups; Settings owns the honest
+    // unconfigured/not-installed states.
+    let mut groups = state.model_groups.clone();
+    for integration in &state.integrations {
+        // 515: only adapters that are actually installed/available (or that
+        // report models) appear; a missing CLI is Settings-only.
+        if !integration.installed && integration.models.is_empty() {
+            continue;
+        }
+        let mut models: Vec<goble_harness_types::HarnessModel> = integration
+            .models
+            .iter()
+            .map(|model| {
+                goble_harness_types::HarnessModel::new(model.id.clone(), model.name.clone())
+                    .with_thinking(model.efforts.clone())
+            })
+            .collect();
+        // 549: the primary CLI adapters run the provider catalog their harness
+        // owns; if the CLI exposes no `models` command, borrow the configured
+        // provider's real models instead of inventing any.
+        if models.is_empty() {
+            let provider = match integration.id.as_str() {
+                "claude" => Some("anthropic"),
+                "codex" => Some("openai"),
+                "gemini" => Some("google"),
+                _ => None,
+            };
+            if let Some(provider) = provider {
+                if let Some(group) = state.model_groups.iter().find(|group| {
+                    group.harness == provider || group.label.eq_ignore_ascii_case(provider)
+                }) {
+                    models = group.models.clone();
+                }
+            }
+        }
+        if models.is_empty() {
+            continue;
+        }
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.harness == integration.id)
+        {
+            group.models.extend(models);
+        } else {
+            groups.push(goble_desktop_service::ModelGroup {
+                harness: integration.id.clone(),
+                label: integration.name.clone(),
+                models,
+            });
+        }
+    }
+    let tray_harnesses: Vec<ModelTrayHarness> = groups
         .iter()
         .map(|group| {
             ModelTrayHarness::new(group.harness.clone(), group.label.clone()).with_models(
@@ -456,8 +447,7 @@ pub fn build_agent_chat(
         .collect();
     // What a pick resolves to: the model ids in the order the tray draws them,
     // since the tray reports the row it took rather than the id behind it.
-    let tray_model_ids: Vec<String> = state
-        .model_groups
+    let tray_model_ids: Vec<String> = groups
         .iter()
         .flat_map(|group| group.models.iter().map(|model| model.id.clone()))
         .collect();
@@ -511,9 +501,20 @@ pub fn build_agent_chat(
         .with_tool_fold(state.tool_fold.clone())
         .with_tool_hover(state.tool_hover.clone())
         .with_changed_files_open(session.changed_files_open.clone())
+        // The changed-files card's Review opens the SIDE PANEL's Review tab,
+        // not a pane beside the conversation; a hidden panel is expanded first.
         .with_on_review_changes({
-            let open = actions.on_diff_panel.clone();
-            move || (open.borrow_mut())(pane_id, crate::ui::DiffPanelAction::Open(None))
+            let side = actions.on_side_tab.clone();
+            let toggle = actions.on_toggle_right_sidebar.clone();
+            let panel_open = state.right_sidebar_open;
+            move || {
+                (side.borrow_mut())(crate::state::SideTabAction::Add(
+                    crate::state::SideTabKind::Review,
+                ));
+                if !panel_open {
+                    (toggle.borrow_mut())();
+                }
+            }
         })
         // This pane's own filter bar state (seeded per pane before the
         // snapshot), so opening it in one pane leaves the siblings alone.
@@ -539,7 +540,7 @@ pub fn build_agent_chat(
         .with_composer_value(session.composer_draft.clone())
         // Only the active pane's composer is focused, so a background chat pane
         // never swallows keys before the active pane (e.g. a terminal) sees them.
-        .with_composer_focused(active && state.composer_focused)
+        .with_composer_focused(active && session.composer_focused)
         .with_composer_caret(controls.caret.clone())
         .with_composer_anchor(controls.selection_anchor.clone())
         // The clipboard is the pane's own: a copy, a cut and a paste in the
@@ -551,11 +552,6 @@ pub fn build_agent_chat(
         .with_composer_ssh_session(ssh_session)
         .with_composer_attachments(session.composer_attachments.clone())
         .with_composer_stop_visible(session.agent_busy)
-        // The instructions the composer draws above its editor: grok-build's
-        // own hints, as this GUI binds them.
-        .with_composer_hints(crate::ui::shortcut_hints::agent_rich_input_hints(
-            session.agent_busy,
-        ))
         // The live turn-status footer, fed by C1's real live state per pane. It
         // is information only, so it carries no click handler.
         .with_turn_status(session.turn_status.clone())
@@ -600,11 +596,6 @@ pub fn build_agent_chat(
         .with_on_dismiss_queued(in_pane(&on_pane_activate, pane_id, move || {
             (on_dismiss_queued.borrow_mut())()
         }))
-        .with_composer_model_menu(model_items, model_menu_open, model_index, move |index| {
-            if let Some(name) = models_for_select.get(index) {
-                (on_model_select.borrow_mut())(pane_id, name.clone());
-            }
-        })
         // The submit paths all resolve the pane through the active-pane
         // contract, so the pane whose composer was pressed becomes the active
         // one first: a click on a background pane's send sends *its* draft to
@@ -684,15 +675,21 @@ pub fn build_agent_chat(
         {
             let on_model_select = actions.on_model_select.clone();
             let on_thinking_select = actions.on_thinking_select.clone();
+            let on_configure = actions.on_open_models_settings.clone();
             let tray = ComposerModelTray::new(
                 tray_harnesses.clone(),
                 controls.model_tray_state.clone(),
                 controls.model_tray_open.clone(),
             )
             .with_current(controls.model.clone(), controls.thinking.clone())
+            .with_credential_source(state.llm_credential_source.clone())
             .with_on_select_model(move |row| {
                 if let Some(id) = tray_model_ids.get(row) {
-                    (on_model_select.borrow_mut())(pane_id, id.clone());
+                    if id.starts_with("__configure__:") {
+                        (on_configure.borrow_mut())();
+                    } else {
+                        (on_model_select.borrow_mut())(pane_id, id.clone());
+                    }
                 }
             })
             .with_on_select_level(move |level| {
@@ -825,6 +822,20 @@ pub fn build_agent_chat(
     // shell behind. A pane with neither passes `None`.
     if let Some(on_escape) = on_escape {
         chat = chat.with_on_escape(move || (on_escape.borrow_mut())());
+    }
+    // 341: the conversation's project pill sits above the composer. The side
+    // panel's reserved conversation has no project of its own.
+    if pane_id != crate::state::SIDE_AGENT_PANE_ID {
+        // BF: the selector is for the conversation's first turn only. Once a
+        // turn exists (or the user has typed), the band stays but the selector
+        // is gone, so the composer never jumps.
+        let show_project = session.messages.is_empty() && session.composer_draft.trim().is_empty();
+        let pill = if show_project {
+            crate::ui::chat::project_pill::build_project_pill(app, state, actions, pane_id)
+        } else {
+            crate::ui::chat::project_pill::project_pill_placeholder()
+        };
+        chat = chat.with_project_pill(pill);
     }
     // The right "agent panel" (routines + scheduled tasks) is now a floating
     // overlay layered over the whole app in `build_ui`, not a docked sidebar
@@ -1062,8 +1073,8 @@ mod chat_geometry_tests {
         );
         assert_eq!(
             band.0.max_x(),
-            pane_right,
-            "the user's bubble is right-aligned to the pane's trailing edge"
+            pane_right - 31.0,
+            "the user's bubble keeps the lane's trailing inset"
         );
         assert!(
             band.0.min_x() > pane_left + 50.0,
@@ -1078,7 +1089,7 @@ mod chat_geometry_tests {
 
         let padded = reply_x - pane_left;
         assert!(
-            (11.0..=17.0).contains(&padded),
+            (26.0..=29.0).contains(&padded),
             "the agent's row keeps its band inset after the top/left pane band was removed, got {padded}"
         );
 

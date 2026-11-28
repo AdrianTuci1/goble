@@ -128,7 +128,10 @@ impl GobleHome {
         self.seed_config_if_missing()?;
         self.seed_environment_if_missing()?;
         self.seed_file_if_missing(crate::hosts::HOSTS_FILE_NAME, &crate::hosts::empty_toml())?;
-        self.seed_file_if_missing("README.md", "# Goble home\n\nUser home on this machine. Mirrors the `~/.grok` structure.\n")?;
+        self.seed_file_if_missing(
+            "README.md",
+            "# Goble home\n\nUser home on this machine. Mirrors the `~/.grok` structure.\n",
+        )?;
         self.seed_file_if_missing(
             "version.json",
             &format!("{{\"version\": \"{}\"}}\n", env!("CARGO_PKG_VERSION")),
@@ -172,7 +175,8 @@ impl GobleHome {
         if path.exists() {
             return Ok(());
         }
-        crate::environment::save(&path, &EnvironmentFile::new()).context("write environment.toml")?;
+        crate::environment::save(&path, &EnvironmentFile::new())
+            .context("write environment.toml")?;
         Ok(())
     }
 
@@ -189,15 +193,13 @@ impl GobleHome {
     /// files that are missing so it never clobbers the user's edits.
     fn seed_docs(&self) -> Result<()> {
         let dir = self.docs_user_guide_dir();
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("create docs dir {}", dir.display()))?;
+        fs::create_dir_all(&dir).with_context(|| format!("create docs dir {}", dir.display()))?;
         for (name, contents) in docs::USER_GUIDE {
             let path = dir.join(name);
             if path.exists() {
                 continue;
             }
-            fs::write(&path, contents)
-                .with_context(|| format!("write user guide doc {name}"))?;
+            fs::write(&path, contents).with_context(|| format!("write user guide doc {name}"))?;
         }
         Ok(())
     }

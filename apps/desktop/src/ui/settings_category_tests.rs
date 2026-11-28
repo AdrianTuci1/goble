@@ -806,12 +806,21 @@ fn provider_accounts_render_real_accounts_and_local_cli_detection() {
 fn the_agent_cli_groups_collapse_and_expand_in_ui_state() {
     let fixture = Fixture::new(SEEDED_CONFIG);
     let model = fixture.model(SettingsCategory::Providers);
-    let fold_id = model
+    let Some(fold_id) = model
         .sections
         .iter()
-        .find(|section| section.fold.is_some())
+        .find(|section| section.fold.is_some() && section.id != "harnesses.more")
         .map(|section| section.id.clone())
-        .expect("the Providers page folds the agent CLIs");
+    else {
+        // On a machine with no installed CLI every catalog entry lives under
+        // the persisted "More integrations" fold: opening it expands sections.
+        let before = model.sections.len();
+        fixture.dispatch(SettingsAction::ToggleFold("harnesses.more".to_string()));
+        let model = fixture.model(SettingsCategory::Providers);
+        assert!(model.sections.len() > before, "More integrations expands");
+        fixture.dispatch(SettingsAction::ToggleFold("harnesses.more".to_string()));
+        return;
+    };
     let closed = model
         .sections
         .iter()

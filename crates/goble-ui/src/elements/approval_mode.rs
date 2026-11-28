@@ -65,6 +65,41 @@ impl ApprovalMode {
         }
     }
 
+    /// 394: the approval card's display order and copy.
+    pub const DISPLAY_ORDER: [Self; 4] = [
+        Self::Manual,
+        Self::Plan,
+        Self::AlwaysApprove,
+        Self::AutoReview,
+    ];
+
+    pub fn display_label(self) -> &'static str {
+        match self {
+            Self::Manual => "Default",
+            Self::Plan => "Auto",
+            Self::AlwaysApprove => "Full access",
+            Self::AutoReview => "Requires review",
+        }
+    }
+
+    pub fn display_description(self) -> &'static str {
+        match self {
+            Self::Manual => "Ask before sensitive operations",
+            Self::Plan => "Automatically decides if commands run",
+            Self::AlwaysApprove => "Run any commands without restriction",
+            Self::AutoReview => "Every command requires approval",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Manual => "lock",
+            Self::Plan => "shield-lock",
+            Self::AlwaysApprove => "shield-alert",
+            Self::AutoReview => "eye",
+        }
+    }
+
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|mode| *mode == self).unwrap_or(1)
     }

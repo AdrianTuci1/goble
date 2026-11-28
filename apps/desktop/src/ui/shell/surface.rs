@@ -46,6 +46,8 @@ impl WorkspaceSurface {
         // One flat dark surface for the whole pane area, edges included: no
         // rounded sheet and no band, so the resize zone reads as the same
         // black material as the panels.
+        // The 6 pt shell margin is the grey `Surface`; the 12 pt rounded sheet
+        // inside it is the black content material.
         let backdrop = app.theme.color(ColorToken::ContentBg);
         Self {
             child,

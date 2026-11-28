@@ -20,8 +20,8 @@ use crate::elements::content_lane::lane_column;
 use crate::elements::running_indicator::SPINNER_FRAMES;
 use crate::elements::{
     AppContext, Chip, Container, CrossAxisAlignment, EdgeInsets, Element, Expanded, Flex, HoverRow,
-    Icon, InlineText, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Text,
-    TextSpan,
+    Icon, InlineText, LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint,
+    Text, TextSpan,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
@@ -120,7 +120,11 @@ pub struct WorkRow {
 impl WorkRow {
     /// A row with nothing live about it: a static dot, no activity and no
     /// controls until the caller asks for them.
-    pub fn new(id: impl Into<String>, kind: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        kind: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             kind: kind.into(),
@@ -278,7 +282,10 @@ pub struct WorkDock {
 impl WorkDock {
     pub fn new(groups: Vec<WorkGroup>) -> Self {
         Self {
-            groups: groups.into_iter().filter(|group| !group.rows.is_empty()).collect(),
+            groups: groups
+                .into_iter()
+                .filter(|group| !group.rows.is_empty())
+                .collect(),
             content: ContentWidth::Full,
             horizontal_bleed: 0.0,
             phase: 0.0,
@@ -384,9 +391,7 @@ impl WorkDock {
         }
         // The band's own horizontal padding: the cards read as insets inside
         // the band, exactly as they did when the band itself was this wide.
-        self.root = Some(
-            Padding::new(column.finish(), EdgeInsets::new(md, 0.0, md, 0.0)).finish(),
-        );
+        self.root = Some(Padding::new(column.finish(), EdgeInsets::new(md, 0.0, md, 0.0)).finish());
     }
 
     /// One group as DSH's announcement card: a quiet inset surface, a hairline,
@@ -866,7 +871,8 @@ mod tests {
         let commands = paint(&mut WorkDock::new(groups()), 900.0);
         let rows = row_texts(&commands);
         assert!(
-            rows.iter().any(|line| line.starts_with("Tasks") && line.ends_with('2')),
+            rows.iter()
+                .any(|line| line.starts_with("Tasks") && line.ends_with('2')),
             "the tasks header names its count, got {rows:?}"
         );
         assert!(
@@ -902,7 +908,10 @@ mod tests {
             row.starts_with(&format!("{} Task", SPINNER_FRAMES[0])),
             "a live task leads with the spinner, got {row:?}"
         );
-        assert!(row.contains("— reading"), "the activity follows, got {row:?}");
+        assert!(
+            row.contains("— reading"),
+            "the activity follows, got {row:?}"
+        );
         assert!(
             rows.iter().any(|line| line.ends_with("6.6s")),
             "the meta is drawn at the row's edge, got {rows:?}"
@@ -924,7 +933,8 @@ mod tests {
         groups[0].open = false;
         let rows = row_texts(&paint(&mut WorkDock::new(groups), 900.0));
         assert!(
-            rows.iter().any(|line| line.starts_with("Tasks") && line.ends_with('2')),
+            rows.iter()
+                .any(|line| line.starts_with("Tasks") && line.ends_with('2')),
             "the folded group keeps its header, got {rows:?}"
         );
         assert!(
@@ -965,9 +975,7 @@ mod tests {
         let more = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. }
-                    if text.contains("show 2 more") =>
-                {
+                RenderCommand::DrawText { text, origin, .. } if text.contains("show 2 more") => {
                     Some(*origin)
                 }
                 _ => None,
@@ -1009,14 +1017,10 @@ mod tests {
         let stop_sink = stopped.clone();
         let mut dock = WorkDock::new(groups())
             .with_on_open(Rc::new(RefCell::new(
-                move |section: WorkSection, id: String| {
-                    open_sink.borrow_mut().push((section, id))
-                },
+                move |section: WorkSection, id: String| open_sink.borrow_mut().push((section, id)),
             )))
             .with_on_stop(Rc::new(RefCell::new(
-                move |section: WorkSection, id: String| {
-                    stop_sink.borrow_mut().push((section, id))
-                },
+                move |section: WorkSection, id: String| stop_sink.borrow_mut().push((section, id)),
             )));
         let commands = paint(&mut dock, 900.0);
         let open = icon_centre(&commands, "arrow-up", 0).expect("the first row's open control");
@@ -1188,7 +1192,9 @@ mod tests {
                     line_height,
                     color,
                     ..
-                } if text.contains("Audit the migration") => Some((*font_size, *line_height, *color)),
+                } if text.contains("Audit the migration") => {
+                    Some((*font_size, *line_height, *color))
+                }
                 _ => None,
             })
             .expect("the card body draws its row");
@@ -1292,11 +1298,11 @@ mod tests {
         let card = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::FillRect { rect, corner_radius, .. }
-                    if (*corner_radius - card_radius).abs() < 0.01 =>
-                {
-                    Some(*rect)
-                }
+                RenderCommand::FillRect {
+                    rect,
+                    corner_radius,
+                    ..
+                } if (*corner_radius - card_radius).abs() < 0.01 => Some(*rect),
                 _ => None,
             })
             .expect("the group draws its card");
@@ -1365,9 +1371,7 @@ mod tests {
         let hovered_title = hovered
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText {
-                    text, color, ..
-                } if text == "Subagents" => Some(*color),
+                RenderCommand::DrawText { text, color, .. } if text == "Subagents" => Some(*color),
                 _ => None,
             })
             .expect("the hovered header title is drawn");
@@ -1379,9 +1383,7 @@ mod tests {
         let hovered_count = hovered
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawText {
-                    text, color, ..
-                } if text == "1" => Some(*color),
+                RenderCommand::DrawText { text, color, .. } if text == "1" => Some(*color),
                 _ => None,
             })
             .expect("the hovered header count is drawn");
@@ -1404,9 +1406,7 @@ mod tests {
                     rect,
                     color,
                     corner_radius,
-                } if *color == app.theme.color(ColorToken::Surface)
-                    && *corner_radius == 0.0 =>
-                {
+                } if *color == app.theme.color(ColorToken::Surface) && *corner_radius == 0.0 => {
                     Some(*rect)
                 }
                 _ => None,

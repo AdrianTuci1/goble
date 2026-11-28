@@ -373,6 +373,10 @@ impl ApplicationHandler for App {
         }
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        // macOS keeps the native window shape: clip the content view to the
+        // rounded frame so the app ends at its border radius.
+        #[cfg(target_os = "macos")]
+        crate::platform::mac::round_window_corners(window.as_ref());
         let surface_state = pollster::block_on(SurfaceState::new(Arc::clone(&window))).unwrap();
         // Expose a fullscreen control to the UI: the app layer requests the real
         // window to enter/leave borderless fullscreen through

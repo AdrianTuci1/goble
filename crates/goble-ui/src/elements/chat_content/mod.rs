@@ -16,10 +16,10 @@ mod fragment;
 mod message;
 mod sub_agent;
 mod sub_agent_panel;
-mod work_dock;
-mod tool_call;
 #[cfg(test)]
 mod tests;
+mod tool_call;
+mod work_dock;
 
 pub use block::{group_fragments_into_blocks, ChatBlock, InlineSpan, InlineStyle};
 pub use changed_files::{changed_files_for_message, ChangedFile, ChangedFiles};
@@ -28,8 +28,8 @@ pub use fragment::{ChatFragment, ChatFragmentKind, ListItem};
 pub use message::{ChatAction, ChatMessage, ChatRole};
 pub use sub_agent::{format_elapsed, SubAgentRow, SubAgentRowStatus};
 pub use sub_agent_panel::SubAgentPanel;
-pub use work_dock::{WorkDock, WorkGroup, WorkRow, WorkSection};
 pub use tool_call::{tool_fold_key, ToolCall, ToolDisplayMode};
+pub use work_dock::{WorkDock, WorkGroup, WorkRow, WorkSection};
 
 /// The elapsed time a sub-agent row states, shared by the transcript row's
 /// status line and the strip's own column so the two read the same clock.

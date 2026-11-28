@@ -27,6 +27,9 @@ impl RootView {
         // The app always runs on the real backend store; there is no mock
         // fallback when a store is unavailable (see `main`).
         let state = Rc::new(RefCell::new(UiState::from_desktop(desktop)));
+        if let Some(width) = desktop.get_ui_sidebar_width() {
+            state.borrow_mut().sidebar_width = width.clamp(200.0, 480.0);
+        }
         let ai_state = Rc::new(RefCell::new(AiState::from_desktop(desktop)));
         let projects_state = Rc::new(RefCell::new(ProjectsState::from_desktop(desktop)));
         let media_state = Rc::new(RefCell::new(MediaState::from_desktop(desktop)));

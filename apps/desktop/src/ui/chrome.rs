@@ -11,14 +11,14 @@ use std::rc::Rc;
 use goble_ui::color::ColorU;
 use goble_ui::elements::interactive::contains;
 use goble_ui::elements::{
-    AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element,
-    Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
+    AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment, Divider, EdgeInsets,
+    Element, Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
     MainAxisSize, MenuId, MenuPointer, PaintContext, Point, PopupMenu, PopupMenuItem,
     PopupMenuPosition, ScrollState, Scrollable, SearchInput, SizeConstraint, Spacer, Stack, Text,
     TextInput, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::{DispatchedEvent, BUTTON_PRIMARY};
-use goble_ui::geometry::{vec2f, PointF, RectF, Size2F, Vector2F};
+use goble_ui::geometry::{rectf, vec2f, PointF, RectF, Size2F, Vector2F};
 use goble_ui::platform::text_atlas::{advance_width, FontWeight};
 use goble_ui::theme::{ColorToken, FontFamily};
 
@@ -52,11 +52,11 @@ const CONTROL_BUTTON_SIZE: f32 = 30.0;
 const CONTROL_SPACING: f32 = 2.0;
 /// The vertical padding that centers a 30 pt control row inside the 40 pt
 /// content band.
-const SECTION_VERTICAL_PADDING: f32 = (CHROME_CONTENT_HEIGHT - CONTROL_BUTTON_SIZE) / 2.0;
+const SECTION_VERTICAL_PADDING: f32 = (CHROME_HEIGHT - CONTROL_BUTTON_SIZE) / 2.0;
 /// A section's top inset: the quiet band above the content plus the padding that
 /// centers its controls in the rest of the band. The traffic lights are the one
 /// exception: they center on the full bar instead (see [`traffic_lights`]).
-const SECTION_TOP_PADDING: f32 = CHROME_TOP_PADDING + SECTION_VERTICAL_PADDING;
+const SECTION_TOP_PADDING: f32 = (CHROME_HEIGHT - CONTROL_BUTTON_SIZE) / 2.0;
 /// A section rule's width: one physical pixel, painted as a filled Empty.
 const SEPARATOR_WIDTH: f32 = 1.0;
 /// The main section's leading padding: the title starts where the pane area's
@@ -160,9 +160,11 @@ const TRAFFIC_LIGHT_GAP: f32 = 8.0;
 const TRAFFIC_LIGHTS_WIDTH: f32 = TRAFFIC_LIGHT_SIZE * 3.0 + TRAFFIC_LIGHT_GAP * 2.0;
 
 fn glyph(app: &AppContext, name: &'static str) -> Box<dyn Element> {
+    // The topbar's own controls read in primary ink: the More dots, Overview
+    // and the other bar glyphs are white, not muted.
     Icon::new(name)
         .with_size(CONTROL_ICON_SIZE)
-        .with_theme_color(ColorToken::Muted, app)
+        .with_theme_color(ColorToken::Text, app)
         .finish()
 }
 
@@ -209,8 +211,7 @@ pub fn build_chrome_row(
     // section takes exactly that width so the rule falls on the same boundary.
     // With the sidebar retracted the section shrinks to its controls, and the
     // main section starts immediately after them.
-    let sidebar_shown =
-        state.responsive.sidebar_shown(state.sidebar_visible) && !state.side_panel_maximized;
+    let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
     let sidebar_width = if sidebar_shown {
         state.sidebar_width
     } else {
@@ -319,6 +320,8 @@ pub fn build_chrome_row(
             .with_focused(rename.focused)
             .with_select_all(true)
             .with_plain(true)
+            .with_font_size(14.5)
+            .with_font_weight(FontWeight::Medium)
             .with_on_change(move |value| (on_change.borrow_mut())(value))
             .with_on_submit(move || (on_submit.borrow_mut())())
             .with_on_focus_change(move |focused| {
@@ -327,8 +330,11 @@ pub fn build_chrome_row(
                 }
             })
             .finish();
+        // Exactly the resting pill's box: same 10 pt side padding, same 26 pt
+        // height, no vertical padding of its own, so the text does not move or
+        // resize when editing starts.
         let editor = Container::new(input)
-            .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
+            .with_padding(EdgeInsets::new(10.0, 1.5, 10.0, 0.0))
             .finish();
         let editor = ConstrainedBox::new(editor)
             .with_max_width(360.0)
@@ -366,7 +372,7 @@ pub fn build_chrome_row(
         // No chip at rest: the title is plain text and the rounded band only
         // appears under the pointer (where the tooltip names the action).
         let pill = HoverRow::new(label)
-            .with_padding(EdgeInsets::new(3.0, 10.0, 3.0, 10.0))
+            .with_padding(EdgeInsets::new(10.0, 6.0, 10.0, 6.0))
             .with_corner_radius(8.0)
             .with_on_click(move || (on_start.borrow_mut())(id.clone()))
             .finish();
@@ -461,20 +467,24 @@ pub fn build_chrome_row(
     }
     let copy_children = vec![name_item, id_item, project_item];
     let more_items = vec![
-        PopupMenuItem::new("Rename").with_shortcut("⌘ R"),
-        PopupMenuItem::new(pin_label),
-        PopupMenuItem::new("Archive").with_shortcut("⌘ ⇧ A"),
+        PopupMenuItem::new("Rename")
+            .with_icon("pencil")
+            .with_shortcut("⌘ R"),
+        PopupMenuItem::new(pin_label).with_icon("pin"),
+        PopupMenuItem::new("Archive")
+            .with_icon("archive-arrow-down")
+            .with_shortcut("⌘ ⇧ A"),
         PopupMenuItem::new("Split")
-            .with_icon("split-horizontal")
+            .with_icon("square-split-horizontal")
             .with_children(split_children)
             .with_separator_before(),
         PopupMenuItem::new("Copy")
-            .with_icon("copy")
+            .with_icon("files")
             .with_children(copy_children),
         PopupMenuItem::new("Close pane").with_separator_before(),
     ];
     let (submenu_index, submenu_highlight, submenu_keyboard) = more_submenu_state();
-    let more = PopupMenu::new(button(app, "ellipsis", "More"), more_items)
+    let more = PopupMenu::new(button(app, "ellipsis-vertical", "More"), more_items)
         .with_open(state.chrome_more_open.clone())
         .with_position(PopupMenuPosition::BelowEnd)
         .with_max_width(240.0)
@@ -489,8 +499,9 @@ pub fn build_chrome_row(
         })
         .finish();
     // The panel must not be covered by the panes painted after the chrome.
-    let more = TopLayer::new(more).finish();
+    let mut more = Some(TopLayer::new(more).finish());
     let panel_open = state.right_sidebar_open;
+    let panel_maximized = panel_open && state.side_panel_maximized;
 
     // Panel 1's trailing controls are the More menu and the Overview popover
     // only. Maximize/collapse and the side-panel toggle moved into panel 2's
@@ -500,7 +511,7 @@ pub fn build_chrome_row(
     let overview_active = *overview_open.borrow();
     let toggle_overview = overview_open.clone();
     let overview_button = Tooltip::new(
-        TopbarButton::new(glyph(app, "flat-list"))
+        TopbarButton::new(glyph(app, "overview"))
             .with_size(CONTROL_BUTTON_SIZE)
             .with_corner_radius(8.0)
             .with_active(overview_active)
@@ -515,12 +526,26 @@ pub fn build_chrome_row(
     .finish();
     let overview_button = AnchorProbe::new(overview_button, overview_anchor.clone()).finish();
 
+    // Panel 1 always keeps its trailing controls — the 3-dot More menu and the
+    // Overview launcher — whether the side panel is open or not: the agent's
+    // own topbar must never lose them.
     let mut main_section = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(CONTROL_SPACING)
-        .with_child(Expanded::new(title).finish())
-        .with_child(more)
+        .with_child(
+            Expanded::new(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(title)
+                    .finish(),
+            )
+            .finish(),
+        );
+    // Panel 1's trailing controls are always its own two icons — the More menu
+    // and the Overview launcher — whether the side panel is open or closed.
+    main_section = main_section
+        .with_child(more.take().expect("the More menu"))
         .with_child(overview_button);
     // Panel 1 keeps the control that OPENS the side panel: with the panel
     // closed nothing in the strip could bring it back (the close control lives
@@ -559,10 +584,13 @@ pub fn build_chrome_row(
     let mut strip = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(leading)
-        .with_child(Expanded::new(main_section).finish());
+        .with_child(leading);
+    if sidebar_shown {
+        // 289: the sidebar column ends on the body's own sidebar edge.
+        strip = strip.with_child(vertical_separator(app));
+    }
     if panel_open {
-        let maximized = state.side_panel_maximized;
+        let maximized = panel_maximized;
         // The chip strip and its `+` are one measured row: the `+` sits
         // immediately after the last chip and travels/scrolls with it, so it is
         // never pinned over the window controls. Only the maximize/toggle
@@ -572,53 +600,64 @@ pub fn build_chrome_row(
         let has_tabs = state
             .side_tabs
             .iter()
-            .any(|kind| *kind != SideTabKind::Overview);
+            .any(|kind| !matches!(*kind, SideTabKind::Overview | SideTabKind::NewTab));
         let tab_strip: Box<dyn Element> = if has_tabs {
             TabStripScroller::new(app, state, actions).finish()
         } else {
+            // With no open tab the panel shows the Overview menu in its body;
+            // the "+" is not part of the bar in that state.
             Empty::new().finish()
         };
-        let on_max = actions.on_toggle_side_panel_maximized.clone();
         let on_close = actions.on_toggle_right_sidebar.clone();
+        // The general topbar keeps only the chips plus maximize and the
+        // side-panel toggle; the review's own icons live in the review row.
+        let on_max = actions.on_toggle_side_panel_maximized.clone();
+        let max_button = Tooltip::new(
+            TopbarButton::new(
+                Icon::new(if maximized {
+                    "fullscreen-exit"
+                } else {
+                    "fullscreen-enter"
+                })
+                .with_size(CONTROL_ICON_SIZE)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+            )
+            .with_size(CONTROL_BUTTON_SIZE)
+            .with_corner_radius(8.0)
+            .with_on_click(move || (on_max.borrow_mut())())
+            .finish(),
+            if maximized {
+                "Restore side panel"
+            } else {
+                "Maximize side panel"
+            },
+        )
+        .with_position(TooltipPosition::Below)
+        .finish();
+        let close_button = Tooltip::new(
+            TopbarButton::new(
+                Icon::new("panel-right-outline")
+                    .with_size(CONTROL_ICON_SIZE)
+                    .with_theme_color(ColorToken::Text, app)
+                    .finish(),
+            )
+            .with_size(CONTROL_BUTTON_SIZE)
+            .with_corner_radius(8.0)
+            .with_active(true)
+            .with_on_click(move || (on_close.borrow_mut())())
+            .finish(),
+            "Toggle side panel",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish();
         let side_section = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(CONTROL_SPACING)
             .with_child(Expanded::new(tab_strip).finish())
-            .with_child(button_click(
-                app,
-                if maximized {
-                    "fullscreen-exit"
-                } else {
-                    "fullscreen-enter"
-                },
-                if maximized {
-                    "Restore side panel"
-                } else {
-                    "Maximize side panel"
-                },
-                move || (on_max.borrow_mut())(),
-            ))
-            .with_child({
-                // Mirrored DSH panel glyph for the right-hand panel.
-                let on_close = on_close.clone();
-                Tooltip::new(
-                    TopbarButton::new(
-                        Icon::new("panel-right-outline")
-                            .with_size(CONTROL_ICON_SIZE)
-                            .with_theme_color(ColorToken::Text, app)
-                            .finish(),
-                    )
-                    .with_size(CONTROL_BUTTON_SIZE)
-                    .with_corner_radius(8.0)
-                    .with_active(true)
-                    .with_on_click(move || (on_close.borrow_mut())())
-                    .finish(),
-                    "Toggle side panel",
-                )
-                .with_position(TooltipPosition::Below)
-                .finish()
-            })
+            .with_child(max_button)
+            .with_child(close_button)
             .finish();
         let side_section = Container::new(side_section)
             .with_padding(EdgeInsets::new(
@@ -628,33 +667,54 @@ pub fn build_chrome_row(
                 SECTION_VERTICAL_PADDING,
             ))
             .finish();
-        // The strip's panel-2 section takes exactly the width the side panel
-        // takes on the sheet, so dragging the split moves the topbar boundary
-        // with it. It mirrors the body: the sidebar (or its controls) on the
-        // left, the sheet margin, no left pane inset and the right one.
+        // The strip's panel-2 section must start on the body's own split
+        // boundary, so the topbar rule and the panel hairline are the same
+        // vertical line. Mirror the body's geometry exactly: the sheet keeps
+        // `WORKSPACE_MARGIN` inside the shell (sidebar or window edge), the pane
+        // area cancels its right inset by `PANE_INSET + 1`, and the split takes
+        // its ratio of that area.
+        let window_width = state.window_size.x;
         let body_sidebar_width = if sidebar_shown {
             state.sidebar_width
         } else {
             0.0
         };
-        let content_width = (state.window_size.x
-            - body_sidebar_width
-            - 2.0 * crate::ui::shell::WORKSPACE_MARGIN
-            - crate::ui::panes::PANE_AREA_INSET)
-            .max(0.0);
-        let side_width = content_width
-            * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, content_width);
+        let content_width = (window_width - body_sidebar_width - SEPARATOR_WIDTH).max(0.0);
+        let side_width = if maximized {
+            content_width
+        } else {
+            content_width
+                * crate::ui::build::resolved_side_split_ratio(state.side_split_ratio, content_width)
+        };
+        let boundary_x = body_sidebar_width + SEPARATOR_WIDTH + (content_width - side_width);
+        let side_section_width = if maximized {
+            content_width
+        } else {
+            (window_width - boundary_x - SEPARATOR_WIDTH).max(0.0)
+        };
         // The first frame (and a headless test) can build before the window
         // measures itself: fall back to the flexible section until the width is
         // known, so the chips are never laid out at zero width.
-        let side_section = if state.window_size.x > 0.0 {
+        let side_section = if window_width > 0.0 {
             ConstrainedBox::new(side_section)
-                .with_width(side_width)
+                .with_width(side_section_width)
                 .finish()
         } else {
             Expanded::new(side_section).finish()
         };
-        strip = strip.with_child(side_section);
+        if maximized {
+            // 282: panel 2 owns the whole content column; the sidebar column
+            // and its rule stay in place and the panel-1 title is not drawn.
+            strip = strip.with_child(side_section);
+        } else {
+            strip = strip.with_child(Expanded::new(main_section).finish());
+            // 206/289: one 1 px rule separates panel 1 from panel 2.
+            strip = strip
+                .with_child(vertical_separator(app))
+                .with_child(side_section);
+        }
+    } else {
+        strip = strip.with_child(Expanded::new(main_section).finish());
     }
     // The strip is the full bar height; each section carries the 2 pt quiet band
     // as its own top inset, so its controls center in the 40 pt content band.
@@ -803,39 +863,35 @@ fn active_conversation_name(state: &UiSnapshot) -> String {
         .unwrap_or_else(|| "New Agent".to_string())
 }
 
-/// The side-panel section's "+": a popup menu that appends one of the active
-/// pane's surfaces to the tab strip. Selecting a kind that is already a tab
-/// shows that tab instead of stacking a duplicate.
+/// 284: the "+" control opens the in-panel Add-tab surface, not a popup.
 fn side_tab_add_menu(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
 ) -> Box<dyn Element> {
     let on_add = actions.on_side_tab.clone();
-    let items = vec![
-        PopupMenuItem::new(SideTabKind::Agent.title()).with_icon(SideTabKind::Agent.icon()),
-        PopupMenuItem::new(SideTabKind::Files.title()).with_icon(SideTabKind::Files.icon()),
-        PopupMenuItem::new(SideTabKind::Terminal.title()).with_icon(SideTabKind::Terminal.icon()),
-        PopupMenuItem::new(SideTabKind::TaskOutput.title())
-            .with_icon(SideTabKind::TaskOutput.icon()),
-    ];
-    let menu = PopupMenu::new(button(app, "plus", "Add tab"), items)
-        .with_open(state.side_tab_add_menu_open.clone())
-        .with_position(PopupMenuPosition::BelowEnd)
-        .with_max_width(200.0)
-        .with_on_select(move |index| {
-            let kind = match index {
-                0 => SideTabKind::Agent,
-                1 => SideTabKind::Files,
-                2 => SideTabKind::Terminal,
-                3 => SideTabKind::TaskOutput,
-                _ => return,
-            };
-            (on_add.borrow_mut())(SideTabAction::Add(kind));
-        })
-        .finish();
-    // The `+` panel is above the panes, like the More menu.
-    TopLayer::new(menu).finish()
+    let toggle = move || {
+        (on_add.borrow_mut())(SideTabAction::Add(SideTabKind::NewTab));
+    };
+    // 376: the "+" is active while the New tab chip is the current tab.
+    let active = state.side_tabs.get(state.active_side_tab) == Some(&SideTabKind::NewTab);
+    let button = Tooltip::new(
+        TopbarButton::new(
+            Icon::new("plus")
+                .with_size(14.0)
+                .with_theme_color(ColorToken::Text, app)
+                .finish(),
+        )
+        .with_size(28.0)
+        .with_corner_radius(7.0)
+        .with_active(active)
+        .with_on_click(toggle)
+        .finish(),
+        "Add tab",
+    )
+    .with_position(TooltipPosition::Below)
+    .finish();
+    button
 }
 
 /// Fit a label into a one-line chip without inventing different text: take a
@@ -853,6 +909,8 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
 /// is selected. These mirror `side_tabs.rs`'s chip geometry: the strip measures
 /// each chip at its natural label width, then clips and offsets the whole row.
 const TAB_STRIP_GAP: f32 = 4.0;
+/// The chip row's height: the strip centres it on the bar's middle line.
+const TAB_STRIP_CHIP_HEIGHT: f32 = 30.0;
 const TAB_STRIP_ICON: f32 = 13.0;
 const TAB_STRIP_PADDING_X: f32 = 8.0;
 const TAB_STRIP_LABEL_GAP: f32 = 6.0;
@@ -870,6 +928,9 @@ struct TabStripScroller {
     widths: Vec<f32>,
     active: usize,
     tabs: usize,
+    indices: Vec<usize>,
+    on_reorder: Rc<RefCell<dyn FnMut(SideTabAction)>>,
+    drag: Option<(f32, usize, usize)>,
     scroll: Rc<RefCell<ScrollState>>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -882,21 +943,32 @@ const TAB_STRIP_ADD_GAP: f32 = 4.0;
 impl TabStripScroller {
     fn new(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Self {
         let mut widths = Vec::new();
+        let mut indices = Vec::new();
         let mut active = 0;
         for (index, kind) in state.side_tabs.iter().enumerate() {
-            if *kind == SideTabKind::Overview {
+            if matches!(*kind, SideTabKind::Overview | SideTabKind::NewTab) {
                 continue;
             }
             if index == state.active_side_tab {
                 active = widths.len();
             }
+            let label_text = if *kind == SideTabKind::FileTab {
+                state
+                    .side_file_tab
+                    .as_deref()
+                    .map(|path| path.rsplit('/').next().unwrap_or(path))
+                    .unwrap_or("File")
+            } else {
+                kind.title()
+            };
             let label = advance_width(
-                kind.title(),
+                label_text,
                 12.5,
                 FontWeight::Medium,
                 FontFamily::System,
                 false,
             );
+            indices.push(index);
             widths.push(
                 TAB_STRIP_PADDING_X * 2.0
                     + TAB_STRIP_ICON
@@ -925,6 +997,9 @@ impl TabStripScroller {
             widths,
             active,
             tabs,
+            indices,
+            on_reorder: actions.on_side_tab.clone(),
+            drag: None,
             scroll,
             size: None,
             origin: None,
@@ -972,6 +1047,25 @@ impl TabStripScroller {
     }
 }
 
+impl TabStripScroller {
+    /// The visual chip index under `x`, relative to the strip origin.
+    fn chip_at(&self, x: f32) -> Option<usize> {
+        let mut left = -self.scroll.borrow().offset();
+        for (index, width) in self.widths.iter().enumerate() {
+            if x >= left && x < left + width {
+                return Some(index);
+            }
+            left += width + TAB_STRIP_GAP;
+        }
+        None
+    }
+
+    fn chip_left(&self, index: usize) -> f32 {
+        let widths: f32 = self.widths.iter().take(index).sum();
+        -self.scroll.borrow().offset() + widths + TAB_STRIP_GAP * index as f32
+    }
+}
+
 impl Element for TabStripScroller {
     fn layout(
         &mut self,
@@ -985,9 +1079,15 @@ impl Element for TabStripScroller {
             app,
         );
         let height = constraint.max.y.max(add_size.y);
+        // Chips centre on the bar's own middle line: the scroll viewport is the
+        // chip row's height, not the full strip.
+        let chips_height = TAB_STRIP_CHIP_HEIGHT.min(height);
         let viewport_width = (constraint.max.x - add_size.x - TAB_STRIP_ADD_GAP).max(0.0);
         self.scroll_size = self.scrollable.layout(
-            SizeConstraint::new(vec2f(viewport_width, height), vec2f(viewport_width, height)),
+            SizeConstraint::new(
+                vec2f(viewport_width, chips_height),
+                vec2f(viewport_width, chips_height),
+            ),
             ctx,
             app,
         );
@@ -1002,8 +1102,18 @@ impl Element for TabStripScroller {
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, Default::default()));
-        self.scrollable.paint(origin, ctx, app);
         let size = self.size.unwrap_or(Vector2F::zero());
+        let chips_y = origin.y + ((size.y - self.scroll_size.y) / 2.0).max(0.0);
+        self.scrollable.paint(vec2f(origin.x, chips_y), ctx, app);
+        if let Some((_, _, target)) = self.drag {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                let x = origin.x + self.chip_left(target) - TAB_STRIP_GAP / 2.0;
+                renderer.fill_rect(
+                    rectf(x, origin.y + 4.0, 2.0, self.scroll_size.y - 8.0),
+                    app.theme.color(ColorToken::Accent),
+                );
+            }
+        }
         let add_size = self.add.size().unwrap_or(Vector2F::zero());
         // The + sits right beside the visible chips; only when they overflow
         // the viewport is it pushed to the viewport's fixed trailing edge.
@@ -1030,6 +1140,62 @@ impl Element for TabStripScroller {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
+        if let DispatchedEvent::MouseDown { position, button } = event {
+            if *button == 0 {
+                if let Some(origin) = self.origin {
+                    let x = position.x - origin.x();
+                    if x >= 0.0 && x <= self.scroll_size.x {
+                        if let Some(index) = self.chip_at(x) {
+                            self.drag = Some((x, index, index));
+                            let _ = self.scrollable.dispatch_event(event, ctx, app);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((start, from, _target)) = self.drag {
+            match event {
+                DispatchedEvent::MouseMove { position } => {
+                    if let Some(origin) = self.origin {
+                        let x = position.x - origin.x();
+                        // A real click carries a little pointer jitter. Keep it
+                        // a click until the pointer is clearly dragging, or a
+                        // chip would reorder instead of switching content.
+                        let mut target = if (x - start).abs() > 4.0 {
+                            self.tabs.saturating_sub(1)
+                        } else {
+                            from
+                        };
+                        if (x - start).abs() > 4.0 {
+                            for index in 0..self.tabs {
+                                if x < self.chip_left(index) + self.widths[index] / 2.0 {
+                                    target = index;
+                                    break;
+                                }
+                            }
+                        }
+                        self.drag = Some((start, from, target));
+                        return true;
+                    }
+                }
+                DispatchedEvent::MouseUp { .. } => {
+                    if let Some((_, from, to)) = self.drag.take() {
+                        if from != to {
+                            let from_state = self.indices.get(from).copied();
+                            let to_state = self.indices.get(to).copied();
+                            if let (Some(from_state), Some(to_state)) = (from_state, to_state) {
+                                (self.on_reorder.borrow_mut())(SideTabAction::Reorder(
+                                    from_state, to_state,
+                                ));
+                            }
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         if self.scrollable.dispatch_event(event, ctx, app) {
             return true;
         }
@@ -1648,7 +1814,7 @@ fn build_overview_popover_content(
     }));
     let (row, action) = overview_action_row(
         app,
-        "file",
+        "review-file",
         "Review",
         flat.len() == highlight,
         review,
@@ -1658,13 +1824,11 @@ fn build_overview_popover_content(
     body = body.with_child(row);
     flat.push(action);
 
-    let on_explorer = actions.on_select_sidebar_view.clone();
-    let files = Rc::new(RefCell::new(move || {
-        (on_explorer.borrow_mut())(SidebarView::Explorer)
-    }));
+    let on_files_tab = actions.on_open_files_tab.clone();
+    let files = Rc::new(RefCell::new(move || (on_files_tab.borrow_mut())()));
     let (row, action) = overview_action_row(
         app,
-        "folder",
+        "file",
         "Files",
         flat.len() == highlight,
         files,
@@ -1678,7 +1842,7 @@ fn build_overview_popover_content(
     let terminal = Rc::new(RefCell::new(move || (on_terminal.borrow_mut())(active)));
     let (row, action) = overview_action_row(
         app,
-        "terminal",
+        "terminal-square",
         "Terminal",
         flat.len() == highlight,
         terminal,
@@ -1848,90 +2012,202 @@ pub fn build_side_panel(
     // of its own (the reserved side pane id, never the active pane's chat);
     // Terminal and Files mount the real pane views rather than a static
     // overview.
-    let content: Box<dyn Element> = match kind {
-        SideTabKind::Overview => build_overview_content(app, state, actions),
-        SideTabKind::Agent => {
-            // The side composer routes to the side conversation's own session.
-            // The pane target is the reserved id, so the active pane's draft and
-            // transcript are untouched; activating the reserved id would be
-            // meaningless (it is not a leaf), so the side chat's submit/focus
-            // paths are wired to no-op activation and side actions instead.
-            let mut side_actions = actions.clone();
-            let on_side = actions.on_side_chat.clone();
-            let on_side_change = on_side.clone();
-            side_actions.on_composer_change = Rc::new(RefCell::new(move |value: String| {
-                (on_side_change.borrow_mut())(SideChatAction::Draft(value))
-            }));
-            let on_side_send = on_side.clone();
-            side_actions.on_send_message = Rc::new(RefCell::new(move |text: String| {
-                (on_side_send.borrow_mut())(SideChatAction::Send(text))
-            }));
-            let on_side_enter = on_side.clone();
-            side_actions.on_cmd_enter = Rc::new(RefCell::new(move |text: String| {
-                (on_side_enter.borrow_mut())(SideChatAction::Send(text))
-            }));
-            let on_side_attach = on_side.clone();
-            side_actions.on_attach = Rc::new(RefCell::new(move || {
-                (on_side_attach.borrow_mut())(SideChatAction::Attach)
-            }));
-            let on_side_focus = on_side;
-            side_actions.on_composer_focus_change = Rc::new(RefCell::new(move |focused: bool| {
-                (on_side_focus.borrow_mut())(SideChatAction::Focus(focused))
-            }));
-            // Focusing or submitting in the side chat must not move the pane
-            // tree's active pane to the reserved id.
-            side_actions.on_pane_activate = Rc::new(RefCell::new(|_pane: u64| {}));
-            crate::ui::chat::build_agent_chat(
-                app,
-                state,
-                &side_actions,
-                crate::state::SIDE_AGENT_PANE_ID,
-                true,
-                false,
-                None,
-            )
-        }
-        SideTabKind::Terminal => {
-            let cwd = state
-                .pane_chat
-                .get(&active)
-                .map(|pane| pane.composer_path.clone())
-                .filter(|cwd| !cwd.trim().is_empty())
-                .unwrap_or_else(|| state.composer_path.clone());
-            crate::ui::terminal::build_terminal_dock(app, state, actions, active, cwd, true)
-        }
-        SideTabKind::Files => {
-            let path = state
-                .spaces
-                .get(state.active_space)
-                .and_then(|space| space.leaf_kind(active))
-                .and_then(|kind| match kind {
-                    PaneKind::File { path } => Some(path.clone()),
-                    _ => None,
-                });
-            match (state.pane_files.contains_key(&active), path) {
-                (true, Some(path)) => {
-                    crate::ui::file_view::build_file_view(app, state, actions, active, &path)
+    let add_open = *state.side_tab_add_menu_open.borrow();
+    // The panel's starting surface is Overview itself — the launcher with its
+    // search input — never a separate static "Start" list.
+    let start_surface = add_open || state.side_tabs.is_empty();
+    let content: Box<dyn Element> = if start_surface {
+        build_overview_content(app, state, actions)
+    } else {
+        match kind {
+            SideTabKind::Browser => crate::ui::browser::build_browser_tab(app, state),
+            SideTabKind::Automations => crate::ui::crons::build_crons_drawer(app, state, actions),
+            SideTabKind::FileTab => match state.side_file_tab.as_ref() {
+                Some(path) => {
+                    let crumbs = path
+                        .split('/')
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>();
+                    let tail = crumbs
+                        .iter()
+                        .rev()
+                        .take(3)
+                        .rev()
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(" / ");
+                    let bar = Flex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(6.0)
+                        .with_child(
+                            Text::new(format!("… / {tail}"))
+                                .with_font_size(11.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .with_child(Spacer::new().finish())
+                        .with_child(glyph(app, "dots-vertical"))
+                        .with_child(glyph(app, "file"))
+                        .with_child(glyph(app, "refresh"))
+                        .with_child(glyph(app, "panel-left-outline"))
+                        .finish();
+                    let bar = Container::new(bar)
+                        .with_padding(EdgeInsets::new(8.0, 5.0, 8.0, 5.0))
+                        .finish();
+                    Flex::column()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_child(bar)
+                        .with_child(Divider::horizontal().finish())
+                        .with_child(
+                            Expanded::new(crate::ui::file_view::build_file_view(
+                                app,
+                                state,
+                                actions,
+                                crate::state::SIDE_FILE_PANE_ID,
+                                path,
+                            ))
+                            .finish(),
+                        )
+                        .finish()
                 }
-                // No file is open in the active pane: say so instead of
-                // drawing a view of a file that is not there.
-                _ => side_tabs::no_file_message(app),
+                None => side_tabs::no_file_message(app),
+            },
+            SideTabKind::Overview | SideTabKind::NewTab => {
+                build_overview_content(app, state, actions)
+            }
+            SideTabKind::Agent => {
+                // The side composer routes to the side conversation's own session.
+                // The pane target is the reserved id, so the active pane's draft and
+                // transcript are untouched; activating the reserved id would be
+                // meaningless (it is not a leaf), so the side chat's submit/focus
+                // paths are wired to no-op activation and side actions instead.
+                let mut side_actions = actions.clone();
+                let on_side = actions.on_side_chat.clone();
+                let on_side_change = on_side.clone();
+                side_actions.on_composer_change = Rc::new(RefCell::new(move |value: String| {
+                    (on_side_change.borrow_mut())(SideChatAction::Draft(value))
+                }));
+                let on_side_send = on_side.clone();
+                side_actions.on_send_message = Rc::new(RefCell::new(move |text: String| {
+                    (on_side_send.borrow_mut())(SideChatAction::Send(text))
+                }));
+                let on_side_enter = on_side.clone();
+                side_actions.on_cmd_enter = Rc::new(RefCell::new(move |text: String| {
+                    (on_side_enter.borrow_mut())(SideChatAction::Send(text))
+                }));
+                let on_side_attach = on_side.clone();
+                side_actions.on_attach = Rc::new(RefCell::new(move || {
+                    (on_side_attach.borrow_mut())(SideChatAction::Attach)
+                }));
+                let on_side_focus = on_side;
+                side_actions.on_composer_focus_change =
+                    Rc::new(RefCell::new(move |focused: bool| {
+                        (on_side_focus.borrow_mut())(SideChatAction::Focus(focused))
+                    }));
+                // Focusing or submitting in the side chat must not move the pane
+                // tree's active pane to the reserved id.
+                side_actions.on_pane_activate = Rc::new(RefCell::new(|_pane: u64| {}));
+                crate::ui::chat::build_agent_chat(
+                    app,
+                    state,
+                    &side_actions,
+                    crate::state::SIDE_AGENT_PANE_ID,
+                    true,
+                    false,
+                    None,
+                )
+            }
+            SideTabKind::Terminal => {
+                let cwd = state
+                    .pane_chat
+                    .get(&active)
+                    .map(|pane| pane.composer_path.clone())
+                    .filter(|cwd| !cwd.trim().is_empty())
+                    .unwrap_or_else(|| state.composer_path.clone());
+                let grid = crate::ui::terminal::build_terminal_dock(
+                    app, state, actions, active, cwd, true,
+                );
+                if state.side_rail_open {
+                    side_body_with_rail(app, state, actions, grid)
+                } else {
+                    grid
+                }
+            }
+            SideTabKind::Files => {
+                // Y: the tab shows the file a click named (SIDE_FILE_PANE_ID), or
+                // the file the active pane already shows. It never retargets the
+                // main pane just to read a file.
+                let (pane_id, path) = if let Some(path) = state.side_file.clone() {
+                    (crate::state::SIDE_FILE_PANE_ID, Some(path))
+                } else {
+                    let path = state
+                        .spaces
+                        .get(state.active_space)
+                        .and_then(|space| space.leaf_kind(active))
+                        .and_then(|kind| match kind {
+                            PaneKind::File { path } => Some(path.clone()),
+                            _ => None,
+                        });
+                    (active, path)
+                };
+                if state.side_files_show_explorer {
+                    // The workspace tree is drawn INSIDE the side panel; its
+                    // file rows open the file in this same tab.
+                    crate::ui::explorer::build_explorer(app, state, actions)
+                } else {
+                    match (state.pane_files.contains_key(&pane_id), path) {
+                        (true, Some(path)) => crate::ui::file_view::build_file_view(
+                            app, state, actions, pane_id, &path,
+                        ),
+                        _ => side_tabs::no_file_message(app),
+                    }
+                }
+            }
+            SideTabKind::TaskOutput => {
+                let output = task_output_view(app, state);
+                if state.side_rail_open {
+                    side_body_with_rail(app, state, actions, output)
+                } else {
+                    output
+                }
+            }
+            SideTabKind::Review => {
+                crate::ui::diff_panel::build_review_tab(app, state, actions, active)
             }
         }
-        SideTabKind::TaskOutput => Scrollable::new(
-            side_tabs::build_task_output(app, state),
-            goble_ui::elements::Axis::Vertical,
-        )
-        .finish(),
-        SideTabKind::Review => crate::ui::diff_panel::build_review_tab(app, state, actions, active),
     };
+    // AF: every tab except Review (which already owns its row) gets its own
+    // 1 pt-separated topbar inside the panel content.
+    let content: Box<dyn Element> =
+        if kind == SideTabKind::Review || kind == SideTabKind::Browser || start_surface {
+            content
+        } else {
+            let topbar = side_tab_topbar(app, state, actions, kind);
+            let inner_pad = if kind == SideTabKind::Terminal {
+                EdgeInsets::new(0.0, 0.0, 0.0, 0.0)
+            } else {
+                EdgeInsets::uniform(
+                    crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET + 8.0,
+                )
+            };
+            let mut column = Flex::column()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(topbar)
+                .with_child(Divider::horizontal().finish());
+            column = column.with_child(
+                Expanded::new(Container::new(content).with_padding(inner_pad).finish()).finish(),
+            );
+            column.finish()
+        };
     // A horizontal swipe on the content steps the strip; vertical travel goes
     // to the mounted surface unchanged.
-    let content = side_tabs::swipe_content(
-        content,
-        actions.on_side_tab.clone(),
-        state.side_swipe_accum.clone(),
-    );
+    // Tab switching is a mouse gesture: the content no longer eats horizontal
+    // trackpad travel and steps the strip behind the user's back.
+    let content = content;
 
     let body = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
@@ -1948,17 +2224,12 @@ pub fn build_side_panel(
     let inset = crate::ui::panes::PANE_AREA_INSET + crate::ui::panes::PANE_INSET;
     let body = Container::new(body)
         .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
-        // The reference's content inset (the search field's own left margin)
-        // is a little wider than the panel frame: 16 pt inside the `Bg`, the
-        // same breathing room the main pane's chat column keeps.
-        .with_padding(EdgeInsets::uniform(inset + 8.0))
         .finish();
     // The side panel is its own black surface (agent, terminal, files and
     // review tabs all sit on `Bg`), so it reads apart from the grey sidebar and
     // topbar material.
     Container::new(body)
         .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
-        .with_padding(EdgeInsets::new(0.0, inset, inset, inset))
         .finish()
 }
 
@@ -1978,8 +2249,10 @@ fn build_overview_content(
         .with_focused(state.global_search_focused)
         .with_caret(state.global_search_caret.clone())
         .with_placeholder("Search or enter a URL")
-        .with_text_size(13.5)
-        .with_extra_height(18.0)
+        .with_text_size(13.0)
+        .with_extra_height(0.0)
+        .with_corner_radius(22.0)
+        .with_background(ColorToken::ContentBg)
         .with_on_change(move |value| (on_search_change.borrow_mut())(value))
         .with_on_focus_change(move |focused| (on_search_focus.borrow_mut())(focused))
         .finish();
@@ -2154,32 +2427,40 @@ fn build_overview_content(
     // Terminal and Side Question open as panel-2 tabs from this launcher (the
     // Overview icon is the way to add a surface without the strip's `+`).
     let on_side_tab = actions.on_side_tab.clone();
+    let on_plugins = actions.on_plugins.clone();
     let active = state.active_pane_id;
     let mut rows = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0);
+        .with_spacing(4.0);
     for (icon, label, action, trailing) in [
-        ("file", "Review", 0u8, None),
-        ("folder", "Open File", 1, None),
-        ("terminal", "Terminal", 2, None),
+        ("review-file", "Review", 0u8, None),
+        ("file", "Open File", 1, None),
+        ("terminal-square", "Terminal", 2, None),
         ("environment-cloud", "Browser", 3, None),
-        ("message-plus-square", "Side Question", 4, None),
+        ("side-question", "Side Question", 4, None),
+        ("plug", "Plugins", 5, Some("chevron-right")),
     ] {
-        let disabled = matches!(action, 3);
+        let disabled = false;
         let row = if disabled {
-            Container::new(panel_row(app, icon, label, true, trailing)).finish()
+            HoverRow::new(panel_row(app, icon, label, true, trailing))
+                .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
+                .with_corner_radius(8.0)
+                .finish()
         } else {
             let on_diff = on_diff.clone();
-            let on_explorer = on_explorer.clone();
+            let on_files_tab = actions.on_open_files_tab.clone();
             let on_side_tab = on_side_tab.clone();
+            let on_plugins = on_plugins.clone();
             HoverRow::new(panel_row(app, icon, label, false, trailing))
-                .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
+                .with_padding(EdgeInsets::new(6.0, 4.0, 6.0, 4.0))
                 .with_corner_radius(8.0)
                 .with_on_click(move || match action {
                     0 => (on_diff.borrow_mut())(active, DiffPanelAction::Open(None)),
-                    1 => (on_explorer.borrow_mut())(SidebarView::Explorer),
+                    1 => (on_files_tab.borrow_mut())(),
                     2 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Terminal)),
+                    3 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Browser)),
                     4 => (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::Agent)),
+                    5 => (on_plugins.borrow_mut())(),
                     _ => {}
                 })
                 .finish()
@@ -2245,14 +2526,39 @@ fn build_overview_content(
                 .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
                 .finish(),
         );
-        for task in tasks {
-            sections = sections.with_child(panel_row(
-                app,
-                "terminal-input",
-                &task.description,
-                false,
-                None,
-            ));
+        for task in tasks.iter().take(4) {
+            let text = task.description.to_ascii_lowercase();
+            // 615: the running task uses the terminal-2 glyph with a blinking
+            // cursor bar; a failed command uses circle-x; an elapsed/timed task
+            // shows the timer glyph.
+            let (icon, trailing) = if text.contains("fail") || text.contains("error") {
+                ("circle-x", None)
+            } else if text.contains("elapsed") || text.contains("timed") {
+                ("timer", Some("timer"))
+            } else {
+                ("terminal-2", None)
+            };
+            sections = sections.with_child(
+                HoverRow::new(panel_row(app, icon, &task.description, false, trailing))
+                    .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
+                    .with_corner_radius(8.0)
+                    .finish(),
+            );
+        }
+        if tasks.len() > 4 {
+            let on_side_tab = on_side_tab.clone();
+            sections = sections.with_child(
+                HoverRow::new(
+                    Container::new(muted_line(app, "See all"))
+                        .with_padding(EdgeInsets::new(10.0, 4.0, 4.0, 4.0))
+                        .finish(),
+                )
+                .with_corner_radius(6.0)
+                .with_on_click(move || {
+                    (on_side_tab.borrow_mut())(SideTabAction::Add(SideTabKind::TaskOutput))
+                })
+                .finish(),
+            );
         }
     }
 
@@ -2275,9 +2581,461 @@ fn build_overview_content(
             .with_padding(EdgeInsets::new(20.0, 0.0, 20.0, 0.0))
             .finish(),
     )
-    .with_max_width(540.0)
+    .with_max_width(980.0)
     .finish();
     Scrollable::new(body, goble_ui::elements::Axis::Vertical).finish()
+}
+
+/// AF: the per-tab content topbar. The Review tab owns a richer one inside
+/// `diff_panel`, so it is not wrapped here.
+fn side_tab_topbar(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    kind: SideTabKind,
+) -> Box<dyn Element> {
+    let on_side_tab = actions.on_side_tab.clone();
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(2.0);
+    let (label, trailing): (String, Option<Box<dyn Element>>) = match kind {
+        SideTabKind::Terminal => {
+            let toggle = {
+                let on_side_tab = on_side_tab.clone();
+                move || (on_side_tab.borrow_mut())(SideTabAction::ToggleRail)
+            };
+            (
+                "zsh".to_string(),
+                Some(
+                    Tooltip::new(
+                        TopbarButton::new(
+                            Icon::new("menu-01")
+                                .with_size(14.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .finish(),
+                        )
+                        .with_size(26.0)
+                        .with_corner_radius(13.0)
+                        .with_on_click(toggle)
+                        .finish(),
+                        "Toggle tasks",
+                    )
+                    .with_position(TooltipPosition::Below)
+                    .finish(),
+                ),
+            )
+        }
+        SideTabKind::TaskOutput => {
+            let text = task_output_text(state);
+            let on_copy = actions.on_copy_terminal.clone();
+            let copy = Tooltip::new(
+                TopbarButton::new(
+                    Icon::new("copy")
+                        .with_size(14.0)
+                        .with_theme_color(ColorToken::Muted, app)
+                        .finish(),
+                )
+                .with_size(26.0)
+                .with_corner_radius(6.0)
+                .with_on_click(move || (on_copy.borrow_mut())(text.clone()))
+                .finish(),
+                "Copy output",
+            )
+            .with_position(TooltipPosition::Below)
+            .finish();
+            let toggle = {
+                let on_side_tab = on_side_tab.clone();
+                move || (on_side_tab.borrow_mut())(SideTabAction::ToggleRail)
+            };
+            let chevron = Tooltip::new(
+                TopbarButton::new(
+                    Icon::new(if state.side_rail_open {
+                        "chevron-right"
+                    } else {
+                        "chevron-left"
+                    })
+                    .with_size(14.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+                )
+                .with_size(26.0)
+                .with_corner_radius(6.0)
+                .with_on_click(toggle)
+                .finish(),
+                "Toggle tasks",
+            )
+            .with_position(TooltipPosition::Below)
+            .finish();
+            (
+                "Background Task Output".to_string(),
+                Some(
+                    Flex::row()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(2.0)
+                        .with_child(copy)
+                        .with_child(chevron)
+                        .finish(),
+                ),
+            )
+        }
+        SideTabKind::Agent => ("New side question".to_string(), None),
+        SideTabKind::Files => {
+            let label = state
+                .side_file
+                .clone()
+                .or_else(|| {
+                    state
+                        .spaces
+                        .get(state.active_space)
+                        .and_then(|space| space.leaf_kind(state.active_pane_id))
+                        .and_then(|kind| match kind {
+                            PaneKind::File { path } => Some(path.clone()),
+                            _ => None,
+                        })
+                })
+                .unwrap_or_else(|| "Files".to_string());
+            let on_open = actions.on_open_files_tab.clone();
+            (
+                label,
+                Some(
+                    Tooltip::new(
+                        TopbarButton::new(
+                            Icon::new("folder")
+                                .with_size(14.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .finish(),
+                        )
+                        .with_size(26.0)
+                        .with_corner_radius(6.0)
+                        .with_on_click(move || (on_open.borrow_mut())())
+                        .finish(),
+                        "Browse files",
+                    )
+                    .with_position(TooltipPosition::Below)
+                    .finish(),
+                ),
+            )
+        }
+        SideTabKind::Overview => ("Overview".to_string(), None),
+        SideTabKind::NewTab => ("New tab".to_string(), None),
+        SideTabKind::Browser => ("Browser".to_string(), None),
+        SideTabKind::FileTab => ("File".to_string(), None),
+        SideTabKind::Automations => ("Automations".to_string(), None),
+        SideTabKind::Review => ("Review".to_string(), None),
+    };
+    row = row.with_child(
+        Expanded::new(
+            Text::new(label)
+                .with_font_size(12.5)
+                .with_weight(FontWeight::Medium)
+                .with_theme_color(ColorToken::Text, app)
+                .with_max_lines(1)
+                .finish(),
+        )
+        .finish(),
+    );
+    if let Some(trailing) = trailing {
+        row = row.with_child(trailing);
+    }
+    ConstrainedBox::new(
+        Container::new(row.finish())
+            .with_padding(EdgeInsets::new(10.0, 2.0, 8.0, 2.0))
+            .finish(),
+    )
+    .with_height(36.0)
+    .finish()
+}
+
+fn task_output_text(state: &UiSnapshot) -> String {
+    state
+        .pane_live_work
+        .get(&state.active_pane_id)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item.description.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// AF: the Task Output body as a monospace, line-numbered code view.
+fn task_output_view(app: &AppContext, state: &UiSnapshot) -> Box<dyn Element> {
+    let items = state
+        .pane_live_work
+        .get(&state.active_pane_id)
+        .cloned()
+        .unwrap_or_default();
+    let mut column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(2.0);
+    if items.is_empty() {
+        column = column.with_child(
+            Text::new("No task output")
+                .with_font_family(FontFamily::Mono)
+                .with_font_size(12.0)
+                .with_theme_color(ColorToken::Muted, app)
+                .finish(),
+        );
+    } else {
+        for (index, item) in items.iter().enumerate() {
+            column = column.with_child(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(10.0)
+                    .with_child(
+                        ConstrainedBox::new(
+                            Text::new(format!("{}", index + 1))
+                                .with_font_family(FontFamily::Mono)
+                                .with_font_size(11.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .finish(),
+                        )
+                        .with_width(28.0)
+                        .finish(),
+                    )
+                    .with_child(
+                        Expanded::new(
+                            Text::new(item.description.clone())
+                                .with_font_family(FontFamily::Mono)
+                                .with_font_size(11.5)
+                                .with_theme_color(ColorToken::Text, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .finish(),
+                    )
+                    .finish(),
+            );
+        }
+    }
+    Scrollable::new(
+        Container::new(column.finish())
+            .with_padding(EdgeInsets::uniform(10.0))
+            .finish(),
+        Axis::Vertical,
+    )
+    .finish()
+}
+
+/// AF: Terminal / Task Output body with the shared Terminals + Background Tasks
+/// rail on the right, separated by one full-height rule.
+fn side_body_with_rail(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    body: Box<dyn Element>,
+) -> Box<dyn Element> {
+    let rail = side_tasks_rail(app, state, actions);
+    let rule = ConstrainedBox::new(
+        Container::new(
+            Flex::column()
+                .with_main_axis_size(MainAxisSize::Max)
+                .finish(),
+        )
+        .with_background(Fill::Solid(app.theme.color(ColorToken::Border)))
+        .finish(),
+    )
+    .with_width(1.0)
+    .finish();
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(body).finish())
+        .with_child(rule)
+        .with_child(rail)
+        .finish()
+}
+
+fn side_tasks_rail(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+    let terminal_ids: Vec<u64> = {
+        let sessions = state.terminal.borrow();
+        let mut ids: Vec<u64> = sessions.sessions.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    };
+    let active_index = terminal_ids
+        .iter()
+        .position(|id| *id == state.active_pane_id)
+        .unwrap_or(0);
+    let previous = terminal_ids
+        .get(
+            active_index
+                .wrapping_sub(1)
+                .min(terminal_ids.len().saturating_sub(1)),
+        )
+        .copied();
+    let next = terminal_ids
+        .get((active_index + 1) % terminal_ids.len().max(1))
+        .copied();
+    let activate = actions.on_pane_activate.clone();
+    let prev_button = TopbarButton::new(
+        Icon::new("chevron-up")
+            .with_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(20.0)
+    .with_on_click(move || {
+        if let Some(id) = previous {
+            (activate.borrow_mut())(id);
+        }
+    })
+    .finish();
+    let activate_next = actions.on_pane_activate.clone();
+    let next_button = TopbarButton::new(
+        Icon::new("chevron-down")
+            .with_size(12.0)
+            .with_theme_color(ColorToken::Muted, app)
+            .finish(),
+    )
+    .with_size(20.0)
+    .with_on_click(move || {
+        if let Some(id) = next {
+            (activate_next.borrow_mut())(id);
+        }
+    })
+    .finish();
+    let mut header = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(muted_line(app, "Terminals"))
+        .with_child(Spacer::new().finish())
+        .with_child(prev_button)
+        .with_child(next_button)
+        .finish();
+    let mut column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_spacing(1.0)
+        .with_child(header);
+    for (index, id) in terminal_ids.iter().enumerate() {
+        let title = state
+            .pane_titles
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| "Terminal".to_string());
+        let on_activate = actions.on_pane_activate.clone();
+        let activate_id = *id;
+        let on_close = actions.on_close_pane.clone();
+        let on_close_activate = actions.on_pane_activate.clone();
+        let close = Tooltip::new(
+            TopbarButton::new(
+                Icon::new("x")
+                    .with_size(10.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_size(18.0)
+            .with_on_click(move || {
+                (on_close_activate.borrow_mut())(activate_id);
+                (on_close.borrow_mut())();
+            })
+            .finish(),
+            "Close terminal",
+        )
+        .with_position(TooltipPosition::Below)
+        .finish();
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Expanded::new(
+                    Text::new(title)
+                        .with_font_family(FontFamily::Mono)
+                        .with_font_size(12.0)
+                        .with_theme_color(ColorToken::Text, app)
+                        .with_max_lines(1)
+                        .finish(),
+                )
+                .finish(),
+            )
+            .with_child(close)
+            .finish();
+        column = column.with_child(
+            HoverRow::new(
+                Container::new(row)
+                    .with_padding(EdgeInsets::new(4.0, 8.0, 4.0, 4.0))
+                    .finish(),
+            )
+            .with_selected(index == active_index && *id == state.active_pane_id)
+            .with_on_click(move || (on_activate.borrow_mut())(activate_id))
+            .finish(),
+        );
+    }
+    let tasks = state
+        .pane_live_work
+        .get(&state.active_pane_id)
+        .cloned()
+        .unwrap_or_default();
+    // 359: no tasks means no Background Tasks heading at all.
+    if !tasks.is_empty() {
+        column = column.with_child(
+            Container::new(muted_line(app, "Background Tasks"))
+                .with_padding(EdgeInsets::new(12.0, 0.0, 0.0, 0.0))
+                .finish(),
+        );
+    }
+    for task in &tasks {
+        let icon = if task.description.contains("failed") {
+            "x-circle"
+        } else if task.description.contains("finished") || task.description.contains("done") {
+            "check"
+        } else {
+            "terminal-input"
+        };
+        column = column.with_child(
+            HoverRow::new(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(7.0)
+                    .with_child(
+                        Icon::new(icon)
+                            .with_size(12.0)
+                            .with_theme_color(ColorToken::Muted, app)
+                            .finish(),
+                    )
+                    .with_child(
+                        Expanded::new(
+                            Text::new(task.description.clone())
+                                .with_font_size(11.5)
+                                .with_theme_color(ColorToken::Text, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .finish(),
+                    )
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(5.0, 8.0, 5.0, 8.0))
+            .finish(),
+        );
+    }
+    if tasks.is_empty() {
+        column = column.with_child(
+            Container::new(muted_line(app, "No background tasks"))
+                .with_padding(EdgeInsets::new(4.0, 8.0, 4.0, 8.0))
+                .finish(),
+        );
+    }
+    let scroll = Scrollable::new(column.finish(), Axis::Vertical).finish();
+    let rail = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(scroll).finish())
+        .finish();
+    ConstrainedBox::new(
+        Container::new(rail)
+            .with_border(Border::left(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+            .finish(),
+    )
+    .with_width(188.0)
+    .finish()
 }
 
 fn panel_row(
@@ -2293,7 +3051,7 @@ fn panel_row(
         .with_spacing(10.0)
         .with_child(
             Icon::new(icon)
-                .with_size(17.0)
+                .with_size(15.0)
                 .with_theme_color(
                     if disabled {
                         ColorToken::Border
@@ -2306,7 +3064,7 @@ fn panel_row(
         )
         .with_child(
             Text::new(label)
-                .with_font_size(15.0)
+                .with_font_size(13.0)
                 .with_theme_color(
                     if disabled {
                         ColorToken::Muted
@@ -2340,10 +3098,16 @@ fn section_header(app: &AppContext, label: &str, count: usize) -> Box<dyn Elemen
                 .finish(),
         )
         .with_child(
-            Text::new(count.to_string())
-                .with_font_size(10.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
+            Container::new(
+                Text::new(count.to_string())
+                    .with_font_size(10.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
+            .with_corner_radius(9.0)
+            .with_padding(EdgeInsets::new(2.0, 6.0, 2.0, 6.0))
+            .finish(),
         )
         .finish()
 }

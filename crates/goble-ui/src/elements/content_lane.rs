@@ -346,12 +346,7 @@ impl ContentLane {
                 strip,
                 height,
             ),
-            LaneEdge::Right => rectf(
-                column.max_x() + CONTENT_LANE_HANDLE_GAP,
-                top,
-                strip,
-                height,
-            ),
+            LaneEdge::Right => rectf(column.max_x() + CONTENT_LANE_HANDLE_GAP, top, strip, height),
         })
     }
 
@@ -1182,7 +1177,11 @@ mod tests {
         ctx.cursor_inside = true;
         ctx.cursor_position = vec2f(1289.0, 5.0);
         lane.paint(vec2f(0.0, 0.0), &mut ctx, &app);
-        let commands = ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
+        let commands = ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
         let lines = fills(&commands, accent);
         assert_eq!(lines.len(), 1, "one handle line: {commands:?}");
         assert_eq!(lines[0].min_y(), 36.0, "clamped to the inset band's top");

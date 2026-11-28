@@ -240,7 +240,9 @@ impl Element for Code {
     ) -> Vector2F {
         let max_width = self.measure_max_width(constraint);
         let mut size = match &self.highlighted {
-            Some(lines) => measure_highlighted_lines(lines, self.font_size, self.line_height, max_width),
+            Some(lines) => {
+                measure_highlighted_lines(lines, self.font_size, self.line_height, max_width)
+            }
             None => measure_text_family(
                 &self.text,
                 self.font_size,
@@ -398,13 +400,7 @@ impl Element for Code {
                 false,
             );
             for row in rows {
-                self.record_run(
-                    origin.x,
-                    y + row.top,
-                    &row.text,
-                    FontWeight::Regular,
-                    false,
-                );
+                self.record_run(origin.x, y + row.top, &row.text, FontWeight::Regular, false);
             }
         }
     }
@@ -536,7 +532,10 @@ fn measure_highlighted_lines(
             width = width.max(row_width);
         }
     }
-    vec2f(width.ceil(), (rows.max(1) as f32 * font_size * line_height).ceil())
+    vec2f(
+        width.ceil(),
+        (rows.max(1) as f32 * font_size * line_height).ceil(),
+    )
 }
 
 #[cfg(test)]
@@ -575,8 +574,8 @@ mod tests {
 
         let app = AppContext::default();
         let recording = Rc::new(RefCell::new(SelectableText::default()));
-        let mut code = Code::new("let alpha = 1;\nlet beta = 2;")
-            .with_text_selection(recording.clone());
+        let mut code =
+            Code::new("let alpha = 1;\nlet beta = 2;").with_text_selection(recording.clone());
         code.layout(
             SizeConstraint::loose(vec2f(400.0, 200.0)),
             &mut LayoutContext,
@@ -679,7 +678,9 @@ mod tests {
             &mut LayoutContext::default(),
             &app,
         );
-        let mut narrow = Code::new(source).with_highlighted_lines(lines).with_wrap(true);
+        let mut narrow = Code::new(source)
+            .with_highlighted_lines(lines)
+            .with_wrap(true);
         let narrow_size = narrow.layout(
             SizeConstraint::loose(vec2f(120.0, 400.0)),
             &mut LayoutContext::default(),

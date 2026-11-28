@@ -15,7 +15,7 @@ use goble_ui::elements::{
     file_icon_name, AppContext, Axis, Border, ConstrainedBox, Container, CrossAxisAlignment,
     Divider, EdgeInsets, Element, Empty, EventContext, Expanded, Fill, Flex, HoverButton, Icon,
     LayoutContext, MainAxisSize, Padding, PaintContext, Point, SizeConstraint, Spacer, SplitNode,
-    Stack, Text, TopbarButton,
+    Stack, Text, Tooltip, TooltipPosition, TopbarButton,
 };
 use goble_ui::event::DispatchedEvent;
 use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
@@ -109,18 +109,6 @@ pub fn build_active_space(
             // pane (see [`PaneCard`]).
             PaneCard::new(column.finish(), app).finish()
         }
-    };
-    // A window floated over the layout is a second layer above it, not a
-    // change to the layout: the tree below keeps its regions and sessions.
-    let content: Box<dyn Element> = match active_space {
-        Some(space) => match build_floating_overlay(app, state, actions, space) {
-            Some(overlay) => Stack::new()
-                .with_children(vec![content])
-                .with_overlay(overlay, Vector2F::zero())
-                .finish(),
-            None => content,
-        },
-        None => content,
     };
     // The drop ghost is drawn with the pane area but after its panes, so it
     // covers the pane the pointer is over and stays under the bar's floating
@@ -231,7 +219,11 @@ fn build_space(
             let mut children = Vec::new();
             let mut placed = Vec::new();
             for pane in &space.floating {
-                let Some(kind) = leaf_kind_of(&space.root, pane.pane_id) else {
+                let Some(kind) = pane
+                    .kind
+                    .clone()
+                    .or_else(|| leaf_kind_of(&space.root, pane.pane_id))
+                else {
                     continue;
                 };
                 // A minimized window is accounted for even though it is not
@@ -324,7 +316,7 @@ fn build_space(
 /// the same one the floating layout uses for its own windows: moving,
 /// resizing, raising and focusing all go through it, and a press that misses
 /// the window falls through to the layout below.
-fn build_floating_overlay(
+pub(crate) fn build_floating_overlay(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
@@ -335,7 +327,11 @@ fn build_floating_overlay(
     }
     let mut children = Vec::new();
     for pane in &space.floating {
-        let Some(kind) = leaf_kind_of(&space.root, pane.pane_id) else {
+        let Some(kind) = pane
+            .kind
+            .clone()
+            .or_else(|| leaf_kind_of(&space.root, pane.pane_id))
+        else {
             continue;
         };
         if pane.minimized {
@@ -457,6 +453,7 @@ fn build_pane(
             let slot_min = crate::state::pane_slot_min_width();
             let min_first = pane_min_width(first, slot_min);
             let min_second = pane_min_width(second, slot_min);
+            let second_leaf_id = second.first_leaf_id();
             let first = build_pane(app, state, actions, first);
             let second = build_pane(app, state, actions, second);
             // A split with one side lifted collapses onto the side that stays:
@@ -482,7 +479,14 @@ fn build_pane(
                 .with_on_drag_end(move || (on_end.borrow_mut())());
             let node = match dir {
                 SplitDir::Horizontal => node.with_min_panes(min_first, min_second),
-                SplitDir::Vertical => node,
+                SplitDir::Vertical => {
+                    let on_activate = actions.on_pane_activate.clone();
+                    let on_close = actions.on_close_pane.clone();
+                    node.with_gap(36.0).with_on_close(move || {
+                        (on_activate.borrow_mut())(second_leaf_id);
+                        (on_close.borrow_mut())();
+                    })
+                }
             };
             Some(Box::new(node))
         }
@@ -1124,6 +1128,61 @@ impl Element for RegionLayer {
                 );
             }
             child.content.paint(child_origin, ctx, app);
+            if self.floating {
+                // AG: a visible corner grip appears under the pointer; the
+                // resize hit target exists all the time.
+                let grip = rectf(
+                    child_origin.x + px.width() - FLOAT_RESIZE_GRIP,
+                    child_origin.y + px.height() - FLOAT_RESIZE_GRIP,
+                    FLOAT_RESIZE_GRIP,
+                    FLOAT_RESIZE_GRIP,
+                );
+                let _ = &grip;
+                {
+                    if let Some(renderer) = ctx.renderer.as_mut() {
+                        let color = app.theme.color(ColorToken::Muted);
+                        for step in 0..3 {
+                            let offset = 4.0 + step as f32 * 3.0;
+                            renderer.fill_rect(
+                                rectf(
+                                    child_origin.x + px.width() - offset,
+                                    child_origin.y + px.height() - 3.0,
+                                    2.0,
+                                    2.0,
+                                ),
+                                color,
+                            );
+                            renderer.fill_rect(
+                                rectf(
+                                    child_origin.x + px.width() - 3.0,
+                                    child_origin.y + px.height() - offset,
+                                    2.0,
+                                    2.0,
+                                ),
+                                color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if self.floating && ctx.cursor_inside {
+            for child in &self.children {
+                let Some(bounds) = self.child_bounds(child) else {
+                    continue;
+                };
+                let grip = rectf(
+                    bounds.max_x() - FLOAT_RESIZE_GRIP,
+                    bounds.max_y() - FLOAT_RESIZE_GRIP,
+                    FLOAT_RESIZE_GRIP,
+                    FLOAT_RESIZE_GRIP,
+                );
+                if contains(grip, ctx.cursor_position) {
+                    app.window_control
+                        .set_cursor(goble_ui::platform::window::CursorKind::EwResize);
+                    break;
+                }
+            }
         }
     }
 
@@ -1178,6 +1237,9 @@ impl Element for RegionLayer {
                 if self.floating {
                     if let DispatchedEvent::MouseDown { .. } = event {
                         let pane = &self.children[index];
+                        // AG: a press focuses and raises the window before the
+                        // gesture starts.
+                        (self.on_activate.borrow_mut())(pane.pane_id);
                         let on_grip = position.x >= bounds.max_x() - FLOAT_RESIZE_GRIP
                             && position.y >= bounds.max_y() - FLOAT_RESIZE_GRIP;
                         // The controls own their presses: a press on close must
@@ -1405,6 +1467,7 @@ fn window_icon(kind: &PaneKind) -> &'static str {
     match kind {
         PaneKind::Chat | PaneKind::Worker => "agent",
         PaneKind::Terminal => "terminal",
+        PaneKind::Explorer => "folder",
         PaneKind::File { path } => file_icon_name(&file_view::file_name(path)),
         PaneKind::Settings { .. } => "settings",
         PaneKind::Diff { .. } => "code",
@@ -1416,6 +1479,7 @@ fn window_title(kind: &PaneKind) -> String {
     match kind {
         PaneKind::Chat | PaneKind::Worker => "Agent".to_string(),
         PaneKind::Terminal => "Terminal".to_string(),
+        PaneKind::Explorer => "Files".to_string(),
         PaneKind::File { path } => file_view::file_name(path),
         PaneKind::Settings { .. } => "Settings".to_string(),
         PaneKind::Diff { .. } => "Changes".to_string(),
@@ -1499,6 +1563,7 @@ fn build_leaf_column(
             }
             // A file view is read-only: no composer, no shell, just the file the
             // pane was opened on.
+            PaneKind::Explorer => crate::ui::explorer::build_explorer(app, state, actions),
             PaneKind::File { path } => file_view::build_file_view(app, state, actions, id, &path),
             // The review pane: the file list and every changed file's diff, with
             // the options that shape the view (refresh, expand/collapse, sidebar).
@@ -1610,15 +1675,13 @@ mod tests {
         assert!((cut_radius - CARD_EDGE_BAND - radius).abs() < 1e-6);
     }
 
-    /// R: one flat grey app surface. EVERY pane card — chat, worker, terminal,
-    /// file, diff, settings — shares the window's `Surface`; there is no darker
-    /// card material and no second backdrop tone.
+    /// Every pane card — chat, worker, terminal, file, diff, settings — shares
+    /// the black `ContentBg` material; the shell/topbar/sidebar keep the grey
+    /// `Surface`.
     #[test]
-    fn every_panel_card_shares_the_window_surface() {
+    fn every_panel_card_shares_the_content_material() {
         fn assert_panels_flat(app: &AppContext) {
-            let surface = app.theme.color(ColorToken::Surface);
-            let bg = app.theme.color(ColorToken::Bg);
-            assert_eq!(bg, surface, "window and panel materials are one grey");
+            let surface = app.theme.color(ColorToken::ContentBg);
             for kind in [
                 PaneKind::Chat,
                 PaneKind::Worker,
@@ -1634,7 +1697,7 @@ mod tests {
                 assert_eq!(
                     pane_surface(app),
                     surface,
-                    "the panel card ({kind:?}) is the window surface"
+                    "the panel card ({kind:?}) is the content material"
                 );
             }
         }

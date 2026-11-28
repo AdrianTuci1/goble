@@ -149,10 +149,7 @@ impl ContextPill {
     }
 
     pub fn finish(self, app: &AppContext) -> Box<dyn Element> {
-        let open = self
-            .open
-            .as_ref()
-            .is_some_and(|open| *open.borrow());
+        let open = self.open.as_ref().is_some_and(|open| *open.borrow());
         // An open pill's label is the value in force: it reads in the text
         // colour, while a closed one stays muted. The leading glyph and the
         // chevron stay muted either way.
@@ -220,11 +217,10 @@ impl ContextPill {
         if self.on_select.is_none() {
             return trigger;
         }
-        let mut menu = PopupMenu::new(trigger, self.items)
-            .with_position(match self.tray_side {
-                PillTraySide::Above => PopupMenuPosition::Above,
-                PillTraySide::Below => PopupMenuPosition::Below,
-            });
+        let mut menu = PopupMenu::new(trigger, self.items).with_position(match self.tray_side {
+            PillTraySide::Above => PopupMenuPosition::Above,
+            PillTraySide::Below => PopupMenuPosition::Below,
+        });
         if let Some(width) = self.menu_max_width {
             menu = menu.with_max_width(width);
         }

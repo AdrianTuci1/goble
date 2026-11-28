@@ -450,9 +450,7 @@ impl ConversationListItem {
         // The band's own colour, which `paint` fills the whole card with (and
         // the fade blends into): the pointer over the card, the selected
         // conversation, or the surface the card sits on.
-        self.bg = if self.selected {
-            app.theme.color(ColorToken::Selected)
-        } else if hover {
+        self.bg = if hover {
             app.theme.color(ColorToken::Hover)
         } else {
             app.theme.color(ColorToken::Surface)
@@ -2245,21 +2243,16 @@ mod tests {
         );
         let mut element: Box<dyn Element> = Box::new(selected);
         let commands = crate::test_util::render_element(&mut element, vec2f(width, 200.0), &app);
-        let band = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == app.theme.color(ColorToken::Selected) =>
-                {
-                    Some(*rect)
-                }
-                _ => None,
-            })
-            .expect("the selected card paints its band");
-        assert_eq!(
-            (band.min_x(), band.max_x()),
-            (0.0, width),
-            "the selected band spans the card too: {band:?}"
+        // 471/remote: a selected row is flat at rest; the surface appears only
+        // on hover, matching the Review rows.
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::FillRect { color, .. }
+                    if *color == app.theme.color(ColorToken::Hover)
+                        || *color == app.theme.color(ColorToken::Selected)
+            )),
+            "the selected card paints no rest band: {commands:?}"
         );
     }
 
@@ -2903,6 +2896,9 @@ pub struct SidebarGroupRow {
     /// A fixed leading glyph (the Starred group's pin). `None` draws the
     /// folder, swapped for the disclosure triangle while hovered.
     leading_icon: Option<&'static str>,
+    /// A plain heading with no leading glyph at all (the label starts where
+    /// the icon slot used to be).
+    hide_leading_icon: bool,
     expanded: bool,
     /// Whether the group holds the selected conversation: its folder takes the
     /// theme accent, the way DSH blues the folder of the active workspace.
@@ -2959,6 +2955,7 @@ impl SidebarGroupRow {
         Self {
             label: label.into(),
             leading_icon: None,
+            hide_leading_icon: false,
             expanded,
             active: false,
             hovered: false,
@@ -2983,6 +2980,13 @@ impl SidebarGroupRow {
     /// group's pin).
     pub fn with_leading_icon(mut self, icon: &'static str) -> Self {
         self.leading_icon = Some(icon);
+        self
+    }
+
+    /// Draw the heading with no leading glyph; the label takes the icon slot's
+    /// width, so it starts where the folder used to be.
+    pub fn without_leading_icon(mut self) -> Self {
+        self.hide_leading_icon = true;
         self
     }
 
@@ -3300,13 +3304,15 @@ impl SidebarGroupRow {
         let menu_open = self.menu_open();
         let highlight = self.ui.borrow().highlight;
         let (glyph, size, color) = self.glyph();
-        let leading = sidebar_leading_slot(
-            Icon::new(glyph)
-                .with_size(size)
-                .with_theme_color(color, app)
-                .finish(),
-            size,
-        );
+        let leading = (!self.hide_leading_icon).then(|| {
+            sidebar_leading_slot(
+                Icon::new(glyph)
+                    .with_size(size)
+                    .with_theme_color(color, app)
+                    .finish(),
+                size,
+            )
+        });
         let label = match label_width {
             Some(width) if width.is_finite() => {
                 truncate_with_ellipsis(&self.label, SIDEBAR_TITLE_SIZE, SIDEBAR_TITLE_LINE, width)
@@ -3316,23 +3322,25 @@ impl SidebarGroupRow {
         let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(SIDEBAR_LABEL_GAP)
-            .with_child(leading)
-            .with_child(
-                Expanded::new(
-                    Padding::new(
-                        Text::new(label)
-                            .with_font_size(SIDEBAR_TITLE_SIZE)
-                            .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
-                            .with_max_lines(1)
-                            .with_theme_color(ColorToken::Text, app)
-                            .finish(),
-                        EdgeInsets::new(0.0, 0.0, 0.0, 0.0),
-                    )
-                    .finish(),
+            .with_spacing(SIDEBAR_LABEL_GAP);
+        if let Some(leading) = leading {
+            row = row.with_child(leading);
+        }
+        let mut row = row.with_child(
+            Expanded::new(
+                Padding::new(
+                    Text::new(label)
+                        .with_font_size(SIDEBAR_TITLE_SIZE)
+                        .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
+                        .with_max_lines(1)
+                        .with_theme_color(ColorToken::Text, app)
+                        .finish(),
+                    EdgeInsets::new(0.0, 0.0, 0.0, 0.0),
                 )
                 .finish(),
-            );
+            )
+            .finish(),
+        );
         // The strip's layout footprint: the label keeps clear of it while the
         // controls are shown, exactly as DSH's flex row does.
         let strip = self.strip_width();
@@ -3399,8 +3407,11 @@ impl Element for SidebarGroupRow {
                     - 2.0 * SIDEBAR_PAINT_INSET
                     - SIDEBAR_ROW_PADDING_START
                     - SIDEBAR_ROW_PADDING_END
-                    - SIDEBAR_LEADING_SLOT_W
-                    - SIDEBAR_LABEL_GAP
+                    - if false {
+                        0.0
+                    } else {
+                        SIDEBAR_LEADING_SLOT_W + SIDEBAR_LABEL_GAP
+                    }
                     - trailing)
                     .max(0.0),
             )
@@ -4394,8 +4405,7 @@ impl SidebarSessionRow {
         } else {
             let mut cluster = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(SIDEBAR_TRAILING_GAP)
-                .with_child(harness_bar_mark(&self.harness, SIDEBAR_HARNESS_MARK, app));
+                .with_spacing(SIDEBAR_TRAILING_GAP);
             if self.remote {
                 cluster = cluster.with_child(
                     Icon::new(SIDEBAR_ICON_CLOUD)
@@ -5944,8 +5954,11 @@ mod sidebar_workspaces_tests {
                     - 2.0 * SIDEBAR_PAINT_INSET
                     - SIDEBAR_ROW_PADDING_START
                     - SIDEBAR_ROW_PADDING_END
-                    - SIDEBAR_LEADING_SLOT_W
-                    - SIDEBAR_LABEL_GAP
+                    - if false {
+                        0.0
+                    } else {
+                        SIDEBAR_LEADING_SLOT_W + SIDEBAR_LABEL_GAP
+                    }
                     - 6.0
                     - strip)
                     .max(0.0);
@@ -6696,8 +6709,14 @@ mod sidebar_workspaces_tests {
         let at = dots + vec2f(8.0, 8.0);
         let mut ctx = EventContext::default();
         for event in [
-            DispatchedEvent::MouseDown { position: at, button: 0 },
-            DispatchedEvent::MouseUp { position: at, button: 0 },
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
         ] {
             row.dispatch_event(&event, &mut ctx, &app);
         }
@@ -6774,8 +6793,14 @@ mod sidebar_workspaces_tests {
         let at = dots + vec2f(8.0, 8.0);
         let mut ctx = EventContext::default();
         for event in [
-            DispatchedEvent::MouseDown { position: at, button: 0 },
-            DispatchedEvent::MouseUp { position: at, button: 0 },
+            DispatchedEvent::MouseDown {
+                position: at,
+                button: 0,
+            },
+            DispatchedEvent::MouseUp {
+                position: at,
+                button: 0,
+            },
         ] {
             row.dispatch_event(&event, &mut ctx, &app);
         }

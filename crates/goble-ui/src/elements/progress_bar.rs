@@ -1,7 +1,5 @@
 use crate::color::ColorU;
-use crate::elements::{
-    AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint,
-};
+use crate::elements::{AppContext, Element, LayoutContext, PaintContext, Point, SizeConstraint};
 use crate::geometry::{rectf, Vector2F};
 
 /// A thin segmented progress bar: one rounded slice per step, in the order the
@@ -52,7 +50,11 @@ impl Element for ProgressBar {
             constraint.min.x
         }
         .max(0.0);
-        let height = if self.colors.is_empty() { 0.0 } else { self.height };
+        let height = if self.colors.is_empty() {
+            0.0
+        } else {
+            self.height
+        };
         let size = Vector2F::new(width, height);
         self.size = Some(size);
         size
@@ -72,11 +74,7 @@ impl Element for ProgressBar {
         let slice = ((size.x - total_gap) / count as f32).max(0.0);
         for (index, color) in self.colors.iter().enumerate() {
             let x = origin.x + index as f32 * (slice + self.gap);
-            renderer.fill_rounded_rect(
-                rectf(x, origin.y, slice, size.y),
-                *color,
-                size.y / 2.0,
-            );
+            renderer.fill_rounded_rect(rectf(x, origin.y, slice, size.y), *color, size.y / 2.0);
         }
     }
 
@@ -105,7 +103,9 @@ mod tests {
             ColorU::new(40, 50, 60, 255),
             ColorU::new(70, 80, 90, 255),
         ];
-        let mut bar = ProgressBar::new(colors.clone()).with_height(4.0).with_gap(2.0);
+        let mut bar = ProgressBar::new(colors.clone())
+            .with_height(4.0)
+            .with_gap(2.0);
         let size = bar.layout(
             SizeConstraint::loose(vec2f(100.0, 20.0)),
             &mut LayoutContext::default(),
@@ -122,9 +122,11 @@ mod tests {
         let rects: Vec<_> = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::FillRect { rect, color, corner_radius } => {
-                    Some((*rect, *color, *corner_radius))
-                }
+                RenderCommand::FillRect {
+                    rect,
+                    color,
+                    corner_radius,
+                } => Some((*rect, *color, *corner_radius)),
                 _ => None,
             })
             .collect();

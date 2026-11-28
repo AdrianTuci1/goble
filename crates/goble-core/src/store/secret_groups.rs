@@ -47,9 +47,8 @@ impl Store {
     /// comes back with an empty `entries`, not absent.
     pub fn list_secret_groups(&self) -> Result<Vec<SecretGroup>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, created_at, updated_at FROM secret_groups ORDER BY name",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, created_at, updated_at FROM secret_groups ORDER BY name")?;
         let mut rows = stmt.query([])?;
         let mut groups = Vec::new();
         while let Some(row) = rows.next()? {
@@ -91,7 +90,10 @@ impl Store {
     /// never disagree about which group an entry belongs to.
     pub fn delete_secret_group(&self, id: &str) -> Result<bool> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM secret_group_entries WHERE group_id = ?1", params![id])?;
+        conn.execute(
+            "DELETE FROM secret_group_entries WHERE group_id = ?1",
+            params![id],
+        )?;
         let removed = conn.execute("DELETE FROM secret_groups WHERE id = ?1", params![id])?;
         Ok(removed > 0)
     }
@@ -119,10 +121,10 @@ impl Store {
 
     /// Remove one entry by id; returns whether a row was removed.
     pub fn delete_secret_entry(&self, id: &str) -> Result<bool> {
-        let removed = self
-            .conn
-            .lock()
-            .execute("DELETE FROM secret_group_entries WHERE id = ?1", params![id])?;
+        let removed = self.conn.lock().execute(
+            "DELETE FROM secret_group_entries WHERE id = ?1",
+            params![id],
+        )?;
         Ok(removed > 0)
     }
 

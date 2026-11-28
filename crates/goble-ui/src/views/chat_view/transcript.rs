@@ -1,8 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::elements::chat_content::{changed_files_for_message, ChatRole};
-use crate::elements::chat_content::{tool_fold_key, ChatFragmentKind, ToolDisplayMode};
+use crate::elements::chat_content::{
+    changed_files_for_message, ChatFragmentKind, ChatMessage, ChatRole,
+};
+use crate::elements::chat_content::{tool_fold_key, ToolDisplayMode};
 use crate::elements::chat_message_bubble::{tool_fold_targets, ToolFoldTarget};
 use crate::elements::chat_typography;
 use crate::elements::popup_menu::POPUP_PANEL_RADIUS;
@@ -11,11 +13,11 @@ use crate::elements::{
     command_approval_card, slash_menu_open, AppContext, AskUserCard, Axis, Border, Button,
     ButtonVariant, ChatComposer, ChatMessageBubble, CommandApprovalState, ConstrainedBox,
     Container, ContentLane, CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded,
-    Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding,
-    QuickActionButton, Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip, TooltipPosition,
-    TurnStatus, TurnStatusFooter,
+    Fill, Flex, HoverRow, Icon, MainAxisAlignment, MainAxisSize, ModelMenu, Padding, Point,
+    QuickActionButton, ScrollState, Scrollable, SlashMenu, Spacer, Stack, Text, Tooltip,
+    TooltipPosition, TurnStatus, TurnStatusFooter,
 };
-use crate::geometry::Vector2F;
+use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::platform::text_atlas::FontWeight;
 use crate::theme::{ColorToken, FontFamily, SpacingToken};
 
@@ -320,6 +322,455 @@ mod failure_tests {
     }
 }
 
+/// 356: one rail entry per turn section, computed from the transcript.
+#[derive(Clone, Debug)]
+struct TurnMarker {
+    label: String,
+}
+
+fn turn_text(message: &ChatMessage) -> String {
+    for fragment in &message.fragments {
+        let text = match &fragment.kind {
+            ChatFragmentKind::Text(text)
+            | ChatFragmentKind::Bold(text)
+            | ChatFragmentKind::Italic(text)
+            | ChatFragmentKind::BoldItalic(text)
+            | ChatFragmentKind::Code(text)
+            | ChatFragmentKind::Heading { text, .. } => text,
+            _ => continue,
+        };
+        let text = text.trim();
+        if !text.is_empty() {
+            return text.chars().take(64).collect();
+        }
+    }
+    "Untitled turn".to_string()
+}
+
+/// 444/448: one marker per real user turn; the rail gets no synthetic dots.
+fn turn_markers(messages: &[ChatMessage]) -> Vec<TurnMarker> {
+    messages
+        .iter()
+        .filter(|message| message.role == ChatRole::User)
+        .map(|message| TurnMarker {
+            label: turn_text(message),
+        })
+        .collect()
+}
+
+/// Where one turn row was painted, in window coordinates.
+#[derive(Clone, Copy, Debug, Default)]
+struct TurnGeometry {
+    top: f32,
+    height: f32,
+}
+
+type TurnSlot = Rc<RefCell<Option<TurnGeometry>>>;
+
+/// 448: records a turn row's real painted bounds for the rail.
+struct TurnProbe {
+    child: Box<dyn Element>,
+    slot: TurnSlot,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl TurnProbe {
+    fn new(child: Box<dyn Element>, slot: TurnSlot) -> Self {
+        Self {
+            child,
+            slot,
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for TurnProbe {
+    fn layout(
+        &mut self,
+        constraint: crate::elements::SizeConstraint,
+        ctx: &mut crate::elements::LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(
+        &mut self,
+        origin: Vector2F,
+        ctx: &mut crate::elements::PaintContext,
+        app: &AppContext,
+    ) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        if let Some(size) = self.size {
+            *self.slot.borrow_mut() = Some(TurnGeometry {
+                top: origin.y,
+                height: size.y,
+            });
+        }
+        self.child.paint(origin, ctx, app);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &crate::event::DispatchedEvent,
+        ctx: &mut crate::elements::EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, ctx, app)
+    }
+}
+
+/// The transcript's left scroll rail: one indicator per actual turn, placed by
+/// the turn row's real painted offset. The latest/active turn is a longer
+/// segment; hover names it, click scrolls to it.
+struct ScrollDotsRail {
+    scroll: Rc<RefCell<ScrollState>>,
+    labels: Vec<String>,
+    slots: Vec<TurnSlot>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+const DOT_SIZE: f32 = 3.0;
+const DOT_GAP: f32 = 12.0;
+/// The active/latest turn's longer segment.
+const LONG_SEGMENT: f32 = 18.0;
+const RAIL_WIDTH: f32 = 3.0;
+/// Keep the rail inside the transcript lane rather than over the sidebar.
+const RAIL_INSET: f32 = 40.0;
+const RAIL_HOVER_GAP: f32 = 14.0;
+const HOVER_CARD_WIDTH: f32 = 260.0;
+const HOVER_CARD_HEIGHT: f32 = 24.0;
+/// Below either of these the left scroll rail is not drawn at all.
+const RAIL_MIN_WIDTH: f32 = 620.0;
+const RAIL_MIN_HEIGHT: f32 = 340.0;
+
+impl ScrollDotsRail {
+    fn new(
+        scroll: Rc<RefCell<ScrollState>>,
+        markers: Vec<TurnMarker>,
+        slots: Vec<TurnSlot>,
+    ) -> Self {
+        Self {
+            scroll,
+            labels: markers.into_iter().map(|m| m.label).collect(),
+            slots,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.labels.len().min(self.slots.len())
+    }
+
+    /// The plotted fraction of each turn, from its real painted offset and the
+    /// current scroll. Markers are normalised between the first and last turn
+    /// so a short or long transcript uses the rail the same way.
+    fn fractions(&self) -> Vec<f32> {
+        let offset = self.scroll.borrow().offset();
+        let mut raw: Vec<f32> = self
+            .slots
+            .iter()
+            .take(self.count())
+            .filter_map(|slot| slot.borrow().map(|geometry| geometry.top + offset))
+            .collect();
+        let first = raw.first().copied().unwrap_or(0.0);
+        for value in &mut raw {
+            *value = (*value - first).max(0.0);
+        }
+        let span = raw.last().copied().unwrap_or(0.0).max(1.0);
+        raw.into_iter()
+            .map(|value| (value / span).clamp(0.0, 1.0))
+            .collect()
+    }
+
+    fn marker_y(&self, fraction: f32) -> f32 {
+        let height = self.size.map(|size| size.y).unwrap_or(0.0);
+        let top = (height * 0.20).max(24.0);
+        let bottom = (height * 0.80).min(height - 24.0);
+        top + (bottom - top).max(0.0) * fraction
+    }
+
+    fn long_index(&self) -> Option<usize> {
+        let count = self.count();
+        (count > 0).then_some(count - 1)
+    }
+
+    /// 446/448: with many turns the tail becomes one longer segment for the
+    /// most recent turns instead of squeezing every one into a dot.
+    fn tail_group(&self) -> Option<(usize, usize)> {
+        let count = self.count();
+        (count > 8).then(|| (count - 3, count))
+    }
+
+    fn group_label(&self, range: (usize, usize)) -> String {
+        let (start, end) = range;
+        let first = self.labels.get(start).map(String::as_str).unwrap_or("Turn");
+        let last = self
+            .labels
+            .get(end.saturating_sub(1))
+            .map(String::as_str)
+            .unwrap_or("Turn");
+        format!("{} turns · {} – {}", end - start, first, last)
+    }
+
+    fn hovered_indicator(&self, ctx: &crate::elements::PaintContext) -> Option<usize> {
+        if !ctx.cursor_inside {
+            return None;
+        }
+        let origin = self.origin?;
+        let rail_x = origin.x() + RAIL_INSET;
+        if ctx.cursor_position.x < rail_x - 4.0
+            || ctx.cursor_position.x > rail_x + RAIL_WIDTH + RAIL_HOVER_GAP
+        {
+            return None;
+        }
+        let fractions = self.fractions();
+        if let Some((start, end)) = self.tail_group() {
+            if start < fractions.len() && end <= fractions.len() {
+                let top = origin.y() + self.marker_y(fractions[start]);
+                let bottom = origin.y() + self.marker_y(fractions[end - 1]);
+                if ctx.cursor_position.y >= top - DOT_GAP
+                    && ctx.cursor_position.y <= bottom + DOT_GAP
+                {
+                    return Some(start);
+                }
+                let mut best = None;
+                let mut distance = DOT_GAP;
+                for (index, fraction) in fractions.iter().take(start).enumerate() {
+                    let center = origin.y() + self.marker_y(*fraction);
+                    let candidate = (ctx.cursor_position.y - center).abs();
+                    if candidate <= distance {
+                        distance = candidate;
+                        best = Some(index);
+                    }
+                }
+                return best;
+            }
+        }
+        let mut best = None;
+        let mut distance = DOT_GAP;
+        for (index, fraction) in fractions.iter().enumerate() {
+            let center = origin.y() + self.marker_y(*fraction);
+            let candidate = (ctx.cursor_position.y - center).abs();
+            if candidate <= distance {
+                distance = candidate;
+                best = Some(index);
+            }
+        }
+        best
+    }
+
+    fn active_indicator(&self, fractions: &[f32]) -> Option<usize> {
+        if fractions.is_empty() {
+            return None;
+        }
+        let scroll = self.scroll.borrow();
+        let max = scroll.max_offset().max(1.0);
+        let current = (scroll.offset() / max).clamp(0.0, 1.0);
+        let mut best = 0;
+        let mut distance = f32::INFINITY;
+        for (index, fraction) in fractions.iter().enumerate() {
+            let delta = (current - fraction).abs();
+            if delta < distance {
+                distance = delta;
+                best = index;
+            }
+        }
+        Some(best)
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for ScrollDotsRail {
+    fn layout(
+        &mut self,
+        constraint: crate::elements::SizeConstraint,
+        _ctx: &mut crate::elements::LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        self.size = Some(constraint.max);
+        constraint.max
+    }
+
+    fn paint(
+        &mut self,
+        origin: Vector2F,
+        ctx: &mut crate::elements::PaintContext,
+        app: &AppContext,
+    ) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let Some(size) = self.size else { return };
+        if size.x < RAIL_MIN_WIDTH || size.y < RAIL_MIN_HEIGHT || self.count() == 0 {
+            return;
+        }
+        let fractions = self.fractions();
+        if fractions.is_empty() {
+            return;
+        }
+        let hovered = self.hovered_indicator(ctx);
+        let active = self.active_indicator(&fractions);
+        let Some(renderer) = ctx.renderer.as_mut() else {
+            return;
+        };
+        let muted = app.theme.color(ColorToken::Muted);
+        let ink = app.theme.color(ColorToken::Text);
+        let x = origin.x + RAIL_INSET;
+        let group = self.tail_group();
+        let long = self.long_index();
+        for index in 0..self.count() {
+            if group.is_some_and(|(start, _)| index >= start) {
+                continue;
+            }
+            let y = origin.y + self.marker_y(fractions[index]);
+            let is_active = active == Some(index);
+            let is_hovered = hovered == Some(index);
+            let color = if is_active || is_hovered { ink } else { muted };
+            if group.is_none() && Some(index) == long {
+                renderer.fill_rounded_rect(
+                    rectf(x, y - LONG_SEGMENT / 2.0, RAIL_WIDTH, LONG_SEGMENT),
+                    color,
+                    RAIL_WIDTH / 2.0,
+                );
+            } else {
+                renderer.fill_rounded_rect(
+                    rectf(x, y - DOT_SIZE / 2.0, DOT_SIZE, DOT_SIZE),
+                    color,
+                    DOT_SIZE / 2.0,
+                );
+            }
+        }
+        if let Some((start, end)) = group {
+            if end <= fractions.len() {
+                let top = origin.y + self.marker_y(fractions[start]);
+                let bottom = origin.y + self.marker_y(fractions[end - 1]);
+                let active = active.is_some_and(|index| index >= start && index < end);
+                let is_hovered = hovered == Some(start);
+                let color = if active || is_hovered { ink } else { muted };
+                renderer.fill_rounded_rect(
+                    rectf(x, top - DOT_SIZE / 2.0, RAIL_WIDTH, (bottom - top) + LONG_SEGMENT),
+                    color,
+                    RAIL_WIDTH / 2.0,
+                );
+            }
+        }
+        if let Some(index) = hovered {
+            let label = if let Some(group) = self.tail_group() {
+                if index == group.0 {
+                    self.group_label(group)
+                } else {
+                    self.labels.get(index).map(String::as_str).unwrap_or("Turn").to_string()
+                }
+            } else {
+                self.labels.get(index).map(String::as_str).unwrap_or("Turn").to_string()
+            };
+            let anchor_y = origin.y + self.marker_y(fractions[index]);
+            let card = rectf(
+                x + RAIL_WIDTH + 8.0,
+                anchor_y - HOVER_CARD_HEIGHT / 2.0,
+                HOVER_CARD_WIDTH,
+                HOVER_CARD_HEIGHT,
+            );
+            renderer.fill_rounded_rect(card, app.theme.color(ColorToken::SurfaceRaised), 6.0);
+            renderer.stroke_rect(card, app.theme.color(ColorToken::Border), 1.0, 6.0);
+            renderer.draw_text_with_font(
+                vec2f(card.min_x() + 8.0, card.min_y() + 5.0),
+                &label,
+                11.0,
+                app.theme.color(ColorToken::Text),
+                card.width() - 16.0,
+                14.0,
+                FontWeight::Regular,
+                FontFamily::System,
+                false,
+            );
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &crate::event::DispatchedEvent,
+        _ctx: &mut crate::elements::EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        let Some(size) = self.size else { return false };
+        if size.x < RAIL_MIN_WIDTH || size.y < RAIL_MIN_HEIGHT {
+            return false;
+        }
+        if let crate::event::DispatchedEvent::MouseDown { position, .. } = event {
+            if let Some(origin) = self.origin {
+                if (position.x - (origin.x() + RAIL_INSET)).abs() < RAIL_WIDTH + RAIL_HOVER_GAP {
+                    let fractions = self.fractions();
+                    if let Some((start, end)) = self.tail_group() {
+                        if end <= fractions.len() {
+                            let top = origin.y() + self.marker_y(fractions[start]);
+                            let bottom = origin.y() + self.marker_y(fractions[end - 1]);
+                            if position.y >= top - DOT_GAP && position.y <= bottom + DOT_GAP {
+                                self.scroll_to(fractions[start]);
+                                return true;
+                            }
+                        }
+                    }
+                    for (index, fraction) in fractions.iter().enumerate() {
+                        if self
+                            .tail_group()
+                            .is_some_and(|(start, _)| index >= start)
+                        {
+                            continue;
+                        }
+                        let y = origin.y() + self.marker_y(*fraction);
+                        let hit = if self.tail_group().is_none()
+                            && Some(index) == self.long_index()
+                        {
+                            LONG_SEGMENT / 2.0
+                        } else {
+                            DOT_GAP / 2.0
+                        };
+                        if (position.y - y).abs() <= hit {
+                            self.scroll_to(*fraction);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+}
+
+impl ScrollDotsRail {
+    fn scroll_to(&self, fraction: f32) {
+        let current = self.scroll.borrow().offset();
+        let max = self.scroll.borrow().max_offset();
+        let target = max * fraction.clamp(0.0, 1.0);
+        self.scroll.borrow_mut().scroll_by(target - current);
+    }
+}
+
 impl ChatView {
     /// The slash-command list, when the draft the composer holds is a command:
     /// the items the host filtered for that draft, anchored above the composer
@@ -500,7 +951,12 @@ impl ChatView {
                                 .with_max_width(EMPTY_FRAME_MAX_WIDTH)
                                 .finish(),
                         )
-                        .with_padding(EdgeInsets::new(margin, 0.0, margin, 0.0))
+                        .with_padding(EdgeInsets::new(
+                            (margin - 20.0).max(0.0),
+                            0.0,
+                            (margin - 20.0).max(0.0),
+                            0.0,
+                        ))
                         .finish(),
                     )
                     .finish(),
@@ -991,6 +1447,12 @@ impl ChatView {
             .with_main_axis_size(MainAxisSize::Max)
             .with_spacing(spacing);
 
+        let turn_slots: Vec<TurnSlot> = self
+            .messages
+            .iter()
+            .filter(|message| message.role == ChatRole::User)
+            .map(|_| Rc::new(RefCell::new(None)))
+            .collect();
         let message_area: Box<dyn Element> = if self.messages.is_empty()
             && self.pending_ask.is_none()
             && self.composer_proposal.is_none()
@@ -1025,6 +1487,7 @@ impl ChatView {
             // The rows the sticky turn header reads: the latest user message and
             // the next prompt after it, recorded as they paint.
             let sticky = StickyTurn::for_messages(&self.messages);
+            let mut turn_index = 0usize;
             for (index, message) in self.messages.iter().enumerate() {
                 let on_action = self.on_action.clone();
                 let fragments = message.fragments.clone();
@@ -1047,7 +1510,13 @@ impl ChatView {
                 if self.transcript_selection.is_some() {
                     bubble = bubble.with_text_selection(self.text_recording.clone());
                 }
-                let bubble = bubble.finish();
+                let mut bubble = bubble.finish();
+                if message.role == ChatRole::User {
+                    if let Some(slot) = turn_slots.get(turn_index).cloned() {
+                        bubble = TurnProbe::new(bubble, slot).finish();
+                    }
+                    turn_index += 1;
+                }
                 message_column = message_column.with_child(sticky.probe(index, bubble));
             }
             // DSH closes a completed assistant turn with its changed-files
@@ -1206,7 +1675,14 @@ impl ChatView {
             // shorter than the pane is flushed to the end of it, so the last
             // message sits on the input (warp-new) instead of leaving the gap
             // between it and the input on screen.
-            let transcript = Scrollable::new(message_column.finish(), Axis::Vertical)
+            let transcript = Scrollable::new(
+                Padding::new(
+                    message_column.finish(),
+                    EdgeInsets::new(15.0, 0.0, 15.0, 0.0),
+                )
+                .finish(),
+                Axis::Vertical,
+            )
                 .with_state(self.scroll.clone())
                 .with_bottom_anchor(true)
                 .finish();
@@ -1228,13 +1704,11 @@ impl ChatView {
             // for the whole turn it opens. The header is an overlay of the
             // transcript's stack, so it covers the top strip instead of taking
             // a row from the scrolling content.
-            let transcript: Box<dyn Element> = match sticky.overlay() {
-                Some(header) => Stack::new()
-                    .with_children(vec![transcript])
-                    .with_overlay(header, Vector2F::zero())
-                    .finish(),
-                None => transcript,
-            };
+            // The latest user message is no longer pinned under the topbar:
+            // it scrolls with the transcript and leaves the visible area with
+            // its own bubble.
+            let transcript: Box<dyn Element> = transcript;
+            let _ = &sticky;
             if self.has_terminal_blocks() {
                 if let Some(bar) = self.build_global_filter_bar(app) {
                     // The filter bar is content-sized, the transcript takes the
@@ -1294,7 +1768,7 @@ impl ChatView {
             .with_anchor(self.composer_anchor.clone())
             // While a turn is in flight the status row above the input carries
             // the one Stop control; an idle input keeps it in its action row.
-            .with_stop_visible(self.composer_stop_visible && !self.turn_status.is_in_flight())
+            .with_stop_visible(self.composer_stop_visible || self.turn_status.is_in_flight())
             // The rich input is one card on both surfaces, and the owner's
             // instruction row is a fixed line **under** it, right-aligned. A
             // terminal pane's bar is built from this same widget in this same
@@ -1505,15 +1979,9 @@ impl ChatView {
             // doing, and the row also carries the turn's Stop. An idle pane
             // pays no status height: the composer's own fixed row under the
             // card carries the hints now.
-            if self.turn_status.is_in_flight() {
-                let mut footer = TurnStatusFooter::new(self.turn_status.clone());
-                if self.composer_stop_visible {
-                    if let Some(cb) = self.on_stop.clone() {
-                        footer = footer.with_stop(move || (cb.borrow_mut())());
-                    }
-                }
-                column = column.with_child(footer.finish());
-            }
+            // The turn-status row above the card is gone: its text was not
+            // used, and Stop now lives in the composer's own footer while the
+            // turn is in flight.
             // The command list is the one band that no longer takes a row in
             // this column. It is an overlay anchored above the composer: the
             // `ComposerOverlay` lays the composer out exactly as the closed
@@ -1538,6 +2006,9 @@ impl ChatView {
             // the answer settles it. The turn-status row stays as the mark
             // that the turn is suspended.
             if !waiting {
+                if let Some(pill) = self.project_pill.take() {
+                    column = column.with_child(pill);
+                }
                 let composer: Box<dyn Element> = match slash_panel {
                     Some(panel) => ComposerOverlay::new(composer, Some(panel))
                         // Keep the exact anchor the in-flow band had: the
@@ -1591,6 +2062,19 @@ impl ChatView {
         } else {
             content
         };
+        // 310: a left rail of scroll dots, matching the transcript's position.
+        let content: Box<dyn Element> = Stack::new()
+            .with_children(vec![content])
+            .with_overlay(
+                ScrollDotsRail::new(
+                    self.scroll.clone(),
+                    turn_markers(&self.messages),
+                    turn_slots.clone(),
+                )
+                .finish(),
+                Vector2F::zero(),
+            )
+            .finish();
         // The pane's tree: the full-width chrome band above the laned content
         // column. The chrome takes its own height (the bar's reserved height
         // and the dock's own); the lane fills the rest.
@@ -1720,5 +2204,89 @@ impl ChatView {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod rail_tests {
+    use super::*;
+    use crate::elements::ChatFragment;
+
+    fn user(text: &str) -> ChatMessage {
+        ChatMessage::new(ChatRole::User, vec![ChatFragment::text(text)])
+    }
+
+    fn assistant(text: &str) -> ChatMessage {
+        ChatMessage::new(ChatRole::Assistant, vec![ChatFragment::text(text)])
+    }
+
+    /// 444/445/448: zero turns → zero markers; N user turns → N markers.
+    #[test]
+    fn the_rail_has_exactly_one_marker_per_real_user_turn() {
+        assert!(turn_markers(&[]).is_empty());
+        assert!(turn_markers(&[assistant("hello")]).is_empty());
+        let messages = vec![
+            user("first prompt"),
+            assistant("reply"),
+            user("second prompt"),
+            assistant("reply"),
+            user("third prompt"),
+        ];
+        let markers = turn_markers(&messages);
+        assert_eq!(markers.len(), 3);
+        assert_eq!(markers[0].label, "first prompt");
+        assert_eq!(markers[2].label, "third prompt");
+    }
+
+    /// 446: marker fractions come from the painted turn offsets, not fixed
+    /// scroll slots; the latest turn is the long segment and the active marker
+    /// follows the scroll position.
+    #[test]
+    fn the_rail_plots_painted_turn_offsets_and_marks_the_active_turn() {
+        let slots: Vec<TurnSlot> = (0..3)
+            .map(|index| {
+                Rc::new(RefCell::new(Some(TurnGeometry {
+                    top: 100.0 + index as f32 * 200.0,
+                    height: 80.0,
+                })))
+            })
+            .collect();
+        let mut rail = ScrollDotsRail::new(
+            Rc::new(RefCell::new(ScrollState::default())),
+            turn_markers(&[user("a"), user("b"), user("c")]),
+            slots,
+        );
+        rail.size = Some(vec2f(800.0, 600.0));
+        let fractions = rail.fractions();
+        assert_eq!(fractions, vec![0.0, 0.5, 1.0]);
+        assert_eq!(rail.long_index(), Some(2));
+        assert_eq!(rail.active_indicator(&fractions), Some(0));
+        assert!(rail.marker_y(1.0) > rail.marker_y(0.0));
+    }
+
+    /// 446/448: a long transcript groups its tail turns under one segment.
+    #[test]
+    fn many_turns_group_the_tail_under_one_long_segment() {
+        let turns: Vec<ChatMessage> = (0..10)
+            .map(|index| user(&format!("turn {index}")))
+            .collect();
+        let slots: Vec<TurnSlot> = (0..10)
+            .map(|index| {
+                Rc::new(RefCell::new(Some(TurnGeometry {
+                    top: 100.0 + index as f32 * 80.0,
+                    height: 60.0,
+                })))
+            })
+            .collect();
+        let mut rail = ScrollDotsRail::new(
+            Rc::new(RefCell::new(ScrollState::default())),
+            turn_markers(&turns),
+            slots,
+        );
+        rail.size = Some(vec2f(800.0, 600.0));
+        assert_eq!(rail.tail_group(), Some((7, 10)));
+        let label = rail.group_label((7, 10));
+        assert!(label.starts_with("3 turns · turn 7"), "{label}");
+        assert!(label.ends_with("turn 9"), "{label}");
     }
 }

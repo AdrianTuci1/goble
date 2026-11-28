@@ -674,8 +674,9 @@ mod tests {
         let clicked = Rc::new(RefCell::new(false));
         let flag = clicked.clone();
         let status = TurnStatus::busy(TurnActivity::Thinking, Some(Duration::from_secs(3)), 0);
-        let mut element: Box<dyn Element> =
-            TurnStatusFooter::new(status).with_stop(move || *flag.borrow_mut() = true).finish();
+        let mut element: Box<dyn Element> = TurnStatusFooter::new(status)
+            .with_stop(move || *flag.borrow_mut() = true)
+            .finish();
 
         let app = AppContext::default();
         let commands = render_element(&mut element, vec2f(600.0, 40.0), &app);

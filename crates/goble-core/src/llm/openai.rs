@@ -346,7 +346,9 @@ impl LlmProvider for OpenAiProvider {
             temperature: request.temperature,
             max_tokens: request.max_tokens,
             stream: true,
-            stream_options: OpenAiStreamOptions { include_usage: true },
+            stream_options: OpenAiStreamOptions {
+                include_usage: true,
+            },
         };
 
         log::debug!("LLM request shape: {}", request_shape(&body.messages));

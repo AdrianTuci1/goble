@@ -140,14 +140,112 @@ fn handle(
             state.settings.shortcuts_search_focused = false;
         }
         SettingsAction::ShortcutRemap(id) => {
-            // Remapping is not in this build. The trash affordance is a real
-            // press that says so; it never deletes a binding (the list is a
-            // report of what the app dispatches, and there is nowhere to write
-            // a removal to).
-            let _ = id;
+            let label = id.trim_start_matches("shortcut.");
+            if state.settings.shortcuts.remove(label).is_some() {
+                persist_shortcuts(state, desktop);
+                state.settings.set_status(
+                    StatusKind::Success,
+                    format!("Removed the custom chord for {label}."),
+                );
+            } else {
+                state
+                    .settings
+                    .set_status(StatusKind::Info, pages::REMAP_UNAVAILABLE);
+            }
+        }
+        SettingsAction::ShortcutAdd(id) => {
+            state.settings.shortcuts_recording =
+                Some(id.trim_start_matches("shortcut.").to_string());
+            state.settings.shortcuts_recorded.clear();
+        }
+        SettingsAction::ShortcutCancel => {
+            state.settings.shortcuts_recording = None;
+            state.settings.shortcuts_recorded.clear();
+        }
+        SettingsAction::ShortcutCapture { key, modifiers } => {
+            let mut chord: Vec<String> = modifiers.clone();
+            let modifier_only = matches!(
+                key.as_str(),
+                "Shift" | "Control" | "Alt" | "Meta" | "Command" | "Super" | "CapsLock"
+            );
+            if !modifier_only {
+                chord.push(key);
+            }
+            state.settings.shortcuts_recorded = chord.clone();
+            if !modifier_only && !chord.is_empty() {
+                if let Some(label) = state.settings.shortcuts_recording.clone() {
+                    state.settings.shortcuts.insert(label.clone(), chord);
+                    state.settings.shortcuts_recording = None;
+                    state.settings.shortcuts_recorded.clear();
+                    persist_shortcuts(state, desktop);
+                    state
+                        .settings
+                        .set_status(StatusKind::Success, format!("Added a shortcut to {label}."));
+                }
+            }
+        }
+        SettingsAction::RefreshIntegrations => {
+            state.settings.integrations =
+                goble_core::integration::IntegrationRegistry::with_defaults().snapshot_all();
             state
                 .settings
-                .set_status(StatusKind::Info, pages::REMAP_UNAVAILABLE);
+                .set_status(StatusKind::Success, "Integration detection refreshed.");
+        }
+        SettingsAction::IntegrationConnect(id) => {
+            let snapshot = state
+                .settings
+                .integrations
+                .iter()
+                .find(|integration| integration.id == id)
+                .cloned();
+            let Some(snapshot) = snapshot else {
+                state
+                    .settings
+                    .set_status(StatusKind::Error, format!("{id} is not an integration."));
+                return;
+            };
+            if !snapshot.installed {
+                state.settings.set_status(
+                    StatusKind::Warning,
+                    format!(
+                        "{} is not installed; install it and run its login command.",
+                        snapshot.name
+                    ),
+                );
+                return;
+            }
+            let Some(path) = snapshot.path.as_ref() else {
+                state.settings.set_status(
+                    StatusKind::Warning,
+                    "The integration has no executable path.",
+                );
+                return;
+            };
+            match std::process::Command::new(path).arg("login").spawn() {
+                Ok(_) => state.settings.set_status(
+                    StatusKind::Info,
+                    format!(
+                        "Started {} login. Finish in the browser, then refresh.",
+                        snapshot.name
+                    ),
+                ),
+                Err(error) => state.settings.set_status(
+                    StatusKind::Error,
+                    format!("Could not start {} login: {error}", snapshot.name),
+                ),
+            }
+        }
+        SettingsAction::ClearColorPreview => {
+            *state.settings.color_preview.borrow_mut() = None;
+        }
+        SettingsAction::PreviewColor { channel, color } => {
+            // 521: live preview only; no settings write and no config reload.
+            *state.settings.color_preview.borrow_mut() = Some((channel, color));
+        }
+        SettingsAction::ShortcutDelete(id) => {
+            let label = id.trim_start_matches("shortcut.");
+            state.settings.shortcuts.remove(label);
+            persist_shortcuts(state, desktop);
         }
         SettingsAction::Step(delta) => step_focus(state, delta),
         SettingsAction::Adjust(delta) => {
@@ -1697,3 +1795,16 @@ fn _mode(mode: RemoteMode) -> String {
 /// the page rendered from.
 #[allow(dead_code)]
 fn _revision(_: &ConfigRevision) {}
+
+/// 370: write the custom shortcut map through the app's settings store.
+fn persist_shortcuts(state: &UiState, desktop: Option<&Arc<DesktopState>>) {
+    let Some(desktop) = desktop else { return };
+    match serde_json::to_string(&state.settings.shortcuts) {
+        Ok(json) => {
+            if let Err(error) = desktop.set_ui_shortcuts(&json) {
+                log::warn!("set_ui_shortcuts failed: {error}");
+            }
+        }
+        Err(error) => log::warn!("serialize shortcuts failed: {error}"),
+    }
+}

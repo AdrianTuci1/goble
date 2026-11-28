@@ -198,8 +198,9 @@ impl ConfigEditor {
     ) -> Result<EditOutcome<T>, ConfigError> {
         let path = self.path(file);
         if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)
-                .map_err(|error| ConfigError::Io(file, format!("create {}: {error}", parent.display())))?;
+            fs::create_dir_all(parent).map_err(|error| {
+                ConfigError::Io(file, format!("create {}: {error}", parent.display()))
+            })?;
         }
 
         let in_process = self.lock_handle(file);
@@ -221,11 +222,11 @@ impl ConfigEditor {
         }
 
         // 2. Parse. A file we cannot parse is never overwritten.
-        let mut doc: DocumentMut = raw
-            .parse::<DocumentMut>()
-            .map_err(|error: toml_edit::TomlError| {
-                ConfigError::RefusedUnparseable(error.to_string(), file)
-            })?;
+        let mut doc: DocumentMut =
+            raw.parse::<DocumentMut>()
+                .map_err(|error: toml_edit::TomlError| {
+                    ConfigError::RefusedUnparseable(error.to_string(), file)
+                })?;
         let before_problems = problems_for(file, &raw);
 
         // 3. The caller's change.
@@ -311,9 +312,9 @@ impl ConfigEditor {
         let text = config
             .to_toml()
             .map_err(|error| ConfigError::Io(ConfigFile::Config, error.to_string()))?;
-        let replacement: DocumentMut = text
-            .parse::<DocumentMut>()
-            .map_err(|error| ConfigError::RefusedUnparseable(error.to_string(), ConfigFile::Config))?;
+        let replacement: DocumentMut = text.parse::<DocumentMut>().map_err(|error| {
+            ConfigError::RefusedUnparseable(error.to_string(), ConfigFile::Config)
+        })?;
         self.edit(ConfigFile::Config, expected, |doc| {
             *doc = replacement;
             Ok(())
@@ -342,7 +343,11 @@ impl ConfigEditor {
         hosts: &HostsFile,
         expected: Option<&ConfigRevision>,
     ) -> Result<EditOutcome<()>, ConfigError> {
-        self.write_typed(ConfigFile::Hosts, expected, hosts::to_toml_with_header(hosts))
+        self.write_typed(
+            ConfigFile::Hosts,
+            expected,
+            hosts::to_toml_with_header(hosts),
+        )
     }
 
     /// The shared tail of a typed whole-file save: lock, re-read, conflict, parse
@@ -355,8 +360,9 @@ impl ConfigEditor {
     ) -> Result<EditOutcome<()>, ConfigError> {
         let path = self.path(file);
         if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)
-                .map_err(|error| ConfigError::Io(file, format!("create {}: {error}", parent.display())))?;
+            fs::create_dir_all(parent).map_err(|error| {
+                ConfigError::Io(file, format!("create {}: {error}", parent.display()))
+            })?;
         }
         let in_process = self.lock_handle(file);
         let _guard = in_process.lock();
@@ -380,11 +386,11 @@ impl ConfigEditor {
                 ConfigError::RefusedUnparseable(error.to_string(), file)
             })?;
 
-        let replacement: DocumentMut = text
-            .parse::<DocumentMut>()
-            .map_err(|error: toml_edit::TomlError| {
-                ConfigError::RefusedUnparseable(error.to_string(), file)
-            })?;
+        let replacement: DocumentMut =
+            text.parse::<DocumentMut>()
+                .map_err(|error: toml_edit::TomlError| {
+                    ConfigError::RefusedUnparseable(error.to_string(), file)
+                })?;
         let errors = schema::validate(file, &replacement);
         if !errors.is_empty() {
             return Err(ConfigError::Invalid(errors));
@@ -464,10 +470,7 @@ impl AdvisoryLock {
             .truncate(false)
             .open(&lock_path)
             .map_err(|error| {
-                ConfigError::Io(
-                    file,
-                    format!("open lock {}: {error}", lock_path.display()),
-                )
+                ConfigError::Io(file, format!("open lock {}: {error}", lock_path.display()))
             })?;
         #[cfg(unix)]
         {
@@ -475,10 +478,7 @@ impl AdvisoryLock {
             let _ = lock.set_permissions(fs::Permissions::from_mode(0o600));
         }
         FileExt::lock_exclusive(&lock).map_err(|error| {
-            ConfigError::Io(
-                file,
-                format!("lock {}: {error}", lock_path.display()),
-            )
+            ConfigError::Io(file, format!("lock {}: {error}", lock_path.display()))
         })?;
         Ok(Self { file: lock })
     }
@@ -556,10 +556,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "goble-config-editor-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("goble-config-editor-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -598,7 +596,10 @@ installer = \"internal\"
             .expect("edit");
 
         let after = fs::read_to_string(&path).unwrap();
-        assert!(after.starts_with("# goble configuration, hand written\n"), "{after}");
+        assert!(
+            after.starts_with("# goble configuration, hand written\n"),
+            "{after}"
+        );
         assert!(
             after.contains("# a comment that must survive every edit"),
             "{after}"
@@ -695,12 +696,18 @@ installer = \"internal\"
         let error = editor
             .apply_ops(
                 ConfigFile::Config,
-                &[ConfigOp::set(&["app", "vim_mode"], ConfigValue::Bool(false))],
+                &[ConfigOp::set(
+                    &["app", "vim_mode"],
+                    ConfigValue::Bool(false),
+                )],
                 None,
             )
             .expect_err("refused");
         assert!(
-            matches!(error, ConfigError::RefusedUnparseable(_, ConfigFile::Config)),
+            matches!(
+                error,
+                ConfigError::RefusedUnparseable(_, ConfigFile::Config)
+            ),
             "{error:?}"
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), broken);
@@ -717,7 +724,10 @@ installer = \"internal\"
         let error = editor
             .apply_ops(
                 ConfigFile::Config,
-                &[ConfigOp::set(&["app", "scroll_speed"], ConfigValue::Int(500))],
+                &[ConfigOp::set(
+                    &["app", "scroll_speed"],
+                    ConfigValue::Int(500),
+                )],
                 None,
             )
             .expect_err("out of range");
@@ -796,7 +806,10 @@ installer = \"internal\"
             .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
             .filter(|name| name != "config.toml" && name != "config.toml.lock")
             .collect();
-        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 
     #[test]
@@ -925,18 +938,12 @@ installer = \"internal\"
                 &[ConfigOp::set(
                     &["model", "kimi"],
                     ConfigValue::Table(vec![
-                        (
-                            "model".to_string(),
-                            ConfigValue::Str("kimi-k2".to_string()),
-                        ),
+                        ("model".to_string(), ConfigValue::Str("kimi-k2".to_string())),
                         (
                             "base_url".to_string(),
                             ConfigValue::Str("https://api.kimi.com/v1".to_string()),
                         ),
-                        (
-                            "max_completion_tokens".to_string(),
-                            ConfigValue::Int(8192),
-                        ),
+                        ("max_completion_tokens".to_string(), ConfigValue::Int(8192)),
                     ]),
                 )],
                 None,

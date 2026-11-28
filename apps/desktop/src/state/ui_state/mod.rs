@@ -72,6 +72,9 @@ pub const NEW_AGENT_TAB_LABEL: &str = "New Agent";
 /// machinery ([`UiState::pane_sessions`], `pane_runtime`, `pane_chat`) without
 /// appearing as a leaf, so the active pane's chat is never reused.
 pub const SIDE_AGENT_PANE_ID: u64 = u64::MAX - 1;
+/// The reserved pane id the right panel's Files tab reads a file under, so a
+/// file opens in the panel without touching the main pane tree.
+pub const SIDE_FILE_PANE_ID: u64 = u64::MAX - 2;
 
 /// The subject a fresh side-panel agent conversation starts under. It is a
 /// placeholder like [`NEW_CONVERSATION_TITLE`], replaced by the first prompt's
@@ -135,6 +138,16 @@ pub enum SideTabKind {
     /// The active pane's working-tree review: the changed-file rail and the
     /// diff, inside the panel like Terminal and Side Question (Q).
     Review,
+    /// A freshly opened, not-yet-chosen tab. It shows Overview's launcher and
+    /// is replaced by the first kind chosen from it.
+    NewTab,
+    /// 645: the Automations surface shown as the side panel's content.
+    Automations,
+    /// 616: the hover-opened file tab, backed by `side_file_tab`.
+    FileTab,
+    /// 535: the embedded browser tab (platform webview; honest placeholder
+    /// when the build has no native view).
+    Browser,
 }
 
 impl SideTabKind {
@@ -147,6 +160,10 @@ impl SideTabKind {
             Self::Terminal => "Terminal",
             Self::TaskOutput => "Task output",
             Self::Review => "Review",
+            Self::NewTab => "New tab",
+            Self::Browser => "Browser",
+            Self::FileTab => "File",
+            Self::Automations => "Automations",
         }
     }
 
@@ -159,6 +176,10 @@ impl SideTabKind {
             Self::Terminal => "terminal",
             Self::TaskOutput => "terminal-input",
             Self::Review => "file",
+            Self::NewTab => "plus",
+            Self::Browser => "globe",
+            Self::FileTab => "file",
+            Self::Automations => "clock",
         }
     }
 }
@@ -177,9 +198,40 @@ pub enum SideTabAction {
     /// Move by this many tabs, wrapping at both ends. A horizontal swipe sends
     /// `-1` (next) or `1` (previous).
     Cycle(i32),
+    /// Show or hide the inner Terminals/Background Tasks rail.
+    ToggleRail,
+    /// Move the tab at the first index to the second index.
+    Reorder(usize, usize),
 }
 
-#[derive(Clone)]
+/// 512: the side panel's per-conversation state. Tabs, the active tab, the
+/// open/closed flag and the width/maximized flags travel with the conversation
+/// rather than the window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SidePanelConversationState {
+    pub tabs: Vec<SideTabKind>,
+    pub active: usize,
+    pub open: bool,
+    pub split_ratio: f32,
+    pub maximized: bool,
+    pub browser_url: String,
+    pub review_rail_width: f32,
+}
+
+impl Default for SidePanelConversationState {
+    fn default() -> Self {
+        Self {
+            tabs: vec![SideTabKind::Overview],
+            active: 0,
+            open: false,
+            split_ratio: 0.5,
+            maximized: false,
+            browser_url: String::new(),
+            review_rail_width: 280.0,
+        }
+    }
+}
+
 pub struct UiState {
     pub current_tab: AppTab,
     pub conversations: Vec<ConversationEntry>,
@@ -202,6 +254,9 @@ pub struct UiState {
     pub queued_prompt: Option<String>,
     pub composer_draft: String,
     pub composer_focused: bool,
+    /// AF: the Side Question composer's own focus, independent of the active
+    /// pane's composer.
+    pub side_composer_focused: bool,
     /// Model choices shown in the composer's model dropdown.
     pub models: Vec<String>,
     /// The same models grouped the way the model tray lists them: one column
@@ -209,6 +264,10 @@ pub struct UiState {
     /// thinking levels its harness runs them at. Read from the desktop's
     /// catalog, so the tray shows what a turn can actually run.
     pub model_groups: Vec<goble_desktop_service::ModelGroup>,
+    /// T3-style integration snapshots (Antigravity and the CLI integrations):
+    /// detection, auth, models and config path, loaded once per settings/model
+    /// refresh rather than per frame.
+    pub integrations: Vec<goble_core::integration::IntegrationSnapshot>,
     /// The harness's own composer catalog: the commands and skills a draft can
     /// list, and the models it runs with their thinking levels. Read from the
     /// desktop, so the composer lists what the harness advertises instead of a
@@ -332,6 +391,8 @@ pub struct UiState {
     pub settings_llm_provider: String,
     pub settings_llm_model: String,
     pub settings_llm_api_key: String,
+    /// Human label for where that key came from (environment/config/store).
+    pub llm_credential_source: Option<String>,
     pub settings_llm_base_url: String,
     pub settings_llm_temperature: String,
     pub settings_workers: Vec<(String, String, String, bool)>,
@@ -703,6 +764,14 @@ pub struct UiState {
     pub ssh_target_error: Option<String>,
     /// Whether the Workspaces header's add menu is up.
     pub sidebar_add_menu_open: Rc<RefCell<bool>>,
+    /// Whether the Conversations header's add menu is up.
+    pub conversations_add_menu_open: Rc<RefCell<bool>>,
+    /// The sidebar Automations popover.
+    pub automations_open: bool,
+    /// Keyboard row in the Automations popover (`crons.len()` = New automation).
+    pub automations_highlight: usize,
+    /// Whether the composer's project pill menu is up.
+    pub project_menu_open: Rc<RefCell<bool>>,
     /// The chat transcript's changed-files card fold, shared across rebuilds.
     pub changed_files_open: Rc<RefCell<bool>>,
     /// The settings overlay (not a pane): open flag and the hamburger's state
@@ -721,10 +790,35 @@ pub struct UiState {
     /// surfaces. The app machine keeps it non-empty (see
     /// [`UiState::ensure_side_tabs`]).
     pub side_tabs: Vec<SideTabKind>,
+    /// 512: each conversation's own side-panel state, keyed by conversation id.
+    pub side_panel_by_chat: std::collections::HashMap<String, SidePanelConversationState>,
+    /// 535: the live browser URL for the active conversation.
+    pub browser_url: Rc<RefCell<String>>,
+    /// 534: the Review Files Changed rail width (per conversation).
+    pub review_rail_width: Rc<RefCell<f32>>,
+    /// 616: Review topbar menus (Uncommitted pill / Commit split).
+    pub review_uncommitted_open: Rc<RefCell<bool>>,
+    pub review_commit_open: Rc<RefCell<bool>>,
+    /// The inner Terminals/Background Tasks rail is open in Terminal and Task
+    /// Output. AF: the per-tab topbar toggles it.
+    pub side_rail_open: bool,
     /// The pane + working directory a Review side tab shows. The tab reads the
     /// pane's own diff controls and `pane_diffs[pane]`, so opening Review does
     /// not split a diff pane into the layout.
     pub side_review: Option<(u64, String)>,
+    /// The file the side panel's Files tab shows, independent of the active
+    /// pane's kind. A click anywhere that names a file sets this and activates
+    /// the Files tab.
+    pub side_file: Option<String>,
+    /// 616: the path the hover-opened file tab shows.
+    pub side_file_tab: Option<String>,
+    /// The most recently opened file anywhere (a chat link, the explorer, the
+    /// review list). The Files tab opens onto this file instead of its empty
+    /// state — no extra "open a file" press needed.
+    pub last_opened_file: Option<String>,
+    /// The Files tab's explorer view: true shows the workspace tree inside the
+    /// side panel, false shows the file the tab opened.
+    pub side_files_show_explorer: bool,
     /// The index in [`Self::side_tabs`] the panel is showing. Kept in range by
     /// the side-tab methods; a stale value falls back to Overview.
     pub active_side_tab: usize,

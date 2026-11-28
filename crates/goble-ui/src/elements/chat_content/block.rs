@@ -1,7 +1,7 @@
-use crate::color::ColorU;
-use crate::elements::terminal_block::TerminalData;
 use super::fragment::{ChatFragment, ChatFragmentKind, ListItem};
 use super::message::ChatAction;
+use crate::color::ColorU;
+use crate::elements::terminal_block::TerminalData;
 
 /// The inline style of a span inside a paragraph block.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,10 +29,18 @@ pub struct InlineSpan {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatBlock {
     Paragraph(Vec<InlineSpan>),
-    Heading { level: u8, text: String },
-    CodeBlock { lang: Option<String>, code: String },
+    Heading {
+        level: u8,
+        text: String,
+    },
+    CodeBlock {
+        lang: Option<String>,
+        code: String,
+    },
     /// ANSI-coloured output, drawn as prose without a code panel.
-    Ansi { text: String },
+    Ansi {
+        text: String,
+    },
     List {
         items: Vec<ListItem>,
         start: Option<u64>,
@@ -45,8 +53,14 @@ pub enum ChatBlock {
         rows: Vec<Vec<String>>,
     },
     Rule,
-    Image { alt: String, url: String },
-    Action { label: String, payload: ChatAction },
+    Image {
+        alt: String,
+        url: String,
+    },
+    Action {
+        label: String,
+        payload: ChatAction,
+    },
     Terminal(TerminalData),
     /// A model reasoning step's own row: recessed (muted), collapsed until
     /// expanded. `key` identifies the row's app-owned expand state.
@@ -58,7 +72,9 @@ pub enum ChatBlock {
     },
     /// A session event, not something either side said: the harness's own note
     /// about the conversation, drawn quiet and on its own line.
-    Notice { text: String },
+    Notice {
+        text: String,
+    },
 }
 
 impl InlineSpan {
@@ -152,9 +168,7 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
                     code: code.clone(),
                 });
             }
-            ChatFragmentKind::Ansi(text) => blocks.push(ChatBlock::Ansi {
-                text: text.clone(),
-            }),
+            ChatFragmentKind::Ansi(text) => blocks.push(ChatBlock::Ansi { text: text.clone() }),
             ChatFragmentKind::List { items, start } => {
                 blocks.push(ChatBlock::List {
                     items: items.clone(),
@@ -171,9 +185,7 @@ pub fn group_fragments_into_blocks(fragments: &[ChatFragment]) -> Vec<ChatBlock>
                 });
             }
             ChatFragmentKind::Rule => blocks.push(ChatBlock::Rule),
-            ChatFragmentKind::Notice(text) => blocks.push(ChatBlock::Notice {
-                text: text.clone(),
-            }),
+            ChatFragmentKind::Notice(text) => blocks.push(ChatBlock::Notice { text: text.clone() }),
             ChatFragmentKind::Image { alt, url } => {
                 blocks.push(ChatBlock::Image {
                     alt: alt.clone(),

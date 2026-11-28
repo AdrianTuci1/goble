@@ -11,6 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::state::{SideTabAction, SideTabKind};
 use goble_ui::color::ColorU;
 use goble_ui::elements::conversation_list_item::{
     sidebar_relative_time, SidebarActionRow, SidebarGroupRow, SidebarIconButton, SidebarList,
@@ -22,9 +23,9 @@ use goble_ui::elements::conversation_list_item::{
 };
 use goble_ui::elements::{
     AgentCardUi, AppContext, Axis, ConstrainedBox, Container, ConversationEntry,
-    CrossAxisAlignment, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow, MainAxisSize,
-    Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput, Spacer, Text,
-    Tooltip, TooltipPosition,
+    CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Fill, Flex, HoverRow,
+    MainAxisSize, Padding, PopupMenu, PopupMenuItem, PopupMenuPosition, Scrollable, SearchInput,
+    Spacer, Text, Tooltip, TooltipPosition,
 };
 use goble_ui::geometry::vec2f;
 use goble_ui::theme::{ColorToken, SpacingToken};
@@ -90,7 +91,9 @@ pub fn build_sidebar(
 
     let view: Box<dyn Element> = match state.sidebar_view {
         SidebarView::Agents => agents_view(app, state, actions, selected_medium),
-        SidebarView::Explorer => build_explorer(app, state, actions),
+        // Z: the left sidebar no longer lists files; an old Explorer state
+        // falls back to the conversations view.
+        SidebarView::Explorer => agents_view(app, state, actions, selected_medium),
         SidebarView::Search => build_search(app, state, actions),
     };
 
@@ -268,11 +271,6 @@ fn agents_view(
 
     // The spec's 8pt inset is the gap ABOVE the header; the first group row sits
     // flush under it (DSH's toolbar has no bottom margin).
-    let header = Padding::new(
-        workspaces_header(app, state, actions),
-        EdgeInsets::new(0.0, SIDEBAR_SECTION_TOP_INSET, 0.0, 0.0),
-    )
-    .finish();
 
     // The list takes the rest and scrolls inside it (its offset lives in app
     // state so it survives the per-frame rebuild).
@@ -282,14 +280,23 @@ fn agents_view(
         .with_state(state.sidebar_scroll.clone())
         .finish();
 
-    let automations = sidebar_action(
-        app,
-        state,
-        actions,
-        "sparkle",
-        "Automations",
-        "sidebar.automations",
-    );
+    let on_automations = actions.on_side_tab.clone();
+    let automations_active = state
+        .side_tabs
+        .get(state.active_side_tab)
+        .is_some_and(|kind| *kind == SideTabKind::Automations);
+    let automations = SidebarActionRow::new("clock", "Automations")
+        .with_label_color(if automations_active {
+            ColorToken::Accent
+        } else {
+            ColorToken::Text
+        })
+        .with_hovered(is_hovered(state, "sidebar.automations"))
+        .with_hover_cell(state.sidebar_hover_row.clone(), "sidebar.automations")
+        .with_on_click(move || {
+            (on_automations.borrow_mut())(SideTabAction::Add(SideTabKind::Automations))
+        })
+        .finish();
     let customizations = sidebar_action(
         app,
         state,
@@ -300,7 +307,8 @@ fn agents_view(
     );
     let on_settings = actions.on_settings.clone();
     let settings = SidebarActionRow::new("settings", "Settings")
-        .with_label_color(ColorToken::Muted)
+        .with_label_color(ColorToken::Text)
+        .with_hovered(is_hovered(state, "sidebar.settings"))
         .with_hover_cell(state.sidebar_hover_row.clone(), "sidebar.settings")
         .with_on_click(move || (on_settings.borrow_mut())())
         .finish();
@@ -311,7 +319,6 @@ fn agents_view(
     column = column.with_child(new_conversation);
     column = column.with_child(automations);
     column = column.with_child(customizations);
-    column = column.with_child(header);
     column = column.with_child(Expanded::new(list).finish());
     column = column.with_child(settings);
     column.finish()
@@ -340,6 +347,91 @@ fn new_conversation_row(state: &UiSnapshot, actions: &UiActions) -> Box<dyn Elem
 
 /// The section header: "Workspaces" and its two controls (settings and new
 /// conversation). 36pt tall, 12pt inset, no magnifier.
+/// A section heading without controls: "Conversations" sits at the same level
+/// as the Projects header, in the same muted type.
+fn plain_section_header(app: &AppContext, label: &str) -> Box<dyn Element> {
+    let vertical = (SIDEBAR_HEADER_HEIGHT - SIDEBAR_HEADER_BUTTON) / 2.0;
+    let title = Text::new(label.to_string())
+        .with_font_size(SIDEBAR_TITLE_SIZE)
+        .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
+        .with_theme_color(ColorToken::Muted, app)
+        .finish();
+    Container::new(title)
+        .with_padding(EdgeInsets::new(
+            SIDEBAR_HEADER_PADDING_START,
+            vertical,
+            0.0,
+            vertical,
+        ))
+        .finish()
+}
+
+/// 339: the Conversations heading carries the same trailing "+" box as the
+/// Projects header. Its menu is the shared project picker, with No Project
+/// checked because a loose conversation starts outside a project.
+fn conversations_header(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+) -> Box<dyn Element> {
+    let title = Text::new("Conversations")
+        .with_font_size(SIDEBAR_TITLE_SIZE)
+        .with_line_height(SIDEBAR_TITLE_LINE / SIDEBAR_TITLE_SIZE)
+        .with_theme_color(ColorToken::Muted, app)
+        .finish();
+    let add = SidebarIconButton::new(SIDEBAR_ICON_NEW_CHAT)
+        .with_button_size(SIDEBAR_HEADER_BUTTON)
+        .with_icon_size(SIDEBAR_HEADER_ICON)
+        .with_radius(12.0)
+        .with_hovered(is_hovered(state, "header.new.conversations"))
+        .with_hover_cell(state.sidebar_hover_row.clone(), "header.new.conversations")
+        .finish();
+    let menu_actions = actions.clone();
+    let menu = PopupMenu::new(
+        Tooltip::new(add, "New conversation")
+            .with_position(TooltipPosition::Below)
+            .finish(),
+        super::project_menu::items(
+            actions,
+            super::project_menu::ProjectMenuContext::Conversations,
+            true,
+        ),
+    )
+    .with_open(state.conversations_add_menu_open.clone())
+    .with_corner_radius(12.0)
+    .with_max_width(220.0)
+    .with_row_height(34.0)
+    .with_icon_size(14.0)
+    .with_position(PopupMenuPosition::BelowEnd)
+    .with_menu_id("sidebar.add-conversation")
+    .with_on_select(move |index| {
+        super::project_menu::on_select(
+            &menu_actions,
+            super::project_menu::ProjectMenuContext::Conversations,
+            index,
+        )
+    })
+    .finish();
+    let menu = DeferredOverlay::new(menu, state.conversations_add_menu_open.clone()).finish();
+    let vertical = (SIDEBAR_HEADER_HEIGHT - SIDEBAR_HEADER_BUTTON) / 2.0;
+    let row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(app.theme.spacing_px(SpacingToken::Xs))
+        .with_child(title)
+        .with_child(Spacer::new().finish())
+        .with_child(menu)
+        .finish();
+    Container::new(row)
+        .with_padding(EdgeInsets::new(
+            SIDEBAR_HEADER_PADDING_START,
+            vertical,
+            0.0,
+            vertical,
+        ))
+        .finish()
+}
+
 fn workspaces_header(
     app: &AppContext,
     state: &UiSnapshot,
@@ -452,8 +544,6 @@ fn workspaces_header(
     // `workspace.add`): the click opens the platform's directory picker, and the
     // picked folder becomes a row under this header. The separate "New
     // conversation" row above the header is what starts a conversation.
-    let on_add_workspace = actions.on_add_workspace.clone();
-    let on_open_ssh_target = actions.on_open_ssh_target.clone();
     let add = SidebarIconButton::new(SIDEBAR_ICON_PROJECT_ADD)
         .with_button_size(SIDEBAR_HEADER_BUTTON)
         .with_icon_size(SIDEBAR_HEADER_ICON)
@@ -464,14 +554,16 @@ fn workspaces_header(
     // DSH/T3's add-workspace menu: a small anchored casing with the local
     // directory flow and the SSH host flow. The popup owns the press on the
     // trigger, so the button itself takes no click.
+    let menu_actions = actions.clone();
     let add_menu = PopupMenu::new(
         Tooltip::new(add, "Add workspace")
             .with_position(TooltipPosition::Below)
             .finish(),
-        vec![
-            PopupMenuItem::new("New Project").with_icon("folder"),
-            PopupMenuItem::new("SSH Host…").with_icon("terminal-input"),
-        ],
+        super::project_menu::items(
+            actions,
+            super::project_menu::ProjectMenuContext::Projects,
+            false,
+        ),
     )
     .with_open(state.sidebar_add_menu_open.clone())
     .with_corner_radius(12.0)
@@ -480,10 +572,12 @@ fn workspaces_header(
     .with_icon_size(14.0)
     .with_position(PopupMenuPosition::BelowEnd)
     .with_menu_id("sidebar.add-workspace")
-    .with_on_select(move |index| match index {
-        0 => (on_add_workspace.borrow_mut())(),
-        1 => (on_open_ssh_target.borrow_mut())(),
-        _ => {}
+    .with_on_select(move |index| {
+        super::project_menu::on_select(
+            &menu_actions,
+            super::project_menu::ProjectMenuContext::Projects,
+            index,
+        )
     })
     .finish();
     let add_menu = DeferredOverlay::new(add_menu, state.sidebar_add_menu_open.clone()).finish();
@@ -800,7 +894,9 @@ fn group_block(
         .with_hovered(is_hovered(state, &key))
         .with_hover_cell(state.sidebar_hover_row.clone(), key)
         .with_on_click(move || (on_toggle.borrow_mut())(toggle_key.clone()));
-    if let Some(icon) = fixed_glyph {
+    if label == "Conversations" {
+        header = header.without_leading_icon();
+    } else if let Some(icon) = fixed_glyph {
         header = header.with_leading_icon(icon);
     } else if workspace.is_some_and(WorkspaceSection::is_remote) {
         // The remote target is a badge, not a second line: the row's leading
@@ -833,6 +929,7 @@ fn group_block(
                 continue;
             }
             block = block.with_child(session_row(app, state, actions, entry, section, &group_ids));
+            block = block.with_child(Divider::horizontal().with_thickness(1.0).finish());
         }
     }
     block.finish()
@@ -989,15 +1086,9 @@ fn workspaces_list(
             .cmp(&left.updated_at)
             .then_with(|| left.name.cmp(&right.name))
     });
-    let shown: Vec<&ConversationEntry> = if state.conversations_expanded {
-        visible.clone()
-    } else {
-        by_recency
-            .iter()
-            .take(COLLAPSED_CONVERSATIONS)
-            .copied()
-            .collect()
-    };
+    // Every conversation is listed: the sidebar no longer collapses the list
+    // behind a "View all / Show less" row.
+    let shown: Vec<&ConversationEntry> = visible.clone();
     let shown_ids: std::collections::HashSet<&str> =
         shown.iter().map(|entry| entry.id.as_str()).collect();
 
@@ -1076,7 +1167,21 @@ fn workspaces_list(
             target: workspace.target.clone(),
         });
     }
-    sections.sort_by(|left, right| left.folder.cmp(&right.folder));
+    // A conversation that has not run in a project is its own list, under the
+    // "Conversations" heading; it is not a workspace block.
+    sections.retain(|workspace| workspace.folder != "Conversations");
+    // "The rest reorders by most recent": project groups follow the newest
+    // conversation they contain, read off the same recency order the flat list
+    // uses, not the alphabet. A stored workspace with no sessions goes last.
+    let latest_stamp = |folder: &str| -> String {
+        visible
+            .iter()
+            .filter(|entry| entry.folder == folder)
+            .map(|entry| entry.timestamp.clone())
+            .max()
+            .unwrap_or_default()
+    };
+    sections.sort_by(|left, right| latest_stamp(&right.folder).cmp(&latest_stamp(&left.folder)));
     if flat_list {
         // One flat run of sessions instead of the project blocks; the manual
         // order keys off the flat section, and recency otherwise.
@@ -1103,9 +1208,21 @@ fn workspaces_list(
             }
             flat_block =
                 flat_block.with_child(session_row(app, state, actions, entry, "flat", &group_ids));
+            flat_block = flat_block.with_child(Divider::horizontal().with_thickness(1.0).finish());
         }
         blocks.push(flat_block.finish());
     }
+    // The Projects section comes first, with its view-options and add controls.
+    if !flat_list {
+        blocks.push(
+            Padding::new(
+                workspaces_header(app, state, actions),
+                EdgeInsets::new(0.0, SIDEBAR_SECTION_TOP_INSET, 0.0, 0.0),
+            )
+            .finish(),
+        );
+    }
+
     for workspace in sections.iter().filter(|_| !flat_list) {
         let entries: Vec<&ConversationEntry> = visible
             .iter()
@@ -1144,8 +1261,51 @@ fn workspaces_list(
             &shown_ids,
             None,
             contains_selected,
-            Some(workspace),
+            // The fallback "Conversations" group is a plain heading: no
+            // workspace icon, no three-dot menu, the label starts where the
+            // leading icon used to be.
+            (workspace.folder != "Conversations").then_some(workspace),
         ));
+    }
+
+    // "Conversations" always sits UNDER the Projects groups; it disappears
+    // entirely when there is nothing loose to list.
+    if !flat_list {
+        let mut loose: Vec<&ConversationEntry> = visible
+            .iter()
+            .filter(|entry| entry.folder == "Conversations")
+            .copied()
+            .collect();
+        loose.sort_by(|a, b| {
+            let a_key = a.updated_at.as_deref().unwrap_or(&a.timestamp);
+            let b_key = b.updated_at.as_deref().unwrap_or(&b.timestamp);
+            b_key.cmp(a_key)
+        });
+        // 339: no loose row means no Conversations heading at all.
+        let shown: Vec<&ConversationEntry> = loose
+            .iter()
+            .copied()
+            .filter(|entry| shown_ids.contains(entry.id.as_str()))
+            .collect();
+        if !shown.is_empty() {
+            let mut block = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(GOBLE_ROW_GAP)
+                .with_child(conversations_header(app, state, actions));
+            let group_ids: Vec<String> = shown.iter().map(|entry| entry.id.clone()).collect();
+            for entry in shown {
+                block = block.with_child(session_row(
+                    app,
+                    state,
+                    actions,
+                    entry,
+                    "conversations",
+                    &group_ids,
+                ));
+                block = block.with_child(Divider::horizontal().with_thickness(1.0).finish());
+            }
+            blocks.push(block.finish());
+        }
     }
 
     // The list is empty for one of two reasons, and they read differently:
@@ -1188,7 +1348,6 @@ fn workspaces_list(
             .finish(),
         );
     } else if shown.len() < visible.len() || state.conversations_expanded {
-        column = column.with_child(overflow_row(app, state, actions, visible.len()));
     }
 
     Padding::new(
@@ -1196,45 +1355,6 @@ fn workspaces_list(
         EdgeInsets::new(0.0, 0.0, 0.0, SIDEBAR_LIST_BOTTOM_PAD),
     )
     .finish()
-}
-
-/// The digest's "View all (n)" / "Show less" control, in the spec's 28pt
-/// overflow row: left-aligned at the group labels, no border.
-fn overflow_row(
-    app: &AppContext,
-    state: &UiSnapshot,
-    actions: &UiActions,
-    total: usize,
-) -> Box<dyn Element> {
-    let on_toggle = actions.on_toggle_conversations_expanded.clone();
-    let label = if state.conversations_expanded {
-        "Show less".to_string()
-    } else {
-        format!("View all ({total})")
-    };
-    let vertical =
-        (goble_ui::elements::conversation_list_item::SIDEBAR_OVERFLOW_HEIGHT - 16.0) / 2.0;
-    let row = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_child(
-            Text::new(label)
-                .with_font_size(12.0)
-                .with_line_height(16.0 / 12.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
-        .finish();
-    HoverRow::new(row)
-        .with_quiet_hover()
-        .with_padding(EdgeInsets::new(
-            goble_ui::elements::conversation_list_item::SIDEBAR_OVERFLOW_INDENT,
-            vertical,
-            0.0,
-            vertical,
-        ))
-        .with_on_click(move || (on_toggle.borrow_mut())())
-        .finish()
 }
 
 #[cfg(test)]
@@ -1799,7 +1919,7 @@ mod sidebar_surface_tests {
     /// directory's own children, the search view draws what the query found, and
     /// neither is the conversation list.
     #[test]
-    fn the_toolbelt_switches_the_sidebar_between_the_tree_and_the_search() {
+    fn the_sidebar_has_no_file_tree_and_keeps_search() {
         let dir = tempfile::tempdir().expect("temp thread-store dir");
         let desktop = Arc::new(DesktopState::new(
             Store::open_in_memory().expect("in-memory store"),
@@ -1820,12 +1940,12 @@ mod sidebar_surface_tests {
         let commands = render_element(&mut root, vec2f(1024.0, 768.0), &app);
         let drawn = drawn_text(&commands);
         assert!(
-            drawn.iter().any(|run| run == "notes.md"),
-            "the explorer draws the directory's children: {drawn:?}"
+            !drawn.iter().any(|run| run == "notes.md"),
+            "the sidebar draws no file tree: {drawn:?}"
         );
         assert!(
-            !drawn.iter().any(|run| run == "New conversation"),
-            "the explorer is not the conversation list: {drawn:?}"
+            drawn.iter().any(|run| run == "New conversation"),
+            "an old Explorer state falls back to the conversations list: {drawn:?}"
         );
 
         // The search view draws the query it ran and the rows it found.
@@ -2228,27 +2348,45 @@ mod sidebar_action_tests {
         assert!(!state.borrow().starred_conversations.contains("c1"));
     }
 
-    /// A file row opens the file in a pane of its own: the tree hands the path
-    /// to the pane tree, and the input the user was typing in is left alone.
+    /// Y/Z: a file row/click opens the side panel's Files tab; it never
+    /// retargets or splits a main pane, and the sidebar no longer owns a tree.
     #[test]
-    fn a_file_click_opens_the_file_in_a_pane_not_in_the_input() {
+    fn a_file_click_opens_the_side_files_tab_not_a_pane() {
         let (state, actions, dir) = harness();
         let spaced = dir.path().join("my notes.md");
         std::fs::write(&spaced, "hi").unwrap();
         let path = spaced.to_string_lossy().to_string();
+        let pane_id = state.borrow().active_pane_id;
 
         (actions.on_explorer_file_click.borrow_mut())(path.clone());
         let s = state.borrow();
-        let pane_id = s.active_pane_id;
-        assert_eq!(
+        assert_ne!(
             s.spaces[s.active_space].leaf_kind(pane_id),
-            Some(&crate::ui::PaneKind::File { path }),
-            "the clicked file opens in a pane of its own"
+            Some(&crate::ui::PaneKind::File { path: path.clone() }),
+            "the main pane is not retargeted to the file"
         );
+        assert_eq!(s.side_file.as_deref(), Some(path.as_str()));
+        assert_eq!(s.active_side_tab_kind(), crate::state::SideTabKind::Files);
+        assert!(s.right_sidebar_open, "the Files tab is revealed");
         assert_eq!(
             s.composer_draft, "",
             "the path is not typed into the pane's input"
         );
+    }
+
+    /// Y: the "Open File" launcher shows the Files side tab without touching a
+    /// pane.
+    #[test]
+    fn open_file_launcher_shows_the_side_files_tab() {
+        let (state, actions, _dir) = harness();
+        let pane = state.borrow().active_pane_id;
+        let max = state.borrow().spaces[0].root.max_id();
+        (actions.on_open_files_tab.borrow_mut())();
+        let s = state.borrow();
+        assert_eq!(s.active_side_tab_kind(), crate::state::SideTabKind::Files);
+        assert!(s.right_sidebar_open);
+        assert_eq!(s.active_pane_id, pane);
+        assert_eq!(s.spaces[0].root.max_id(), max);
     }
 
     /// The query runs the search off the UI thread, and clearing it abandons the
@@ -2444,25 +2582,21 @@ mod workspace_row_tests {
             .add_ssh_workspace("controlpanel", "controlpanel", Some(&desktop));
         *state.borrow().sidebar_add_menu_open.borrow_mut() = true;
         let commands = render(&mut root, &app);
+        let remote = sidebar_text(&commands, "Remote");
+        let ssh = sidebar_text(&commands, "SSH Host");
         let project = sidebar_text(&commands, "New Project");
-        let ssh = sidebar_text(&commands, "SSH Host…");
         assert!(
-            project.y < ssh.y,
-            "New Project is the first row, SSH Host… the second: {project:?} / {ssh:?}"
+            remote.y < ssh.y && ssh.y < project.y,
+            "the shared picker groups Remote, SSH Host, then New Project: {remote:?} / {ssh:?} / {project:?}"
         );
         let _badge = sidebar_icon(&commands, "environment-cloud");
 
-        // The SSH row opens the overlay on its config and focused field.
-        click(&mut root, &app, ssh + vec2f(8.0, 8.0));
-        let open = state.borrow();
-        assert!(open.ssh_target_open, "the SSH Host… row opens the overlay");
-        assert!(open.ssh_target_focused, "the target field starts focused");
-        assert!(
-            open.ssh_config_path.ends_with("/.ssh/config"),
-            "the overlay starts on the default config: {:?}",
-            open.ssh_config_path
-        );
+        // The SSH row is a submenu parent; its flyout's child owns the
+        // existing SSH target flow. The shared picker rows are what this test
+        // covers; the flow itself is exercised by the SSH overlay tests.
     }
+
+    /// The Workspaces header's "+" adds a workspace    }
 
     /// The Workspaces header's "+" adds a workspace: the picked directory is
     /// persisted (`ui.workspaces`), lists as a row, survives a restart, and is
@@ -2487,7 +2621,7 @@ mod workspace_row_tests {
         );
         let menu = render(&mut root, &app);
         sidebar_text(&menu, "New Project");
-        sidebar_text(&menu, "SSH Host…");
+        sidebar_text(&menu, "SSH Host");
         assert_eq!(
             state.borrow().spaces.len(),
             before_spaces,

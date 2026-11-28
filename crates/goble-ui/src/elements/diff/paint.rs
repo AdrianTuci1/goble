@@ -755,10 +755,8 @@ impl Element for Diff {
                             rectf(origin.x + RAIL_WIDTH, y, gutter_w, metrics.row_h),
                             gutter,
                         );
-                        renderer.fill_rect(
-                            rectf(origin.x + RAIL_WIDTH, y, 3.0, metrics.row_h),
-                            color,
-                        );
+                        renderer
+                            .fill_rect(rectf(origin.x + RAIL_WIDTH, y, 3.0, metrics.row_h), color);
                     }
                     if self.show_line_numbers {
                         if let Some(number) = line.old_line {
@@ -767,7 +765,11 @@ impl Element for Diff {
                                 origin.x + metrics.old_number_x + metrics.number_w,
                                 y,
                                 number,
-                                if line.kind == DiffLineKind::Removed { color } else { muted },
+                                if line.kind == DiffLineKind::Removed {
+                                    color
+                                } else {
+                                    muted
+                                },
                             );
                         }
                         if let Some(number) = line.new_line {
@@ -776,7 +778,11 @@ impl Element for Diff {
                                 origin.x + metrics.new_number_x + metrics.number_w,
                                 y,
                                 number,
-                                if line.kind == DiffLineKind::Added { color } else { muted },
+                                if line.kind == DiffLineKind::Added {
+                                    color
+                                } else {
+                                    muted
+                                },
                             );
                         }
                     }

@@ -15,10 +15,6 @@ mod context_tests;
 #[cfg(test)]
 mod memory_tests;
 
-pub use compaction::{
-    merge_compaction, CompactionResult, CompactedDecision, COMPACTION_PROMPT,
-};
+pub use compaction::{merge_compaction, CompactedDecision, CompactionResult, COMPACTION_PROMPT};
 pub use context::ContextBuilder;
-pub use memory::{
-    AgentMemory, Decision, Goal, Milestone, SessionSummary, AGENT_MEMORY_VERSION,
-};
+pub use memory::{AgentMemory, Decision, Goal, Milestone, SessionSummary, AGENT_MEMORY_VERSION};

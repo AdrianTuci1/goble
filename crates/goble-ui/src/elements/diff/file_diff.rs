@@ -27,7 +27,9 @@ use crate::elements::{
     AppContext, Element, LayoutContext, PaintContext, Point, ScrollState, SizeConstraint, TextSpan,
 };
 use crate::geometry::{rectf, vec2f, Vector2F};
-use crate::platform::text_atlas::{advance_width_exact, measure_text_family, wrapped_lines, FontWeight};
+use crate::platform::text_atlas::{
+    advance_width_exact, measure_text_family, wrapped_lines, FontWeight,
+};
 use crate::syntax::HighlightedLine;
 use crate::theme::{ColorToken, FontFamily};
 
@@ -71,6 +73,7 @@ pub struct FileDiffView {
     layout: DiffLayout,
     wrap: bool,
     show_line_numbers: bool,
+    hunk_headers: bool,
     fill_width: bool,
     rows: Rc<Vec<DiffRow>>,
     split_rows: Rc<Vec<SplitDiffRow>>,
@@ -142,6 +145,7 @@ impl FileDiffView {
             layout: DiffLayout::Unified,
             wrap: false,
             show_line_numbers: true,
+            hunk_headers: true,
             fill_width: true,
             one_sided: rows_are_one_sided(&rows),
             rows,
@@ -199,6 +203,13 @@ impl FileDiffView {
     /// them at the element's edge.
     pub fn with_wrap(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
+        self
+    }
+
+    /// Y: the review's inline diff starts directly with the changed lines; it
+    /// has no second header and no `@@` band.
+    pub fn with_hunk_headers(mut self, show: bool) -> Self {
+        self.hunk_headers = show;
         self
     }
 
@@ -276,6 +287,7 @@ impl FileDiffView {
                 for row in self.rows.iter() {
                     match row {
                         DiffRow::Gap { .. } => {}
+                        DiffRow::HunkHeader { .. } if !self.hunk_headers => {}
                         DiffRow::HunkHeader { .. } => {
                             if !first_hunk {
                                 top += DiffSpec::DIFF_HUNK_GAP;
@@ -299,6 +311,7 @@ impl FileDiffView {
                 for row in self.split_rows.iter() {
                     match row {
                         SplitDiffRow::Gap { .. } => {}
+                        SplitDiffRow::HunkHeader { .. } if !self.hunk_headers => {}
                         SplitDiffRow::HunkHeader { .. } => {
                             if !first_hunk {
                                 top += DiffSpec::DIFF_HUNK_GAP;
@@ -544,7 +557,9 @@ impl FileDiffView {
             }
             let line_y = y + index as f32 * line_height;
             match runs {
-                Some(runs) => draw_sliced_runs(renderer, x, line_y, runs, range.start, range.end, text),
+                Some(runs) => {
+                    draw_sliced_runs(renderer, x, line_y, runs, range.start, range.end, text)
+                }
                 None => {
                     renderer.draw_text_with_font(
                         vec2f(x, line_y),
@@ -780,7 +795,9 @@ impl Element for FileDiffView {
             DiffLayout::Unified => {
                 let wrap_width = self.unified_wrap_width(size.x);
                 for (index, row) in self.rows.iter().enumerate() {
-                    if matches!(row, DiffRow::Gap { .. }) {
+                    if matches!(row, DiffRow::Gap { .. })
+                        || (!self.hunk_headers && matches!(row, DiffRow::HunkHeader { .. }))
+                    {
                         continue;
                     }
                     if box_index >= self.row_boxes.len() {
@@ -824,7 +841,9 @@ impl Element for FileDiffView {
                 let divider = DiffSpec::DIFF_SPLIT_DIVIDER;
                 let cell_width = (size.x - divider) * 0.5;
                 for row in self.split_rows.iter() {
-                    if matches!(row, SplitDiffRow::Gap { .. }) {
+                    if matches!(row, SplitDiffRow::Gap { .. })
+                        || (!self.hunk_headers && matches!(row, SplitDiffRow::HunkHeader { .. }))
+                    {
                         continue;
                     }
                     if box_index >= self.row_boxes.len() {
@@ -915,7 +934,9 @@ fn draw_runs(
     fallback: ColorU,
 ) {
     match runs {
-        Some(runs) if !runs.is_empty() => draw_sliced_runs(renderer, x, y, runs, 0, text.len(), text),
+        Some(runs) if !runs.is_empty() => {
+            draw_sliced_runs(renderer, x, y, runs, 0, text.len(), text)
+        }
         _ => {
             renderer.draw_text_with_font(
                 vec2f(x, y),

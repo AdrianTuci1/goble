@@ -367,11 +367,7 @@ impl TerminalGrid {
                 // A range spanning whole rows starts at the left edge of the
                 // rows after the first and ends at the right edge before the
                 // last.
-                let from = if row == start_row {
-                    start_column
-                } else {
-                    0
-                };
+                let from = if row == start_row { start_column } else { 0 };
                 let to = if row == end_row {
                     end_column.min(columns - 1)
                 } else {
@@ -382,12 +378,7 @@ impl TerminalGrid {
                 }
                 let (x, y) = self.origin_of(origin, row, from);
                 renderer.fill_rect(
-                    rectf(
-                        x,
-                        y,
-                        (to - from + 1) as f32 * column_pitch,
-                        row_pitch,
-                    ),
+                    rectf(x, y, (to - from + 1) as f32 * column_pitch, row_pitch),
                     self.color(color),
                 );
             }
@@ -507,7 +498,6 @@ impl TerminalGrid {
             for (column, cell) in row.cells.iter().enumerate() {
                 let (x, top) = self.origin_of(origin, row_index, column);
                 let (foreground, _) = self.cell_colors(cell);
-
 
                 if cell.attrs.underline != Underline::None {
                     let color = cell
@@ -982,12 +972,8 @@ mod tests {
         );
         assert!(
             rects.iter().any(|(_, _, width, _, color)| {
-                *color == ColorU::new(
-                    palette.cursor.0,
-                    palette.cursor.1,
-                    palette.cursor.2,
-                    255,
-                ) && (*width - column * 5.0).abs() < 0.01
+                *color == ColorU::new(palette.cursor.0, palette.cursor.1, palette.cursor.2, 255)
+                    && (*width - column * 5.0).abs() < 0.01
             }),
             "the active match is five cells in the accent: {rects:?}"
         );

@@ -172,7 +172,11 @@ impl AgentMemory {
         }
     }
 
-    pub fn record_decision(&mut self, summary: impl Into<String>, rationale: impl Into<String>) -> String {
+    pub fn record_decision(
+        &mut self,
+        summary: impl Into<String>,
+        rationale: impl Into<String>,
+    ) -> String {
         let decision = Decision::new(summary, rationale);
         let id = decision.id.clone();
         self.decisions.push(decision);

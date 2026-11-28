@@ -46,6 +46,9 @@ pub struct SplitNode {
     min_first_px: f32,
     min_second_px: f32,
     dragging: bool,
+    /// Extra main-axis space between the children, drawn as a gutter band.
+    gap: f32,
+    on_close: Option<Rc<RefCell<dyn FnMut()>>>,
     on_drag_start: Option<Rc<RefCell<dyn FnMut()>>>,
     on_drag_move: Option<Rc<RefCell<dyn FnMut(f32)>>>,
     on_drag_end: Option<Rc<RefCell<dyn FnMut()>>>,
@@ -63,6 +66,8 @@ impl SplitNode {
             min_first_px: MIN_PANE_PX,
             min_second_px: MIN_PANE_PX,
             dragging: false,
+            gap: 0.0,
+            on_close: None,
             on_drag_start: None,
             on_drag_move: None,
             on_drag_end: None,
@@ -86,6 +91,19 @@ impl SplitNode {
     pub fn with_min_panes(mut self, min_first_px: f32, min_second_px: f32) -> Self {
         self.min_first_px = min_first_px.max(1.0);
         self.min_second_px = min_second_px.max(1.0);
+        self
+    }
+
+    /// A vertical split's gutter band, in pixels. It is taken out of the two
+    /// children's share along the main axis and painted between them.
+    pub fn with_gap(mut self, gap: f32) -> Self {
+        self.gap = gap.max(0.0);
+        self
+    }
+
+    /// The close control at the trailing end of a vertical split's band.
+    pub fn with_on_close<F: FnMut() + 'static>(mut self, callback: F) -> Self {
+        self.on_close = Some(Rc::new(RefCell::new(callback)));
         self
     }
 
@@ -113,7 +131,8 @@ impl SplitNode {
 
     /// Main-axis position (within this element) where the divider sits.
     fn boundary(&self) -> f32 {
-        self.size.map(|s| s.along(self.axis)).unwrap_or(0.0) * self.ratio
+        let main = self.size.map(|s| s.along(self.axis)).unwrap_or(0.0);
+        self.gap / 2.0 + (main - self.gap).max(0.0) * self.ratio
     }
 
     /// Build a [`SizeConstraint`] giving `main` along the axis and `cross` across.
@@ -143,9 +162,18 @@ impl SplitNode {
             ),
             Axis::Vertical => rectf(
                 origin.x(),
-                origin.y() + boundary - DIVIDER_HALF,
+                origin.y() + boundary
+                    - (if self.gap > 0.0 {
+                        self.gap / 2.0
+                    } else {
+                        DIVIDER_HALF
+                    }),
                 cross,
-                DIVIDER_HALF * 2.0,
+                if self.gap > 0.0 {
+                    self.gap
+                } else {
+                    DIVIDER_HALF * 2.0
+                },
             ),
         })
     }
@@ -185,8 +213,14 @@ impl SplitNode {
         let pointer = match self.axis {
             Axis::Horizontal => position.x - origin.x(),
             Axis::Vertical => position.y - origin.y(),
-        };
-        Self::clamp_ratio_with(pointer / main, main, self.min_first_px, self.min_second_px)
+        } - self.gap / 2.0;
+        let available = (main - self.gap).max(1.0);
+        Self::clamp_ratio_with(
+            pointer / available,
+            available,
+            self.min_first_px,
+            self.min_second_px,
+        )
     }
 
     /// Ask the platform for the cursor this frame should show.
@@ -228,14 +262,11 @@ impl Element for SplitNode {
         // (the ratio floor alone can leave a pane only a few pixels wide in a
         // small split). Storing the clamped value keeps the divider painted
         // where the children actually begin.
-        self.ratio = Self::clamp_ratio_with(
-            self.ratio,
-            main,
-            self.min_first_px,
-            self.min_second_px,
-        );
-        let first_main = main * self.ratio;
-        let second_main = main - first_main;
+        let available = (main - self.gap).max(0.0);
+        self.ratio =
+            Self::clamp_ratio_with(self.ratio, available, self.min_first_px, self.min_second_px);
+        let first_main = available * self.ratio;
+        let second_main = available - first_main;
 
         let _ = self
             .first
@@ -254,9 +285,37 @@ impl Element for SplitNode {
         let boundary = self.boundary();
         self.first
             .paint(origin + self.axis_offset(0.0, 0.0), ctx, app);
-        self.second
-            .paint(origin + self.axis_offset(boundary, 0.0), ctx, app);
+        self.second.paint(
+            origin + self.axis_offset(boundary + self.gap / 2.0, 0.0),
+            ctx,
+            app,
+        );
 
+        if self.gap > 0.0 && self.axis == Axis::Vertical {
+            let cross = self.size.map(|s| s.x).unwrap_or(0.0);
+            let band = rectf(
+                origin.x,
+                origin.y + boundary - self.gap / 2.0,
+                cross,
+                self.gap,
+            );
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                renderer.fill_rect(band, app.theme.color(crate::theme::ColorToken::Bg));
+                renderer.fill_rect(
+                    rectf(band.min_x(), band.min_y(), band.width(), 1.0),
+                    app.theme.color(crate::theme::ColorToken::Border),
+                );
+                renderer.draw_icon(
+                    vec2f(
+                        band.max_x() - 24.0,
+                        band.min_y() + (band.height() - 16.0) / 2.0,
+                    ),
+                    "x-close",
+                    16.0,
+                    app.theme.color(crate::theme::ColorToken::Muted),
+                );
+            }
+        }
         // A split paints no divider, neither at rest nor while dragging: the
         // panes keep their own separation (the app wears one outline around
         // each tab and leaves the window's `Bg` between them), and a rule here
@@ -298,6 +357,23 @@ impl Element for SplitNode {
             }
         }
         if let DispatchedEvent::MouseDown { position, .. } = event {
+            if self.gap > 0.0 && self.axis == Axis::Vertical {
+                if let (Some(origin), Some(size)) = (self.origin, self.size) {
+                    let boundary = self.boundary();
+                    let close = rectf(
+                        origin.x() + size.x - 32.0,
+                        origin.y() + boundary - self.gap / 2.0,
+                        32.0,
+                        self.gap,
+                    );
+                    if contains(close, *position) {
+                        if let Some(cb) = &self.on_close {
+                            (cb.borrow_mut())();
+                        }
+                        return true;
+                    }
+                }
+            }
             if let Some(bounds) = self.handle_bounds() {
                 if contains(bounds, *position) {
                     if let Some(cb) = &self.on_drag_start {

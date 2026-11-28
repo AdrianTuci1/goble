@@ -209,18 +209,54 @@ fn main() -> anyhow::Result<()> {
             ),
             (
                 "spotlight",
-                vec2f(1600.0, 1000.0),
+                vec2f(1182.0, 667.0),
                 false,
                 SettingsCategory::General,
             ),
             (
                 "spotlight-scope",
-                vec2f(1600.0, 1000.0),
+                vec2f(1182.0, 667.0),
                 false,
                 SettingsCategory::General,
             ),
             (
                 "spotlight-options",
+                vec2f(1182.0, 667.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-files",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "sidebar-no-files",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-question",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-add-tab",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "files-explorer",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-task-output",
                 vec2f(1600.0, 1000.0),
                 false,
                 SettingsCategory::General,
@@ -244,6 +280,24 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::General,
             ),
             (
+                "sidebar-collapsed",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "tool-inline",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-tabs-reordered",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "side-panel-max",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -254,6 +308,120 @@ fn main() -> anyhow::Result<()> {
                 vec2f(1600.0, 1000.0),
                 false,
                 SettingsCategory::General,
+            ),
+            (
+                "composer-effort-open",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "composer-model-first",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "composer-narrow",
+                vec2f(820.0, 900.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "composer-model-open",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "composer-permissions-open",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "sidebar-no-conversations",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "sidebar-conversations",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "sidebar-conversations-menu",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "composer-project-menu",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "composer-project-typed",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "chat-rail-empty",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "chat-rail-one",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "chat-rail-many",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "chat-scroll-rail-hover",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "chat-no-model",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "automations-popover",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "automations-empty",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "settings-select-open",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::General,
+            ),
+            (
+                "settings-integrations",
+                vec2f(1600.0, 1900.0),
+                true,
+                SettingsCategory::Providers,
             ),
             (
                 "settings-wide",
@@ -280,6 +448,48 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::Shortcuts,
             ),
             (
+                "settings-long",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::Advanced,
+            ),
+            (
+                "settings-shortcuts-record",
+                vec2f(1600.0, 1000.0),
+                true,
+                SettingsCategory::Shortcuts,
+            ),
+            (
+                "side-automations",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-file-tab",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-browser",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "side-tab-new",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "settings-integrations",
+                vec2f(1600.0, 1900.0),
+                true,
+                SettingsCategory::Providers,
+            ),
+            (
                 "settings-narrow",
                 vec2f(700.0, 900.0),
                 true,
@@ -299,6 +509,36 @@ fn main() -> anyhow::Result<()> {
             ),
             (
                 "split-file-viewer",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "stacked-split",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "floating-file",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "floating-file-left",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "floating-file-right",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
+                "floating-file-small",
                 vec2f(1600.0, 1000.0),
                 false,
                 SettingsCategory::General,
@@ -333,6 +573,10 @@ fn main() -> anyhow::Result<()> {
                     s.pane_sessions.entry(pane).or_default().path = root.clone();
                     s.side_review = Some((pane, root));
                     s.select_diff_file(pane, None);
+                    if !name.ends_with("narrow") {
+                        // The reference's wrapped inline diff.
+                        s.toggle_diff_wrap(pane);
+                    }
                     if name == "split-file-viewer" {
                         let file = repo_path.join("src/lib.rs");
                         let file = file.to_string_lossy().to_string();
@@ -343,10 +587,56 @@ fn main() -> anyhow::Result<()> {
                         s.attach_pane_file(pane, file);
                     }
                 }
-                if name == "side-panel" {
-                    // Empty panel: the Overview home surface, no chip and no +.
+                if name == "stacked-split" {
+                    let space_index = s.active_space;
+                    let pane = s.active_pane_id;
+                    let mut next = s.next_pane_id;
+                    if let Some(space) = s.spaces.get_mut(space_index) {
+                        if let Some(second) = space.split_with_kind(
+                            pane,
+                            goble_app::ui::SplitDir::Vertical,
+                            &mut next,
+                            goble_app::state::PaneKind::Terminal,
+                        ) {
+                            s.next_pane_id = next;
+                            s.terminal.borrow_mut().sessions.insert(
+                                second,
+                                goble_app::terminal::TerminalSession::preview_screen(
+                                    "user@goble ~ % echo lower\r\nlower\r\nuser@goble ~ % ",
+                                ),
+                            );
+                        }
+                    }
+                }
+                if name == "floating-file-right" {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
+                    s.active_side_tab = 0;
+                }
+                if name.starts_with("floating-file") {
+                    let file = repo_path.join("src/lib.rs");
+                    let file = file.to_string_lossy().to_string();
+                    if s.open_file_in_floating(file, None) {
+                        let id = s.active_pane_id;
+                        let rect = if name == "floating-file-small" {
+                            goble_app::ui::PaneRect::new(0.18, 0.22, 0.34, 0.38)
+                        } else if name == "floating-file-left" {
+                            goble_app::ui::PaneRect::new(0.01, 0.14, 0.34, 0.58)
+                        } else if name == "floating-file-right" {
+                            goble_app::ui::PaneRect::new(0.63, 0.14, 0.34, 0.58)
+                        } else {
+                            goble_app::ui::PaneRect::new(0.16, 0.18, 0.46, 0.50)
+                        };
+                        let space_index = s.active_space;
+                        if let Some(space) = s.spaces.get_mut(space_index) {
+                            space.set_floating_rect(id, rect);
+                        }
+                    }
+                }
+                if name == "side-panel" {
+                    // Empty panel: the Start surface, no chip, with "+".
+                    s.right_sidebar_open = true;
+                    s.side_tabs = Vec::new();
                     s.active_side_tab = 0;
                 }
                 if name == "side-panel-resize" {
@@ -364,7 +654,7 @@ fn main() -> anyhow::Result<()> {
                     s.terminal.borrow_mut().sessions.insert(
                         pane,
                         goble_app::terminal::TerminalSession::preview_screen(
-                            "$ cargo test -p goble-app --lib\r\n   Compiling goble-app\r\n$ ",
+                            "user@goble ~ % cargo test -p goble-app --lib\r\n   Compiling goble-app\r\nuser@goble ~ % ",
                         ),
                     );
                 }
@@ -381,7 +671,7 @@ fn main() -> anyhow::Result<()> {
                     s.terminal.borrow_mut().sessions.insert(
                         pane,
                         goble_app::terminal::TerminalSession::preview_screen(
-                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                            "user@goble ~ % git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\nuser@goble ~ % ",
                         ),
                     );
                 }
@@ -402,7 +692,7 @@ fn main() -> anyhow::Result<()> {
                     s.terminal.borrow_mut().sessions.insert(
                         pane,
                         goble_app::terminal::TerminalSession::preview_screen(
-                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                            "user@goble ~ % git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\nuser@goble ~ % ",
                         ),
                     );
                 }
@@ -413,14 +703,33 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 if name.starts_with("spotlight") {
+                    // The reference has exactly two conversations in the
+                    // spotlight fixture; the shared seed carries a third plus
+                    // an archived row, so trim the preview data to match the
+                    // shot while leaving every other scene untouched.
+                    s.conversations
+                        .retain(|entry| entry.id == "spot-1" || entry.id == "spot-2");
                     s.spotlight.open = true;
-                    s.spotlight.focused = true;
+                    // The reference menus were opened from the scope pill /
+                    // options button, which leaves the query line unfocused;
+                    // the caret is not in the shot.
+                    s.spotlight.focused =
+                        !(name == "spotlight-scope" || name == "spotlight-options");
                     if name == "spotlight-scope" {
                         *s.spotlight.scope_menu_open.borrow_mut() = true;
                     }
                     if name == "spotlight-options" {
                         *s.spotlight.options_menu_open.borrow_mut() = true;
                     }
+                }
+                if name == "side-tabs-reordered" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Files,
+                        goble_app::state::SideTabKind::Agent,
+                        goble_app::state::SideTabKind::Terminal,
+                    ];
+                    s.active_side_tab = 0;
                 }
                 if name == "side-tabs-hover" || name == "side-tabs-add" {
                     s.right_sidebar_open = true;
@@ -434,7 +743,17 @@ fn main() -> anyhow::Result<()> {
                         *s.side_tab_add_menu_open.borrow_mut() = true;
                     }
                 }
-                if name == "side-agent" {
+                if name == "side-files" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Files];
+                    s.active_side_tab = 0;
+                    s.side_file = Some(repo_path.join("src/lib.rs").to_string_lossy().to_string());
+                }
+                if name == "sidebar-no-files" {
+                    s.right_sidebar_open = false;
+                    s.sidebar_visible = true;
+                }
+                if name == "side-agent" || name == "side-question" {
                     s.right_sidebar_open = true;
                     s.side_tabs = vec![
                         goble_app::state::SideTabKind::Overview,
@@ -473,15 +792,208 @@ fn main() -> anyhow::Result<()> {
                     s.terminal.borrow_mut().sessions.insert(
                         pane,
                         goble_app::terminal::TerminalSession::preview_screen(
-                            "$ git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\n$ ",
+                            "user@goble ~ % git status\r\nOn branch feat/desktop-redesign\r\nnothing to commit\r\nuser@goble ~ % ",
                         ),
                     );
+                }
+                if name == "composer-narrow" {
+                    s.right_sidebar_open = true;
+                    s.side_split_ratio = 0.48;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Overview];
+                    s.active_side_tab = 0;
+                }
+                if name == "composer-model-open"
+                    || name == "composer-model-first"
+                    || name == "composer-effort-open"
+                {
+                    use goble_desktop_service::ModelGroup;
+                    use goble_harness_types::HarnessModel;
+                    s.model_groups = vec![
+                        ModelGroup {
+                            harness: "anthropic".to_string(),
+                            label: "Anthropic".to_string(),
+                            models: vec![
+                                HarnessModel::new("claude-opus-4", "Claude Opus 4").with_thinking(
+                                    vec!["low".into(), "medium".into(), "high".into()],
+                                ),
+                                HarnessModel::new("claude-sonnet-4", "Claude Sonnet 4")
+                                    .with_thinking(vec![
+                                        "low".into(),
+                                        "medium".into(),
+                                        "high".into(),
+                                    ]),
+                            ],
+                        },
+                        ModelGroup {
+                            harness: "openai".to_string(),
+                            label: "OpenAI".to_string(),
+                            models: vec![HarnessModel::new("gpt-5", "GPT-5").with_thinking(vec![
+                                "minimal".into(),
+                                "low".into(),
+                                "high".into(),
+                            ])],
+                        },
+                        ModelGroup {
+                            harness: "google".to_string(),
+                            label: "Google".to_string(),
+                            models: vec![HarnessModel::new("gemini-2.5-pro", "Gemini 2.5 Pro")],
+                        },
+                        ModelGroup {
+                            harness: "deepseek".to_string(),
+                            label: "DeepSeek".to_string(),
+                            models: vec![HarnessModel::new(
+                                "deepseek-v4-flash",
+                                "DeepSeek-V4-Flash",
+                            )
+                            .with_thinking(vec!["low".into(), "high".into()])],
+                        },
+                        ModelGroup {
+                            harness: "acme".to_string(),
+                            label: "Acme (custom)".to_string(),
+                            models: vec![HarnessModel::new("acme-1", "Acme-1")],
+                        },
+                    ];
+                    {
+                        use goble_core::integration::{
+                            IntegrationHealth, IntegrationModel, IntegrationSnapshot,
+                        };
+                        s.integrations = vec![IntegrationSnapshot {
+                            id: "antigravity".to_string(),
+                            name: "Antigravity".to_string(),
+                            icon: "harness-antigravity".to_string(),
+                            installed: true,
+                            version: Some("agy_acp_server_20250115_1".to_string()),
+                            path: Some("/opt/antigravity/bin/agy".to_string()),
+                            health: IntegrationHealth::Connected,
+                            auth: "authenticated · CLI session".to_string(),
+                            models: vec![
+                                IntegrationModel {
+                                    id: "gemini-3-pro".to_string(),
+                                    name: "Gemini 3 Pro".to_string(),
+                                    efforts: vec!["low".to_string(), "high".to_string()],
+                                },
+                                IntegrationModel {
+                                    id: "claude-sonnet-4-5".to_string(),
+                                    name: "Claude Sonnet 4.5".to_string(),
+                                    efforts: Vec::new(),
+                                },
+                            ],
+                            config_path: Some("/home/me/.config/antigravity".to_string()),
+                            detail: "`agy` is connected and reports 2 model(s).".to_string(),
+                        }];
+                    }
+                    s.llm_credential_source = Some("environment".to_string());
+                    let pane = s.active_pane_id;
+                    s.selected_model = "claude-sonnet-4".to_string();
+                    let controls = s.pane_controls_mut(pane);
+                    controls.model = "claude-sonnet-4".to_string();
+                    controls.thinking = "high".to_string();
+                    {
+                        let mut tray = controls.model_tray_state.borrow_mut();
+                        tray.seeded = true;
+                        tray.pane = goble_ui::elements::ModelTrayPane::Model;
+                        tray.row = 1;
+                    }
+                    if name == "composer-model-first" {
+                        controls.model_tray_state.borrow_mut().pane =
+                            goble_ui::elements::ModelTrayPane::Root;
+                    } else if name == "composer-effort-open" {
+                        controls.model_tray_state.borrow_mut().pane =
+                            goble_ui::elements::ModelTrayPane::Effort;
+                    }
+                    *controls.model_menu_open.borrow_mut() = true;
+                    *controls.model_tray_open.borrow_mut() = true;
+                }
+                if name == "composer-permissions-open" {
+                    let pane = s.active_pane_id;
+                    *s.pane_controls_mut(pane).approval_menu_open.borrow_mut() = true;
+                }
+                if name == "settings-integrations" {
+                    use goble_core::integration::{
+                        IntegrationHealth, IntegrationModel, IntegrationSnapshot,
+                    };
+                    for harness in &mut s.settings.harnesses {
+                        if harness.id == "antigravity" {
+                            harness.installed = true;
+                            harness.configured = true;
+                            harness.enabled = true;
+                            harness.path = Some("/opt/antigravity/bin/agy".to_string());
+                            harness.version = Some("agy_acp_server_20250115_1".to_string());
+                        }
+                    }
+                    s.settings.folds.insert("harness.antigravity".to_string());
+                    s.settings.integrations = vec![
+                        IntegrationSnapshot {
+                            id: "antigravity".to_string(),
+                            name: "Antigravity".to_string(),
+                            icon: "harness-antigravity".to_string(),
+                            installed: true,
+                            version: Some("agy_acp_server_20250115_1".to_string()),
+                            path: Some("/opt/antigravity/bin/agy".to_string()),
+                            health: IntegrationHealth::Installed,
+                            auth: "sign-in not checked".to_string(),
+                            models: vec![IntegrationModel {
+                                id: "gemini-3-pro".to_string(),
+                                name: "Gemini 3 Pro".to_string(),
+                                efforts: vec!["low".to_string(), "high".to_string()],
+                            }],
+                            config_path: Some("/home/me/.config/antigravity".to_string()),
+                            detail: "`agy` is installed. Sign-in is checked when a session starts."
+                                .to_string(),
+                        },
+                        IntegrationSnapshot {
+                            id: "claude".to_string(),
+                            name: "Claude Code".to_string(),
+                            icon: "harness-claude".to_string(),
+                            installed: true,
+                            version: Some("2.1.0".to_string()),
+                            path: Some("/usr/local/bin/claude".to_string()),
+                            health: IntegrationHealth::Installed,
+                            auth: "CLI manages its own sign-in".to_string(),
+                            models: Vec::new(),
+                            config_path: None,
+                            detail: "`claude` is on PATH.".to_string(),
+                        },
+                    ];
+                }
+                if name == "settings-shortcuts-record" {
+                    s.settings.shortcuts_recording = Some("Command palette".to_string());
+                    s.settings.shortcuts_recorded = vec!["⌘".to_string(), "K".to_string()];
+                }
+                if name == "side-automations" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Automations];
+                    s.active_side_tab = 0;
+                }
+                if name == "side-file-tab" {
+                    let file = repo_path.join("src/lib.rs").to_string_lossy().to_string();
+                    s.open_file_tab(file);
+                }
+                if name == "side-browser" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Browser];
+                    s.active_side_tab = 0;
+                    *s.browser_url.borrow_mut() = "https://www.google.com/".to_string();
+                }
+                if name == "side-tab-new" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![
+                        goble_app::state::SideTabKind::Overview,
+                        goble_app::state::SideTabKind::NewTab,
+                    ];
+                    s.active_side_tab = 1;
+                }
+                if name == "settings-select-open" {
+                    let (open, _) = s.settings.select_menu("app.approval_mode");
+                    *open.borrow_mut() = true;
                 }
                 if name == "settings-wide-appearance-palette" {
                     // The in-field swatch's palette popover, opened on the
                     // accent channel so the square and the anchored grid are
                     // both in the shot.
                     *s.settings.color_palette_menu.borrow_mut() = Some(0);
+                    *s.settings.color_preview.borrow_mut() =
+                        Some((0, goble_ui::color::ColorU::new(42, 156, 218, 255)));
                 }
                 if name == "overview-popover" {
                     s.right_sidebar_open = true;
@@ -489,6 +1001,153 @@ fn main() -> anyhow::Result<()> {
                 }
                 if name == "overview" {
                     s.right_sidebar_open = true;
+                    s.global_search_focused = true;
+                    let active = s.active_pane_id;
+                    let runtime = s.pane_runtime.entry(active).or_default();
+                    for (index, command) in [
+                        "wait for GHCR build to finish",
+                        "watch Release v1.1.0 run",
+                        "watch CI run",
+                        "watch Release workflow run 44804857294",
+                        "watch background job 5",
+                        "watch background job 6",
+                        "watch background job 7",
+                        "watch background job 8",
+                        "watch background job 9",
+                        "watch background job 10",
+                        "watch background job 11",
+                        "watch background job 12",
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let id = format!("preview-task-{index:02}");
+                        runtime.in_flight_tools.insert(
+                            id.clone(),
+                            goble_ui::ToolCall {
+                                id,
+                                name: "Shell".to_string(),
+                                arguments: format!("{{\"command\":\"{command}\"}}"),
+                                status: goble_core::harness::ToolCallStatus::Running,
+                                result: None,
+                                diff: None,
+                            },
+                        );
+                    }
+                }
+                if name == "tool-inline" {
+                    let mut message = ChatMessage::new(
+                        ChatRole::Assistant,
+                        vec![ChatFragment::text("Let me inspect the change.")],
+                    );
+                    message.tool_calls.push(goble_ui::ToolCall {
+                        id: "preview-tool-inline".into(),
+                        name: "Read".into(),
+                        arguments: r#"{"path":"src/lib.rs"}"#.into(),
+                        status: goble_core::harness::ToolCallStatus::Finished,
+                        result: Some("pub fn build() {}".into()),
+                        diff: None,
+                    });
+                    let active = s.active_pane_id;
+                    s.pane_runtime
+                        .entry(active)
+                        .or_default()
+                        .messages
+                        .push(message);
+                }
+                if name.starts_with("chat-rail-") || name == "chat-scroll-rail-hover" {
+                    let active = s.active_pane_id;
+                    let runtime = s.pane_runtime.entry(active).or_default();
+                    runtime.messages.clear();
+                    runtime.pending_ask = None;
+                    runtime.pending_command = None;
+                    let turns = match name {
+                        "chat-rail-empty" => 0,
+                        "chat-rail-one" => 1,
+                        _ => 7,
+                    };
+                    for index in 0..turns {
+                        runtime.messages.push(goble_ui::ChatMessage::new(
+                            goble_ui::ChatRole::User,
+                            vec![goble_ui::ChatFragment::text(format!(
+                                "Turn {}: audit the release pipeline",
+                                index + 1
+                            ))],
+                        ));
+                        runtime.messages.push(goble_ui::ChatMessage::new(
+                            goble_ui::ChatRole::Assistant,
+                            vec![goble_ui::ChatFragment::text(
+                                "I checked the pipeline and found the stale cache.",
+                            )],
+                        ));
+                    }
+                }
+                if name == "chat-no-model" {
+                    s.show_llm_key_banner = true;
+                    s.settings_llm_api_key = "preview-key".to_string();
+                    s.settings_llm_provider.clear();
+                }
+                if name == "automations-popover" {
+                    s.automations_open = true;
+                    s.crons = vec![
+                        goble_app::ui::CronEntry::new(
+                            "preview-nightly",
+                            "Nightly dependency audit",
+                            "Every day at 02:00",
+                            "2h ago",
+                        )
+                        .with_enabled(true),
+                        goble_app::ui::CronEntry::new(
+                            "preview-release",
+                            "Release checklist",
+                            "Every Friday at 16:00",
+                            "3d ago",
+                        ),
+                    ];
+                }
+                if name == "automations-empty" {
+                    s.automations_open = true;
+                    s.crons.clear();
+                }
+                if name == "sidebar-no-conversations" {
+                    s.conversations.clear();
+                }
+                if name == "sidebar-conversations"
+                    || name == "sidebar-conversations-menu"
+                    || name == "composer-project-menu"
+                {
+                    s.conversations = vec![ConversationEntry::new(
+                        "loose-preview",
+                        "Loose conversation",
+                        "A conversation outside any project",
+                        "10:42",
+                    )
+                    .with_folder("Conversations")];
+                }
+                if name == "sidebar-conversations-menu" {
+                    *s.conversations_add_menu_open.borrow_mut() = true;
+                }
+                if name == "composer-project-menu" || name == "composer-project-typed" {
+                    s.set_active_pane_path(String::new());
+                    let active = s.active_pane_id;
+                    let runtime = s.pane_runtime.entry(active).or_default();
+                    runtime.messages.clear();
+                    runtime.pending_ask = None;
+                    runtime.pending_command = None;
+                    if name == "composer-project-menu" {
+                        s.composer_draft.clear();
+                        *s.project_menu_open.borrow_mut() = true;
+                    } else {
+                        s.composer_draft = "Hello".to_string();
+                        s.pane_sessions.entry(active).or_default().draft = "Hello".to_string();
+                    }
+                }
+                if name == "sidebar-collapsed" {
+                    s.sidebar_visible = false;
+                    s.right_sidebar_open = true;
+                    s.side_split_ratio = 0.42;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Terminal];
+                    s.active_side_tab = 0;
                 }
                 if name == "side-panel-max" {
                     s.right_sidebar_open = true;
@@ -501,6 +1160,62 @@ fn main() -> anyhow::Result<()> {
                     ];
                     s.active_side_tab = 0;
                 }
+                if name == "side-add-tab" {
+                    s.right_sidebar_open = true;
+                    *s.side_tab_add_menu_open.borrow_mut() = true;
+                }
+                if name == "files-explorer" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::Files];
+                    s.active_side_tab = 0;
+                    s.side_file = Some(repo_path.join("src/lib.rs").to_string_lossy().to_string());
+                    let space_index = s.active_space;
+                    let pane = s.active_pane_id;
+                    let mut next = s.next_pane_id;
+                    if let Some(space) = s.spaces.get_mut(space_index) {
+                        if let Some(id) = space.split_with_kind(
+                            pane,
+                            goble_app::ui::SplitDir::Horizontal,
+                            &mut next,
+                            goble_app::state::PaneKind::Explorer,
+                        ) {
+                            s.next_pane_id = next;
+                            s.focus_pane(id);
+                            s.pane_sessions.entry(id).or_default().path =
+                                repo_path.to_string_lossy().to_string();
+                        }
+                    }
+                }
+                if name == "side-task-output" {
+                    s.right_sidebar_open = true;
+                    s.side_tabs = vec![goble_app::state::SideTabKind::TaskOutput];
+                    s.active_side_tab = 0;
+                }
+                if name == "side-terminal" || name == "side-task-output" {
+                    let active = s.active_pane_id;
+                    let runtime = s.pane_runtime.entry(active).or_default();
+                    for (index, command) in [
+                        "job finished build",
+                        "job failed tests",
+                        "job running deploy",
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let id = format!("rail-task-{index:02}");
+                        runtime.in_flight_tools.insert(
+                            id.clone(),
+                            goble_ui::ToolCall {
+                                id,
+                                name: "Shell".to_string(),
+                                arguments: format!("{{\"command\":\"{command}\"}}"),
+                                status: goble_core::harness::ToolCallStatus::Running,
+                                result: None,
+                                diff: None,
+                            },
+                        );
+                    }
+                }
                 if name == "terminal-dock" {
                     let pane = s.active_pane_id;
                     if s.toggle_terminal_dock(pane) {
@@ -508,7 +1223,7 @@ fn main() -> anyhow::Result<()> {
                         s.terminal.borrow_mut().sessions.insert(
                             pane,
                             goble_app::terminal::TerminalSession::preview_screen(
-                                "$ echo tty-ok\r\ntty-ok\r\n$ ",
+                                "user@goble ~ % echo tty-ok\r\ntty-ok\r\nuser@goble ~ % ",
                             ),
                         );
                     }
@@ -520,6 +1235,32 @@ fn main() -> anyhow::Result<()> {
             let _ = raster::render_element_to_png(
                 &assets, &app, &mut root, size.x, size.y, 1.0, None, &path,
             );
+            if name == "chat-scroll-rail-hover" {
+                let _ = raster::render_element_to_png_at(
+                    &assets,
+                    &app,
+                    &mut root,
+                    size.x,
+                    size.y,
+                    1.0,
+                    vec2f(300.0, 477.0),
+                    None,
+                    &path,
+                );
+            }
+            if name == "settings-wide" || name == "settings-long" {
+                let _ = raster::render_element_to_png_at(
+                    &assets,
+                    &app,
+                    &mut root,
+                    size.x,
+                    size.y,
+                    1.0,
+                    vec2f(60.0, 300.0),
+                    None,
+                    &path,
+                );
+            }
             if name == "side-tabs-hover" {
                 // Paint once with the pointer on the Side Question chip, so the
                 // hover close X is in the shot.
@@ -544,6 +1285,42 @@ fn main() -> anyhow::Result<()> {
                         &path,
                     );
                 }
+            }
+            if name == "overview" {
+                // Z: capture the Browser row's dark hover band, as in the
+                // reference launcher.
+                let commands = raster::render_commands(&mut root, size, &app);
+                if let Some(origin) = commands.iter().find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. } if text == "Browser" => {
+                        Some(*origin)
+                    }
+                    _ => None,
+                }) {
+                    let _ = raster::render_element_to_png_at(
+                        &assets,
+                        &app,
+                        &mut root,
+                        size.x,
+                        size.y,
+                        1.0,
+                        origin + vec2f(20.0, 4.0),
+                        None,
+                        &path,
+                    );
+                }
+            }
+            if name.starts_with("floating-file") {
+                let _ = raster::render_element_to_png_at(
+                    &assets,
+                    &app,
+                    &mut root,
+                    size.x,
+                    size.y,
+                    1.0,
+                    vec2f(1082.0, 678.0),
+                    None,
+                    &path,
+                );
             }
             if name == "conversation-title-hover" {
                 let commands = raster::render_commands(&mut root, size, &app);

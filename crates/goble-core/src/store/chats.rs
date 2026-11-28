@@ -57,7 +57,10 @@ impl Store {
     pub fn delete_chat(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM chat_messages WHERE chat_id = ?1", params![id])?;
-        conn.execute("DELETE FROM chat_compactions WHERE chat_id = ?1", params![id])?;
+        conn.execute(
+            "DELETE FROM chat_compactions WHERE chat_id = ?1",
+            params![id],
+        )?;
         conn.execute("DELETE FROM chats WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -272,8 +275,8 @@ impl Store {
     /// than a zero.
     pub fn chat_usage(&self, id: &str) -> Result<Option<TokenUsage>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT usage_input, usage_cached, usage_output FROM chats WHERE id = ?1")?;
+        let mut stmt = conn
+            .prepare("SELECT usage_input, usage_cached, usage_output FROM chats WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;
         let Some(row) = rows.next()? else {
             return Ok(None);

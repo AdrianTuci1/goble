@@ -17,11 +17,60 @@ use crate::ui::settings::{SettingsAction, SettingsRegion, SettingsUiState as Set
 
 impl UiState {
     pub fn refresh_llm_models(&mut self, desktop: &DesktopState) {
+        // The configuration is the source of truth for the turn: a model
+        // declared in `config.toml` carries its endpoint and inline key, and
+        // the form/snapshot must read that same setting instead of starting
+        // from an empty key (which made every send say "No API key
+        // configured" even though the config had one).
+        if self.settings_llm_model.trim().is_empty() || self.settings_llm_model == "gpt-4o" {
+            if let Some(model) = desktop.config_default_model() {
+                self.settings_llm_model = model;
+            }
+        }
+        if self.settings_llm_api_key.trim().is_empty() {
+            let model = self.settings_llm_model.clone();
+            if let Some(setting) =
+                desktop.effective_llm_setting(&self.settings_llm_provider, &model)
+            {
+                self.settings_llm_api_key = setting.api_key;
+                if let Some(base) = setting.base_url {
+                    self.settings_llm_base_url = base;
+                }
+                if !setting.model.trim().is_empty() {
+                    self.settings_llm_model = setting.model;
+                }
+            }
+        }
+        // 485/492: one resolver sees the env source too; a key present there
+        // makes can_run_agent_turn true even when config/store are empty.
+        if self.settings_llm_api_key.trim().is_empty() {
+            let env = goble_core::credential::provider_env_var(&self.settings_llm_provider)
+                .and_then(|name| std::env::var(name).ok());
+            let resolved =
+                goble_core::credential::resolve(&goble_core::credential::CredentialSources {
+                    env,
+                    ..Default::default()
+                });
+            if let Some(key) = resolved.value {
+                self.settings_llm_api_key = key;
+            }
+        }
+        let env_present = goble_core::credential::provider_env_var(&self.settings_llm_provider)
+            .is_some_and(|name| std::env::var_os(name).is_some());
+        self.llm_credential_source = if env_present {
+            Some("environment".to_string())
+        } else if !self.settings_llm_api_key.trim().is_empty() {
+            Some("config/store".to_string())
+        } else {
+            None
+        };
         self.models = desktop.available_models(&self.settings_llm_provider);
         if self.selected_model.trim().is_empty() {
             self.selected_model = desktop.default_model(&self.settings_llm_provider);
         }
         self.model_groups = desktop.model_groups(&self.settings_llm_provider);
+        self.integrations =
+            goble_core::integration::IntegrationRegistry::with_defaults().snapshot_all();
         // The harness's own answer to "what can this draft list": the commands
         // and skills behind `/` and `$`, and the models behind the tray.
         self.composer_catalog = desktop.composer_catalog(&self.settings_llm_provider);
@@ -145,6 +194,12 @@ impl UiState {
         if self.settings.harnesses.is_empty() {
             self.settings.harnesses = desktop.list_harnesses();
         }
+        // 479: never probe PATH/integrations on the settings draw/open path.
+        // Use the cached snapshot loaded once by the model refresh; an explicit
+        // Refresh action is the only thing that re-runs detection.
+        if self.settings.integrations.is_empty() && !self.integrations.is_empty() {
+            self.settings.integrations = self.integrations.clone();
+        }
         self.settings_workers = desktop
             .list_workers()
             .into_iter()
@@ -159,6 +214,15 @@ impl UiState {
                 .collect();
         }
         self.settings.update_view = self.update_view.clone();
+        if self.settings.shortcuts.is_empty() {
+            if let Some(json) = desktop.get_ui_shortcuts() {
+                if let Ok(map) =
+                    serde_json::from_str::<std::collections::BTreeMap<String, Vec<String>>>(&json)
+                {
+                    self.settings.shortcuts = map;
+                }
+            }
+        }
         // The pages that read ~/.ssh (Hosts) share the one read; the page asks
         // for it when it is first shown, not while it draws.
         if self.settings.ssh_hosts.is_none() {
@@ -170,8 +234,13 @@ impl UiState {
         self.auto_save_on_close = desktop.get_auto_save_on_close();
         self.refresh_llm_models(desktop);
         self.refresh_remote_agents(Some(desktop));
-        self.settings.page = self.settings_page();
-        self.settings.nav_index = SettingsState::nav_index_of(self.settings.page);
+        // 320: the settings sheet can be an overlay, with no settings leaf to
+        // carry the page. A write/reload must not reset the user's page in that
+        // case; only a real pane-owned settings tab adopts the leaf's page.
+        if self.settings_pane().is_some() {
+            self.settings.page = self.settings_page();
+            self.settings.nav_index = SettingsState::nav_index_of(self.settings.page);
+        }
         // A reload can shorten a page; keep the focused row inside it.
         let count = crate::ui::settings::pages::page_model(self.settings.page, &self.settings)
             .control_count();
@@ -435,3 +504,30 @@ pub fn update_actions(state: &mut UiState, action: &SettingsAction) -> bool {
 /// this enum's `key()` owns.
 #[allow(dead_code)]
 fn _preset(_: ThemePreset) {}
+
+#[cfg(test)]
+mod overlay_page_tests {
+    use super::*;
+
+    /// 320: the settings sheet is an overlay with no settings leaf; a settings
+    /// write/reload must keep the page and row it was showing instead of
+    /// falling back to General.
+    #[test]
+    fn refreshing_settings_keeps_an_overlay_page_and_row() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = std::sync::Arc::new(DesktopState::new(
+            goble_core::store::Store::open_in_memory().expect("in-memory store"),
+            goble_desktop_service::ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        let mut state = UiState::mock();
+        state.settings.page = crate::ui::SettingsCategory::Appearance;
+        state.settings.row_index = 2;
+        state.refresh_settings(&desktop);
+        assert_eq!(
+            state.settings.page,
+            crate::ui::SettingsCategory::Appearance,
+            "the overlay keeps its page"
+        );
+        assert_eq!(state.settings.row_index, 2, "the overlay keeps its row");
+    }
+}

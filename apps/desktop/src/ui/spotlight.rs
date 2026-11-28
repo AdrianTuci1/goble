@@ -8,12 +8,15 @@ use std::rc::Rc;
 
 use goble_ui::elements::conversation_list_item::sidebar_relative_time;
 use goble_ui::elements::{
-    AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets, Element, Empty,
-    Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, MainAxisSize, Padding, Scrollable, Text,
-    TextInput,
+    caret_beam, AppContext, Border, ConstrainedBox, Container, CrossAxisAlignment, EdgeInsets,
+    Element, Empty, EventContext, Expanded, Fill, Flex, HoverRow, Icon, KeyHandler, LayoutContext,
+    MainAxisSize, PaintContext, Point, ScrollState, Scrollable, SizeConstraint, Text,
 };
-use goble_ui::geometry::{rectf, vec2f, RectF, Vector2F};
-use goble_ui::theme::{ColorToken, FontFamily};
+use goble_ui::event::DispatchedEvent;
+use goble_ui::geometry::{vec2f, Vector2F};
+use goble_ui::platform::text_atlas::FontWeight;
+use goble_ui::theme::ColorToken;
+use goble_ui::ColorU;
 
 use goble_ui::ConversationEntry;
 
@@ -76,6 +79,10 @@ pub struct SpotlightState {
     pub selected: usize,
     pub scope_menu_open: Rc<RefCell<bool>>,
     pub options_menu_open: Rc<RefCell<bool>>,
+    /// The result list's scroll offset, owned by the app so the per-frame tree
+    /// rebuild does not reset it: without a state the viewport neither clips its
+    /// rows nor scrolls them.
+    pub results_scroll: Rc<RefCell<ScrollState>>,
 }
 
 impl Default for SpotlightState {
@@ -92,6 +99,7 @@ impl Default for SpotlightState {
             selected: 0,
             scope_menu_open: Rc::new(RefCell::new(false)),
             options_menu_open: Rc::new(RefCell::new(false)),
+            results_scroll: Rc::new(RefCell::new(ScrollState::default())),
         }
     }
 }
@@ -120,6 +128,7 @@ pub fn filtered_conversations<'a>(
     let query = spotlight.query.trim().to_lowercase();
     let mut rows: Vec<&ConversationEntry> = conversations
         .iter()
+        .filter(|entry| entry.has_agent_reply)
         .filter(|entry| {
             if spotlight.only_archived {
                 entry.archived
@@ -180,9 +189,60 @@ pub fn commands() -> [(&'static str, &'static str); 3] {
     ]
 }
 
+/// The spotlight's own colours. The reference is a near-black app with a
+/// slightly lifted card; the shell preview is a touch lighter, so the card keeps
+/// the reference's relative lift instead of blending into the pane behind it.
+struct SpotPalette {
+    card: ColorU,
+    border: ColorU,
+    raised: ColorU,
+    text: ColorU,
+    muted: ColorU,
+    header_muted: ColorU,
+    icon: ColorU,
+    menu: ColorU,
+}
+
+fn palette(app: &AppContext) -> SpotPalette {
+    if app.theme.name == "dark" {
+        SpotPalette {
+            // X: the reference card fill, so the black content material behind
+            // it still reads as a lifted rounded card.
+            card: ColorU::hex(0x17161B),
+            border: ColorU::hex(0x323136),
+            raised: ColorU::hex(0x323136),
+            text: ColorU::hex(0xF8F7FC),
+            muted: ColorU::hex(0x918F97),
+            header_muted: ColorU::hex(0xA6A8AE),
+            icon: ColorU::hex(0xA5A4AA),
+            menu: ColorU::hex(0x1C1B20),
+        }
+    } else {
+        SpotPalette {
+            card: app.theme.color(ColorToken::Surface),
+            border: app.theme.color(ColorToken::Border),
+            raised: app.theme.color(ColorToken::Selected),
+            text: app.theme.color(ColorToken::Text),
+            muted: app.theme.color(ColorToken::Muted),
+            header_muted: app.theme.color(ColorToken::Muted),
+            icon: app.theme.color(ColorToken::Muted),
+            menu: app.theme.color(ColorToken::SurfaceRaised),
+        }
+    }
+}
+
+/// Card geometry taken from the 2364x1334 reference (a 2x 1182x667 window).
+const CARD_WIDTH_RATIO: f32 = 0.542;
+const CARD_TOP_RATIO: f32 = 0.25;
+const CARD_RADIUS: f32 = 8.0;
+const ROW_HEIGHT: f32 = 36.0;
+const ROW_BAND_HEIGHT: f32 = 28.0;
+const MENU_TOP: f32 = 33.0;
+
 /// Build the full-window spotlight layer. It is inert (an empty element) while
-/// closed; when open it paints a scrim, the centered window and the two
-/// anchored menus above the shell.
+/// closed; when open it paints the centered window and the two anchored menus
+/// above the shell. The outside press target is transparent, as in the
+/// reference (the shell behind is not dimmed).
 pub fn build_spotlight(
     app: &AppContext,
     state: &UiSnapshot,
@@ -195,19 +255,21 @@ pub fn build_spotlight(
     }
     let dispatch = actions.on_spotlight.clone();
     let close = dispatch.clone();
-    let scrim = HoverRow::new(
-        Container::new(Empty::new().with_size(window).finish())
-            .with_background(Fill::Solid(goble_ui::ColorU::new(0, 0, 0, 70)))
-            .finish(),
-    )
-    .with_on_click(move || (close.borrow_mut())(SpotlightAction::Close))
-    .finish();
+    // The scrim only catches presses: it paints nothing at any hover state, so
+    // the workspace behind the spotlight stays fully visible.
+    let scrim = Scrim::new(window, move || (close.borrow_mut())(SpotlightAction::Close)).finish();
 
-    let width = (window.x * 0.39).clamp(520.0, 920.0);
-    let x = ((window.x - width) * 0.5).max(24.0);
-    let y = (window.y * 0.18).clamp(60.0, 200.0);
+    let width = (window.x * CARD_WIDTH_RATIO).clamp(520.0, 1000.0);
+    let x = (window.x - width) * 0.5;
+    let y = (window.y * CARD_TOP_RATIO).max(48.0);
+    // The card lives inside the window: its results scroll in the room that is
+    // actually left, never past the bottom edge.
+    let content_max_height = (window.y - y - 24.0).max(160.0);
 
-    let card = build_window(app, state, actions, width);
+    let scope_width = (width * 0.21).max(132.0);
+    let options_width = (width * 0.30).max(178.0);
+
+    let card = build_window(app, state, actions, width, content_max_height);
     let scope_menu = *spotlight.scope_menu_open.borrow();
     let options_menu = *spotlight.options_menu_open.borrow();
 
@@ -215,17 +277,17 @@ pub fn build_spotlight(
     stack = stack.with_overlay(card, vec2f(x, y));
     if scope_menu {
         stack = stack.with_overlay(
-            build_scope_menu(app, state, actions),
-            vec2f(x + 10.0, y + 50.0),
+            build_scope_menu(app, state, actions, scope_width),
+            vec2f(x + 4.0, y + MENU_TOP),
         );
     }
     if options_menu {
         stack = stack.with_overlay(
-            build_options_menu(app, state, actions),
-            vec2f(x + width - 304.0, y + 50.0),
+            build_options_menu(app, state, actions, options_width),
+            vec2f(x + width - options_width - 4.0, y + MENU_TOP),
         );
     }
-    let dispatch = actions.on_spotlight.clone();
+    let query = spotlight.query.clone();
     let keys = dispatch.clone();
     let element = KeyHandler::new(stack.finish(), move |key: &str, modifiers| {
         if modifiers.command || modifiers.ctrl || modifiers.alt {
@@ -248,12 +310,91 @@ pub fn build_spotlight(
                 (keys.borrow_mut())(SpotlightAction::Escape);
                 true
             }
+            "Backspace" => {
+                let mut next = query.clone();
+                next.pop();
+                (keys.borrow_mut())(SpotlightAction::Query(next));
+                true
+            }
+            typed if typed.chars().count() == 1 => {
+                let mut next = query.clone();
+                next.push_str(typed);
+                (keys.borrow_mut())(SpotlightAction::Query(next));
+                true
+            }
             _ => false,
         }
     })
     .finish();
-    let _ = dispatch;
     element
+}
+
+/// The spotlight's outside-press catcher: full-window, paints nothing (the
+/// workspace stays visible), consumes the pointer and closes on a press.
+struct Scrim {
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+    window: Vector2F,
+    on_close: Rc<RefCell<dyn FnMut()>>,
+}
+
+impl Scrim {
+    fn new(window: Vector2F, on_close: impl FnMut() + 'static) -> Self {
+        Self {
+            size: None,
+            origin: None,
+            window,
+            on_close: Rc::new(RefCell::new(on_close)),
+        }
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for Scrim {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        self.size = Some(self.window.min(constraint.max));
+        self.window
+    }
+
+    fn paint(&mut self, origin: Vector2F, _ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        match event {
+            // The scrim owns the pointer: no hover, scroll or press reaches the
+            // workspace behind the open spotlight.
+            DispatchedEvent::MouseDown { .. } => {
+                (self.on_close.borrow_mut())();
+                true
+            }
+            DispatchedEvent::MouseMove { .. }
+            | DispatchedEvent::MouseUp { .. }
+            | DispatchedEvent::Scroll { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 fn build_window(
@@ -261,87 +402,142 @@ fn build_window(
     state: &UiSnapshot,
     actions: &UiActions,
     width: f32,
+    content_max_height: f32,
 ) -> Box<dyn Element> {
     let spotlight = &state.spotlight;
+    let colors = palette(app);
     let dispatch = actions.on_spotlight.clone();
     let scope = dispatch.clone();
     let options = dispatch.clone();
+
     let pill = {
-        let scope = scope.clone();
+        let pill_content = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(7.0)
+            .with_child(
+                Text::new(spotlight.scope.label())
+                    .with_font_size(14.0)
+                    .with_weight(FontWeight::Medium)
+                    .with_color(colors.text)
+                    .finish(),
+            )
+            .with_child(
+                Icon::new("chevron-down")
+                    .with_size(9.0)
+                    .with_color(colors.muted)
+                    .finish(),
+            )
+            .finish();
         HoverRow::new(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(6.0)
-                .with_child(
-                    Text::new(spotlight.scope.label())
-                        .with_font_size(14.0)
-                        .with_weight(FontWeight::Medium)
-                        .with_theme_color(ColorToken::Text, app)
-                        .finish(),
-                )
-                .with_child(
-                    Icon::new("chevron-down")
-                        .with_size(11.0)
-                        .with_theme_color(ColorToken::Muted, app)
-                        .finish(),
-                )
+            Container::new(pill_content)
+                .with_background(Fill::Solid(colors.raised))
+                .with_corner_radius(10.0)
+                .with_padding(EdgeInsets::new(10.5, 7.0, 10.5, 7.0))
                 .finish(),
         )
-        .with_padding(EdgeInsets::new(7.0, 11.0, 6.0, 11.0))
-        .with_corner_radius(9.0)
-        .with_hover_token(ColorToken::Selected)
         .with_on_click(move || (scope.borrow_mut())(SpotlightAction::ToggleScopeMenu))
         .finish()
     };
-    let input = {
-        let query = dispatch.clone();
-        let input = TextInput::new()
-            .with_value(spotlight.query.clone())
-            .with_placeholder("Search for conversations...")
-            .with_focused(spotlight.focused)
-            .with_full_width(true)
-            .with_on_change(move |value| (query.borrow_mut())(SpotlightAction::Query(value)));
-        input.finish()
-    };
+
+    let input = search_input(app, spotlight, &colors);
+
     let options_button = HoverRow::new(
-        Icon::new("menu-01")
-            .with_size(15.0)
-            .with_theme_color(ColorToken::Muted, app)
-            .finish(),
+        Container::new(
+            Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(1.0)
+                .with_child(filter_bar(&colors, 11.0))
+                .with_child(filter_bar(&colors, 7.5))
+                .with_child(filter_bar(&colors, 3.5))
+                .finish(),
+        )
+        .with_padding(EdgeInsets::uniform(5.0))
+        .with_corner_radius(6.0)
+        .finish(),
     )
-    .with_padding(EdgeInsets::uniform(7.0))
-    .with_corner_radius(8.0)
+    .with_hover_token(ColorToken::Selected)
     .with_on_click(move || (options.borrow_mut())(SpotlightAction::ToggleOptionsMenu))
     .finish();
+
     let header = Container::new(
         Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(10.0)
+            .with_spacing(4.0)
             .with_child(pill)
             .with_child(Expanded::new(input).finish())
             .with_child(options_button)
             .finish(),
     )
-    .with_padding(EdgeInsets::new(10.0, 12.0, 8.0, 12.0))
+    .with_padding(EdgeInsets::new(4.0, 3.0, 8.0, 4.0))
     .finish();
 
-    let mut column = Flex::column()
+    let content_width = (width - 2.0).max(0.0);
+    let separator = Container::new(Empty::new().with_size(vec2f(content_width, 1.0)).finish())
+        .with_background(Fill::Solid(colors.border))
+        .finish();
+
+    let column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(header)
-        .with_child(build_results(app, state, actions));
+        .with_child(separator)
+        .with_child(build_results(app, state, actions, content_max_height));
     ConstrainedBox::new(
         Container::new(column.finish())
-            .with_background(Fill::Solid(app.theme.color(ColorToken::ContentBg)))
-            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
-            .with_corner_radius(14.0)
+            .with_background(Fill::Solid(colors.card))
+            .with_border(Border::all(1.0).with_border_color(colors.border))
+            .with_corner_radius(CARD_RADIUS)
             .finish(),
     )
     .with_width(width)
     .finish()
 }
 
-fn build_results(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+/// The borderless query line: the reference has no input box, just the scope
+/// pill, the placeholder and the options button on one row.
+fn search_input(
+    app: &AppContext,
+    spotlight: &SpotlightState,
+    colors: &SpotPalette,
+) -> Box<dyn Element> {
+    let empty = spotlight.query.is_empty();
+    let display = if empty {
+        "Search for conversations...".to_string()
+    } else {
+        spotlight.query.clone()
+    };
+    let color = if empty { colors.muted } else { colors.text };
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center);
+    if spotlight.focused {
+        row = row.with_child(caret_beam(app));
+    }
+    row = row.with_child(
+        Text::new(display)
+            .with_font_size(14.0)
+            .with_color(color)
+            .with_max_lines(1)
+            .finish(),
+    );
+    Container::new(row.finish())
+        .with_padding(EdgeInsets::new(6.0, 0.0, 6.0, 0.0))
+        .finish()
+}
+
+fn filter_bar(colors: &SpotPalette, width: f32) -> Box<dyn Element> {
+    Container::new(Empty::new().with_size(vec2f(width, 1.5)).finish())
+        .with_background(Fill::Solid(colors.icon))
+        .with_corner_radius(0.8)
+        .finish()
+}
+
+fn build_results(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    content_max_height: f32,
+) -> Box<dyn Element> {
     let spotlight = &state.spotlight;
     let dispatch = actions.on_spotlight.clone();
     let mut rows = Flex::column()
@@ -439,22 +635,28 @@ fn build_results(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> B
         rows = rows.with_child(
             Container::new(
                 Text::new("No results found")
-                    .with_font_size(13.0)
-                    .with_theme_color(ColorToken::Muted, app)
+                    .with_font_size(14.0)
+                    .with_color(palette(app).muted)
                     .finish(),
             )
-            .with_padding(EdgeInsets::new(20.0, 16.0, 20.0, 18.0))
+            .with_padding(EdgeInsets::new(16.0, 9.0, 16.0, 9.0))
             .finish(),
         );
     }
     let height = if count == 0 {
-        64.0
+        ROW_HEIGHT
     } else {
-        (count as f32 * 36.0 + 8.0).min(340.0)
+        (count as f32 * ROW_HEIGHT)
+            .min(340.0)
+            .min((content_max_height - 52.0).max(36.0))
     };
-    ConstrainedBox::new(Scrollable::new(rows.finish(), goble_ui::elements::Axis::Vertical).finish())
-        .with_height(height)
-        .finish()
+    ConstrainedBox::new(
+        Scrollable::new(rows.finish(), goble_ui::elements::Axis::Vertical)
+            .with_state(spotlight.results_scroll.clone())
+            .finish(),
+    )
+    .with_height(height)
+    .finish()
 }
 
 fn result_row(
@@ -465,21 +667,17 @@ fn result_row(
     selected: bool,
     on_click: impl FnMut() + 'static,
 ) -> Box<dyn Element> {
+    let colors = palette(app);
     let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_spacing(10.0)
-        .with_child(
-            Icon::new(icon)
-                .with_size(16.0)
-                .with_theme_color(ColorToken::Muted, app)
-                .finish(),
-        )
+        .with_spacing(8.0)
+        .with_child(leading_icon(app, icon, &colors))
         .with_child(
             Expanded::new(
                 Text::new(title)
                     .with_font_size(14.0)
-                    .with_theme_color(ColorToken::Text, app)
+                    .with_color(colors.text)
                     .with_max_lines(1)
                     .finish(),
             )
@@ -488,31 +686,77 @@ fn result_row(
     if !trailing.is_empty() {
         row = row.with_child(
             Text::new(trailing)
-                .with_font_family(FontFamily::Mono)
-                .with_font_size(11.0)
-                .with_theme_color(ColorToken::Muted, app)
+                .with_font_size(14.0)
+                .with_color(colors.muted)
                 .finish(),
         );
     }
+    let band = Container::new(row.finish())
+        .with_padding(EdgeInsets::new(12.0, 5.0, 13.5, 5.0))
+        .with_corner_radius(6.0);
+    let band = if selected {
+        band.with_background(Fill::Solid(colors.raised))
+    } else {
+        band
+    };
     HoverRow::new(
-        Container::new(row.finish())
-            .with_background(if selected {
-                Fill::Solid(app.theme.color(ColorToken::Selected))
-            } else {
-                Fill::None
-            })
-            .with_padding(EdgeInsets::new(9.0, 16.0, 9.0, 16.0))
+        Container::new(band.finish())
+            .with_padding(EdgeInsets::new(
+                (ROW_HEIGHT - ROW_BAND_HEIGHT) * 0.5,
+                4.0,
+                (ROW_HEIGHT - ROW_BAND_HEIGHT) * 0.5,
+                4.0,
+            ))
             .finish(),
     )
+    .with_hover_token(ColorToken::Selected)
+    .with_corner_radius(6.0)
     .with_on_click(on_click)
     .finish()
 }
 
-fn build_scope_menu(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -> Box<dyn Element> {
+/// The reference's leading conversation mark: a small outlined speech bubble.
+/// Goble has no matching asset, so the bubble is drawn from a rounded casing
+/// (with a tail bar) at the row's own 16 pt icon box.
+fn leading_icon(app: &AppContext, icon: &'static str, colors: &SpotPalette) -> Box<dyn Element> {
+    if icon == "conversation-local" {
+        let bubble = Container::new(Empty::new().with_size(vec2f(12.0, 9.0)).finish())
+            .with_border(Border::all(1.2).with_border_color(colors.icon))
+            .with_corner_radius(3.0);
+        let tail = Container::new(Empty::new().with_size(vec2f(3.5, 1.2)).finish())
+            .with_background(Fill::Solid(colors.icon))
+            .finish();
+        let mark = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_spacing(0.0)
+            .with_child(bubble.finish())
+            .with_child(
+                Container::new(tail)
+                    .with_padding(EdgeInsets::new(1.0, 0.0, 0.0, 0.0))
+                    .finish(),
+            )
+            .finish();
+        return Container::new(mark)
+            .with_padding(EdgeInsets::new(1.6, 0.0, 1.6, 0.0))
+            .finish();
+    }
+    Icon::new(icon)
+        .with_size(16.0)
+        .with_color(colors.icon)
+        .finish()
+}
+
+fn build_scope_menu(
+    app: &AppContext,
+    state: &UiSnapshot,
+    actions: &UiActions,
+    width: f32,
+) -> Box<dyn Element> {
+    let colors = palette(app);
     let dispatch = actions.on_spotlight.clone();
     let mut menu = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(1.0);
+        .with_spacing(0.0);
     for scope in [
         SpotlightScope::Commands,
         SpotlightScope::Files,
@@ -521,59 +765,55 @@ fn build_scope_menu(app: &AppContext, state: &UiSnapshot, actions: &UiActions) -
     ] {
         let on_select = dispatch.clone();
         let selected = state.spotlight.scope == scope;
-        let row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(8.0)
-            .with_child(
-                Text::new(scope.label())
-                    .with_font_size(13.5)
-                    .with_theme_color(ColorToken::Text, app)
-                    .finish(),
-            )
-            .with_child(Expanded::new(Empty::new().finish()).finish());
-        let row = if selected {
-            row.with_child(
-                Icon::new("check")
-                    .with_size(12.0)
-                    .with_theme_color(ColorToken::Text, app)
-                    .finish(),
-            )
-        } else {
-            row
-        };
-        menu = menu.with_child(
-            HoverRow::new(
-                Container::new(row.finish())
-                    .with_padding(EdgeInsets::new(7.0, 12.0, 7.0, 12.0))
-                    .with_corner_radius(6.0)
-                    .finish(),
-            )
-            .with_on_click(move || (on_select.borrow_mut())(SpotlightAction::Scope(scope)))
-            .finish(),
-        );
+        menu = menu.with_child(menu_row(
+            app,
+            &colors,
+            scope.label(),
+            selected,
+            true,
+            13.0,
+            move || (on_select.borrow_mut())(SpotlightAction::Scope(scope)),
+        ));
     }
-    menu_card(app, menu.finish(), 200.0)
+    menu_card(
+        app,
+        &colors,
+        menu.finish(),
+        width,
+        EdgeInsets::new(4.0, 9.0, 4.0, 7.0),
+    )
 }
 
 fn build_options_menu(
     app: &AppContext,
     state: &UiSnapshot,
     actions: &UiActions,
+    width: f32,
 ) -> Box<dyn Element> {
+    let colors = palette(app);
     let dispatch = actions.on_spotlight.clone();
     let mut menu = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(1.0);
-    menu = menu.with_child(menu_header(app, "Sort Conversations"));
+        .with_spacing(0.0);
+    menu = menu.with_child(menu_header(app, &colors, "Sort Conversations"));
+    menu = menu.with_child(menu_spacer(3.0));
     for sort in [SpotlightSort::LastUpdated, SpotlightSort::LastPrompt] {
         let on_select = dispatch.clone();
         let selected = state.spotlight.sort == sort;
-        menu = menu.with_child(menu_row(app, sort.label(), selected, move || {
-            (on_select.borrow_mut())(SpotlightAction::Sort(sort))
-        }));
+        menu = menu.with_child(menu_row(
+            app,
+            &colors,
+            sort.label(),
+            selected,
+            false,
+            9.5,
+            move || (on_select.borrow_mut())(SpotlightAction::Sort(sort)),
+        ));
     }
-    menu = menu.with_child(menu_header(app, "Filter"));
+    menu = menu.with_child(menu_spacer(4.0));
+    menu = menu.with_child(menu_divider(&colors, width - 8.0));
+    menu = menu.with_child(menu_header(app, &colors, "Filter"));
+    menu = menu.with_child(menu_spacer(3.0));
     for (filter, label, selected) in [
         (
             SpotlightFilter::Unread,
@@ -592,70 +832,116 @@ fn build_options_menu(
         ),
     ] {
         let on_select = dispatch.clone();
-        menu = menu.with_child(menu_row(app, label, selected, move || {
-            (on_select.borrow_mut())(SpotlightAction::ToggleFilter(filter))
-        }));
+        menu = menu.with_child(menu_row(
+            app,
+            &colors,
+            label,
+            selected,
+            false,
+            9.5,
+            move || (on_select.borrow_mut())(SpotlightAction::ToggleFilter(filter)),
+        ));
     }
-    menu_card(app, menu.finish(), 292.0)
+    menu_card(
+        app,
+        &colors,
+        menu.finish(),
+        width,
+        EdgeInsets::new(4.0, 0.0, 4.0, 6.0),
+    )
 }
 
-fn menu_header(app: &AppContext, label: &str) -> Box<dyn Element> {
+fn menu_header(app: &AppContext, colors: &SpotPalette, label: &str) -> Box<dyn Element> {
+    let _ = app;
     Container::new(
-        Text::new(label)
-            .with_font_size(11.0)
-            .with_theme_color(ColorToken::Muted, app)
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Text::new(label)
+                    .with_font_size(13.0)
+                    .with_color(colors.header_muted)
+                    .finish(),
+            )
             .finish(),
     )
-    .with_padding(EdgeInsets::new(9.0, 12.0, 5.0, 12.0))
+    .with_padding(EdgeInsets::new(8.0, 3.5, 8.0, 3.5))
     .finish()
+}
+
+fn menu_spacer(height: f32) -> Box<dyn Element> {
+    Container::new(Empty::new().with_size(vec2f(0.0, height)).finish()).finish()
+}
+
+fn menu_divider(colors: &SpotPalette, width: f32) -> Box<dyn Element> {
+    Container::new(Empty::new().with_size(vec2f(width.max(0.0), 1.0)).finish())
+        .with_background(Fill::Solid(colors.border))
+        .finish()
 }
 
 fn menu_row(
     app: &AppContext,
+    colors: &SpotPalette,
     label: &str,
     selected: bool,
+    show_band: bool,
+    right_pad: f32,
     on_click: impl FnMut() + 'static,
 ) -> Box<dyn Element> {
+    let _ = app;
     let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(0.0)
         .with_child(
             Text::new(label)
-                .with_font_size(13.5)
-                .with_theme_color(ColorToken::Text, app)
+                .with_font_size(13.0)
+                .with_color(colors.text)
                 .finish(),
         )
         .with_child(Expanded::new(Empty::new().finish()).finish());
     if selected {
         row = row.with_child(
             Icon::new("check")
-                .with_size(12.0)
-                .with_theme_color(ColorToken::Text, app)
+                .with_size(11.0)
+                .with_color(colors.text)
                 .finish(),
         );
     }
+    let band = Container::new(row.finish())
+        .with_padding(EdgeInsets::new(7.0, 4.6, right_pad, 4.6))
+        .with_corner_radius(6.0);
+    let band = if selected && show_band {
+        band.with_background(Fill::Solid(colors.raised))
+    } else {
+        band
+    };
     HoverRow::new(
-        Container::new(row.finish())
-            .with_padding(EdgeInsets::new(6.0, 12.0, 6.0, 12.0))
-            .with_corner_radius(6.0)
+        Container::new(band.finish())
+            .with_padding(EdgeInsets::new(2.0, 1.0, 2.0, 1.0))
             .finish(),
     )
+    .with_hover_token(ColorToken::Selected)
+    .with_corner_radius(6.0)
     .with_on_click(on_click)
     .finish()
 }
 
-fn menu_card(app: &AppContext, content: Box<dyn Element>, width: f32) -> Box<dyn Element> {
+fn menu_card(
+    app: &AppContext,
+    colors: &SpotPalette,
+    content: Box<dyn Element>,
+    width: f32,
+    padding: EdgeInsets,
+) -> Box<dyn Element> {
     ConstrainedBox::new(
         Container::new(content)
-            .with_background(Fill::Solid(app.theme.color(ColorToken::SurfaceRaised)))
-            .with_border(Border::all(1.0).with_border_color(app.theme.color(ColorToken::Border)))
+            .with_background(Fill::Solid(colors.menu))
+            .with_border(Border::all(1.0).with_border_color(colors.border))
             .with_corner_radius(10.0)
-            .with_padding(EdgeInsets::uniform(4.0))
+            .with_padding(padding)
             .finish(),
     )
     .with_width(width)
     .finish()
 }
-
-// Quiet import used by the result rows' icon labels.
-use goble_ui::platform::text_atlas::FontWeight;

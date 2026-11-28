@@ -57,7 +57,7 @@ pub fn build_tab_strip(
         // Overview is the panel's home surface, not a strip chip: the strip is
         // empty while it is the only surface, and every real tab (Terminal,
         // Side Question, Files, ...) is the one that gets a chip.
-        if *kind == SideTabKind::Overview {
+        if matches!(*kind, SideTabKind::Overview | SideTabKind::NewTab) {
             continue;
         }
         let on_select = actions.on_side_tab.clone();
@@ -67,6 +67,14 @@ pub fn build_tab_strip(
             SideTabChip::new(
                 app,
                 *kind,
+                if *kind == SideTabKind::FileTab {
+                    state
+                        .side_file_tab
+                        .as_deref()
+                        .map(|path| path.rsplit('/').next().unwrap_or(path).to_string())
+                } else {
+                    None
+                },
                 selected,
                 true,
                 move || (on_select.borrow_mut())(SideTabAction::Select(index)),
@@ -123,6 +131,7 @@ impl SideTabChip {
     fn new(
         app: &AppContext,
         kind: SideTabKind,
+        label: Option<String>,
         selected: bool,
         closeable: bool,
         on_select: impl FnMut() + 'static,
@@ -137,7 +146,7 @@ impl SideTabChip {
             .with_size(TAB_ICON_SIZE)
             .with_theme_color(token, app)
             .finish();
-        let label = Text::new(kind.title())
+        let label = Text::new(label.unwrap_or_else(|| kind.title().to_string()))
             .with_font_size(TAB_FONT_SIZE)
             .with_weight(FontWeight::Medium)
             .with_theme_color(token, app)
@@ -501,13 +510,12 @@ mod tests {
         state
     }
 
-    /// The panel starts on the Overview home surface, but reopening keeps the
-    /// tab that was up when it was collapsed: Overview is not re-selected and
-    /// no chip is added for it.
+    /// 294: a fresh panel opens on the Start surface and reopens on the tab
+    /// that was up when it was collapsed.
     #[test]
-    fn the_side_panel_starts_on_overview_and_reopens_on_its_last_tab() {
+    fn the_side_panel_starts_on_start_and_reopens_on_its_last_tab() {
         let mut state = UiState::mock();
-        assert_eq!(state.side_tabs, vec![SideTabKind::Overview]);
+        assert!(state.side_tabs.is_empty());
         assert_eq!(state.active_side_tab, 0);
         assert_eq!(state.active_side_tab_kind(), SideTabKind::Overview);
 
@@ -527,29 +535,22 @@ mod tests {
     fn adding_a_tab_selects_it_once() {
         let mut state = UiState::mock();
         state.add_side_tab(SideTabKind::Agent);
-        assert_eq!(
-            state.side_tabs,
-            vec![SideTabKind::Overview, SideTabKind::Agent]
-        );
-        assert_eq!(state.active_side_tab, 1);
+        assert_eq!(state.side_tabs, vec![SideTabKind::Agent]);
+        assert_eq!(state.active_side_tab, 0);
         state.add_side_tab(SideTabKind::Files);
         state.add_side_tab(SideTabKind::Agent);
         assert_eq!(
             state.side_tabs,
-            vec![
-                SideTabKind::Overview,
-                SideTabKind::Agent,
-                SideTabKind::Files
-            ],
+            vec![SideTabKind::Agent, SideTabKind::Files],
             "Agent is not added twice"
         );
-        assert_eq!(state.active_side_tab, 1, "the existing Agent tab is shown");
+        assert_eq!(state.active_side_tab, 0, "the existing Agent tab is shown");
     }
 
     /// Closing the active tab selects its next neighbour, or the previous one
-    /// when it was the last; closing the only tab brings Overview back.
+    /// when it was the last; closing the only tab returns to Start.
     #[test]
-    fn closing_tabs_selects_a_neighbour_and_never_leaves_the_panel_empty() {
+    fn closing_tabs_selects_a_neighbour_and_returns_to_start() {
         let mut state = state_with(
             &[
                 SideTabKind::Overview,
@@ -572,8 +573,9 @@ mod tests {
 
         let mut only = state_with(&[SideTabKind::Agent], 0);
         only.close_side_tab(0);
-        assert_eq!(only.side_tabs, vec![SideTabKind::Overview]);
+        assert!(only.side_tabs.is_empty());
         assert_eq!(only.active_side_tab, 0);
+        assert_eq!(only.active_side_tab_kind(), SideTabKind::Overview);
     }
 
     /// A horizontal swipe steps the strip and wraps at both ends.
@@ -610,6 +612,7 @@ mod tests {
         let mut chip = SideTabChip::new(
             app,
             SideTabKind::Agent,
+            None,
             selected,
             true,
             move || select.set(select.get() + 1),

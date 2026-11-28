@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::elements::{
     AppContext, Container, CrossAxisAlignment, EdgeInsets, Element, Empty, Fill, Flex, Icon,
-    IconButton, Label, LabelSize, LayoutContext, MainAxisSize, PaintContext,
-    Point, SizeConstraint, Spacer, Text,
+    IconButton, Label, LabelSize, LayoutContext, MainAxisSize, PaintContext, Point, SizeConstraint,
+    Spacer, Text,
 };
 use crate::event::DispatchedEvent;
 use crate::geometry::Vector2F;
@@ -114,10 +114,14 @@ impl ChatSidebar {
             } else {
                 ColorToken::Muted
             };
-            let dot = Container::new(Empty::new().with_size(crate::geometry::vec2f(6.0, 6.0)).finish())
-                .with_background(Fill::Solid(app.theme.color(dot_color)))
-                .with_corner_radius(3.0)
-                .finish();
+            let dot = Container::new(
+                Empty::new()
+                    .with_size(crate::geometry::vec2f(6.0, 6.0))
+                    .finish(),
+            )
+            .with_background(Fill::Solid(app.theme.color(dot_color)))
+            .with_corner_radius(3.0)
+            .finish();
             let row = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
@@ -230,14 +234,21 @@ mod tests {
     fn routines_render_add_button_when_callback_set() {
         let app = AppContext::default();
         let mut element: Box<dyn Element> = ChatSidebar::new(&app)
-            .with_routines(vec![RoutineItem::new("Morning social", "Every day 8 AM", true)])
+            .with_routines(vec![RoutineItem::new(
+                "Morning social",
+                "Every day 8 AM",
+                true,
+            )])
             .with_on_add(|| {})
             .finish();
         let commands = crate::test_util::render_element(&mut element, vec2f(280.0, 600.0), &app);
-        let has_plus = commands.iter().any(|c| {
-            matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "plus")
-        });
-        assert!(has_plus, "sidebar with an add callback should render a plus button");
+        let has_plus = commands.iter().any(
+            |c| matches!(c, crate::render::RenderCommand::DrawIcon { name, .. } if name == "plus"),
+        );
+        assert!(
+            has_plus,
+            "sidebar with an add callback should render a plus button"
+        );
     }
 
     #[test]
@@ -250,15 +261,11 @@ mod tests {
             ])
             .with_on_add(|| {})
             .finish();
-        let mut layout: Box<dyn Element> = ChatLayout::new(
-            Empty::new()
-                .with_size(vec2f(400.0, 600.0))
-                .finish(),
-        )
-        .with_right_sidebar(sidebar)
-        .finish();
-        let commands =
-            crate::test_util::render_element(&mut layout, vec2f(680.0, 600.0), &app);
+        let mut layout: Box<dyn Element> =
+            ChatLayout::new(Empty::new().with_size(vec2f(400.0, 600.0)).finish())
+                .with_right_sidebar(sidebar)
+                .finish();
+        let commands = crate::test_util::render_element(&mut layout, vec2f(680.0, 600.0), &app);
         let has_title = commands.iter().any(|c| {
             matches!(c, crate::render::RenderCommand::DrawText { text, .. } if text == "Morning social")
         });
@@ -267,6 +274,9 @@ mod tests {
                 if text == "Every day 8 AM")
         });
         assert!(has_title, "right sidebar should render routine titles");
-        assert!(has_schedule, "right sidebar should render routine schedules");
+        assert!(
+            has_schedule,
+            "right sidebar should render routine schedules"
+        );
     }
 }

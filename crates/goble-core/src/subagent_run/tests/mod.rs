@@ -152,8 +152,7 @@ fn child_of(store: &Store, parent_chat: &str) -> String {
         .unwrap()
         .into_iter()
         .find(|(id, ..)| {
-            id != parent_chat
-                && store.get_chat_parent(id).unwrap().as_deref() == Some(parent_chat)
+            id != parent_chat && store.get_chat_parent(id).unwrap().as_deref() == Some(parent_chat)
         })
         .map(|(id, ..)| id)
         .expect("a child chats row carrying the parent id")

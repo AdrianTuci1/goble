@@ -84,7 +84,7 @@ pub fn page(state: &SettingsUiState) -> PageModel {
     // The agent CLIs are a stack of folds: one heading per CLI, its rows only
     // while the fold is open (the open state lives in `settings.folds`).
     sections.push(
-        SectionModel::new("harnesses", "Agent CLIs").with_description(
+        SectionModel::new("harnesses", "Integrations").with_description(
             "The agent CLIs the catalog knows, one fold each. Detection resolves the launch command on PATH; Configure writes a [harness.<id>] override.",
         ),
     );
@@ -413,11 +413,36 @@ fn agent_cli_folds(state: &SettingsUiState) -> Vec<SectionModel> {
             .map(|harness| harness_fold_from_config(state, harness))
             .collect();
     }
-    state
-        .harnesses
-        .iter()
-        .map(|harness| harness_fold(state, harness))
-        .collect()
+    // 530: connected/installed integrations first; the rest of the catalog is
+    // one collapsed "More integrations" fold whose open state persists in
+    // `settings.folds`.
+    let mut connected = Vec::new();
+    let mut missing = Vec::new();
+    for harness in &state.harnesses {
+        let fold = harness_fold(state, harness);
+        if harness.installed || harness.configured {
+            connected.push(fold);
+        } else {
+            missing.push(fold);
+        }
+    }
+    if missing.is_empty() {
+        return connected;
+    }
+    let more_id = "harnesses.more";
+    let open = state.folds.contains(more_id);
+    connected.push(
+        SectionModel::new(more_id, "More integrations")
+            .with_description(format!(
+                "{} catalog integrations are not installed or configured.",
+                missing.len()
+            ))
+            .with_fold(open, SettingsAction::ToggleFold(more_id.to_string())),
+    );
+    if open {
+        connected.extend(missing);
+    }
+    connected
 }
 
 fn harness_fold(state: &SettingsUiState, harness: &HarnessStatus) -> SectionModel {
@@ -437,6 +462,93 @@ fn harness_fold(state: &SettingsUiState, harness: &HarnessStatus) -> SectionMode
         &format!("harness.{}", harness.id),
         &harness.id,
     );
+    // 465: the Agent CLIs fold is the T3 integration card: detection,
+    // auth/connect, real model list and config path, all from the adapter
+    // snapshot rather than a second hand-written state.
+    if let Some(integration) = state
+        .integrations
+        .iter()
+        .find(|integration| integration.id == harness.id)
+    {
+        let status = match integration.health {
+            goble_core::integration::IntegrationHealth::Connected => StatusKind::Success,
+            goble_core::integration::IntegrationHealth::Installed => StatusKind::Info,
+            goble_core::integration::IntegrationHealth::NotAuthenticated => StatusKind::Warning,
+            goble_core::integration::IntegrationHealth::NotFound => StatusKind::Error,
+            goble_core::integration::IntegrationHealth::Disabled => StatusKind::Muted,
+        };
+        section = section
+            .with_row(
+                RowModel::new(
+                    format!("harness.{}.identity", harness.id),
+                    harness.name.clone(),
+                    integration.detail.clone(),
+                )
+                .with_leading_icon(
+                    goble_core::harness::harness_by_id(&harness.id)
+                        .map(|spec| spec.icon)
+                        .unwrap_or("plug"),
+                )
+                .with_status(status, integration.health.label()),
+            )
+            .with_row(
+                RowModel::new(
+                    format!("harness.{}.auth", harness.id),
+                    "Authentication",
+                    "How the integration signs in.",
+                )
+                .read_only(integration.auth.clone())
+                .buttons(vec![ActionModel::new(
+                    if matches!(
+                        integration.health,
+                        goble_core::integration::IntegrationHealth::Connected
+                    ) {
+                        "Reconnect"
+                    } else {
+                        "Connect"
+                    },
+                    SettingsAction::IntegrationConnect(integration.id.clone()),
+                )
+                .with_icon("plug")]),
+            )
+            .with_row(
+                RowModel::new(
+                    format!("harness.{}.models", harness.id),
+                    "Models",
+                    "The models the integration reports at runtime.",
+                )
+                .read_only(if integration.models.is_empty() {
+                    "No models reported".to_string()
+                } else {
+                    integration.model_names().join(", ")
+                }),
+            )
+            .with_row(
+                RowModel::new(
+                    format!("harness.{}.config", harness.id),
+                    "Config",
+                    "Where the integration keeps its local configuration.",
+                )
+                .read_only(
+                    integration
+                        .config_path
+                        .clone()
+                        .unwrap_or_else(|| "Not found".to_string()),
+                ),
+            )
+            .with_row(
+                RowModel::new(
+                    format!("harness.{}.refresh", harness.id),
+                    "Refresh integration",
+                    "Re-read installation, sign-in and models.",
+                )
+                .buttons(vec![ActionModel::new(
+                    "Refresh",
+                    SettingsAction::RefreshIntegrations,
+                )
+                .with_icon("refresh")]),
+            );
+    }
     if let Some(error) = harness.error.clone() {
         if !error.is_empty() {
             section = section.with_row(
@@ -450,6 +562,21 @@ fn harness_fold(state: &SettingsUiState, harness: &HarnessStatus) -> SectionMode
             );
         }
     }
+    // Put the integration identity/status/model card ahead of the launch
+    // controls, matching T3's provider card order.
+    let rank = |row: &RowModel| -> usize {
+        let suffix = row.id.rsplit('.').next().unwrap_or_default();
+        match suffix {
+            "identity" => 0,
+            "status" => 1,
+            "auth" => 2,
+            "models" => 3,
+            "config" => 4,
+            "refresh" => 5,
+            _ => 6,
+        }
+    };
+    section.rows.sort_by_key(rank);
     section
 }
 

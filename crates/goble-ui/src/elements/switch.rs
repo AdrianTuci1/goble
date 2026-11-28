@@ -102,10 +102,28 @@ impl Element for Switch {
         let thumb_y = origin.y + padding;
         let thumb_rect = rectf(thumb_x, thumb_y, thumb_size, thumb_size);
         let thumb_color = app.theme.color(ColorToken::Text);
-        ctx.renderer
-            .as_mut()
-            .unwrap()
-            .fill_rect(thumb_rect, thumb_color);
+        let renderer = ctx.renderer.as_mut().unwrap();
+        renderer.fill_rect(thumb_rect, thumb_color);
+        // 571: the track itself carries the state word, not a separate label.
+        let label = if self.checked { "On" } else { "Off" };
+        let label_width = if self.checked {
+            self.size.x - thumb_size - padding * 2.0
+        } else {
+            self.size.x - thumb_size - padding * 2.0
+        };
+        let label_x = if self.checked {
+            origin.x + padding + 2.0
+        } else {
+            origin.x + thumb_size + padding
+        };
+        renderer.draw_text(
+            vec2f(label_x, origin.y + (self.size.y - 11.0) / 2.0),
+            label,
+            9.0,
+            app.theme.color(ColorToken::Text),
+            label_width.max(0.0),
+            1.0,
+        );
     }
 
     fn size(&self) -> Option<Vector2F> {

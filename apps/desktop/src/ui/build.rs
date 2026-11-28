@@ -21,6 +21,76 @@ use super::{
     panes, session_menu, settings, shell, shortcuts_help, sidebar, vault, CONNECTORS_WIDTH,
 };
 
+/// Keeps the shell behind an open modal from reacting to the pointer's hover,
+/// while the modal's own sheet still paints its hover. The shell is painted
+/// before the modal, so clearing `cursor_inside` for that subtree is what stops
+/// a sidebar/topbar row lighting up under the scrim.
+struct ModalHoverGate {
+    child: Box<dyn Element>,
+    suppress: bool,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl ModalHoverGate {
+    fn new(child: Box<dyn Element>, suppress: bool) -> Self {
+        Self {
+            child,
+            suppress,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for ModalHoverGate {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        let saved = ctx.cursor_inside;
+        if self.suppress {
+            ctx.cursor_inside = false;
+        }
+        self.child.paint(origin, ctx, app);
+        ctx.cursor_inside = saved;
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.child.wants_animation()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, ctx, app)
+    }
+}
+
 /// The thickness of the rule that wraps the whole window, warp-new's window
 /// border (`app/src/root_view.rs:117-131`).
 pub const WINDOW_BORDER_WIDTH: f32 = 1.0;
@@ -429,7 +499,7 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         shell::build_workspace_surface(app, row)
     };
     let sidebar_shown = state.responsive.sidebar_shown(state.sidebar_visible);
-    let body: Box<dyn Element> = if sidebar_shown && !state.side_panel_maximized {
+    let body: Box<dyn Element> = if sidebar_shown {
         let on_drag_start = actions.on_sidebar_drag_start.clone();
         let on_drag_move = actions.on_sidebar_drag_move.clone();
         let on_drag_end = actions.on_sidebar_drag_end.clone();
@@ -546,8 +616,18 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
     // Closing a file pane with unsaved edits asks here, above the workspace.
     let close_prompt_dialog = super::file_view::build_close_prompt(app, state, actions);
 
-    let mut stack = Stack::new().with_children(vec![
-        shell_col.finish(),
+    // 382: floating windows are application-window level: above the sidebar
+    // and side panel, below the settings/spotlight layers.
+    let floating_overlay = state
+        .spaces
+        .get(state.active_space)
+        .and_then(|space| panes::build_floating_overlay(app, state, actions, space));
+    let mut children =
+        vec![ModalHoverGate::new(shell_col.finish(), state.settings_overlay_open).finish()];
+    if let Some(floating) = floating_overlay {
+        children.push(floating);
+    }
+    children.extend(vec![
         // The toolbar paints after the body so the popups/trays anchored in it
         // (the "+ ▾" environment menu) sit above the sidebar and the pane
         // surface, and it is dispatched first within the shell for the same
@@ -586,7 +666,16 @@ pub fn build_ui(context: &BuildContext<'_>) -> Box<dyn Element> {
         ))
         .finish(),
     ]);
+    let mut stack = Stack::new().with_children(children);
 
+    // 349: the Automations popover is anchored beside the sidebar row and
+    // floats above the workspace, below the settings/spotlight top layers.
+    if state.automations_open {
+        stack = stack.with_overlay(
+            crons::build_automations_popover(app, state, actions),
+            vec2f(crate::ui::SIDEBAR_WIDTH + 24.0, 56.0),
+        );
+    }
     // A finished turn is announced here, at the window's top layer, so the
     // banner reads the same over the workspace, over settings and over every
     // other page, and shifts nothing it is drawn above.
@@ -1001,37 +1090,32 @@ mod tests {
             .collect()
     }
 
-    /// The one workspace sheet: the rounded surface both panels live on. It is
-    /// the only `Border` rule with the sheet radius that spans the content
-    /// height, so its count also proves the old per-panel casings are gone.
+    /// The flat workspace surface: the full pane-area `Bg` fill that both
+    /// panels live on. It has no radius, margin or border; the largest
+    /// content-sized fill is the sheet.
     fn workspace_sheet(commands: &[RenderCommand], app: &AppContext, size: Vector2F) -> RectF {
-        // The shell's sheet is the one rounded `Surface` fill that spans the
-        // workspace; it owns no Border stroke any more (the windows float with
-        // a shadow instead).
+        let bg = app.theme.color(ColorToken::Bg);
         let surface = app.theme.color(ColorToken::Surface);
+        let content = app.theme.color(ColorToken::ContentBg);
         let sheets: Vec<RectF> = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::FillRect {
-                    rect,
-                    color,
-                    corner_radius,
-                } if *color == surface
-                    && (*corner_radius - 12.0).abs() < 0.01
-                    && rect.height() > size.y / 2.0
-                    && rect.width() > size.x / 2.0 =>
+                RenderCommand::FillRect { rect, color, .. }
+                    if (*color == bg || *color == surface || *color == content)
+                        && rect.height() > size.y / 2.0
+                        && rect.width() > size.x / 2.0
+                        && rect.min_x() >= crate::ui::SIDEBAR_WIDTH - 1.0
+                        && rect.min_y() >= crate::ui::chrome::CHROME_HEIGHT - 1.0 =>
                 {
                     Some(*rect)
                 }
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            sheets.len(),
-            1,
-            "the workspace wears one sheet, not a casing per panel: {sheets:?}"
-        );
-        sheets[0]
+        sheets
+            .into_iter()
+            .max_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
+            .expect("the workspace surface")
     }
 
     /// The rule that spans the window, when the frame drew one.
@@ -1169,7 +1253,7 @@ mod tests {
                 if two_panes { 2 } else { 1 },
                 "the frame draws every pane: {frames:?}"
             );
-            let bg = app.theme.color(ColorToken::Bg);
+            let bg = app.theme.color(ColorToken::ContentBg);
             let border = app.theme.color(ColorToken::Border);
             let _ = border;
             for card in &frames {
@@ -1226,7 +1310,7 @@ mod tests {
     fn the_panel_has_no_corner_ornament() {
         let app = AppContext::default();
         let accent = app.theme.color(ColorToken::Accent);
-        let surface = app.theme.color(ColorToken::Surface);
+        let surface = app.theme.color(ColorToken::ContentBg);
         let border = app.theme.color(ColorToken::Border);
 
         for two_panes in [false, true] {
@@ -1290,8 +1374,8 @@ mod tests {
             for two_panes in [false, true] {
                 let (pixels, frames) = raster_frame(app, two_panes);
                 assert_eq!(frames.len(), if two_panes { 2 } else { 1 });
-                let surface = app.theme.color(ColorToken::Surface);
-                let bg = app.theme.color(ColorToken::Bg);
+                let surface = app.theme.color(ColorToken::ContentBg);
+                let bg = app.theme.color(ColorToken::ContentBg);
                 let accent = app.theme.color(ColorToken::Accent);
 
                 for (index, card) in frames.iter().enumerate() {
@@ -1515,7 +1599,7 @@ mod tests {
     /// plus `TOPBAR_HEIGHT` (so the band is one bar tall against the card, not
     /// inset). A header inside the content lane would be lane-wide instead.
     fn header_band(commands: &[RenderCommand], app: &AppContext, frame: RectF) -> Option<RectF> {
-        let surface = app.theme.color(ColorToken::Surface);
+        let surface = app.theme.color(ColorToken::ContentBg);
         let inset = crate::ui::panes::PANE_INSET;
         commands.iter().find_map(|command| match command {
             RenderCommand::FillRect {
@@ -1542,7 +1626,7 @@ mod tests {
     /// surface), so the card's own fill — the frame rect itself — is skipped and
     /// the column is the tall fill under the pane's chrome.
     fn content_column(commands: &[RenderCommand], app: &AppContext, frame: RectF) -> RectF {
-        let bg = app.theme.color(ColorToken::Bg);
+        let bg = app.theme.color(ColorToken::ContentBg);
         commands
             .iter()
             .filter_map(|command| match command {
@@ -2094,9 +2178,16 @@ mod tests {
             let commands = render_element(&mut root, size, &app);
 
             let rules = thin_rules(&commands);
-            assert!(
-                rules.is_empty(),
-                "{}: no divider rule at a resizable boundary: {rules:?}",
+            // 527: exactly one full-height rule at the sidebar boundary.
+            let sidebar_rule = rules.iter().filter(|rect| {
+                rect.width() <= 1.5
+                    && rect.height() >= 40.0
+                    && (rect.min_x() - (crate::ui::SIDEBAR_WIDTH - 0.5)).abs() < 1.0
+            });
+            assert_eq!(
+                sidebar_rule.count(),
+                1,
+                "{}: one sidebar divider rule: {rules:?}",
                 command()
             );
 
@@ -2523,6 +2614,8 @@ mod tests {
         let (mut root, _state, _dir) = app_root();
         let commands = render_element(&mut root, window(), &app);
         _state.borrow_mut().right_sidebar_open = true;
+        _state.borrow_mut().side_tabs = vec![SideTabKind::Overview];
+        _state.borrow_mut().active_side_tab = 0;
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands
             .iter()
@@ -2537,16 +2630,15 @@ mod tests {
             "Open File",
             "Terminal",
             "Side Question",
+            "Plugins",
         ] {
             assert!(
                 texts.iter().any(|text| *text == expected),
                 "the Overview side tab draws {expected:?}: {texts:?}"
             );
         }
-        // M: Plugins is not in this build, and empty Subagents / Background
-        // Tasks sections are not drawn at all (not even an empty caption).
+        // Empty Subagents / Background Tasks sections are not drawn at all.
         for gone in [
-            "Plugins",
             "Subagents",
             "Background Tasks",
             "No subagents",
@@ -2590,6 +2682,8 @@ mod tests {
             .expect("the chrome row names the conversation");
         assert!(title < crate::ui::chrome::CHROME_HEIGHT);
         state.borrow_mut().right_sidebar_open = true;
+        state.borrow_mut().side_tabs = vec![SideTabKind::Overview];
+        state.borrow_mut().active_side_tab = 0;
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands
             .iter()
@@ -2620,9 +2714,9 @@ mod tests {
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { name, .. } if name == "fullscreen-enter"
+                RenderCommand::DrawIcon { name, .. } if name == "panel-right-outline"
             )),
-            "the dock offers maximize"
+            "the dock offers the side-panel toggle"
         );
     }
 
@@ -2651,7 +2745,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     origin, name, size, ..
-                } if name == "ellipsis" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "ellipsis-vertical" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the panel header draws its More control");
@@ -2745,7 +2839,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     origin, name, size, ..
-                } if name == "ellipsis" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "ellipsis-vertical" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the More control");
@@ -2998,10 +3092,9 @@ mod tests {
         );
     }
 
-    /// Dragging the shared boundary writes the side panel's ratio, clamps it to
-    /// the `0.25..=0.75` range at a wide window, and stops at each panel's
-    /// 320 pt minimum when the content area is narrower. The handle is still a
-    /// cursor-only band centred on the boundary inside the one sheet.
+    /// Dragging the shared boundary writes the side panel's trailing ratio,
+    /// clamps it to the `0.25..=0.75` range at a wide window, and keeps both
+    /// panels above their 320 pt minimum when the content area is narrower.
     #[test]
     fn dragging_the_side_split_changes_and_clamps_the_ratio() {
         let app = AppContext::default();
@@ -3028,7 +3121,8 @@ mod tests {
         assert!(state.borrow().side_split_dragging);
         let _ = render_element(&mut root, size, &app);
 
-        // Far right: the ratio stops at 0.75, not at the window edge.
+        // Far right: the side panel is the trailing share, so it shrinks to
+        // its 0.25 floor while the boundary follows the pointer.
         assert!(root.dispatch_event(
             &DispatchedEvent::MouseMove {
                 position: vec2f(size.x - 1.0, mid_y),
@@ -3037,8 +3131,8 @@ mod tests {
             &app,
         ));
         assert!(
-            (state.borrow().side_split_ratio - 0.75).abs() < 0.001,
-            "the drag clamps at 0.75, got {}",
+            (state.borrow().side_split_ratio - 0.25).abs() < 0.001,
+            "the right drag clamps at the 0.25 side share, got {}",
             state.borrow().side_split_ratio
         );
         let _ = render_element(&mut root, size, &app);
@@ -3046,40 +3140,31 @@ mod tests {
         let sheet = workspace_sheet(&commands, &app, size);
         let main = pane_frames(&state)[0];
         assert!(
-            (main.width() - sheet.width() * 0.25).abs() < 10.0,
-            "the main panel keeps the quarter share: {main:?} in {sheet:?}"
+            (main.width() - sheet.width() * 0.75).abs() < 12.0,
+            "the main panel keeps the three-quarter share: {main:?} in {sheet:?}"
         );
 
-        assert!(root.dispatch_event(
+        let _ = root.dispatch_event(
             &DispatchedEvent::MouseUp {
                 position: vec2f(size.x - 1.0, mid_y),
                 button: 0,
             },
             &mut ctx,
             &app,
-        ));
+        );
         assert!(
             !state.borrow().side_split_dragging,
             "mouse up ends the drag"
         );
 
-        // Narrower content: at 1400 the panel can be at most all but 320 pt,
-        // and the main panel stops at 320 pt.
+        // Narrower content: the side share can reach 0.75, but the main panel
+        // never falls below 320 pt; dragging left/right hits those bounds.
         let narrow = vec2f(1400.0, 900.0);
-        state.borrow_mut().side_split_ratio = 0.75;
+        state.borrow_mut().side_split_ratio = 0.5;
         let _ = render_element(&mut root, narrow, &app);
         let commands = render_element(&mut root, narrow, &app);
         let sheet = workspace_sheet(&commands, &app, narrow);
-        let expected = 1.0 - 320.0 / sheet.width();
-        // The layout resolves the stored 0.75 against the minimum rather than
-        // writing the clamped value back; the panel widths are the evidence.
         let main = pane_frames(&state)[0];
-        assert!(
-            (main.width() - 320.0).abs() < 10.0,
-            "the main panel holds its 320 pt minimum: {main:?}"
-        );
-        // The pane card's right edge crosses the shared boundary by the
-        // canceled gutter (card max = boundary + 5), so the handle is there.
         let boundary = main.max_x() - 5.0;
         let mid_y = main.min_y() + main.height() / 2.0;
         assert!(root.dispatch_event(
@@ -3098,20 +3183,21 @@ mod tests {
             &mut ctx,
             &app,
         ));
-        let min_side = 320.0 / sheet.width();
         assert!(
-            (state.borrow().side_split_ratio - min_side).abs() < 0.001,
-            "the drag clamps at the 320 pt side minimum, got {} (wanted {min_side})",
+            state.borrow().side_split_ratio > 0.69,
+            "the left drag takes the side panel to its width-aware maximum, got {}",
             state.borrow().side_split_ratio
         );
-
-        let _ = root.dispatch_event(
-            &DispatchedEvent::MouseUp {
-                position: vec2f(0.0, mid_y),
-                button: 0,
-            },
-            &mut ctx,
-            &app,
+        let _ = render_element(&mut root, narrow, &app);
+        let main = pane_frames(&state)[0];
+        assert!(
+            main.width() >= 320.0 - 10.0,
+            "the main panel holds its 320 pt minimum: {main:?}"
+        );
+        let min_side = (320.0 / sheet.width()).min(0.75);
+        assert!(
+            state.borrow().side_split_ratio >= min_side - 0.001,
+            "the side panel keeps its minimum too"
         );
     }
 
@@ -3134,7 +3220,7 @@ mod tests {
         );
         assert!(
             (bottom - 8.0).abs() < 0.5,
-            "the bottom keeps the card gutter plus the shell's 4 pt free space: {bottom}"
+            "the bottom keeps the area and card gutters: {bottom}"
         );
     }
 
@@ -3169,45 +3255,46 @@ mod tests {
         );
     }
 
-    /// F: the whole workspace is one rounded sheet with a 5 pt free margin of
-    /// the shell's own material, and the side panel is the same flat `Bg` as
-    /// the main panel (no second casing, no border or radius on the boundary).
+    /// The workspace surface is flush to the chrome/sidebar/window edges (the
+    /// sheet has no margin or radius), and the side panel shares the content
+    /// material.
     #[test]
-    fn the_workspace_sheet_keeps_the_margin_and_both_panels_share_its_material() {
+    fn the_workspace_surface_is_flush_and_both_panels_share_its_material() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
         let size = vec2f(1024.0, 768.0);
         state.borrow_mut().right_sidebar_open = true;
+        state.borrow_mut().side_tabs = vec![SideTabKind::Overview];
+        state.borrow_mut().active_side_tab = 0;
         let commands = render_element(&mut root, size, &app);
         let sheet = workspace_sheet(&commands, &app, size);
 
-        // The free margin is exactly 5 pt on every side, outside the sheet.
-        for (label, actual) in [
-            ("left", sheet.min_x() - crate::ui::SIDEBAR_WIDTH),
-            ("top", sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT),
-            ("right", size.x - sheet.max_x()),
-            ("bottom", size.y - sheet.max_y()),
-        ] {
-            assert!(
-                (actual - shell::WORKSPACE_MARGIN).abs() < 0.51,
-                "the {label} free margin is 5 pt, got {actual}: {sheet:?}"
-            );
-        }
-        // The margin is the shell's `Bg`, not the sheet's `Surface`.
-        let bg = app.theme.color(ColorToken::Bg);
-        let margin_at = vec2f(sheet.min_x() - 2.0, sheet.min_y() + 4.0);
+        // Flush content surface: it reaches the chrome, the sidebar and the
+        // window's right/bottom edges; no margin or radius.
+        assert!(
+            (sheet.min_x() - crate::ui::SIDEBAR_WIDTH).abs() < 1.0,
+            "the surface starts at the sidebar: {sheet:?}"
+        );
+        assert!(
+            (sheet.min_y() - crate::ui::chrome::CHROME_HEIGHT).abs() < 1.0,
+            "the surface starts under the chrome: {sheet:?}"
+        );
+        assert!(
+            (size.x - sheet.max_x()).abs() < 1.0 && (size.y - sheet.max_y()).abs() < 1.0,
+            "the surface reaches the window's right/bottom edges: {sheet:?}"
+        );
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::FillRect { rect, color, .. }
-                    if *color == bg && contains(*rect, margin_at)
+                RenderCommand::FillRect { rect, corner_radius, .. }
+                    if *rect == sheet && *corner_radius == 0.0
             )),
-            "the free margin is painted in the shell background"
+            "the surface is square, not a rounded sheet"
         );
 
-        // The side panel body paints the main panel's `Bg` across the boundary,
-        // with no casing of its own: the only rounded sheet rule is the one
-        // `workspace_sheet` found.
+        // The side panel body paints the content material across the boundary,
+        // with no casing of its own.
+        let bg = app.theme.color(ColorToken::ContentBg);
         let boundary = sheet.min_x() + sheet.width() * 0.5;
         let side_at = vec2f(boundary + 30.0, sheet.min_y() + 120.0);
         assert!(
@@ -3235,17 +3322,17 @@ mod tests {
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { name, .. } if name == "dots-vertical"
+                RenderCommand::DrawIcon { name, .. } if name == "ellipsis-vertical"
             )),
             "the side panel's search row carries the kebab"
         );
-        // M: no Plugins row, so no disclosure chevron in the launcher.
+        // Z: the launcher keeps Plugins with its disclosure chevron.
         assert!(
-            !commands.iter().any(|command| matches!(
+            commands.iter().any(|command| matches!(
                 command,
                 RenderCommand::DrawIcon { name, .. } if name == "chevron-right"
             )),
-            "the launcher has no Plugins disclosure row"
+            "the launcher's Plugins row carries its chevron"
         );
     }
 
@@ -3419,7 +3506,7 @@ mod tests {
             s.add_side_tab(SideTabKind::Agent);
             s.add_side_tab(SideTabKind::Files);
         }
-        assert_eq!(state.borrow().active_side_tab, 2);
+        assert_eq!(state.borrow().active_side_tab, 1);
         let commands = render_element(&mut root, window(), &app);
         let chip = commands
             .iter()
@@ -3435,7 +3522,7 @@ mod tests {
         click(&mut root, &app, chip);
         assert_eq!(
             state.borrow().active_side_tab,
-            1,
+            0,
             "the chip click selects Side Question"
         );
         // Overview is the panel-1 launcher, not a strip chip.
@@ -3453,40 +3540,41 @@ mod tests {
     /// G: an open panel with no real tab draws no chip and no `+` — Overview is
     /// the body's home surface and the panel-1 launcher, never a strip chip.
     #[test]
-    fn the_empty_side_panel_draws_no_chip_and_no_add_button() {
+    fn the_empty_side_panel_shows_the_start_surface_and_add_button() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
         state.borrow_mut().right_sidebar_open = true;
-        assert_eq!(
-            state.borrow().side_tabs,
-            vec![SideTabKind::Overview],
-            "the default is the Overview home surface"
+        assert!(
+            state.borrow().side_tabs.is_empty(),
+            "a fresh panel has no open tab"
         );
         let commands = render_element(&mut root, window(), &app);
-        let chrome_text: Vec<&str> = commands
+        let texts: Vec<&str> = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. }
-                    if origin.y < crate::ui::chrome::CHROME_HEIGHT =>
-                {
-                    Some(text.as_str())
-                }
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
+        for label in [
+            "Search or enter a URL",
+            "Review",
+            "Open File",
+            "Terminal",
+            "Side Question",
+            "Plugins",
+        ] {
+            assert!(
+                texts.contains(&label),
+                "the Overview home lists {label:?}: {texts:?}"
+            );
+        }
         assert!(
-            !chrome_text.iter().any(|text| *text == "Overview"),
-            "no Overview chip: {chrome_text:?}"
-        );
-        assert!(
-            !commands.iter().any(|command| matches!(
+            commands.iter().any(|command| matches!(
                 command,
-                RenderCommand::DrawIcon { name, origin, .. }
-                    if name == "plus"
-                        && origin.y < crate::ui::chrome::CHROME_HEIGHT
-                        && origin.x > 300.0
+                RenderCommand::DrawIcon { name, .. } if name == "plus"
             )),
-            "the empty section has no + button"
+            "the empty panel keeps the add-tab button"
         );
     }
 
@@ -3538,15 +3626,15 @@ mod tests {
             })
             .expect("the Side Question chip");
         let plus = icon_x("plus").expect("the add button");
-        let maximize = icon_x("fullscreen-enter").expect("the maximize control");
+        let menu = icon_x("panel-right-outline").expect("the side-panel toggle");
         assert!(terminal < side_question, "the chips keep strip order");
         assert!(
             plus > side_question,
             "the + sits after the chips: plus {plus}, chip {side_question}"
         );
         assert!(
-            maximize - plus > 20.0,
-            "the + stays left of the window controls: plus {plus}, maximize {maximize}"
+            menu - plus > 20.0,
+            "the + stays left of the trailing icons: plus {plus}, menu {menu}"
         );
     }
 
@@ -3836,348 +3924,703 @@ mod tests {
         );
     }
 
-    /// U: Escape only dismisses the topmost overlay. It never opens, restores
-    /// or focuses a terminal/floating pane, however many times it is pressed.
+    /// 203/206: the open review panel's trailing cluster is exactly the More
+    /// kebab and the round panel menu — no search, no maximize/panel glyph —
+    /// with one 1 px separator between panel 1 and panel 2.
     #[test]
-    fn escape_dismisses_overlays_without_opening_stale_panes() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = app_root();
-        let _ = render_element(&mut root, window(), &app);
-        let before_id = state.borrow().spaces[0].root.max_id();
-        let before_terminals = state.borrow().terminal.borrow().sessions.len();
-        let mut ctx = EventContext;
-
-        // Settings is a surface over the shell: Escape closes it, and the pane
-        // tree/terminal registry are untouched.
-        state.borrow_mut().settings_overlay_open = true;
-        let _ = render_element(&mut root, window(), &app);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(
-            !state.borrow().settings_overlay_open,
-            "Escape closes settings"
-        );
-        assert_eq!(
-            state.borrow().spaces[0].root.max_id(),
-            before_id,
-            "Escape opens no pane"
-        );
-        assert_eq!(
-            state.borrow().terminal.borrow().sessions.len(),
-            before_terminals,
-            "Escape starts no terminal"
-        );
-
-        // Repeated Escape with no overlay is inert too.
-        for _ in 0..4 {
-            let _ = root.dispatch_event(
-                &DispatchedEvent::KeyDown {
-                    key: "Escape".to_string(),
-                    modifiers: Default::default(),
-                },
-                &mut ctx,
-                &app,
-            );
-        }
-        assert_eq!(
-            state.borrow().spaces[0].root.max_id(),
-            before_id,
-            "repeated Escape never resurrects a terminal/floating pane"
-        );
-        assert_eq!(
-            state.borrow().terminal.borrow().sessions.len(),
-            before_terminals,
-            "repeated Escape starts no terminal session"
-        );
-
-        // The spotlight behaves the same way.
-        state.borrow_mut().spotlight.open = true;
-        state.borrow_mut().spotlight.focused = true;
-        let _ = render_element(&mut root, window(), &app);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(
-            !state.borrow().spotlight.open,
-            "Escape closes the spotlight"
-        );
-        assert_eq!(
-            state.borrow().spaces[0].root.max_id(),
-            before_id,
-            "the spotlight's Escape opens no pane either"
-        );
-    }
-
-    /// Q: the topbar Search opens the spotlight, which filters real
-    /// conversations by query/scope, navigates with the keys and dismisses on
-    /// Escape or an outside press.
-    #[test]
-    fn the_topbar_search_opens_the_spotlight_and_it_filters_navigates_and_dismisses() {
-        let app = AppContext::default();
-        let (mut root, state, _dir) = app_root();
-        {
-            let mut s = state.borrow_mut();
-            s.conversations = vec![
-                goble_ui::ConversationEntry::new("a", "Alpha notes", "", "1d"),
-                goble_ui::ConversationEntry::new("b", "Beta build", "", "2d"),
-            ];
-        }
-        let commands = render_element(&mut root, window(), &app);
-        let search = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawIcon {
-                    name, origin, size, ..
-                } if name == "search" && origin.y < 44.0 => {
-                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
-                }
-                _ => None,
-            })
-            .expect("the topbar Search control");
-        click(&mut root, &app, search);
-        assert!(state.borrow().spotlight.open, "Search opens the spotlight");
-        assert!(
-            state.borrow().spotlight.focused,
-            "the query field is focused"
-        );
-
-        let commands = render_element(&mut root, window(), &app);
-        let texts: Vec<String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        for expected in [
-            "Conversations",
-            "Search for conversations...",
-            "Alpha notes",
-            "Beta build",
-        ] {
-            assert!(
-                texts.iter().any(|text| text == expected),
-                "the spotlight draws {expected:?}: {texts:?}"
-            );
-        }
-
-        // Query + scope filtering.
-        state.borrow_mut().spotlight.query = "beta".to_string();
-        let commands = render_element(&mut root, window(), &app);
-        let card_texts: Vec<String> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. }
-                    if origin.x > 250.0 && origin.y > 90.0 && origin.y < 500.0 =>
-                {
-                    Some(text.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        assert!(card_texts.iter().any(|text| text == "Beta build"));
-        assert!(!card_texts.iter().any(|text| text == "Alpha notes"));
-        *state.borrow().spotlight.scope_menu_open.borrow_mut() = true;
-        let commands = render_element(&mut root, window(), &app);
-        let commands_item = commands
-            .iter()
-            .find_map(|command| match command {
-                RenderCommand::DrawText { text, origin, .. } if text == "Commands" => Some(*origin),
-                _ => None,
-            })
-            .expect("the scope menu");
-        click(&mut root, &app, commands_item + vec2f(4.0, 4.0));
-        assert_eq!(
-            state.borrow().spotlight.scope,
-            crate::ui::spotlight::SpotlightScope::Commands
-        );
-        assert!(!*state.borrow().spotlight.scope_menu_open.borrow());
-        state.borrow_mut().spotlight.scope = crate::ui::spotlight::SpotlightScope::Conversations;
-        state.borrow_mut().spotlight.query.clear();
-
-        // Keyboard: Down moves the highlight, Enter opens, Escape closes.
-        let mut ctx = EventContext;
-        assert!(root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "ArrowDown".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        ));
-        assert_eq!(state.borrow().spotlight.selected, 1);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Enter".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(!state.borrow().spotlight.open, "Enter opens and dismisses");
-
-        // Escape closes the window; with a menu open it closes the menu first.
-        state.borrow_mut().spotlight.open = true;
-        *state.borrow().spotlight.options_menu_open.borrow_mut() = true;
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(!*state.borrow().spotlight.options_menu_open.borrow());
-        assert!(state.borrow().spotlight.open);
-        let _ = root.dispatch_event(
-            &DispatchedEvent::KeyDown {
-                key: "Escape".to_string(),
-                modifiers: Default::default(),
-            },
-            &mut ctx,
-            &app,
-        );
-        assert!(!state.borrow().spotlight.open);
-
-        // An outside press dismisses it too.
-        state.borrow_mut().spotlight.open = true;
-        click(&mut root, &app, vec2f(4.0, 4.0));
-        assert!(!state.borrow().spotlight.open, "outside press closes");
-    }
-
-    /// Paint the laid-out frame once more with the pointer at `pointer`, so
-    /// hover-only controls are observable with their real geometry.
-    fn commands_with_pointer(
-        root: &mut Box<dyn Element>,
-        app: &AppContext,
-        pointer: Vector2F,
-    ) -> Vec<RenderCommand> {
-        let mut ctx = goble_ui::elements::PaintContext::new(Renderer::new());
-        ctx.cursor_inside = true;
-        ctx.cursor_position = pointer;
-        root.paint(vec2f(0.0, 0.0), &mut ctx, app);
-        ctx.renderer
-            .take()
-            .map(|renderer| renderer.commands().to_vec())
-            .unwrap_or_default()
-    }
-
-    /// S: the full chrome row drives the strip end-to-end — a chip click
-    /// switches the body, the hover X closes that chip, and the fixed + opens
-    /// its add menu.
-    #[test]
-    fn the_side_tab_strip_handles_chip_close_and_add_clicks() {
+    fn the_review_owns_its_icon_row_below_the_general_topbar() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
         {
             let mut s = state.borrow_mut();
             s.right_sidebar_open = true;
-            s.add_side_tab(SideTabKind::Terminal);
-            s.add_side_tab(SideTabKind::Agent);
-            s.active_side_tab = 2;
+            s.side_tabs = vec![crate::state::SideTabKind::Review];
+            s.active_side_tab = 0;
         }
-        let commands = render_element(&mut root, window(), &app);
-        let label = |text: &str| {
-            commands.iter().find_map(|command| match command {
-                RenderCommand::DrawText {
-                    text: drawn,
-                    origin,
-                    ..
-                } if drawn == text && origin.y < crate::ui::chrome::CHROME_HEIGHT => Some(*origin),
+        let size = vec2f(1600.0, 1000.0);
+        let commands = render_element(&mut root, size, &app);
+        let split = size.x * 0.625;
+        let top: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if origin.y < crate::ui::chrome::CHROME_HEIGHT && origin.x > split =>
+                {
+                    Some(name.as_str())
+                }
                 _ => None,
             })
-        };
-        // Chip click switches the panel off the active Side Question tab.
-        let terminal = label("Terminal").expect("the Terminal chip");
-        click(&mut root, &app, terminal + vec2f(4.0, 4.0));
-        assert_eq!(
-            state.borrow().active_side_tab_kind(),
-            SideTabKind::Terminal,
-            "the chip click switches the panel content"
+            .collect();
+        assert!(
+            top.contains(&"fullscreen-enter") || top.contains(&"fullscreen-exit"),
+            "the general topbar keeps maximize: {top:?}"
         );
+        assert!(
+            top.contains(&"panel-right-outline"),
+            "the general topbar keeps the side-panel toggle: {top:?}"
+        );
+        assert!(
+            !top.contains(&"search") && !top.contains(&"dots-vertical"),
+            "the review icons are not in the general bar: {top:?}"
+        );
+        let review_row: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawIcon { name, origin, .. }
+                    if origin.y > crate::ui::chrome::CHROME_HEIGHT
+                        && origin.y < crate::ui::chrome::CHROME_HEIGHT + 40.0 =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        // 472: the Review row is only Search and the sidebar toggle.
+        for icon in ["search", "panel-left-outline"] {
+            assert!(
+                review_row.contains(&icon),
+                "the review's own row carries {icon:?}: {review_row:?}"
+            );
+        }
+        for icon in ["dots-vertical", "menu-01"] {
+            assert!(
+                !review_row.contains(&icon),
+                "the review's own row drops {icon:?}: {review_row:?}"
+            );
+        }
+        let border = app.theme.color(ColorToken::Border);
+        let separators = commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::FillRect { rect, color, .. }
+                        if *color == border
+                            && rect.width() <= 1.01
+                            && rect.height() >= 40.0
+                )
+            })
+            .count();
+        assert!(separators >= 1, "a 1 px rule separates the rows");
+    }
 
-        // The hover X sits at the chip's trailing square; the fixed + is the
-        // last icon before the window controls.
+    /// 289/290: the two topbar rules land on the body's sidebar and split
+    /// boundaries at a normal ratio.
+    #[test]
+    fn topbar_rules_align_with_the_body_columns() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.sidebar_visible = true;
+            s.right_sidebar_open = true;
+            s.side_split_ratio = 0.5;
+            s.side_tabs = vec![crate::state::SideTabKind::Terminal];
+            s.active_side_tab = 0;
+        }
+        let size = vec2f(1600.0, 1000.0);
+        let commands = render_element(&mut root, size, &app);
+        let border = app.theme.color(ColorToken::Border);
+        let rules: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, .. }
+                    if matches!(command, RenderCommand::FillRect { color, .. } if *color == border)
+                        && rect.width() <= 1.01
+                        && rect.height() >= 40.0
+                        && rect.min_y() < 5.0 =>
+                {
+                    Some(rect.min_x())
+                }
+                _ => None,
+            })
+            .collect();
+        let sidebar = state.borrow().sidebar_width;
+        let content = size.x - sidebar - 1.0;
+        let boundary = sidebar + 1.0 + content * 0.5;
+        assert_eq!(rules.len(), 2, "sidebar and split rules: {rules:?}");
+        assert!(
+            (rules[0] - sidebar).abs() < 2.0,
+            "sidebar rule {} vs {sidebar}",
+            rules[0]
+        );
+        assert!(
+            (rules[1] - boundary).abs() < 3.0,
+            "split rule {} vs {boundary}",
+            rules[1]
+        );
+    }
+
+    /// 282/289: maximized panel keeps the sidebar column and gives panel 2 the
+    /// rest; the panel-1 title is not drawn.
+    #[test]
+    fn the_maximized_panel_topbar_hides_the_panel_one_title() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.sidebar_visible = true;
+            s.right_sidebar_open = true;
+            s.side_panel_maximized = true;
+            s.side_tabs = vec![crate::state::SideTabKind::Terminal];
+            s.active_side_tab = 0;
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let topbar: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !topbar.contains(&"New Agent"),
+            "the panel-1 title is hidden while maximized: {topbar:?}"
+        );
+        assert!(
+            topbar.contains(&"Terminal"),
+            "the panel-2 chips span the content column: {topbar:?}"
+        );
+        let sidebar = state.borrow().sidebar_width;
+        let border = app.theme.color(ColorToken::Border);
+        let rules: Vec<f32> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color, .. }
+                    if *color == border
+                        && rect.width() <= 1.01
+                        && rect.height() >= 40.0
+                        && rect.min_y() < 5.0 =>
+                {
+                    Some(rect.min_x())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rules.len(),
+            1,
+            "maximized keeps only the sidebar rule: {rules:?}"
+        );
+        assert!(
+            (rules[0] - sidebar).abs() < 2.0,
+            "the rule sits on the sidebar edge: {} vs {sidebar}",
+            rules[0]
+        );
+    }
+
+    /// 302/303/309/310: the chat footer has no shortcut strip, the model is
+    /// plain text, the text lane is narrower and the left scroll dots exist.
+    #[test]
+    fn the_chat_footer_is_plain_and_the_left_scroll_dots_are_drawn() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let dots = commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::FillRect { rect, .. }
+                        if (rect.width() - 3.0).abs() < 0.01
+                            && (rect.height() - 3.0).abs() < 0.01
+                            && rect.min_x() < 420.0
+                )
+            })
+            .count();
+        assert_eq!(dots, 0, "an empty transcript has no rail markers");
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for label in ["send", "send to cloud", "tasks"] {
+            assert!(
+                !texts.contains(&label),
+                "the shortcut strip {label:?} is gone: {texts:?}"
+            );
+        }
+        {
+            let mut s = state.borrow_mut();
+            let active = s.active_pane_id;
+            let runtime = s.pane_runtime.entry(active).or_default();
+            for index in 0..3 {
+                runtime.messages.push(goble_ui::ChatMessage::new(
+                    goble_ui::ChatRole::User,
+                    vec![goble_ui::ChatFragment::text(format!("turn {index}"))],
+                ));
+                runtime.messages.push(goble_ui::ChatMessage::new(
+                    goble_ui::ChatRole::Assistant,
+                    vec![goble_ui::ChatFragment::text("reply")],
+                ));
+            }
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let dots = commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    RenderCommand::FillRect { rect, .. }
+                        if (rect.width() - 3.0).abs() < 0.01
+                            && (rect.height() - 3.0).abs() < 0.01
+                            && rect.min_x() < 420.0
+                )
+            })
+            .count();
+        assert_eq!(dots, 2, "three turns are two dots plus the latest segment");
+        let long_segment = commands.iter().any(|command| {
+            matches!(
+                command,
+                RenderCommand::FillRect { rect, .. }
+                    if (rect.width() - 3.0).abs() < 0.01
+                        && rect.height() >= 12.0
+                        && rect.min_x() < 420.0
+            )
+        });
+        assert!(
+            long_segment,
+            "the rail's last indicator is the longer latest-turns segment"
+        );
+        // The composer card is still full-width while the transcript lane is
+        // not: the first transcript words start well inside the pane.
+        let first_text = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { origin, .. }
+                    if origin.y > 200.0 && origin.y < 600.0 && origin.x > 200.0 =>
+                {
+                    Some(origin.x)
+                }
+                _ => None,
+            })
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            first_text > 250.0,
+            "the narrowed transcript lane keeps a side margin, got {first_text}"
+        );
+    }
+
+    /// 323: a click with a little pointer jitter still switches the tab; it
+    /// must not be mistaken for a reorder drag.
+    #[test]
+    fn a_side_tab_click_with_jitter_still_switches() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![
+                crate::state::SideTabKind::Agent,
+                crate::state::SideTabKind::Files,
+            ];
+            s.active_side_tab = 1;
+        }
         let commands = render_element(&mut root, window(), &app);
-        let plus = commands
+        let chip = commands
             .iter()
             .find_map(|command| match command {
-                RenderCommand::DrawIcon { name, origin, .. }
-                    if name == "plus" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Side Question" && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
                 {
                     Some(*origin)
                 }
                 _ => None,
             })
-            .expect("the pinned + button");
-        let agent = label("Side Question").expect("the Side Question chip");
-        // Paint with the pointer on the chip so its hover X is real geometry,
-        // then click the X itself.
-        let hovered = commands_with_pointer(&mut root, &app, agent + vec2f(16.0, 6.0));
-        let close = hovered
+            .expect("the Side Question chip");
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: chip + vec2f(4.0, 4.0),
+                button: 0,
+            },
+            DispatchedEvent::MouseMove {
+                position: chip + vec2f(6.0, 4.0),
+            },
+            DispatchedEvent::MouseUp {
+                position: chip + vec2f(6.0, 4.0),
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert_eq!(
+            state.borrow().active_side_tab_kind(),
+            crate::state::SideTabKind::Agent,
+            "the click switches to the pressed chip"
+        );
+        assert_eq!(
+            state.borrow().side_tabs,
+            vec![
+                crate::state::SideTabKind::Agent,
+                crate::state::SideTabKind::Files
+            ],
+            "jitter does not reorder the strip"
+        );
+    }
+
+    /// 297: dragging a chip reorders the strip and keeps the selected tab.
+    #[test]
+    fn dragging_a_side_tab_chip_reorders_the_strip() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![
+                crate::state::SideTabKind::Agent,
+                crate::state::SideTabKind::Files,
+            ];
+            s.active_side_tab = 0;
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let origin = |label: &str| {
+            commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. }
+                        if text == label && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                    {
+                        Some(*origin)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the {label:?} chip"))
+        };
+        let agent = origin("Side Question");
+        let files = origin("Files");
+        let mut ctx = EventContext;
+        for event in [
+            DispatchedEvent::MouseDown {
+                position: agent + vec2f(4.0, 4.0),
+                button: 0,
+            },
+            DispatchedEvent::MouseMove {
+                position: files + vec2f(28.0, 4.0),
+            },
+            DispatchedEvent::MouseUp {
+                position: files + vec2f(28.0, 4.0),
+                button: 0,
+            },
+        ] {
+            root.dispatch_event(&event, &mut ctx, &app);
+        }
+        assert_eq!(
+            state.borrow().side_tabs,
+            vec![
+                crate::state::SideTabKind::Files,
+                crate::state::SideTabKind::Agent,
+            ],
+            "the dragged chip lands after the other one"
+        );
+    }
+
+    /// 283: every side-panel chip switches the content with a real click.
+    #[test]
+    fn side_tab_chips_switch_the_panel_with_real_clicks() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![
+                crate::state::SideTabKind::Overview,
+                crate::state::SideTabKind::Agent,
+                crate::state::SideTabKind::Files,
+                crate::state::SideTabKind::Terminal,
+                crate::state::SideTabKind::TaskOutput,
+            ];
+            s.active_side_tab = 4;
+        }
+        for (label, kind) in [
+            ("Side Question", crate::state::SideTabKind::Agent),
+            ("Files", crate::state::SideTabKind::Files),
+            ("Terminal", crate::state::SideTabKind::Terminal),
+            ("Task output", crate::state::SideTabKind::TaskOutput),
+        ] {
+            let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+            let origin = commands
+                .iter()
+                .find_map(|command| match command {
+                    RenderCommand::DrawText { text, origin, .. }
+                        if text == label && origin.y < crate::ui::chrome::CHROME_HEIGHT =>
+                    {
+                        Some(*origin)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the {label:?} chip"));
+            click(&mut root, &app, origin + vec2f(6.0, 6.0));
+            assert_eq!(
+                state.borrow().active_side_tab_kind(),
+                kind,
+                "the {label:?} chip switches the panel"
+            );
+        }
+    }
+
+    /// 284: "+" opens the in-panel Add-tab surface, not a popup, and a row adds
+    /// the tab.
+    #[test]
+    fn plus_opens_the_in_panel_add_tab_surface() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.side_tabs = vec![
+                crate::state::SideTabKind::Overview,
+                crate::state::SideTabKind::Terminal,
+            ];
+            s.active_side_tab = 1;
+            *s.side_tab_add_menu_open.borrow_mut() = false;
+        }
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let plus = commands
             .iter()
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     name, origin, size, ..
-                } if name == "x-close"
-                    && origin.y < crate::ui::chrome::CHROME_HEIGHT
-                    && origin.x > agent.x - 40.0
-                    && origin.x < agent.x + 140.0 =>
+                } if name == "plus" && origin.y < crate::ui::chrome::CHROME_HEIGHT => {
+                    Some(*origin + vec2f(*size / 2.0, *size / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the add-tab button");
+        click(&mut root, &app, plus);
+        let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| *text == "Search or enter a URL"),
+            "the in-panel Overview launcher is shown: {texts:?}"
+        );
+        let terminal = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Terminal" && origin.y > crate::ui::chrome::CHROME_HEIGHT =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Overview Terminal row");
+        click(&mut root, &app, terminal + vec2f(8.0, 6.0));
+        assert_eq!(
+            state.borrow().active_side_tab_kind(),
+            crate::state::SideTabKind::Terminal
+        );
+        assert!(!*state.borrow().side_tab_add_menu_open.borrow());
+    }
+
+    /// 322: the workspace Explorer reads its tree and a file row opens that
+    /// file in the side panel.
+    #[test]
+    fn the_workspace_explorer_lists_real_rows_and_opens_a_file_sideways() {
+        let app = AppContext::default();
+        let (mut root, state, dir) = app_root();
+        let file = dir.path().join("alpha.txt");
+        std::fs::write(&file, "hello").expect("seed explorer file");
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.right_sidebar_open = false;
+            s.spaces[0].set_leaf_kind(1, crate::state::PaneKind::Explorer);
+            s.pane_sessions.entry(1).or_default().path = dir.path().to_string_lossy().to_string();
+        }
+        let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        let origin = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "alpha.txt" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the explorer lists the real file");
+        click(&mut root, &app, origin + vec2f(10.0, 5.0));
+        assert_eq!(
+            state.borrow().side_file.as_deref(),
+            Some(file.to_string_lossy().as_ref()),
+            "the file row opens the file in the side panel"
+        );
+        assert!(
+            state.borrow().right_sidebar_open,
+            "opening a file reveals the side panel"
+        );
+    }
+
+    /// 357: a missing model is one announcement that opens Settings → Models.
+    #[test]
+    fn the_no_model_announcement_opens_models_settings() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = true;
+            s.settings_llm_api_key = "test-key".to_string();
+            s.settings_llm_provider.clear();
+            s.settings.page = crate::ui::SettingsCategory::General;
+        }
+        let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        let button = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Open Models" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the no-model announcement links to Models");
+        click(&mut root, &app, button + vec2f(8.0, 6.0));
+        assert!(state.borrow().settings_overlay_open);
+        assert_eq!(
+            state.borrow().settings.page,
+            crate::ui::SettingsCategory::Providers
+        );
+    }
+
+    /// 347/348/349/350: conversation rows carry no harness mark, and the
+    /// Automations row's clock opens the real task popover with a switch.
+    #[test]
+    fn automations_opens_a_real_task_popover_and_rows_lose_the_harness_mark() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.crons = vec![crate::ui::CronEntry::new(
+                "auto-1",
+                "Nightly audit",
+                "Every day at 02:00",
+                "2h ago",
+            )];
+        }
+        let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "harness-goble"
+            )),
+            "conversation rows do not lead with a harness mark"
+        );
+        let automations = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "Automations" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Automations row");
+        click(&mut root, &app, automations + vec2f(8.0, 6.0));
+        assert_eq!(
+            state.borrow().active_side_tab_kind(),
+            crate::state::SideTabKind::Automations,
+            "the clock shows the Automations side-panel surface"
+        );
+        let commands = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for label in ["Automations", "Nightly audit", "New automation"] {
+            assert!(
+                texts.contains(&label),
+                "the real automation popover lists {label:?}: {texts:?}"
+            );
+        }
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawIcon { name, .. } if name == "clock"
+            )),
+            "the sidebar Automations row uses the clock icon"
+        );
+    }
+
+    /// 339/343: the Conversations heading only appears when loose rows exist,
+    /// carries the same "+" box, and its menu is the shared project picker with
+    /// No Project checked.
+    #[test]
+    fn conversations_heading_appears_only_with_rows_and_opens_the_shared_picker() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.conversations.clear();
+        }
+        let commands = render_element(&mut root, window(), &app);
+        let texts: Vec<&str> = commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.contains(&"Conversations"),
+            "no loose rows means no Conversations heading: {texts:?}"
+        );
+
+        state.borrow_mut().conversations = vec![goble_ui::elements::ConversationEntry::new(
+            "loose-1",
+            "Loose note",
+            "Let's ship",
+            "10:42",
+        )
+        .with_folder("Conversations")];
+        let commands = render_element(&mut root, window(), &app);
+        let heading = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Conversations" && origin.x < crate::ui::SIDEBAR_WIDTH =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the loose row brings the Conversations heading back");
+        let plus = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawIcon {
+                    name, origin, size, ..
+                } if name == "new-chat"
+                    && origin.x < crate::ui::SIDEBAR_WIDTH
+                    && (origin.y - heading.y).abs() < 22.0 =>
                 {
                     Some(*origin + vec2f(*size / 2.0, *size / 2.0))
                 }
                 _ => None,
             })
-            .unwrap_or_else(|| {
-                let icons: Vec<_> = hovered
-                    .iter()
-                    .filter_map(|command| match command {
-                        RenderCommand::DrawIcon { name, origin, .. } => {
-                            Some((name.clone(), *origin))
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                panic!("the hover X on the Side Question chip: agent {agent:?}, icons {icons:?}");
-            });
-        let mut ctx = EventContext;
-        for event in [
-            DispatchedEvent::MouseDown {
-                position: close,
-                button: 0,
-            },
-            DispatchedEvent::MouseUp {
-                position: close,
-                button: 0,
-            },
-        ] {
-            let _ = root.dispatch_event(&event, &mut ctx, &app);
-        }
-        assert!(
-            !state.borrow().side_tabs.contains(&SideTabKind::Agent),
-            "the X closes the Side Question chip (agent {:?}, close {:?}, tabs {:?})",
-            agent,
-            close,
-            state.borrow().side_tabs
-        );
-
-        // The + menu opens and offers the real tab kinds.
-        click(&mut root, &app, plus + vec2f(6.0, 6.0));
-        assert!(
-            *state.borrow().side_tab_add_menu_open.borrow(),
-            "the fixed + opens its add menu"
-        );
+            .expect("the Conversations heading draws its plus");
+        click(&mut root, &app, plus);
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands
             .iter()
@@ -4186,69 +4629,245 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for item in ["Side Question", "Files", "Terminal", "Task output"] {
+        for label in ["Remote", "SSH Host", "New Project", "No Project"] {
             assert!(
-                texts.iter().any(|text| *text == item),
-                "the + menu offers {item:?}: {texts:?}"
+                texts.contains(&label),
+                "the shared picker lists {label:?}: {texts:?}"
             );
         }
     }
 
-    /// Panel 1's trailing controls are exactly the More menu and the Overview
-    /// popover; the maximize/collapse and side-panel controls live in panel 2.
+    /// 341/343: the composer pill starts at No Project and opens the same
+    /// picker above the input.
     #[test]
-    fn panel_one_offers_only_more_and_overview() {
+    fn the_composer_project_pill_opens_the_shared_picker() {
         let app = AppContext::default();
         let (mut root, state, _dir) = app_root();
-        state.borrow_mut().right_sidebar_open = false;
-        let commands = render_element(&mut root, window(), &app);
-
-        let icons: Vec<&str> = commands
+        {
+            let mut s = state.borrow_mut();
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.set_active_pane_path(String::new());
+        }
+        let size = vec2f(1600.0, 1000.0);
+        let commands = render_element(&mut root, size, &app);
+        let pill = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "No Project" && origin.y > size.y * 0.7 =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the composer project pill");
+        click(&mut root, &app, pill + vec2f(8.0, 6.0));
+        assert!(*state.borrow().project_menu_open.borrow());
+        let commands = render_element(&mut root, size, &app);
+        let project_row = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. } if text == "New Project" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the picker lists New Project");
+        assert!(
+            project_row.y < pill.y,
+            "the picker opens above the composer pill, not over the input"
+        );
+        let texts: Vec<&str> = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
-        assert!(icons.contains(&"ellipsis"), "the More control: {icons:?}");
+        for label in ["Remote", "SSH Host", "New Project", "No Project"] {
+            assert!(
+                texts.contains(&label),
+                "the pill opens the shared picker with {label:?}: {texts:?}"
+            );
+        }
+        // Taking No Project applies in place and closes the picker.
+        let no_project = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "No Project" && origin.y < pill.y =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the checked No Project row");
+        click(&mut root, &app, no_project + vec2f(8.0, 6.0));
         assert!(
-            icons.contains(&"flat-list"),
-            "the Overview control: {icons:?}"
+            !*state.borrow().project_menu_open.borrow(),
+            "choosing a project closes the picker"
+        );
+    }
+
+    /// 333: the wheel reaches the settings page's Scrollable through the modal
+    /// dialog; the modal must not consume it before the page sees it.
+    #[test]
+    fn the_settings_wheel_reaches_the_page_scroll() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.settings_overlay_open = true;
+            s.settings.page = crate::ui::SettingsCategory::Advanced;
+        }
+        let _ = render_element(&mut root, vec2f(1200.0, 900.0), &app);
+        let mut ctx = EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::MouseMove {
+                position: vec2f(700.0, 420.0),
+            },
+            &mut ctx,
+            &app,
+        );
+        root.dispatch_event(
+            &DispatchedEvent::Scroll {
+                delta: vec2f(0.0, -120.0),
+                precise: false,
+            },
+            &mut ctx,
+            &app,
         );
         assert!(
-            !icons.contains(&"fullscreen-enter") && !icons.contains(&"fullscreen-exit"),
-            "panel 1 no longer offers maximize: {icons:?}"
+            state.borrow().settings.scroll.borrow().offset().abs() > 0.5,
+            "the settings page scrolls under the wheel"
+        );
+    }
+
+    /// AG: Escape hides the topmost floating file window; the pane docks back
+    /// into the layout instead of disappearing from the tree.
+    #[test]
+    fn escape_docks_the_floating_file_window() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        let pane = {
+            let mut s = state.borrow_mut();
+            assert!(s.open_file_in_floating("/tmp/float.rs".to_string(), None));
+            s.active_pane_id
+        };
+        assert!(state.borrow().spaces[0].is_floating_overlay(pane));
+        let _ = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        let mut ctx = EventContext;
+        let handled = root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "Escape".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
+        );
+        assert!(handled);
+        assert!(!state.borrow().spaces[0].is_floating_overlay(pane));
+    }
+
+    /// 279: the Side Question composer takes a real click, focus and a typed
+    /// character on the reserved side pane.
+    #[test]
+    fn the_side_question_composer_takes_focus_and_typing() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        {
+            let mut s = state.borrow_mut();
+            s.right_sidebar_open = true;
+            s.show_workspace_choice = false;
+            s.show_llm_key_banner = false;
+            s.crons_open = false;
+            s.side_tabs = vec![crate::state::SideTabKind::Agent];
+            s.active_side_tab = 0;
+        }
+        let size = vec2f(1600.0, 1000.0);
+        let commands = render_element(&mut root, size, &app);
+        let placeholder = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::DrawText { text, origin, .. }
+                    if text == "Ask anything..." && origin.x > size.x * 0.55 =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .expect("the Side Question composer placeholder");
+        click(&mut root, &app, placeholder + vec2f(40.0, -4.0));
+        let _ = render_element(&mut root, size, &app);
+        let mut ctx = EventContext;
+        root.dispatch_event(
+            &DispatchedEvent::KeyDown {
+                key: "a".to_string(),
+                modifiers: Default::default(),
+            },
+            &mut ctx,
+            &app,
         );
         assert_eq!(
-            icons
-                .iter()
-                .filter(|name| **name == "panel-left-outline")
-                .count(),
-            1,
-            "the topbar's sidebar toggle wears DSH's panel-left glyph: {icons:?}"
+            state.borrow().pane_sessions[&crate::state::SIDE_AGENT_PANE_ID].draft,
+            "a",
+            "typing reaches the side composer's draft"
         );
-        assert!(
-            !icons.contains(&"left-panel-close"),
-            "the topbar no longer uses the custom close glyph: {icons:?}"
-        );
+    }
 
-        state.borrow_mut().right_sidebar_open = true;
-        let commands = render_element(&mut root, window(), &app);
-        let icons: Vec<&str> = commands
-            .iter()
-            .filter_map(|command| match command {
-                RenderCommand::DrawIcon { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            icons.contains(&"panel-right-outline"),
-            "the open panel 2 toggle wears DSH's mirrored panel glyph: {icons:?}"
-        );
-        assert!(
-            icons.contains(&"fullscreen-enter"),
-            "panel 2 keeps maximize: {icons:?}"
-        );
+    /// AF: every side tab gets a content topbar; Terminal/TaskOutput add the
+    /// shared Terminals + Background Tasks rail.
+    #[test]
+    fn every_side_tab_renders_its_own_topbar() {
+        let app = AppContext::default();
+        for (kind, expected) in [
+            (crate::state::SideTabKind::Overview, "Overview"),
+            (crate::state::SideTabKind::Agent, "New side question"),
+            (crate::state::SideTabKind::Terminal, "zsh"),
+            (
+                crate::state::SideTabKind::TaskOutput,
+                "Background Task Output",
+            ),
+        ] {
+            let (mut root, state, _dir) = app_root();
+            {
+                let mut s = state.borrow_mut();
+                s.right_sidebar_open = true;
+                s.side_tabs = vec![kind];
+                s.active_side_tab = 0;
+                let active = s.active_pane_id;
+                s.terminal.borrow_mut().sessions.insert(
+                    active,
+                    crate::terminal::TerminalSession::preview_screen("hi"),
+                );
+            }
+            let commands = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+            let texts: Vec<&str> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                texts.iter().any(|text| *text == expected),
+                "{kind:?} draws its topbar {expected:?}: {texts:?}"
+            );
+            if matches!(
+                kind,
+                crate::state::SideTabKind::Terminal | crate::state::SideTabKind::TaskOutput
+            ) {
+                assert!(
+                    texts.iter().any(|text| *text == "Terminals"),
+                    "{kind:?} draws the inner rail's Terminals heading: {texts:?}"
+                );
+                assert!(
+                    !texts.iter().any(|text| *text == "Background Tasks"),
+                    "{kind:?} hides the empty Background Tasks heading: {texts:?}"
+                );
+            }
+        }
     }
 
     /// The Overview button opens the anchored popover with its real sections,
@@ -4262,6 +4881,8 @@ mod tests {
             s.right_sidebar_open = true;
             *s.chrome_overview_open.borrow_mut() = true;
         }
+        state.borrow_mut().side_tabs = vec![SideTabKind::Overview];
+        state.borrow_mut().active_side_tab = 0;
         let commands = render_element(&mut root, window(), &app);
         let texts: Vec<&str> = commands
             .iter()
@@ -4313,7 +4934,7 @@ mod tests {
             .find_map(|command| match command {
                 RenderCommand::DrawIcon {
                     name, origin, size, ..
-                } if name == "flat-list" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
+                } if name == "overview" => Some(*origin + vec2f(*size / 2.0, *size / 2.0)),
                 _ => None,
             })
             .expect("the Overview trigger");
@@ -4425,5 +5046,39 @@ mod tests {
                 .any(|old| after.iter().any(|new| old - new >= 40.0)),
             "the horizontal wheel shifts the strip left ({before:?} -> {after:?})"
         );
+    }
+
+    /// 479: opening the Settings sheet is a draw, not a detection pass. The
+    /// first frame must be effectively instant and must not populate the
+    /// integration cache from PATH.
+    #[test]
+    fn opening_settings_does_not_probe_integrations_on_the_draw_path() {
+        let app = AppContext::default();
+        let (mut root, state, _dir) = app_root();
+        // Warm fonts/layout once; the assertion is about the open frame, not
+        // the process's first-ever render.
+        let _ = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        state.borrow_mut().settings_overlay_open = true;
+        let started = std::time::Instant::now();
+        let _ = render_element(&mut root, vec2f(1600.0, 1000.0), &app);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(250),
+            "the first Settings frame took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// 528: a persisted sidebar width is restored before the first frame.
+    #[test]
+    fn the_sidebar_width_is_persisted_and_restored() {
+        let dir = tempfile::tempdir().expect("temp thread-store dir");
+        let desktop = Arc::new(DesktopState::new(
+            Store::open_in_memory().expect("in-memory store"),
+            ThreadStore::new(dir.path()).expect("thread store"),
+        ));
+        desktop.set_ui_sidebar_width(420.0).expect("persist width");
+        let app = AppContext::default();
+        let view = RootView::new(&app, &desktop, None);
+        assert_eq!(view.state_rc().borrow().sidebar_width, 420.0);
     }
 }

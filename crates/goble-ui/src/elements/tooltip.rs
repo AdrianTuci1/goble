@@ -1,8 +1,8 @@
+use crate::elements::Text;
 use crate::elements::{
     AppContext, Container, EdgeInsets, Element, EventContext, Fill, LayoutContext, PaintContext,
     Point, SizeConstraint,
 };
-use crate::elements::Text;
 use crate::event::DispatchedEvent;
 use crate::geometry::{rectf, vec2f, Vector2F};
 use crate::theme::ColorToken;
@@ -56,7 +56,12 @@ impl Tooltip {
             child,
             message: message.into(),
             position: TooltipPosition::default(),
-            padding: EdgeInsets::new(TOOLTIP_PADDING_H, TOOLTIP_PADDING_V, TOOLTIP_PADDING_H, TOOLTIP_PADDING_V),
+            padding: EdgeInsets::new(
+                TOOLTIP_PADDING_H,
+                TOOLTIP_PADDING_V,
+                TOOLTIP_PADDING_H,
+                TOOLTIP_PADDING_V,
+            ),
             panel: None,
             panel_size: None,
             size: None,
@@ -230,12 +235,18 @@ mod tests {
 
         let mut tooltip = Tooltip::new(child_box(), "Run");
         let idle = paint_frame(&mut tooltip, vec2f(10.0, 10.0), false);
-        assert_eq!(idle.queued, 0, "the pointer outside the window hovers nothing");
+        assert_eq!(
+            idle.queued, 0,
+            "the pointer outside the window hovers nothing"
+        );
         assert!(chip_box(&idle, &app).is_none(), "no chip is drawn");
 
         let hovering = paint_frame(&mut tooltip, vec2f(20.0, 16.0), true);
         assert_eq!(hovering.queued, 1, "the hovered tooltip queues its box");
-        assert!(chip_box(&hovering, &app).is_some(), "the layer draws the chip");
+        assert!(
+            chip_box(&hovering, &app).is_some(),
+            "the layer draws the chip"
+        );
     }
 
     #[test]

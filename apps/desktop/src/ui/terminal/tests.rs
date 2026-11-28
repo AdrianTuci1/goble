@@ -446,6 +446,7 @@ fn shell_root() -> (Box<dyn Element>, Rc<RefCell<UiState>>, tempfile::TempDir) {
         let mut s = state.borrow_mut();
         s.show_workspace_choice = false;
         s.show_llm_key_banner = false;
+        s.sidebar_visible = true;
         s.right_sidebar_open = false;
         s.crons_open = false;
         s.spaces = vec![Space::new(
@@ -492,6 +493,7 @@ fn chat_root() -> (Box<dyn Element>, tempfile::TempDir) {
         let mut s = state.borrow_mut();
         s.show_workspace_choice = false;
         s.show_llm_key_banner = false;
+        s.sidebar_visible = true;
         s.right_sidebar_open = false;
         s.crons_open = false;
         s.terminal
@@ -612,9 +614,10 @@ fn the_shells_bottom_bar_is_the_shared_composer() {
             "the shell bar draws no instruction {label:?}: {shell_runs:?}"
         );
     }
+    // 302: the chat surface no longer draws a shortcut strip under its card.
     assert!(
-        pane_has(&chat_runs, "send") && pane_has(&chat_runs, "send to cloud"),
-        "the chat pane draws its own instructions: {chat_runs:?}"
+        !pane_has(&chat_runs, "send") && !pane_has(&chat_runs, "send to cloud"),
+        "the chat pane draws no shortcut strip: {chat_runs:?}"
     );
 
     // The shell's one instruction is the exception to the pane's rule that
@@ -690,7 +693,7 @@ fn the_shells_composer_is_the_panes_bottom_band() {
     let app = AppContext::default();
     let surface = app.theme.color(ColorToken::Surface);
     let raised = app.theme.color(ColorToken::SurfaceRaised);
-    let pane_bg = app.theme.color(ColorToken::Bg);
+    let pane_bg = app.theme.color(ColorToken::ContentBg);
     let radius = crate::ui::panes::WINDOW_CORNER_RADIUS;
     let fills = |commands: &[RenderCommand], color: ColorU, corner_radius: f32, min_height: f32| {
         commands
@@ -1993,8 +1996,8 @@ fn the_panes_mode_decides_its_surface_and_the_switch_puts_the_agent_surface_up()
     );
     let runs = pane_runs(&mut root, &app);
     assert!(
-        pane_has(&runs, "send to cloud"),
-        "the agent surface's own instruction strip is drawn: {runs:?}"
+        !pane_has(&runs, "send to cloud"),
+        "the agent surface draws no instruction strip: {runs:?}"
     );
     assert!(
         !pane_has(&runs, "for terminal") && !pane_has(&runs, "esc"),
@@ -2141,8 +2144,8 @@ fn cmd_enter_switches_an_ssh_bound_pane_to_the_agent_view_on_the_same_session() 
     let runs = pane_runs(&mut root, &app);
     for label in AGENT_SURFACE_RUNS {
         assert!(
-            pane_has(&runs, label),
-            "the agent surface is up over the same shell, so {label:?} is drawn: {runs:?}"
+            !pane_has(&runs, label),
+            "the agent surface draws no shortcut strip, so {label:?} is absent: {runs:?}"
         );
     }
     assert!(

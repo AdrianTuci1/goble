@@ -22,10 +22,10 @@ use std::rc::Rc;
 use goble_ui::color::ColorU;
 use goble_ui::elements::diff::{DiffLineKind, Hunk};
 use goble_ui::elements::{
-    file_icon_name, AppContext, Axis, Button, ButtonVariant, ConstrainedBox, Container,
-    CrossAxisAlignment, EdgeInsets, Element, Empty, Expanded, Flex, HoverRow, Icon, LayoutContext,
-    MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition, ScrollState,
-    Scrollable, SizeConstraint, Text, TextSpan, Tooltip, TooltipPosition,
+    file_icon_name, AppContext, Axis, Border, Button, ButtonVariant, ConstrainedBox, Container,
+    CrossAxisAlignment, Divider, EdgeInsets, Element, Empty, Expanded, Flex, HoverRow, Icon,
+    LayoutContext, MainAxisSize, PaintContext, Point, PopupMenu, PopupMenuItem, PopupMenuPosition,
+    ScrollState, Scrollable, SizeConstraint, Text, TextSpan, Tooltip, TooltipPosition,
 };
 use goble_ui::geometry::{rectf, vec2f, Vector2F};
 use goble_ui::platform::text_atlas::{wrapped_lines, FontWeight};
@@ -364,7 +364,7 @@ fn tree_row(
         .with_padding(EdgeInsets::new(4.0, 5.0, 4.0, 6.0))
         .with_corner_radius(4.0)
         .with_on_click(move || {
-            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())))
+            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())));
         })
         .finish()
 }
@@ -481,6 +481,7 @@ pub(crate) fn comparison(
     file: &DiffFileDetail,
     split: bool,
     wrap: bool,
+    hunk_headers: bool,
     scroll: Rc<RefCell<ScrollState>>,
 ) -> Box<dyn Element> {
     #[cfg(feature = "file-diff-view")]
@@ -492,6 +493,7 @@ pub(crate) fn comparison(
                 DiffLayout::Unified
             })
             .with_wrap(wrap)
+            .with_hunk_headers(hunk_headers)
             .with_viewport(Rc::clone(&scroll))
             .with_fill_width(true);
         return Box::new(view);
@@ -776,6 +778,9 @@ impl ReviewDiff {
         let color = Self::text_color(cell.kind, app);
         let muted = app.theme.color(ColorToken::Muted);
         if self.split {
+            // 677: one number per visual row, not an old/new pair. Context
+            // shows the old side (left cell); an added-only right cell shows
+            // its new number.
             if let Some(number) = cell.old_no {
                 draw_number(
                     renderer,
@@ -788,8 +793,7 @@ impl ReviewDiff {
                         muted
                     },
                 );
-            }
-            if let Some(number) = cell.new_no {
+            } else if let Some(number) = cell.new_no {
                 draw_number(
                     renderer,
                     origin.x + gutter - 12.0,
@@ -803,26 +807,14 @@ impl ReviewDiff {
                 );
             }
         } else {
-            if let Some(number) = cell.old_no {
-                draw_number(
-                    renderer,
-                    origin.x + 24.0,
-                    y,
-                    number,
-                    if cell.kind == DiffLineKind::Removed {
-                        color
-                    } else {
-                        muted
-                    },
-                );
-            }
-            if let Some(number) = cell.new_no {
+            // 628: one gutter, carrying the number for the visible side.
+            if let Some(number) = cell.new_no.or(cell.old_no) {
                 draw_number(
                     renderer,
                     origin.x + gutter - 12.0,
                     y,
                     number,
-                    if cell.kind == DiffLineKind::Added {
+                    if matches!(cell.kind, DiffLineKind::Added | DiffLineKind::Removed) {
                         color
                     } else {
                         muted
@@ -1348,8 +1340,8 @@ mod ui_tests {
         let drawn = texts(&frame(&mut root, &app));
         assert!(drawn.iter().any(|text| text == "gamma"), "its diff shows");
         assert!(
-            !drawn.iter().any(|text| text == "beta"),
-            "the other file's diff is out of the view: {drawn:?}"
+            drawn.iter().any(|text| text == "beta"),
+            "every file row and diff stays in the flat list: {drawn:?}"
         );
 
         press(&mut root, &app, "ArrowDown");
@@ -1370,6 +1362,21 @@ mod ui_tests {
                 .any(|text| text == "beta"),
             "the comparison followed the keyboard"
         );
+    }
+
+    /// 268: changed files resolve to the real per-extension icon assets.
+    #[test]
+    fn file_rows_use_real_per_extension_icons() {
+        assert_eq!(super::file_type_icon("src/lib.rs"), "file-rust");
+        assert_eq!(super::file_type_icon("include/wheel.h"), "file-c");
+        assert_eq!(super::file_type_icon("wheel.c"), "file-c");
+        assert_eq!(super::file_type_icon("queue.cpp"), "file-cpp");
+        assert_eq!(super::file_type_icon("README.md"), "file-markdown");
+        assert_eq!(super::file_type_icon("package.json"), "file-json");
+        assert_eq!(super::file_type_icon("config.yaml"), "file-json");
+        assert_eq!(super::file_type_icon("run.sh"), "terminal");
+        assert_eq!(super::file_type_icon("main.py"), "file-python");
+        assert_eq!(super::file_type_icon("LICENSE"), "file");
     }
 
     /// The toolbar toggles are real: the state flips and the bar's own label
@@ -1466,68 +1473,36 @@ pub(crate) fn files_changed_rail(
     pane_id: u64,
     detail: &DiffDetail,
     selected: Option<&str>,
+    width: f32,
 ) -> Box<dyn Element> {
-    let mut column = Flex::column()
+    let mut list = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_spacing(2.0)
-        .with_child(
-            Container::new(
-                Text::new("Files Changed")
-                    .with_font_size(12.0)
-                    .with_weight(FontWeight::Medium)
-                    .with_theme_color(ColorToken::Muted, app)
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(8.0, 10.0, 8.0, 10.0))
-            .finish(),
-        );
-    // The rail's way back to the whole tree.
-    {
-        let on_diff = actions.on_diff_panel.clone();
-        let all = HoverRow::new(
-            Container::new(
-                Text::new("All changes")
-                    .with_font_size(12.0)
-                    .with_theme_color(
-                        if selected.is_none() {
-                            ColorToken::Text
-                        } else {
-                            ColorToken::Muted
-                        },
-                        app,
-                    )
-                    .finish(),
-            )
-            .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
-            .with_corner_radius(6.0)
-            .finish(),
-        )
-        .with_selected(selected.is_none())
-        .with_on_click(move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(None)))
-        .finish();
-        column = column.with_child(all);
-    }
-    for file in &detail.files {
+        .with_spacing(0.0);
+    for file in detail.files.iter() {
         let path = file.path.clone();
+        let absolute = file.absolute_path.clone();
         let sel = selected == Some(file.path.as_str());
         let on_diff = actions.on_diff_panel.clone();
+        let on_files = actions.on_open_file_side.clone();
         let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(7.0)
             .with_child(
-                Text::new(type_badge(&file.path))
+                FileTypeIcon::new(file_type_icon(&file.path), 16.0).finish(),
+            )
+            .with_child(
+                Text::new(status_of(file).letter())
                     .with_font_family(FontFamily::Mono)
                     .with_font_size(10.0)
-                    .with_weight(FontWeight::SemiBold)
-                    .with_theme_color(badge_color(&file.path), app)
+                    .with_theme_color(status_of(file).color(), app)
                     .finish(),
             )
             .with_child(
                 Text::new(short_name(&file.path))
                     .with_font_family(FontFamily::System)
-                    .with_font_size(12.0)
+                    .with_font_size(13.0)
                     .with_weight(FontWeight::SemiBold)
                     .with_theme_color(ColorToken::Text, app)
                     .with_max_lines(1)
@@ -1537,7 +1512,7 @@ pub(crate) fn files_changed_rail(
                 Expanded::new(
                     Text::new(short_dir(&file.path))
                         .with_font_family(FontFamily::System)
-                        .with_font_size(11.0)
+                        .with_font_size(13.0)
                         .with_theme_color(ColorToken::Muted, app)
                         .with_max_lines(1)
                         .finish(),
@@ -1545,26 +1520,41 @@ pub(crate) fn files_changed_rail(
                 .finish(),
             )
             .finish();
+        // 471: flat full-bleed rows; no background at rest, only the hover/
+        // selected surface. The 1px rule is the row's only separator.
         let row = HoverRow::new(
             Container::new(row)
-                .with_padding(EdgeInsets::new(6.0, 8.0, 6.0, 8.0))
-                .with_corner_radius(6.0)
+                .with_padding(EdgeInsets::new(7.0, 9.0, 7.0, 9.0))
                 .finish(),
         )
         .with_selected(sel)
         .with_on_click(move || {
-            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())))
+            (on_diff.borrow_mut())(pane_id, DiffPanelAction::Select(Some(path.clone())));
+            (on_files.borrow_mut())(absolute.clone());
         })
         .finish();
-        column = column.with_child(row);
+        list = list.with_child(row);
     }
-    ConstrainedBox::new(
-        Container::new(Scrollable::new(column.finish(), Axis::Vertical).finish())
-            .with_padding(EdgeInsets::new(4.0, 4.0, 4.0, 4.0))
+    // 226: the rail is one full-height bordered column: a fixed header above a
+    // scroll region for the rows.
+    let rail = Flex::column()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(
+            Container::new(
+                Text::new("Files Changed")
+                    .with_font_size(12.0)
+                    .with_weight(FontWeight::Medium)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            )
+            .with_padding(EdgeInsets::new(0.0, 10.0, 0.0, 10.0))
             .finish(),
-    )
-    .with_width(220.0)
-    .finish()
+        )
+        .with_child(Divider::horizontal().finish())
+        .with_child(Expanded::new(Scrollable::new(list.finish(), Axis::Vertical).finish()).finish())
+        .finish();
+    ConstrainedBox::new(rail).with_width(width).finish()
 }
 
 fn short_name(path: &str) -> String {
@@ -1579,6 +1569,93 @@ fn short_dir(path: &str) -> String {
         String::new()
     } else {
         format!("…/{tail}")
+    }
+}
+
+/// 268: the real per-extension icon asset for a changed file, with the
+/// generic document as the fallback.
+/// 665: file-type assets are multi-colour, so they bypass the tinted icon
+/// pipeline and draw as images.
+pub(crate) struct FileTypeIcon {
+    name: &'static str,
+    size: f32,
+    size_out: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl FileTypeIcon {
+    pub(crate) fn new(name: &'static str, size: f32) -> Self {
+        Self {
+            name,
+            size,
+            size_out: None,
+            origin: None,
+        }
+    }
+}
+
+impl Element for FileTypeIcon {
+    fn layout(
+        &mut self,
+        _constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        self.size_out = Some(vec2f(self.size, self.size));
+        vec2f(self.size, self.size)
+    }
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        if let Some((width, height, data)) =
+            goble_ui::platform::icon_atlas::colored_icon(self.name)
+        {
+            if let Some(renderer) = ctx.renderer.as_mut() {
+                renderer.draw_image(
+                    rectf(origin.x, origin.y, self.size, self.size),
+                    format!("file-type:{}", self.name),
+                    width,
+                    height,
+                    1,
+                    data,
+                );
+            }
+        }
+    }
+    fn size(&self) -> Option<Vector2F> {
+        self.size_out
+    }
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
+
+pub(crate) fn file_type_icon(path: &str) -> &'static str {
+    let name = short_name(path);
+    let lower = name.to_ascii_lowercase();
+    if lower == "makefile" {
+        return "file";
+    }
+    let ext = lower.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    match ext {
+        "rs" => "file-rust",
+        "c" | "h" => "file-c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "mm" => "file-cpp",
+        "py" | "pyi" => "file-python",
+        "js" | "jsx" | "mjs" | "cjs" => "file-javascript",
+        "ts" | "tsx" => "file-typescript",
+        "json" | "jsonc" | "yaml" | "yml" | "toml" => "file-json",
+        "md" | "mdx" => "file-markdown",
+        "go" => "file-go",
+        "sql" => "file-sql",
+        "zig" => "file-zig",
+        "wasm" => "file-wasm",
+        "kt" | "kts" => "file-kotlin",
+        "php" => "file-php",
+        "pl" | "pm" => "file-perl",
+        "tf" | "tfvars" => "file-terraform",
+        "mmd" => "file-mermaid",
+        "sh" | "bash" | "zsh" | "fish" => "terminal",
+        _ => "file",
     }
 }
 
@@ -1614,9 +1691,13 @@ pub(crate) fn badge_color(path: &str) -> ColorToken {
         .map(|(_, ext)| ext.to_string())
         .unwrap_or_default();
     match ext.as_str() {
-        "h" | "hpp" | "c" | "cc" | "cpp" | "rs" | "ts" | "tsx" | "js" | "jsx" => ColorToken::Accent,
-        "json" => ColorToken::Warning,
-        "yaml" | "yml" | "sh" | "bash" | "zsh" => ColorToken::Success,
+        "h" | "hpp" => ColorToken::Focus,
+        "c" | "cc" | "cpp" => ColorToken::Success,
+        "rs" => ColorToken::Error,
+        "ts" | "tsx" | "js" | "jsx" => ColorToken::Warning,
+        "json" | "yaml" | "yml" => ColorToken::Warning,
+        "sh" | "bash" | "zsh" => ColorToken::Success,
+        "md" => ColorToken::Text,
         _ => ColorToken::Muted,
     }
 }

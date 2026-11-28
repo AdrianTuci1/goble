@@ -167,35 +167,18 @@ mod rich_input_tests {
             .expect("the composer draws its floating card")
     }
 
-    /// The agent view's instructions are the composer's **fixed row under the
-    /// card**, aligned right (owner: below the card, not above it). The old
-    /// separator line over the rich input is gone, and the row is outside the
-    /// card's own surface so it cannot change the card's height.
+    /// 302: the chat composer draws no shortcut strip.
     #[test]
-    fn the_agent_strip_sits_below_the_input_card() {
-        let (mut root, state, _dir) = workspace();
+    fn the_agent_composer_draws_no_shortcut_strip() {
+        let (mut root, _state, _dir) = workspace();
         let app = AppContext::default();
         let commands = frame(&mut root, &app);
-
-        // The editor is on screen, so the row's place under it means something.
-        let placeholder = lines_of(&commands, "Ask anything...");
-        let editor = *placeholder.first().expect("the rich input is drawn");
-        let case = "idle";
-        let card = composer_card(&commands, &app);
-
         for label in ["send", "send to cloud", "tasks"] {
-            let lines = lines_of(&commands, label);
-            assert!(!lines.is_empty(), "{case}: {label:?} is drawn");
             assert!(
-                lines.iter().all(|line| *line > card.max_y()),
-                "{case}: {label:?} is under the input card (found {lines:?} against {})",
-                card.max_y()
+                lines_of(&commands, label).is_empty(),
+                "the shortcut strip label {label:?} is gone"
             );
         }
-        // Every key of every chord has its own cap on the row's own line. A key
-        // the bundled text faces lack is drawn from the icon set, so no row ever
-        // paints the font's `.notdef` box for it; the ASCII keys keep their own
-        // glyph.
         let drawn_icons: Vec<&str> = commands
             .iter()
             .filter_map(|command| match command {
@@ -205,67 +188,9 @@ mod rich_input_tests {
             .collect();
         for icon in ["key-command", "key-option", "key-return", "key-shift"] {
             assert!(
-                drawn_icons.contains(&icon),
-                "{case}: the {icon} cap is drawn"
+                !drawn_icons.contains(&icon),
+                "the shortcut key cap {icon:?} is gone"
             );
         }
-        for symbol in ["⌘", "⇧", "↵", "⌥"] {
-            assert!(
-                lines_of(&commands, symbol).is_empty(),
-                "{case}: {symbol:?} is never drawn as a character"
-            );
-        }
-
-        // The retired folder/branch band never draws, and the editor stays
-        // inside the one card.
-        assert!(
-            lines_of(&commands, "~/Projects/goble/app").is_empty(),
-            "{case}: the retired path pill is not drawn"
-        );
-        assert!(
-            card.min_y() < editor && editor < card.max_y(),
-            "{case}: the editor is inside the card ({editor} in {card:?})"
-        );
-        assert!(
-            rules(&commands)
-                .iter()
-                .all(|y| { *y < card.min_y() || *y > card.max_y() })
-                || rules(&commands).is_empty(),
-            "{case}: no rule cuts the card or its instruction row"
-        );
-
-        // A running turn puts the live status row above the card; the
-        // instruction row stays under it, with the send entry relabelled
-        // `queue` (the same key queues a follow-up).
-        let pane_id = state.borrow().active_pane_id;
-        state
-            .borrow_mut()
-            .pane_runtime
-            .entry(pane_id)
-            .or_default()
-            .busy = true;
-        let commands = frame(&mut root, &app);
-        let case = "turn running";
-        let card = composer_card(&commands, &app);
-        let status = lines_of(&commands, "Waiting for response…");
-        let status_top = *status.first().expect("the status row is drawn");
-        assert!(
-            status_top < card.min_y(),
-            "{case}: the status row is above the card (row {status_top}, card top {})",
-            card.min_y()
-        );
-        for label in ["queue", "send to cloud", "tasks"] {
-            let lines = lines_of(&commands, label);
-            assert!(!lines.is_empty(), "{case}: {label:?} is still drawn");
-            assert!(
-                lines.iter().all(|line| *line > card.max_y()),
-                "{case}: {label:?} stays under the card (found {lines:?} against {})",
-                card.max_y()
-            );
-        }
-        assert!(
-            lines_of(&commands, "send").is_empty(),
-            "{case}: the send entry is relabelled queue while the turn runs"
-        );
     }
 }

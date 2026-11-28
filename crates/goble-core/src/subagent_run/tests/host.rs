@@ -164,9 +164,7 @@ async fn a_background_spawn_through_a_turn_ends_the_turn_while_the_child_is_park
     let result = events
         .iter()
         .find_map(|event| match event {
-            crate::harness::HarnessEvent::ToolCallFinished { result, .. } => {
-                Some(result.clone())
-            }
+            crate::harness::HarnessEvent::ToolCallFinished { result, .. } => Some(result.clone()),
             _ => None,
         })
         .expect("the spawn call finished");

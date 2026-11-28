@@ -28,11 +28,7 @@ impl ClusterInvite {
     }
 
     /// Issue a new invite for a cluster using its CA. The invite grants the given role.
-    pub fn generate(
-        cluster_name: &str,
-        ca: &ClusterCa,
-        role: ClusterRole,
-    ) -> Result<Self> {
+    pub fn generate(cluster_name: &str, ca: &ClusterCa, role: ClusterRole) -> Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
         let code = Self::generate_code();
         let device_serial = format!("invite-{}", &id[..8]);

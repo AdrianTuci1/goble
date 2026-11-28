@@ -769,9 +769,7 @@ mod tests {
         let app = AppContext::default();
         let state = Rc::new(RefCell::new(ScrollState::following()));
         let mut scrollable = Scrollable::new(
-            Text::new("only a line")
-                .with_font_size(12.0)
-                .finish(),
+            Text::new("only a line").with_font_size(12.0).finish(),
             Axis::Vertical,
         )
         .with_state(Rc::clone(&state))
@@ -785,7 +783,11 @@ mod tests {
 
         let mut ctx = crate::elements::PaintContext::new(crate::render::Renderer::new());
         scrollable.paint(vec2f(0.0, 40.0), &mut ctx, &app);
-        let commands = ctx.renderer.take().map(|r| r.commands().to_vec()).unwrap_or_default();
+        let commands = ctx
+            .renderer
+            .take()
+            .map(|r| r.commands().to_vec())
+            .unwrap_or_default();
         let line = commands
             .iter()
             .find_map(|command| match command {
@@ -1208,8 +1210,7 @@ mod tests {
         let app = AppContext::default();
         let state = Rc::new(RefCell::new(ScrollState::smooth()));
         let mut scrollable = smooth_region(&app, &state);
-        state.borrow_mut().last_layout =
-            Some(Instant::now() - std::time::Duration::from_secs(30));
+        state.borrow_mut().last_layout = Some(Instant::now() - std::time::Duration::from_secs(30));
         let moves = app.scroll_moves();
 
         let mut event_ctx = EventContext;

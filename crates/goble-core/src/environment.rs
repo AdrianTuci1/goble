@@ -118,9 +118,10 @@ fn parse_group(value: &toml::Value) -> std::result::Result<BTreeMap<String, EnvV
     };
     let mut variables = BTreeMap::new();
     for (name, value) in table {
-        let parsed: EnvValue = value.clone().try_into().map_err(|_| {
-            format!("{name} is not a string and not a {{ vault = \"key\" }} table")
-        })?;
+        let parsed: EnvValue = value
+            .clone()
+            .try_into()
+            .map_err(|_| format!("{name} is not a string and not a {{ vault = \"key\" }} table"))?;
         variables.insert(name.clone(), parsed);
     }
     Ok(variables)
@@ -155,7 +156,8 @@ mod tests {
     /// A private scratch directory. Tests run in parallel, so the name carries
     /// both the process id and the test's own name.
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("goble-env-test-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("goble-env-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -194,7 +196,10 @@ mod tests {
                 ("LOG_LEVEL", literal("info")),
             ]),
         );
-        file.insert("staging-eu".to_string(), group(&[("LOG_LEVEL", literal("debug"))]));
+        file.insert(
+            "staging-eu".to_string(),
+            group(&[("LOG_LEVEL", literal("debug"))]),
+        );
 
         save(&path, &file).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -295,7 +300,10 @@ Z = \"9\"
         let dir = temp_dir("order");
         let path = dir.join("environment.toml");
         let mut file = EnvironmentFile::new();
-        file.insert("zeta".to_string(), group(&[("B", literal("2")), ("A", literal("1"))]));
+        file.insert(
+            "zeta".to_string(),
+            group(&[("B", literal("2")), ("A", literal("1"))]),
+        );
         file.insert("alpha".to_string(), group(&[("C", literal("3"))]));
 
         let text = to_toml_with_header(&file);

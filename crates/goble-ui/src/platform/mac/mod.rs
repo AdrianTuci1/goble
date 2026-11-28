@@ -119,3 +119,47 @@ mod tests {
         assert!(!reveal_in_file_manager("/tmp"));
     }
 }
+
+/// Clip the window's content view to the native rounded-window shape.
+///
+/// A transparent-titlebar, full-size-content window still draws its content
+/// square into the frame corners. Masking the content view's layer with the
+/// window's corner radius is what makes the app end at the rounded border:
+/// the metal layer (and everything the UI paints) is clipped to the same shape
+/// macOS draws its shadows around.
+///
+/// Main-thread only, like every AppKit call; a no-op when the window handle is
+/// not an AppKit one.
+pub fn round_window_corners(window: &winit::window::Window) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: winit hands us a live NSWindow for as long as the window exists,
+    // and the calls below are the standard layer-corner mask.
+    unsafe {
+        let ns_view = &*(appkit.ns_view.as_ptr() as *const AnyObject);
+        let ns_window: *mut AnyObject = msg_send![ns_view, window];
+        let content_view = ns_view as *const AnyObject as *mut AnyObject;
+        if ns_window.is_null() {
+            return;
+        }
+        let _: () = msg_send![ns_window, setOpaque: false];
+        let clear: *mut AnyObject = msg_send![objc2::class!(NSColor), clearColor];
+        let _: () = msg_send![ns_window, setBackgroundColor: clear];
+        let _: () = msg_send![content_view, setWantsLayer: true];
+        let layer: *mut AnyObject = msg_send![content_view, layer];
+        if layer.is_null() {
+            return;
+        }
+        // macOS' standard window corner radius.
+        let _: () = msg_send![layer, setCornerRadius: 10.0f64];
+        let _: () = msg_send![layer, setMasksToBounds: true];
+    }
+}

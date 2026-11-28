@@ -134,7 +134,10 @@ impl HubConfig {
 
     /// The relay URL when one is set.
     pub fn relay_url(&self) -> Option<&str> {
-        self.relay_url.as_deref().map(str::trim).filter(|url| !url.is_empty())
+        self.relay_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
     }
 
     /// Whether the hub has a token its API can accept.
@@ -165,7 +168,10 @@ mod tests {
 
     #[test]
     fn an_empty_file_is_a_default_config() {
-        assert_eq!(HubConfig::from_toml("").expect("parse"), HubConfig::default());
+        assert_eq!(
+            HubConfig::from_toml("").expect("parse"),
+            HubConfig::default()
+        );
         assert_eq!(
             HubConfig::default().missing(),
             vec!["database", "relay_url", "token", "workflows"]

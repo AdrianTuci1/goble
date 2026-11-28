@@ -1154,7 +1154,7 @@ mod tests {
             let _ = frame_sized(&mut root, app, size);
             let cmds = frame_sized(&mut root, app, size);
             let pane = pane_rect(&state);
-            let bg = app.theme.color(ColorToken::Bg);
+            let bg = app.theme.color(ColorToken::ContentBg);
 
             // The pane card: the tall fill spanning the pane. An agent pane's
             // card is the darker `Bg`, not the lighter `Surface`.
@@ -1173,7 +1173,7 @@ mod tests {
                 .expect("the pane card paints its surface");
             assert_eq!(
                 card_color, bg,
-                "the whole agent pane card is the darker `Bg` token, not a hardcoded colour"
+                "the whole agent pane card is the ContentBg token, not a hardcoded colour"
             );
 
             // The lane column: the tall fill under the pane's chrome, narrower
@@ -1227,16 +1227,16 @@ mod tests {
                 );
             }
 
-            // The panel surface AROUND the card — the owner's corrected
-            // layering — is the sidebar's `Surface`, not the darker `Bg`.
+            // The panel surface AROUND the card is the content material; the
+            // shell/topbar keeps the grey `Surface`.
             let outside_card = vec2f(
                 pane.min_x() - PANE_INSET / 2.0,
                 pane.min_y() + pane.height() / 2.0,
             );
             assert_eq!(
                 topmost_fill(&cmds, outside_card),
-                Some(app.theme.color(ColorToken::Surface)),
-                "the panel surface around the card is the sidebar's Surface: {outside_card:?}"
+                Some(app.theme.color(ColorToken::ContentBg)),
+                "the panel surface around the card is ContentBg: {outside_card:?}"
             );
         }
 

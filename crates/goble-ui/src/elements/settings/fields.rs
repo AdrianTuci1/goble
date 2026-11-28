@@ -442,6 +442,73 @@ pub struct SettingsSelect {
     origin: Option<Point>,
 }
 
+/// 315: a settings menu painted on the frame's top layer, so an open select
+/// covers later rows instead of being covered by them.
+struct DeferredMenu {
+    inner: Rc<RefCell<Box<dyn Element>>>,
+    defer: bool,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl DeferredMenu {
+    fn new(inner: Box<dyn Element>, defer: bool) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(inner)),
+            defer,
+            size: None,
+            origin: None,
+        }
+    }
+
+    fn finish(self) -> Box<dyn Element> {
+        Box::new(self)
+    }
+}
+
+impl Element for DeferredMenu {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.inner.borrow_mut().layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        // The trigger always paints in its row. An open panel also queues for
+        // the frame's last-painted layer, so no later settings row can cover
+        // it; the inline copy is under that top copy.
+        self.inner.borrow_mut().paint(origin, ctx, app);
+        if self.defer {
+            app.hover_chips
+                .borrow_mut()
+                .push_shared(origin, Rc::clone(&self.inner));
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
+    ) -> bool {
+        self.inner.borrow_mut().dispatch_event(event, ctx, app)
+    }
+}
+
 impl SettingsSelect {
     pub fn new(options: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
@@ -571,7 +638,9 @@ impl SettingsSelect {
                     (callback.borrow_mut())(index);
                 }
             });
-        self.root = Some(menu.finish());
+        // 315: the open panel paints in the window's top layer, above any
+        // later settings row, instead of inside the form's paint order.
+        self.root = Some(DeferredMenu::new(menu.finish(), *self.open.borrow()).finish());
     }
 
     fn root_mut(&mut self) -> &mut Box<dyn Element> {

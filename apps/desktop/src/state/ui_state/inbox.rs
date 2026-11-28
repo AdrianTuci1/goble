@@ -308,9 +308,10 @@ impl UiState {
 
     /// The space holding `pane_id`, if any.
     pub fn space_index_of_pane(&self, pane_id: u64) -> Option<usize> {
-        self.spaces
-            .iter()
-            .position(|space| space.root.contains_leaf(pane_id))
+        self.spaces.iter().position(|space| {
+            space.root.contains_leaf(pane_id)
+                || space.floating.iter().any(|pane| pane.pane_id == pane_id)
+        })
     }
 
     /// Keep the selection inside the list after items leave it.

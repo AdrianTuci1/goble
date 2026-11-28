@@ -110,6 +110,8 @@ pub struct SettingsRow {
     reset: Option<Box<dyn Element>>,
     /// A leading colour swatch (the Appearance page's channel rows).
     swatch: Option<ColorU>,
+    /// A leading icon (the integration rows).
+    leading_icon: Option<&'static str>,
     focused: bool,
     disabled: bool,
     /// Pad the row like T3's `pt-3 pb-1` form row (a row with a child editor).
@@ -131,6 +133,7 @@ impl SettingsRow {
             body: None,
             reset: None,
             swatch: None,
+            leading_icon: None,
             focused: false,
             disabled: false,
             tight_bottom: false,
@@ -152,6 +155,12 @@ impl SettingsRow {
     /// theme channel or a palette.
     pub fn with_swatch(mut self, color: ColorU) -> Self {
         self.swatch = Some(color);
+        self
+    }
+
+    /// A leading 16pt icon, before the label (integration identity rows).
+    pub fn with_leading_icon(mut self, icon: &'static str) -> Self {
+        self.leading_icon = Some(icon);
         self
     }
 
@@ -206,6 +215,14 @@ impl SettingsRow {
             app.theme.color(ColorToken::Muted)
         };
         let mut label_line: Vec<Box<dyn Element>> = Vec::new();
+        if let Some(icon) = self.leading_icon {
+            label_line.push(
+                crate::elements::Icon::new(icon)
+                    .with_size(16.0)
+                    .with_theme_color(ColorToken::Muted, app)
+                    .finish(),
+            );
+        }
         if let Some(color) = self.swatch {
             let swatch = crate::elements::Container::new(
                 crate::elements::Empty::new()

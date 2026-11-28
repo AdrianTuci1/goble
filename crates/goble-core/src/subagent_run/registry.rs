@@ -137,7 +137,12 @@ impl SubAgentRegistry {
     /// attributed to the conversation that spawned the child. A call no turn was
     /// there to hear waits on the entry for the next
     /// [`Self::attach_event_sink`] to hand over.
-    pub(crate) fn note_child_usage(&self, child_id: &str, parent_chat_id: &str, usage: &TokenUsage) {
+    pub(crate) fn note_child_usage(
+        &self,
+        child_id: &str,
+        parent_chat_id: &str,
+        usage: &TokenUsage,
+    ) {
         let call = UsageBuckets::of(usage);
         let sender = self.events.lock().clone();
         let mut children = self.children.lock();

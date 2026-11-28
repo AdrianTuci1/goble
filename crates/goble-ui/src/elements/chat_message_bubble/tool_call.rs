@@ -535,6 +535,7 @@ fn verb_group_header(
     let words = InlineText::new(spans)
         .with_font_size(chat_typography::ROW_SIZE)
         .with_line_height(chat_typography::ROW_LH)
+        .with_fit_content(true)
         .finish();
     // DSH's disclosure: the aggregated run is the one tool row with a small
     // trailing chevron (right closed, down open). A member call is plain text.
@@ -962,6 +963,7 @@ pub(super) fn tool_call_header(
         };
         spans.push(row_span(parsed.subject.clone(), color, app));
     }
+    let name_spans = spans.clone();
     // One space between the operand and the detail, whether the family spells
     // its detail with a leading space (` (2 entries)`, ` +1/-1`) or not. A
     // failed call's summary is DSH's error ink; a stopped one would be the warn
@@ -977,15 +979,35 @@ pub(super) fn tool_call_header(
         };
         spans.push(row_span(format!(" {detail}"), color, app));
     }
-    let words = InlineText::new(spans)
+    let name_words = InlineText::new(name_spans)
+        .with_font_size(chat_typography::ROW_SIZE)
+        .with_line_height(chat_typography::ROW_LH)
+        .with_fit_content(true)
+        .finish();
+    let detail_words = InlineText::new(spans)
         .with_font_size(chat_typography::ROW_SIZE)
         .with_line_height(chat_typography::ROW_LH)
         .finish();
-    let row = Flex::row()
+    // 311: the disclosure chevron sits immediately after the tool name, not at
+    // the row's trailing edge; the detail follows it and wraps in the rest.
+    let chevron = Icon::new(if active {
+        "chevron-down"
+    } else {
+        "chevron-right"
+    })
+    .with_size(12.0)
+    .with_color(text_ink)
+    .finish();
+    let mut row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_child(Expanded::new(words).with_flex(1.0).finish())
-        .finish();
+        .with_spacing(6.0)
+        .with_child(name_words)
+        .with_child(chevron);
+    if !detail.is_empty() {
+        row = row.with_child(Expanded::new(detail_words).with_flex(1.0).finish());
+    }
+    let row = row.finish();
 
     let toggle = fold.clone();
     let hover_key = key.to_string();

@@ -1,14 +1,14 @@
+use super::*;
 use crate::color::ColorU;
 use crate::elements::AppContext;
 use crate::elements::Element;
 use crate::elements::LayoutContext;
 use crate::elements::SizeConstraint;
-use crate::geometry::Vector2F;
 use crate::geometry::vec2f;
+use crate::geometry::Vector2F;
 use crate::render::RenderCommand;
 use crate::test_util::{command_counts, render_element};
 use crate::theme::ColorToken;
-use super::*;
 
 fn sample_text() -> String {
     [
@@ -187,9 +187,7 @@ fn changed_rows_paint_the_theme_band_at_full_width() {
     let bands: Vec<(ColorU, f32)> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::FillRect { rect, color, .. }
-                if *color == insert || *color == delete =>
-            {
+            RenderCommand::FillRect { rect, color, .. } if *color == insert || *color == delete => {
                 Some((*color, rect.width()))
             }
             _ => None,
@@ -603,9 +601,7 @@ fn body_text(commands: &[RenderCommand]) -> String {
     commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if origin.y >= 30.0 => {
-                Some(text.as_str())
-            }
+            RenderCommand::DrawText { origin, text, .. } if origin.y >= 30.0 => Some(text.as_str()),
             _ => None,
         })
         .collect()
@@ -673,13 +669,14 @@ fn wrapped_highlighted_runs_keep_the_space_at_a_run_boundary() {
     let rows: Vec<String> = commands
         .iter()
         .filter_map(|command| match command {
-            RenderCommand::DrawText { origin, text, .. } if origin.y >= 30.0 => {
-                Some(text.clone())
-            }
+            RenderCommand::DrawText { origin, text, .. } if origin.y >= 30.0 => Some(text.clone()),
             _ => None,
         })
         .collect();
-    assert!(rows.len() > 1, "the line wraps into at least two rows: {rows:?}");
+    assert!(
+        rows.len() > 1,
+        "the line wraps into at least two rows: {rows:?}"
+    );
     assert_eq!(rows.concat(), line);
 }
 
@@ -770,7 +767,9 @@ fn empty_fill(commands: &[RenderCommand], app: &AppContext) -> usize {
     let empty = ColorU::new(hover.r, hover.g, hover.b, 128);
     commands
         .iter()
-        .filter(|command| matches!(command, RenderCommand::FillRect { color, .. } if *color == empty))
+        .filter(
+            |command| matches!(command, RenderCommand::FillRect { color, .. } if *color == empty),
+        )
         .count()
 }
 
@@ -805,9 +804,7 @@ fn a_one_sided_split_collapses_to_one_full_width_column() {
         let bands: Vec<f32> = commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::FillRect { rect, color, .. } if *color == band => {
-                    Some(rect.width())
-                }
+                RenderCommand::FillRect { rect, color, .. } if *color == band => Some(rect.width()),
                 _ => None,
             })
             .collect();
@@ -875,7 +872,10 @@ fn adjacent_highlight_runs_start_at_the_exact_pen_advance() {
         })
         .collect();
     runs.sort_by(|a, b| a.0.total_cmp(&b.0));
-    assert!(runs.len() > 2, "the line is highlighted in several runs: {runs:?}");
+    assert!(
+        runs.len() > 2,
+        "the line is highlighted in several runs: {runs:?}"
+    );
 
     let mut rounded_differed = false;
     for pair in runs.windows(2) {

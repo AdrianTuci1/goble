@@ -70,6 +70,8 @@ pub enum DiffPanelAction {
     CopyContent(String),
     /// Open a changed file in a file pane that floats over the space.
     OpenFloating(String),
+    /// 616: open a changed file in the Review's own file tab.
+    OpenFileTab(String),
     /// Open or close the commit bar under the topbar.
     ToggleCommit,
     /// Hold the commit bar's message as it is typed.
@@ -321,6 +323,8 @@ pub struct UiActions {
     /// it, and every row, field and action inside sends its own variant.
     pub on_agent_dashboard: Rc<RefCell<dyn FnMut(AgentDashboardAction)>>,
     pub on_settings: Rc<RefCell<dyn FnMut()>>,
+    /// Open Settings on the Providers/Models page.
+    pub on_open_models_settings: Rc<RefCell<dyn FnMut()>>,
     pub on_close_settings_overlay: Rc<RefCell<dyn FnMut()>>,
     /// Maximize the right overview panel over the main pane, or restore it.
     pub on_toggle_side_panel_maximized: Rc<RefCell<dyn FnMut()>>,
@@ -385,6 +389,13 @@ pub struct UiActions {
     /// the picked directory as a Workspace (DSH's add-workspace flow). It never
     /// creates a conversation — the separate "New conversation" row does that.
     pub on_add_workspace: Rc<RefCell<dyn FnMut()>>,
+    /// Bind the active conversation to a directory chosen from the platform
+    /// picker (the composer project pill's New Project row).
+    pub on_bind_project: Rc<RefCell<dyn FnMut()>>,
+    /// Start a new conversation in a directory chosen from the platform picker.
+    pub on_new_project_conversation: Rc<RefCell<dyn FnMut()>>,
+    /// Clear the active conversation's project (the pill's No Project row).
+    pub on_clear_project: Rc<RefCell<dyn FnMut()>>,
     /// A workspace row's New-session control: start a conversation inside that
     /// workspace's directory (DSH's `ProjectRow` create action).
     pub on_sidebar_workspace_new_session: Rc<RefCell<dyn FnMut(String, String)>>,
@@ -415,6 +426,12 @@ pub struct UiActions {
     /// Hand a file path to the active pane's input, from a click in the project
     /// explorer or on a global-search result.
     pub on_explorer_file_click: Rc<RefCell<dyn FnMut(String)>>,
+    /// Y: open a file in the side panel's Files tab (no pane split).
+    pub on_open_file_side: Rc<RefCell<dyn FnMut(String)>>,
+    /// Y: show the Files tab without naming a new file.
+    pub on_open_files_tab: Rc<RefCell<dyn FnMut()>>,
+    /// 285: open the workspace file explorer from the Files side tab.
+    pub on_open_explorer: Rc<RefCell<dyn FnMut()>>,
     /// Open a file in a file pane and arrange the active space as floating
     /// windows (DSH's "Open in floating panel"). The file pane opens first, so
     /// the window the gesture is about is the one on top.
@@ -550,6 +567,10 @@ pub struct UiActions {
     pub on_cron_create: Rc<RefCell<dyn FnMut()>>,
     pub on_cron_delete: Rc<RefCell<dyn FnMut(String)>>,
     pub on_cron_trigger: Rc<RefCell<dyn FnMut(String)>>,
+    /// Enable/disable one automation task.
+    pub on_cron_toggle: Rc<RefCell<dyn FnMut(String, bool)>>,
+    /// Toggle the sidebar's Automations popover.
+    pub on_toggle_automations: Rc<RefCell<dyn FnMut()>>,
     /// Begin dragging the sidebar divider at the given pointer x.
     pub on_sidebar_drag_start: Rc<RefCell<dyn FnMut(f32)>>,
     /// Move the divider while dragging, given the pointer x.

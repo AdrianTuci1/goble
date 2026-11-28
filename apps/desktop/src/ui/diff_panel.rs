@@ -1544,7 +1544,7 @@ fn file_header(
     let header = HoverRow::new(
         ConstrainedBox::new(
             Container::new(row)
-                .with_padding(EdgeInsets::new(0.0, 8.0, 0.0, 8.0))
+                .with_padding(EdgeInsets::new(7.0, 8.0, 7.0, 8.0))
                 .finish(),
         )
         .with_width(content_width)

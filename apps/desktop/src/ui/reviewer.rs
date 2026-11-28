@@ -778,6 +778,9 @@ impl ReviewDiff {
         let color = Self::text_color(cell.kind, app);
         let muted = app.theme.color(ColorToken::Muted);
         if self.split {
+            // 677: one number per visual row, not an old/new pair. Context
+            // shows the old side (left cell); an added-only right cell shows
+            // its new number.
             if let Some(number) = cell.old_no {
                 draw_number(
                     renderer,
@@ -790,8 +793,7 @@ impl ReviewDiff {
                         muted
                     },
                 );
-            }
-            if let Some(number) = cell.new_no {
+            } else if let Some(number) = cell.new_no {
                 draw_number(
                     renderer,
                     origin.x + gutter - 12.0,
@@ -1477,7 +1479,7 @@ pub(crate) fn files_changed_rail(
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(0.0);
-    for (index, file) in detail.files.iter().enumerate() {
+    for file in detail.files.iter() {
         let path = file.path.clone();
         let absolute = file.absolute_path.clone();
         let sel = selected == Some(file.path.as_str());
@@ -1520,12 +1522,9 @@ pub(crate) fn files_changed_rail(
             .finish();
         // 471: flat full-bleed rows; no background at rest, only the hover/
         // selected surface. The 1px rule is the row's only separator.
-        if index > 0 {
-            list = list.with_child(Divider::horizontal().finish());
-        }
         let row = HoverRow::new(
             Container::new(row)
-                .with_padding(EdgeInsets::new(0.0, 9.0, 0.0, 9.0))
+                .with_padding(EdgeInsets::new(7.0, 9.0, 7.0, 9.0))
                 .finish(),
         )
         .with_selected(sel)

@@ -275,7 +275,7 @@ pub(crate) fn build_explorer(
             );
         }
         let mut row = HoverRow::new(content.finish())
-            .with_padding(EdgeInsets::new(8.0, ITEM_PADDING, 8.0, ITEM_PADDING))
+            .with_padding(EdgeInsets::new(7.0, ITEM_PADDING, 7.0, ITEM_PADDING))
             .with_corner_radius(ROW_RADIUS)
             .with_hover_key(state.explorer_hover.clone(), path.clone())
             .with_on_click(move || {

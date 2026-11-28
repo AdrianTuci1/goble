@@ -952,8 +952,17 @@ impl TabStripScroller {
             if index == state.active_side_tab {
                 active = widths.len();
             }
+            let label_text = if *kind == SideTabKind::FileTab {
+                state
+                    .side_file_tab
+                    .as_deref()
+                    .map(|path| path.rsplit('/').next().unwrap_or(path))
+                    .unwrap_or("File")
+            } else {
+                kind.title()
+            };
             let label = advance_width(
-                kind.title(),
+                label_text,
                 12.5,
                 FontWeight::Medium,
                 FontFamily::System,
@@ -2012,6 +2021,59 @@ pub fn build_side_panel(
     } else {
         match kind {
             SideTabKind::Browser => crate::ui::browser::build_browser_tab(app, state),
+            SideTabKind::FileTab => match state.side_file_tab.as_ref() {
+                Some(path) => {
+                    let crumbs = path
+                        .split('/')
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>();
+                    let tail = crumbs
+                        .iter()
+                        .rev()
+                        .take(3)
+                        .rev()
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(" / ");
+                    let bar = Flex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(6.0)
+                        .with_child(
+                            Text::new(format!("… / {tail}"))
+                                .with_font_size(11.0)
+                                .with_theme_color(ColorToken::Muted, app)
+                                .with_max_lines(1)
+                                .finish(),
+                        )
+                        .with_child(Spacer::new().finish())
+                        .with_child(glyph(app, "dots-vertical"))
+                        .with_child(glyph(app, "file"))
+                        .with_child(glyph(app, "refresh"))
+                        .with_child(glyph(app, "panel-left-outline"))
+                        .finish();
+                    let bar = Container::new(bar)
+                        .with_padding(EdgeInsets::new(8.0, 5.0, 8.0, 5.0))
+                        .finish();
+                    Flex::column()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_child(bar)
+                        .with_child(Divider::horizontal().finish())
+                        .with_child(
+                            Expanded::new(crate::ui::file_view::build_file_view(
+                                app,
+                                state,
+                                actions,
+                                crate::state::SIDE_FILE_PANE_ID,
+                                path,
+                            ))
+                            .finish(),
+                        )
+                        .finish()
+                }
+                None => side_tabs::no_file_message(app),
+            },
             SideTabKind::Overview | SideTabKind::NewTab => {
                 build_overview_content(app, state, actions)
             }
@@ -2475,16 +2537,10 @@ fn build_overview_content(
                 ("terminal-2", None)
             };
             sections = sections.with_child(
-                HoverRow::new(panel_row(
-                    app,
-                    icon,
-                    &task.description,
-                    false,
-                    trailing,
-                ))
-                .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
-                .with_corner_radius(8.0)
-                .finish(),
+                HoverRow::new(panel_row(app, icon, &task.description, false, trailing))
+                    .with_padding(EdgeInsets::new(10.0, 7.0, 10.0, 7.0))
+                    .with_corner_radius(8.0)
+                    .finish(),
             );
         }
         if tasks.len() > 4 {
@@ -2662,6 +2718,7 @@ fn side_tab_topbar(
         SideTabKind::Overview => ("Overview".to_string(), None),
         SideTabKind::NewTab => ("New tab".to_string(), None),
         SideTabKind::Browser => ("Browser".to_string(), None),
+        SideTabKind::FileTab => ("File".to_string(), None),
         SideTabKind::Review => ("Review".to_string(), None),
     };
     row = row.with_child(

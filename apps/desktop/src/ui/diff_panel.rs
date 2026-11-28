@@ -538,8 +538,8 @@ fn build_review_topbar(
                 .finish(),
         )
         .with_variant(ButtonVariant::Primary)
-            .with_on_click(move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::ToggleCommit))
-            .finish()
+        .with_on_click(move || (on_diff.borrow_mut())(pane_id, DiffPanelAction::ToggleCommit))
+        .finish()
     };
     let commit_menu = PopupMenu::new(
         TopbarButton::new(
@@ -1395,17 +1395,22 @@ fn file_block(
 ) -> Box<dyn Element> {
     let mut column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(file_header(
-            app,
-            actions,
+        .with_child(open_file_tab_on_hover(
+            file_header(
+                app,
+                actions,
+                pane_id,
+                file,
+                open,
+                editing,
+                editor,
+                confirming_revert,
+                content_width,
+                selected,
+            ),
+            actions.on_diff_panel.clone(),
             pane_id,
-            file,
-            open,
-            editing,
-            editor,
-            confirming_revert,
-            content_width,
-            selected,
+            file.path.clone(),
         ))
         // 225: every filename row is followed by a 1 px rule at the card width.
         .with_child(Divider::horizontal().finish());
@@ -1546,6 +1551,83 @@ fn file_header(
             .finish()
     };
     header
+}
+
+/// 616: hovering a Review file header reveals/opens its dedicated file tab.
+struct OpenFileTabOnHover {
+    child: Box<dyn Element>,
+    on_diff: Rc<RefCell<dyn FnMut(u64, DiffPanelAction)>>,
+    pane_id: u64,
+    path: String,
+    inside: bool,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+fn open_file_tab_on_hover(
+    child: Box<dyn Element>,
+    on_diff: Rc<RefCell<dyn FnMut(u64, DiffPanelAction)>>,
+    pane_id: u64,
+    path: String,
+) -> Box<dyn Element> {
+    Box::new(OpenFileTabOnHover {
+        child,
+        on_diff,
+        pane_id,
+        path,
+        inside: false,
+        size: None,
+        origin: None,
+    })
+}
+
+impl Element for OpenFileTabOnHover {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, Default::default()));
+        self.child.paint(origin, ctx, app);
+    }
+    fn dispatch_event(
+        &mut self,
+        event: &goble_ui::event::DispatchedEvent,
+        ctx: &mut goble_ui::elements::EventContext,
+        app: &AppContext,
+    ) -> bool {
+        if let (
+            goble_ui::event::DispatchedEvent::MouseMove { position },
+            Some(origin),
+            Some(size),
+        ) = (event, self.origin, self.size)
+        {
+            let inside = position.x >= origin.x()
+                && position.x <= origin.x() + size.x
+                && position.y >= origin.y()
+                && position.y <= origin.y() + size.y;
+            if inside && !self.inside {
+                (self.on_diff.borrow_mut())(
+                    self.pane_id,
+                    DiffPanelAction::OpenFileTab(self.path.clone()),
+                );
+            }
+            self.inside = inside;
+        }
+        self.child.dispatch_event(event, ctx, app)
+    }
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
 }
 
 /// Keep the tail of a directory path, with a leading ellipsis, the way the

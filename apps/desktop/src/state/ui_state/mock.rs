@@ -341,6 +341,7 @@ impl UiState {
             review_commit_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
             side_review: None,
             side_file: None,
+            side_file_tab: None,
             last_opened_file: None,
             side_files_show_explorer: false,
             active_side_tab: 0,

@@ -70,6 +70,8 @@ pub enum DiffPanelAction {
     CopyContent(String),
     /// Open a changed file in a file pane that floats over the space.
     OpenFloating(String),
+    /// 616: open a changed file in the Review's own file tab.
+    OpenFileTab(String),
     /// Open or close the commit bar under the topbar.
     ToggleCommit,
     /// Hold the commit bar's message as it is typed.

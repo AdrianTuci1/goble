@@ -67,6 +67,14 @@ pub fn build_tab_strip(
             SideTabChip::new(
                 app,
                 *kind,
+                if *kind == SideTabKind::FileTab {
+                    state
+                        .side_file_tab
+                        .as_deref()
+                        .map(|path| path.rsplit('/').next().unwrap_or(path).to_string())
+                } else {
+                    None
+                },
                 selected,
                 true,
                 move || (on_select.borrow_mut())(SideTabAction::Select(index)),
@@ -123,6 +131,7 @@ impl SideTabChip {
     fn new(
         app: &AppContext,
         kind: SideTabKind,
+        label: Option<String>,
         selected: bool,
         closeable: bool,
         on_select: impl FnMut() + 'static,
@@ -137,7 +146,7 @@ impl SideTabChip {
             .with_size(TAB_ICON_SIZE)
             .with_theme_color(token, app)
             .finish();
-        let label = Text::new(kind.title())
+        let label = Text::new(label.unwrap_or_else(|| kind.title().to_string()))
             .with_font_size(TAB_FONT_SIZE)
             .with_weight(FontWeight::Medium)
             .with_theme_color(token, app)
@@ -603,6 +612,7 @@ mod tests {
         let mut chip = SideTabChip::new(
             app,
             SideTabKind::Agent,
+            None,
             selected,
             true,
             move || select.set(select.get() + 1),

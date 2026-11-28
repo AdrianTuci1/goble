@@ -141,6 +141,8 @@ pub enum SideTabKind {
     /// A freshly opened, not-yet-chosen tab. It shows Overview's launcher and
     /// is replaced by the first kind chosen from it.
     NewTab,
+    /// 616: the hover-opened file tab, backed by `side_file_tab`.
+    FileTab,
     /// 535: the embedded browser tab (platform webview; honest placeholder
     /// when the build has no native view).
     Browser,
@@ -158,6 +160,7 @@ impl SideTabKind {
             Self::Review => "Review",
             Self::NewTab => "New tab",
             Self::Browser => "Browser",
+            Self::FileTab => "File",
         }
     }
 
@@ -172,6 +175,7 @@ impl SideTabKind {
             Self::Review => "file",
             Self::NewTab => "plus",
             Self::Browser => "globe",
+            Self::FileTab => "file",
         }
     }
 }
@@ -802,6 +806,8 @@ pub struct UiState {
     /// pane's kind. A click anywhere that names a file sets this and activates
     /// the Files tab.
     pub side_file: Option<String>,
+    /// 616: the path the hover-opened file tab shows.
+    pub side_file_tab: Option<String>,
     /// The most recently opened file anywhere (a chat link, the explorer, the
     /// review list). The Files tab opens onto this file instead of its empty
     /// state — no extra "open a file" press needed.

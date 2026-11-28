@@ -11,6 +11,24 @@ fn a_new_browser_tab_starts_on_google() {
     );
 }
 
+/// 616: a Review file hover opens its dedicated file tab.
+#[test]
+fn opening_a_file_tab_activates_it() {
+    let mut state = UiState::mock();
+    state.open_file_tab("/tmp/project/src/main.rs".to_string());
+    assert_eq!(
+        state.side_file_tab.as_deref(),
+        Some("/tmp/project/src/main.rs")
+    );
+    assert!(state
+        .side_tabs
+        .contains(&crate::state::SideTabKind::FileTab));
+    assert_eq!(
+        state.active_side_tab_kind(),
+        crate::state::SideTabKind::FileTab
+    );
+}
+
 /// 537: the browser URL travels with the conversation.
 #[test]
 fn switching_conversations_restores_their_own_browser_url() {

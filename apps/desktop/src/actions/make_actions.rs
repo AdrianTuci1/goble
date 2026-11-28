@@ -2484,6 +2484,9 @@ pub fn make_actions(
                             *controls.diff_git_status.borrow_mut() = Some((error, false));
                         }
                     }
+                    DiffPanelAction::OpenFileTab(path) => {
+                        state.open_file_tab(path);
+                    }
                     DiffPanelAction::OpenFile(path) => {
                         // Y: a file reference opens the side panel's Files tab;
                         // it never splits or retargets a main pane.

@@ -673,6 +673,7 @@ impl RootView {
                 active_side_tab: s.active_side_tab,
                 side_rail_open: s.side_rail_open,
                 side_file: s.side_file.clone(),
+                side_file_tab: s.side_file_tab.clone(),
                 side_files_show_explorer: s.side_files_show_explorer,
                 spotlight: s.spotlight.clone(),
                 side_tab_add_menu_open: s.side_tab_add_menu_open.clone(),

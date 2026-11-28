@@ -460,6 +460,12 @@ fn main() -> anyhow::Result<()> {
                 SettingsCategory::Shortcuts,
             ),
             (
+                "side-file-tab",
+                vec2f(1600.0, 1000.0),
+                false,
+                SettingsCategory::General,
+            ),
+            (
                 "side-browser",
                 vec2f(1600.0, 1000.0),
                 false,
@@ -947,6 +953,10 @@ fn main() -> anyhow::Result<()> {
                 if name == "settings-shortcuts-record" {
                     s.settings.shortcuts_recording = Some("Command palette".to_string());
                     s.settings.shortcuts_recorded = vec!["⌘".to_string(), "K".to_string()];
+                }
+                if name == "side-file-tab" {
+                    let file = repo_path.join("src/lib.rs").to_string_lossy().to_string();
+                    s.open_file_tab(file);
                 }
                 if name == "side-browser" {
                     s.right_sidebar_open = true;

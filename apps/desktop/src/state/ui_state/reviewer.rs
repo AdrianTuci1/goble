@@ -225,6 +225,22 @@ impl UiState {
         true
     }
 
+    /// 616: open a changed file in a dedicated side-panel file tab.
+    pub fn open_file_tab(&mut self, path: String) {
+        self.open_file_side(path.clone());
+        self.side_file_tab = Some(path);
+        if let Some(index) = self
+            .side_tabs
+            .iter()
+            .position(|tab| *tab == SideTabKind::FileTab)
+        {
+            self.active_side_tab = index;
+        } else {
+            self.side_tabs.push(SideTabKind::FileTab);
+            self.active_side_tab = self.side_tabs.len() - 1;
+        }
+    }
+
     /// Dock the window floated above the active space's layout: the float
     /// entry goes away and the file stays in the pane tree, drawn by the
     /// layout it was opened over. Returns whether a window was docked.
